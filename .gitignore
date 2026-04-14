@@ -1,0 +1,48 @@
+# Project-specific exclusions
+/cc-src/
+/.claude/
+/.codex/
+/docs/cc/
+
+# macOS / Windows
+.DS_Store
+Thumbs.db
+
+# Editors / IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Logs
+*.log
+logs/
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+!.env.sample
+
+# Dependencies
+node_modules/
+vendor/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Build outputs / caches
+dist/
+build/
+out/
+tmp/
+temp/
+.cache/
+coverage/
