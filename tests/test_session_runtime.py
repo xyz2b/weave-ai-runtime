@@ -1,7 +1,13 @@
 import asyncio
 from pathlib import Path
 
-from claude_agent_runtime.contracts import MessageAttachment, MessageRole, RuntimeMessage
+from claude_agent_runtime.contracts import (
+    MessageAttachment,
+    MessageRole,
+    RuntimeMessage,
+    ToolResultBlock,
+    ToolUseBlock,
+)
 from claude_agent_runtime.definitions import AgentDefinition, ToolDefinition, ToolTraits
 from claude_agent_runtime.registries import ToolRegistry
 from claude_agent_runtime.session_runtime import (
@@ -119,11 +125,37 @@ def test_session_controller_normalizes_priorities_and_resumes_from_transcript(
     produced = asyncio.run(controller.run_until_idle())
 
     assert controller.state.status == SessionStatus.READY
-    assert produced[-1].content == "done"
-    assert any(message.role == MessageRole.TOOL for message in produced)
+    assert produced[-1].text == "done"
+    assert not any(message.role == MessageRole.TOOL for message in produced)
+    assert any(
+        message.role == MessageRole.USER
+        and any(isinstance(block, ToolResultBlock) for block in message.content)
+        for message in produced
+    )
     loaded = asyncio.run(transcript_store.load("session-1"))
     assert len(loaded.entries) == len(controller.messages)
     assert len(model_client.requests) == 2
+    second_request = model_client.requests[1]
+    assert all(message.role != MessageRole.TOOL for message in second_request.messages)
+    assistant_tool_use = next(
+        message
+        for message in second_request.messages
+        if message.role == MessageRole.ASSISTANT
+        and any(isinstance(block, ToolUseBlock) for block in message.content)
+    )
+    tool_use_block = next(block for block in assistant_tool_use.content if isinstance(block, ToolUseBlock))
+    assert tool_use_block.tool_use_id == "call-1"
+    tool_result_message = next(
+        message
+        for message in second_request.messages
+        if message.role == MessageRole.USER
+        and any(isinstance(block, ToolResultBlock) for block in message.content)
+    )
+    tool_result_block = next(
+        block for block in tool_result_message.content if isinstance(block, ToolResultBlock)
+    )
+    assert tool_result_block.tool_use_id == "call-1"
+    assert tool_result_block.content == {"echo": "ping"}
 
     controller.interrupt()
     assert controller.state.status == SessionStatus.INTERRUPTED

@@ -1,20 +1,22 @@
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from uuid import uuid4
 
-from ..contracts import MessageAttachment, MessageRole, RuntimeMessage
+from ..contracts import MessageAttachment, MessageRole, RuntimeMessage, TextBlock, ToolResultBlock, ToolUseBlock
 from ..definitions import AgentDefinition
 from ..registries import AgentRegistry, SkillRegistry, ToolRegistry
 from ..tool_runtime import (
     ToolCall,
+    ToolCallResult,
+    ToolCallStatus,
     ToolContext,
     ToolScheduler,
     assemble_main_thread_tool_pool,
 )
 from .composer import PromptComposer
+from .message_protocol import normalize_messages_for_api
 from .models import ModelClient, ModelRequest, ModelStreamEventType
 from ..tasking import TaskManager
 
@@ -81,6 +83,7 @@ class TurnEngine:
         iteration = 0
 
         while iteration < max_iterations:
+            api_messages = normalize_messages_for_api(working_messages)
             tool_pool = assemble_main_thread_tool_pool(
                 self._tool_registry,
                 allowed_tools=agent.tools or None,
@@ -93,7 +96,7 @@ class TurnEngine:
                 turn_id=turn_id,
                 agent=agent,
                 cwd=cwd,
-                messages=working_messages,
+                messages=api_messages,
                 available_tools=[tool.name for tool in tool_pool],
                 available_skills=[skill.name for skill in active_skills],
                 base_system_prompt=base_system_prompt,
@@ -113,25 +116,30 @@ class TurnEngine:
                 effort=agent.effort,
             )
 
-            assistant_chunks: list[str] = []
+            assistant_blocks: list[object] = []
             tool_calls: list[ToolCall] = []
             async for event in self._model_client.stream(request):
                 if event.event_type == ModelStreamEventType.CONTENT_DELTA:
-                    assistant_chunks.append(str(event.payload.get("text", "")))
+                    _append_text_block(assistant_blocks, str(event.payload.get("text", "")))
                 elif event.event_type == ModelStreamEventType.TOOL_CALL:
-                    tool_calls.append(
-                        ToolCall(
-                            call_id=str(event.payload.get("call_id", uuid4().hex)),
-                            tool_name=str(event.payload["tool_name"]),
-                            tool_input=dict(event.payload.get("tool_input", {})),
+                    call = ToolCall(
+                        call_id=str(event.payload.get("call_id", uuid4().hex)),
+                        tool_name=str(event.payload["tool_name"]),
+                        tool_input=dict(event.payload.get("tool_input", {})),
+                    )
+                    tool_calls.append(call)
+                    assistant_blocks.append(
+                        ToolUseBlock(
+                            tool_use_id=call.call_id,
+                            name=call.tool_name,
+                            input=call.tool_input,
                         )
                     )
 
             assistant_message = RuntimeMessage(
                 message_id=uuid4().hex,
                 role=MessageRole.ASSISTANT,
-                content="".join(assistant_chunks),
-                metadata={"tool_calls": [call.tool_name for call in tool_calls]},
+                content=tuple(assistant_blocks),
             )
             working_messages.append(assistant_message)
             result.messages.append(assistant_message)
@@ -162,20 +170,22 @@ class TurnEngine:
             self._active_scheduler = None
             self._active_tool_context = None
 
-            for tool_result in tool_results:
+            tool_result_blocks = tuple(_tool_result_block(tool_result) for tool_result in tool_results)
+            if tool_result_blocks:
                 tool_message = RuntimeMessage(
                     message_id=uuid4().hex,
-                    role=MessageRole.TOOL,
-                    content=json.dumps(
-                        {
-                            "tool_name": tool_result.tool_name,
-                            "status": tool_result.status.value,
-                            "output": tool_result.output,
-                            "error": tool_result.error,
-                        },
-                        ensure_ascii=True,
-                        sort_keys=True,
-                    ),
+                    role=MessageRole.USER,
+                    content=tool_result_blocks,
+                    metadata={
+                        "tool_results": [
+                            {
+                                "tool_use_id": tool_result.call_id,
+                                "tool_name": tool_result.tool_name,
+                                "status": tool_result.status.value,
+                            }
+                            for tool_result in tool_results
+                        ]
+                    },
                 )
                 working_messages.append(tool_message)
                 result.messages.append(tool_message)
@@ -185,3 +195,25 @@ class TurnEngine:
         result.iterations = iteration
         result.completed = False
         return result
+
+
+def _append_text_block(blocks: list[object], text: str) -> None:
+    if not text:
+        return
+    if blocks and isinstance(blocks[-1], TextBlock):
+        previous = blocks[-1]
+        blocks[-1] = TextBlock(text=previous.text + text)
+        return
+    blocks.append(TextBlock(text=text))
+
+
+def _tool_result_block(tool_result: ToolCallResult) -> ToolResultBlock:
+    if tool_result.status == ToolCallStatus.SUCCESS:
+        content = tool_result.output
+    else:
+        content = tool_result.error or ""
+    return ToolResultBlock(
+        tool_use_id=tool_result.call_id,
+        content=content,
+        is_error=tool_result.status != ToolCallStatus.SUCCESS,
+    )

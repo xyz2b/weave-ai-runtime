@@ -2,9 +2,16 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict
+from datetime import datetime
 from pathlib import Path
 
-from ..contracts import MessageAttachment, MessageRole, RuntimeMessage
+from ..contracts import (
+    MessageAttachment,
+    MessageRole,
+    RuntimeMessage,
+    deserialize_content_blocks,
+    serialize_content_blocks,
+)
 from ..turn_engine.models import TranscriptEntry, TranscriptSession, TranscriptStore
 
 
@@ -59,7 +66,7 @@ def _serialize_entry(entry: TranscriptEntry) -> dict[str, object]:
         "message": {
             "message_id": entry.message.message_id,
             "role": entry.message.role.value,
-            "content": entry.message.content,
+            "content": serialize_content_blocks(entry.message.content),
             "created_at": entry.message.created_at.isoformat(),
             "attachments": [asdict(attachment) for attachment in entry.message.attachments],
             "metadata": entry.message.metadata,
@@ -75,7 +82,8 @@ def _deserialize_entry(payload: dict[str, object]) -> TranscriptEntry:
     message = RuntimeMessage(
         message_id=message_payload["message_id"],
         role=MessageRole(message_payload["role"]),
-        content=message_payload["content"],
+        content=deserialize_content_blocks(message_payload["content"]),
+        created_at=datetime.fromisoformat(message_payload["created_at"]),
         attachments=attachments,
         metadata=message_payload.get("metadata", {}),
     )
@@ -83,5 +91,5 @@ def _deserialize_entry(payload: dict[str, object]) -> TranscriptEntry:
         session_id=payload["session_id"],
         turn_id=payload.get("turn_id"),
         message=message,
+        created_at=datetime.fromisoformat(payload["created_at"]),
     )
-

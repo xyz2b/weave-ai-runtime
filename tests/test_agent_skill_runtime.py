@@ -121,7 +121,7 @@ def test_agent_runtime_routes_and_skill_executor_supports_inline_and_fork(
             )
         )
     )
-    assert direct_answer.messages[-1].content == "direct answer"
+    assert direct_answer.messages[-1].text == "direct answer"
 
     direct_tool = asyncio.run(
         agent_runtime.invoke(
@@ -133,7 +133,7 @@ def test_agent_runtime_routes_and_skill_executor_supports_inline_and_fork(
             )
         )
     )
-    assert json.loads(direct_tool.messages[0].content)["echo"] == "hi"
+    assert json.loads(direct_tool.messages[0].text)["echo"] == "hi"
 
     direct_skill = asyncio.run(
         agent_runtime.invoke(
@@ -145,8 +145,8 @@ def test_agent_runtime_routes_and_skill_executor_supports_inline_and_fork(
             )
         )
     )
-    assert "src/app.py" in direct_skill.messages[0].content
-    assert "session" in direct_skill.messages[0].content
+    assert "src/app.py" in direct_skill.messages[0].text
+    assert "session" in direct_skill.messages[0].text
 
     direct_subagent = asyncio.run(
         agent_runtime.invoke(
@@ -158,7 +158,7 @@ def test_agent_runtime_routes_and_skill_executor_supports_inline_and_fork(
             )
         )
     )
-    assert direct_subagent.messages[-1].content == "subagent answer"
+    assert direct_subagent.messages[-1].text == "subagent answer"
     assert direct_subagent.isolation_mode == IsolationMode.WORKTREE
 
     background = asyncio.run(
@@ -176,7 +176,7 @@ def test_agent_runtime_routes_and_skill_executor_supports_inline_and_fork(
     assert background.background is True
     completed_background = asyncio.run(agent_runtime.wait_for_background(background.task_id))
     assert completed_background.notification is not None
-    assert agent_runtime.notifications[-1].content == "Background agent 'verification' completed"
+    assert agent_runtime.notifications[-1].text == "Background agent 'verification' completed"
 
     inline = asyncio.run(
         skill_executor.execute(
@@ -186,7 +186,7 @@ def test_agent_runtime_routes_and_skill_executor_supports_inline_and_fork(
             cwd=tmp_path,
         )
     )
-    assert inline.injected_messages[0].content.endswith("tests/test_file.py in session")
+    assert inline.injected_messages[0].text.endswith("tests/test_file.py in session")
 
     forked = asyncio.run(
         skill_executor.execute(
@@ -197,4 +197,4 @@ def test_agent_runtime_routes_and_skill_executor_supports_inline_and_fork(
         )
     )
     assert forked.agent_result is not None
-    assert forked.agent_result.messages[-1].content == "forked answer"
+    assert forked.agent_result.messages[-1].text == "forked answer"
