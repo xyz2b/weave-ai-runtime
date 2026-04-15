@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import StrEnum
+from typing import AsyncIterator
 from uuid import uuid4
 
 from ..contracts import MessageRole, RuntimeMessage, SessionCommand, SessionCommandType, SessionState, SessionStatus
 from ..definitions import AgentDefinition
-from ..turn_engine.engine import TurnEngine
+from ..turn_engine.engine import TurnEngine, TurnStreamEvent, TurnStreamEventType
 from ..turn_engine.models import TranscriptEntry, TranscriptStore
 
 
@@ -85,30 +86,25 @@ class SessionController:
         self.state.status = SessionStatus.READY
         self.state.active_turn_id = None
 
-    async def run_until_idle(self) -> tuple[RuntimeMessage, ...]:
+    async def stream_until_idle(self) -> AsyncIterator[TurnStreamEvent]:
         if self.state.status == SessionStatus.IDLE:
             await self.start()
 
-        produced: list[RuntimeMessage] = []
         while self.state.queued_commands:
             command = self.state.queued_commands.pop(0)
+            self.state.status = SessionStatus.RUNNING
+            self.state.active_turn_id = uuid4().hex
             message = RuntimeMessage(
                 message_id=uuid4().hex,
                 role=_role_for_command(command.command_type),
                 content=str(command.payload["content"]),
                 metadata=command.payload.get("metadata", {}),
             )
-            self._messages.append(message)
-            await self._transcript_store.append(
-                TranscriptEntry(
-                    session_id=self.state.session_id,
-                    turn_id=self.state.active_turn_id,
-                    message=message,
-                )
+            await self._record_message(
+                message,
+                turn_id=self.state.active_turn_id,
             )
-            self.state.status = SessionStatus.RUNNING
-            self.state.active_turn_id = uuid4().hex
-            turn_result = await self._turn_engine.run_turn(
+            async for event in self._turn_engine.run_turn_stream(
                 session_id=self.state.session_id,
                 turn_id=self.state.active_turn_id,
                 agent=self._agent,
@@ -116,22 +112,39 @@ class SessionController:
                 messages=list(self._messages),
                 base_system_prompt=self._system_prompt,
                 runtime_context={"command_type": command.command_type.value},
-            )
-            for output in turn_result.messages:
-                self._messages.append(output)
-                produced.append(output)
-                await self._transcript_store.append(
-                    TranscriptEntry(
-                        session_id=self.state.session_id,
+            ):
+                if event.event_type == TurnStreamEventType.MESSAGE and event.message is not None:
+                    await self._record_message(
+                        event.message,
                         turn_id=self.state.active_turn_id,
-                        message=output,
                     )
-                )
+                yield event
             self.state.active_turn_id = None
-            if self.state.status != SessionStatus.INTERRUPTED:
-                self.state.status = SessionStatus.READY
+            if self.state.status == SessionStatus.INTERRUPTED:
+                break
+            self.state.status = SessionStatus.READY
 
+    async def run_until_idle(self) -> tuple[RuntimeMessage, ...]:
+        produced: list[RuntimeMessage] = []
+        async for event in self.stream_until_idle():
+            if event.event_type == TurnStreamEventType.MESSAGE and event.message is not None:
+                produced.append(event.message)
         return tuple(produced)
+
+    async def _record_message(
+        self,
+        message: RuntimeMessage,
+        *,
+        turn_id: str | None,
+    ) -> None:
+        self._messages.append(message)
+        await self._transcript_store.append(
+            TranscriptEntry(
+                session_id=self.state.session_id,
+                turn_id=turn_id,
+                message=message,
+            )
+        )
 
 
 def _role_for_command(command_type: SessionCommandType) -> MessageRole:

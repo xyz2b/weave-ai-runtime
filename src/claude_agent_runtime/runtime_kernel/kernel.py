@@ -1,14 +1,24 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from pathlib import Path
+from typing import Any, AsyncIterator
+from uuid import uuid4
 
+from ..agent_runtime import AgentInvocation, AgentRunResult, AgentRuntime
 from ..builtins import load_builtin_pack
+from ..contracts import RuntimeMessage, serialize_content_blocks
 from ..definitions import AgentDefinition, SkillDefinition, ToolDefinition
 from ..diagnostics import Diagnostic, DiagnosticSeverity
 from ..errors import RegistryConflictError
 from ..hosts.base import BoundHostRuntime, HostAdapter, NullHostAdapter
 from ..registries import AgentRegistry, DefinitionDiscovery, SkillRegistry, ToolRegistry
+from ..session_runtime import InMemoryTranscriptStore, InboundEvent, InboundEventType, SessionController
+from ..skill_runtime import SkillExecutionResult, SkillExecutor
+from ..tasking import TaskManager
+from ..tool_runtime import ToolContext
+from ..turn_engine.engine import TurnEngine, TurnStreamEvent
+from ..turn_engine.models import ModelRequest, TranscriptStore
 from .config import RuntimeConfig
 
 
@@ -22,6 +32,149 @@ class RuntimeKernel:
     model_client: Any = None
     transcript_store: Any = None
     hosts: dict[str, HostAdapter] = field(default_factory=dict)
+
+
+class _UnconfiguredModelClient:
+    def _error(self) -> RuntimeError:
+        return RuntimeError("RuntimeConfig.model_client is required for runnable turn execution")
+
+    async def complete(self, request: ModelRequest):  # pragma: no cover - defensive boundary
+        _ = request
+        raise self._error()
+
+    async def stream(self, request: ModelRequest):
+        _ = request
+        raise self._error()
+        if False:  # pragma: no cover - marks this as an async generator
+            yield None
+
+
+@dataclass(slots=True)
+class RuntimeAssembly:
+    kernel: RuntimeKernel
+    turn_engine: TurnEngine
+    agent_runtime: AgentRuntime
+    skill_executor: SkillExecutor
+    transcript_store: TranscriptStore
+    task_manager: TaskManager
+    system_prompt: str = ""
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def create_session(
+        self,
+        *,
+        session_id: str | None = None,
+        agent_name: str | None = None,
+        cwd: str | Path | None = None,
+        system_prompt: str | None = None,
+    ) -> SessionController:
+        selected_agent = self._resolve_agent(agent_name or self.kernel.config.default_agent)
+        session_cwd = Path(cwd) if cwd is not None else self.kernel.config.working_directory
+        return SessionController(
+            session_id=session_id or uuid4().hex,
+            agent=selected_agent,
+            turn_engine=self.turn_engine,
+            transcript_store=self.transcript_store,
+            cwd=str(session_cwd),
+            system_prompt=self.system_prompt if system_prompt is None else system_prompt,
+        )
+
+    async def run_prompt(
+        self,
+        prompt: str,
+        *,
+        session_id: str | None = None,
+        agent_name: str | None = None,
+        cwd: str | Path | None = None,
+        system_prompt: str | None = None,
+        metadata: dict[str, object] | None = None,
+    ) -> tuple[RuntimeMessage, ...]:
+        session = self.create_session(
+            session_id=session_id,
+            agent_name=agent_name,
+            cwd=cwd,
+            system_prompt=system_prompt,
+        )
+        await session.resume()
+        session.enqueue_event(
+            InboundEvent(
+                InboundEventType.USER_PROMPT,
+                prompt,
+                metadata=metadata or {},
+            )
+        )
+        return await session.run_until_idle()
+
+    async def stream_prompt(
+        self,
+        prompt: str,
+        *,
+        session_id: str | None = None,
+        agent_name: str | None = None,
+        cwd: str | Path | None = None,
+        system_prompt: str | None = None,
+        metadata: dict[str, object] | None = None,
+    ) -> AsyncIterator[TurnStreamEvent]:
+        session = self.create_session(
+            session_id=session_id,
+            agent_name=agent_name,
+            cwd=cwd,
+            system_prompt=system_prompt,
+        )
+        await session.resume()
+        session.enqueue_event(
+            InboundEvent(
+                InboundEventType.USER_PROMPT,
+                prompt,
+                metadata=metadata or {},
+            )
+        )
+        async for event in session.stream_until_idle():
+            yield event
+
+    async def run_agent_tool(
+        self,
+        agent_name: str,
+        prompt: str,
+        context: ToolContext,
+        *,
+        background: bool = False,
+    ) -> dict[str, Any]:
+        result = await self.agent_runtime.invoke(
+            AgentInvocation(
+                agent_name=agent_name,
+                prompt=prompt,
+                session_id=context.session_id,
+                cwd=context.cwd,
+                background=background,
+                parent_tool_pool=context.tool_pool,
+                parent_skill_pool=context.skill_pool,
+                metadata=dict(context.metadata),
+            )
+        )
+        return _serialize_agent_run_result(result)
+
+    async def run_skill_tool(
+        self,
+        skill_name: str,
+        arguments: list[str] | tuple[str, ...],
+        context: ToolContext,
+    ) -> dict[str, Any]:
+        result = await self.skill_executor.execute(
+            skill_name,
+            arguments=tuple(arguments),
+            session_id=context.session_id,
+            cwd=context.cwd,
+            parent_tool_pool=context.tool_pool,
+            parent_skill_pool=context.skill_pool,
+        )
+        return _serialize_skill_execution_result(result)
+
+    def _resolve_agent(self, agent_name: str) -> AgentDefinition:
+        agent = self.kernel.agent_registry.get(agent_name)
+        if agent is None:
+            raise KeyError(agent_name)
+        return agent
 
 
 def build_runtime_kernel(config: RuntimeConfig) -> RuntimeKernel:
@@ -56,18 +209,101 @@ def build_runtime_kernel(config: RuntimeConfig) -> RuntimeKernel:
     return kernel
 
 
+def assemble_runtime(config: RuntimeConfig) -> RuntimeAssembly:
+    kernel = build_runtime_kernel(config)
+    return _assemble_runtime_stack(kernel)
+
+
 def assemble_host_runtime(
     config: RuntimeConfig,
     host_name: str | None = None,
 ) -> BoundHostRuntime:
-    kernel = build_runtime_kernel(config)
+    runtime = assemble_runtime(config)
+    kernel = runtime.kernel
     if host_name is None:
         host = next(iter(kernel.hosts.values()), NullHostAdapter())
     else:
         host = kernel.hosts.get(host_name)
         if host is None:
             raise KeyError(host_name)
-    return BoundHostRuntime(kernel=kernel, host=host)
+    return BoundHostRuntime(kernel=kernel, host=host, runtime=runtime)
+
+
+def _assemble_runtime_stack(kernel: RuntimeKernel) -> RuntimeAssembly:
+    transcript_store = kernel.transcript_store or InMemoryTranscriptStore()
+    kernel.transcript_store = transcript_store
+    task_manager = TaskManager()
+    turn_engine = TurnEngine(
+        model_client=kernel.model_client or _UnconfiguredModelClient(),
+        tool_registry=kernel.tool_registry,
+        agent_registry=kernel.agent_registry,
+        skill_registry=kernel.skill_registry,
+        task_manager=task_manager,
+    )
+    agent_runtime = AgentRuntime(
+        turn_engine=turn_engine,
+        agent_registry=kernel.agent_registry,
+        tool_registry=kernel.tool_registry,
+        skill_registry=kernel.skill_registry,
+        task_manager=task_manager,
+    )
+    skill_executor = SkillExecutor(skill_registry=kernel.skill_registry, agent_runtime=agent_runtime)
+    agent_runtime.bind_skill_executor(skill_executor)
+    runtime = RuntimeAssembly(
+        kernel=kernel,
+        turn_engine=turn_engine,
+        agent_runtime=agent_runtime,
+        skill_executor=skill_executor,
+        transcript_store=transcript_store,
+        task_manager=task_manager,
+        system_prompt=kernel.config.system_prompt,
+        metadata=dict(kernel.config.metadata),
+    )
+    turn_engine.configure_runtime(
+        permission_handler=kernel.config.permission_handler,
+        ask_user_handler=kernel.config.ask_user_handler,
+        agent_runner=runtime.run_agent_tool,
+        skill_runner=runtime.run_skill_tool,
+        notification_provider=lambda: agent_runtime.notifications,
+        tool_refresh_callback=kernel.config.tool_refresh_callback,
+    )
+    return runtime
+
+
+def _serialize_agent_run_result(result: AgentRunResult) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "agent": result.agent_name,
+        "status": result.status,
+        "background": result.background,
+        "messages": [_serialize_message(message) for message in result.messages],
+    }
+    if result.task_id is not None:
+        payload["task_id"] = result.task_id
+    if result.isolation_mode is not None:
+        payload["isolation_mode"] = result.isolation_mode.value
+    if result.notification is not None:
+        payload["notification"] = _serialize_message(result.notification)
+    return payload
+
+
+def _serialize_skill_execution_result(result: SkillExecutionResult) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "skill": result.skill_name,
+        "mode": result.mode.value,
+        "injected_messages": [_serialize_message(message) for message in result.injected_messages],
+    }
+    if result.agent_result is not None:
+        payload["agent_result"] = _serialize_agent_run_result(result.agent_result)
+    return payload
+
+
+def _serialize_message(message: RuntimeMessage) -> dict[str, Any]:
+    return {
+        "message_id": message.message_id,
+        "role": message.role.value,
+        "content": serialize_content_blocks(message.content),
+        "metadata": dict(message.metadata),
+    }
 
 
 def _register_builtin_tools(

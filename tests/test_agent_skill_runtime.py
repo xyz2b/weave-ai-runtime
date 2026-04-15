@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 
 from claude_agent_runtime.agent_runtime import AgentInvocation, AgentRuntime
+from claude_agent_runtime.contracts import MessageRole, ToolResultBlock
 from claude_agent_runtime.definitions import (
     AgentDefinition,
     IsolationMode,
@@ -12,6 +13,7 @@ from claude_agent_runtime.definitions import (
     ToolTraits,
 )
 from claude_agent_runtime.registries import AgentRegistry, SkillRegistry, ToolRegistry
+from claude_agent_runtime.runtime_kernel import BuiltinPackConfig, RuntimeConfig, assemble_runtime
 from claude_agent_runtime.skill_runtime import SkillExecutor
 from claude_agent_runtime.tasking import TaskManager
 from claude_agent_runtime.turn_engine import ModelRequest, ModelStreamEvent, ModelStreamEventType, TurnEngine
@@ -88,10 +90,26 @@ def test_agent_runtime_routes_and_skill_executor_supports_inline_and_fork(
 
     model_client = FakeModelClient(
         [
-            [ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "direct answer"})],
-            [ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "subagent answer"})],
-            [ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "background answer"})],
-            [ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "forked answer"})],
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-1"}),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "direct answer"}),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+            ],
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-2"}),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "subagent answer"}),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+            ],
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-3"}),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "background answer"}),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+            ],
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-4"}),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "forked answer"}),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+            ],
         ]
     )
     task_manager = TaskManager()
@@ -198,3 +216,117 @@ def test_agent_runtime_routes_and_skill_executor_supports_inline_and_fork(
     )
     assert forked.agent_result is not None
     assert forked.agent_result.messages[-1].text == "forked answer"
+
+
+def test_assembled_runtime_executes_model_generated_agent_and_skill_tools(
+    tmp_path: Path,
+) -> None:
+    model_client = FakeModelClient(
+        [
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-agent-main-1"}),
+                ModelStreamEvent(
+                    ModelStreamEventType.TOOL_CALL,
+                    {
+                        "tool_name": "agent",
+                        "tool_input": {"agent": "verification", "prompt": "run checks"},
+                        "call_id": "call-agent-1",
+                    },
+                ),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "tool_use"}),
+            ],
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-agent-sub"}),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "subagent answer"}),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+            ],
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-agent-main-2"}),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "agent delegation done"}),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+            ],
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-skill-main-1"}),
+                ModelStreamEvent(
+                    ModelStreamEventType.TOOL_CALL,
+                    {
+                        "tool_name": "skill",
+                        "tool_input": {"skill": "fork-skill", "arguments": ["ARG"]},
+                        "call_id": "call-skill-1",
+                    },
+                ),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "tool_use"}),
+            ],
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-skill-sub"}),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "forked answer"}),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+            ],
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-skill-main-2"}),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "skill delegation done"}),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+            ],
+        ]
+    )
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            model_client=model_client,
+            builtins=BuiltinPackConfig(
+                extra_agents=[
+                    AgentDefinition(
+                        name="verification",
+                        description="verify",
+                        prompt="verify",
+                        tools=("*",),
+                        isolation=IsolationMode.WORKTREE,
+                    ),
+                    AgentDefinition(
+                        name="general-purpose",
+                        description="general",
+                        prompt="general",
+                        tools=("*",),
+                    ),
+                ],
+                extra_skills=[
+                    SkillDefinition(
+                        name="fork-skill",
+                        description="fork",
+                        content="Forked skill ${ARG1}",
+                        execution_context=SkillExecutionContext.FORK,
+                        agent="general-purpose",
+                    )
+                ],
+            ),
+        )
+    )
+
+    agent_messages = asyncio.run(runtime.run_prompt("Run agent tool", session_id="session-agent"))
+    skill_messages = asyncio.run(runtime.run_prompt("Run skill tool", session_id="session-skill"))
+
+    agent_tool_result_message = next(
+        message
+        for message in agent_messages
+        if message.role == MessageRole.USER and any(isinstance(block, ToolResultBlock) for block in message.content)
+    )
+    agent_tool_result = next(
+        block for block in agent_tool_result_message.content if isinstance(block, ToolResultBlock)
+    )
+    assert agent_tool_result.content["agent"] == "verification"
+    assert agent_tool_result.content["status"] == "completed"
+    assert agent_tool_result.content["messages"][-1]["content"][0]["text"] == "subagent answer"
+    assert agent_messages[-1].text == "agent delegation done"
+
+    skill_tool_result_message = next(
+        message
+        for message in skill_messages
+        if message.role == MessageRole.USER and any(isinstance(block, ToolResultBlock) for block in message.content)
+    )
+    skill_tool_result = next(
+        block for block in skill_tool_result_message.content if isinstance(block, ToolResultBlock)
+    )
+    assert skill_tool_result.content["skill"] == "fork-skill"
+    assert skill_tool_result.content["mode"] == SkillExecutionContext.FORK.value
+    assert skill_tool_result.content["agent_result"]["messages"][-1]["content"][0]["text"] == "forked answer"
+    assert skill_messages[-1].text == "skill delegation done"

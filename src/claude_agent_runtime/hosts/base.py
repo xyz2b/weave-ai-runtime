@@ -41,5 +41,5 @@ class NullHostAdapter:
 class BoundHostRuntime:
     kernel: Any
     host: HostAdapter
+    runtime: Any = None
     metadata: dict[str, Any] = field(default_factory=dict)
-

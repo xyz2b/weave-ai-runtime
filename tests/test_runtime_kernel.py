@@ -1,5 +1,7 @@
+import asyncio
 from pathlib import Path
 
+from claude_agent_runtime.contracts import MessageRole
 from claude_agent_runtime.definitions import (
     AgentDefinition,
     DefinitionOrigin,
@@ -12,8 +14,25 @@ from claude_agent_runtime.runtime_kernel import (
     HostBinding,
     RuntimeConfig,
     assemble_host_runtime,
+    assemble_runtime,
     build_runtime_kernel,
 )
+from claude_agent_runtime.turn_engine import ModelRequest, ModelStreamEvent, ModelStreamEventType
+
+
+class FakeModelClient:
+    def __init__(self, event_batches: list[list[ModelStreamEvent]]) -> None:
+        self._event_batches = [list(batch) for batch in event_batches]
+        self.requests: list[ModelRequest] = []
+
+    async def complete(self, request: ModelRequest):  # pragma: no cover - protocol completeness
+        raise NotImplementedError
+
+    async def stream(self, request: ModelRequest):
+        self.requests.append(request)
+        batch = self._event_batches.pop(0)
+        for event in batch:
+            yield event
 
 
 def test_runtime_kernel_applies_builtin_switches_and_discovers_project_defs(
@@ -86,3 +105,38 @@ def test_host_assembly_entrypoint_binds_host(tmp_path: Path) -> None:
 
     assert runtime.host.name == "cli"
     assert runtime.kernel.agent_registry.get("main-router") is not None
+    assert runtime.runtime is not None
+    assert runtime.runtime.kernel is runtime.kernel
+
+
+def test_runtime_assembly_provides_runnable_session_surface(tmp_path: Path) -> None:
+    model_client = FakeModelClient(
+        [
+            [
+                ModelStreamEvent(
+                    ModelStreamEventType.MESSAGE_START,
+                    {"request_id": "req-1"},
+                ),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "assembled reply"}),
+                ModelStreamEvent(
+                    ModelStreamEventType.MESSAGE_STOP,
+                    {"stop_reason": "end_turn"},
+                ),
+            ]
+        ]
+    )
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            model_client=model_client,
+            system_prompt="Assembled system prompt",
+        )
+    )
+
+    produced = asyncio.run(runtime.run_prompt("Hello runtime", session_id="session-1"))
+
+    assert produced[-1].role == MessageRole.ASSISTANT
+    assert produced[-1].text == "assembled reply"
+    assert runtime.transcript_store is runtime.kernel.transcript_store
+    assert len(model_client.requests) == 1
+    assert model_client.requests[0].query_source == "user_prompt"

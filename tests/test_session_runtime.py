@@ -88,11 +88,29 @@ def test_session_controller_normalizes_priorities_and_resumes_from_transcript(
         [
             [
                 ModelStreamEvent(
+                    ModelStreamEventType.MESSAGE_START,
+                    {"request_id": "req-1", "ttft_ms": 4.5},
+                ),
+                ModelStreamEvent(
                     ModelStreamEventType.TOOL_CALL,
                     {"tool_name": "echo", "tool_input": {"value": "ping"}, "call_id": "call-1"},
-                )
+                ),
+                ModelStreamEvent(
+                    ModelStreamEventType.MESSAGE_STOP,
+                    {"stop_reason": "tool_use", "usage": {"output_tokens": 7}},
+                ),
             ],
-            [ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "done"})],
+            [
+                ModelStreamEvent(
+                    ModelStreamEventType.MESSAGE_START,
+                    {"request_id": "req-2", "ttft_ms": 7.0},
+                ),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "done"}),
+                ModelStreamEvent(
+                    ModelStreamEventType.MESSAGE_STOP,
+                    {"stop_reason": "end_turn", "usage": {"output_tokens": 3}},
+                ),
+            ],
         ]
     )
     transcript_store = FileTranscriptStore(tmp_path / "transcripts")
@@ -135,8 +153,11 @@ def test_session_controller_normalizes_priorities_and_resumes_from_transcript(
     loaded = asyncio.run(transcript_store.load("session-1"))
     assert len(loaded.entries) == len(controller.messages)
     assert len(model_client.requests) == 2
+    assert model_client.requests[0].abort_signal is not None
+    assert model_client.requests[0].query_source == "user_prompt"
     second_request = model_client.requests[1]
     assert all(message.role != MessageRole.TOOL for message in second_request.messages)
+    assert second_request.abort_signal is not None
     assistant_tool_use = next(
         message
         for message in second_request.messages
@@ -156,9 +177,60 @@ def test_session_controller_normalizes_priorities_and_resumes_from_transcript(
     )
     assert tool_result_block.tool_use_id == "call-1"
     assert tool_result_block.content == {"echo": "ping"}
+    assert produced[-1].metadata["request_id"] == "req-2"
+    assert produced[-1].metadata["stop_reason"] == "end_turn"
+    assert produced[-1].metadata["ttft_ms"] == 7.0
+    assert produced[-1].metadata["usage"] == {"output_tokens": 3}
 
     controller.interrupt()
     assert controller.state.status == SessionStatus.INTERRUPTED
     asyncio.run(controller.resume())
     assert controller.state.status == SessionStatus.READY
     assert len(controller.messages) == len(loaded.entries)
+    assert all(entry.turn_id is not None for entry in loaded.entries)
+
+
+def test_session_controller_streams_turn_events_until_idle(tmp_path: Path) -> None:
+    model_client = FakeModelClient(
+        [
+            [
+                ModelStreamEvent(
+                    ModelStreamEventType.MESSAGE_START,
+                    {"request_id": "req-stream"},
+                ),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "streamed reply"}),
+                ModelStreamEvent(
+                    ModelStreamEventType.MESSAGE_STOP,
+                    {"stop_reason": "end_turn"},
+                ),
+            ]
+        ]
+    )
+    controller = SessionController(
+        session_id="session-stream",
+        agent=AgentDefinition(name="main-router", description="router", prompt="Route the turn"),
+        turn_engine=TurnEngine(model_client=model_client, tool_registry=ToolRegistry()),
+        transcript_store=FileTranscriptStore(tmp_path / "transcripts"),
+        cwd=str(tmp_path),
+        system_prompt="System prompt",
+    )
+    controller.enqueue_event(InboundEvent(InboundEventType.USER_PROMPT, "hello"))
+
+    async def collect():
+        events = []
+        async for event in controller.stream_until_idle():
+            events.append(event)
+        return events
+
+    events = asyncio.run(collect())
+
+    assert [event.event_type.value for event in events] == [
+        "request_start",
+        "stream_progress",
+        "stream_progress",
+        "stream_progress",
+        "message",
+        "terminal",
+    ]
+    assert controller.state.status == SessionStatus.READY
+    assert controller.messages[-1].text == "streamed reply"

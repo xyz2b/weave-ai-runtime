@@ -68,6 +68,7 @@ class AgentRuntime:
         self._tool_registry = tool_registry
         self._skill_registry = skill_registry
         self._task_manager = task_manager or TaskManager()
+        self._skill_executor: Any = None
         self._background_tasks: dict[str, asyncio.Task[AgentRunResult]] = {}
         self._notifications: list[RuntimeMessage] = []
 
@@ -75,10 +76,13 @@ class AgentRuntime:
     def notifications(self) -> tuple[RuntimeMessage, ...]:
         return tuple(self._notifications)
 
+    def bind_skill_executor(self, skill_executor: Any) -> None:
+        self._skill_executor = skill_executor
+
     async def invoke(self, invocation: AgentInvocation) -> AgentRunResult:
         agent = self._resolve_agent(invocation.agent_name)
         if agent.name == "main-router":
-            routed = await self._try_direct_route(invocation)
+            routed = await self._try_compat_route(invocation)
             if routed is not None:
                 return routed
 
@@ -89,22 +93,31 @@ class AgentRuntime:
     async def wait_for_background(self, task_id: str) -> AgentRunResult:
         return await self._background_tasks[task_id]
 
-    async def _try_direct_route(self, invocation: AgentInvocation) -> AgentRunResult | None:
+    async def _try_compat_route(self, invocation: AgentInvocation) -> AgentRunResult | None:
+        # These string-prefixed routes remain as a compatibility/debug surface.
+        # The assembled turn engine is the primary execution path.
         stripped = invocation.prompt.strip()
         if stripped.startswith("/tool "):
             _, remainder = stripped.split(" ", 1)
             tool_name, raw_payload = remainder.split(" ", 1)
             payload = json.loads(raw_payload)
             scheduler = ToolScheduler(self._tool_registry)
-            context = ToolContext(
+            compat_message = RuntimeMessage(
+                message_id=uuid4().hex,
+                role=MessageRole.USER,
+                content=invocation.prompt,
+            )
+            tool_pool = tuple(invocation.parent_tool_pool) or self._tool_registry.definitions()
+            skill_pool = tuple(invocation.parent_skill_pool) or self._skill_registry.resolve_active()
+            context = self._turn_engine.create_tool_context(
                 session_id=invocation.session_id,
                 turn_id=uuid4().hex,
                 agent_name="main-router",
                 cwd=invocation.cwd,
-                tool_registry=self._tool_registry,
-                agent_registry=self._agent_registry,
-                skill_registry=self._skill_registry,
-                task_manager=self._task_manager,
+                messages=(compat_message,),
+                tool_pool=tool_pool,
+                skill_pool=skill_pool,
+                metadata={**invocation.metadata, "compat_route": True},
             )
             result = await scheduler.run(
                 [ToolCall(call_id=uuid4().hex, tool_name=tool_name, tool_input=payload)],
@@ -125,9 +138,11 @@ class AgentRuntime:
         if stripped.startswith("/skill "):
             _, remainder = stripped.split(" ", 1)
             skill_name, *arguments = remainder.split()
-            from .skill_runtime import SkillExecutor
+            executor = self._skill_executor
+            if executor is None:
+                from .skill_runtime import SkillExecutor
 
-            executor = SkillExecutor(skill_registry=self._skill_registry, agent_runtime=self)
+                executor = SkillExecutor(skill_registry=self._skill_registry, agent_runtime=self)
             skill_result = await executor.execute(
                 skill_name,
                 arguments=arguments,
@@ -153,6 +168,7 @@ class AgentRuntime:
                     cwd=invocation.cwd,
                     parent_tool_pool=invocation.parent_tool_pool,
                     parent_skill_pool=invocation.parent_skill_pool,
+                    metadata={**invocation.metadata, "compat_route": True},
                 )
             )
         return None

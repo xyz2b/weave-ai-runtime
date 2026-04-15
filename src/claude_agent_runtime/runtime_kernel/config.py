@@ -2,11 +2,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Mapping
+from typing import TYPE_CHECKING, Any, Mapping
 
 from ..definitions import AgentDefinition, DefinitionSource, SkillDefinition, ToolDefinition
 from ..hosts.base import HostFactory
 from ..turn_engine.models import ModelClient, TranscriptStore
+
+if TYPE_CHECKING:
+    from ..tool_runtime import AskUserHandler, PermissionHandler, ToolRefreshCallback
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,6 +76,10 @@ class RuntimeConfig:
     model_client: ModelClient | None = None
     transcript_store: TranscriptStore | None = None
     default_agent: str = "main-router"
+    system_prompt: str = ""
+    permission_handler: PermissionHandler | None = None
+    ask_user_handler: AskUserHandler | None = None
+    tool_refresh_callback: ToolRefreshCallback | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
@@ -86,4 +93,3 @@ class RuntimeConfig:
                 DefinitionSourcePaths(DefinitionSource.PROJECT, project_claude_dir),
             ),
         )
-

@@ -7,11 +7,12 @@ from fnmatch import fnmatch
 from pathlib import Path
 from typing import Any, Mapping, Protocol, Sequence
 
-from .contracts import ExecutionResult, ExecutionStatus
+from .contracts import ExecutionResult, ExecutionStatus, RuntimeMessage
 from .definitions import (
     InterruptBehavior,
     PermissionBehavior,
     PermissionDecision,
+    SkillDefinition,
     ToolDefinition,
     ValidationOutcome,
 )
@@ -76,6 +77,17 @@ class SkillRunner(Protocol):
     ) -> Any: ...
 
 
+class NotificationSink(Protocol):
+    async def __call__(self, message: RuntimeMessage) -> None: ...
+
+
+class ToolRefreshCallback(Protocol):
+    async def __call__(
+        self,
+        context: "ToolContext",
+    ) -> Sequence[ToolDefinition] | None: ...
+
+
 @dataclass(slots=True)
 class ToolContext:
     session_id: str
@@ -85,12 +97,19 @@ class ToolContext:
     tool_registry: ToolRegistry | None = None
     agent_registry: Any = None
     skill_registry: Any = None
+    messages: tuple[RuntimeMessage, ...] = ()
+    tool_pool: tuple[ToolDefinition, ...] = ()
+    skill_pool: tuple[SkillDefinition, ...] = ()
     progress_sink: ToolProgressSink | None = None
     permission_handler: PermissionHandler | None = None
     ask_user_handler: AskUserHandler | None = None
     agent_runner: AgentRunner | None = None
     skill_runner: SkillRunner | None = None
     task_manager: TaskManager | None = None
+    abort_signal: Any = None
+    notifications: tuple[RuntimeMessage, ...] = ()
+    notification_sink: NotificationSink | None = None
+    tool_refresh_callback: ToolRefreshCallback | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
     _interrupt_reason: str | None = None
 
@@ -115,6 +134,9 @@ class ToolContext:
 
     def request_interrupt(self, reason: str = "interrupt") -> None:
         self._interrupt_reason = reason
+        abort_signal = self.abort_signal
+        if abort_signal is not None and hasattr(abort_signal, "abort"):
+            abort_signal.abort(reason)
 
     def interrupted(self) -> bool:
         return self._interrupt_reason is not None
@@ -122,6 +144,19 @@ class ToolContext:
     @property
     def interrupt_reason(self) -> str | None:
         return self._interrupt_reason
+
+    async def emit_notification(self, message: RuntimeMessage) -> None:
+        self.notifications = (*self.notifications, message)
+        if self.notification_sink is not None:
+            await maybe_await(self.notification_sink(message))
+
+    async def refresh_tools(self) -> tuple[ToolDefinition, ...]:
+        if self.tool_refresh_callback is None:
+            return tuple(self.tool_pool)
+        refreshed = await maybe_await(self.tool_refresh_callback(self))
+        if refreshed is not None:
+            self.tool_pool = tuple(refreshed)
+        return tuple(self.tool_pool)
 
 
 @dataclass(frozen=True, slots=True)
