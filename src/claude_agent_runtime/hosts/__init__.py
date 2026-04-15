@@ -1,4 +1,13 @@
-from .base import BoundHostRuntime, HostAdapter, HostFactory, NullHostAdapter
+from .base import BoundHostRuntime, CallbackHostAdapter, HostAdapter, HostFactory, HostRuntime, NullHostAdapter
+from .reference import CliHostRuntime, SdkHostRuntime
 
-__all__ = ["BoundHostRuntime", "HostAdapter", "HostFactory", "NullHostAdapter"]
-
+__all__ = [
+    "BoundHostRuntime",
+    "CallbackHostAdapter",
+    "CliHostRuntime",
+    "HostAdapter",
+    "HostFactory",
+    "HostRuntime",
+    "NullHostAdapter",
+    "SdkHostRuntime",
+]

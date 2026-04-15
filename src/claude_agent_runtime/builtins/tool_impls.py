@@ -272,9 +272,19 @@ async def task_stop_tool(tool_input: dict[str, Any], context: ToolContext) -> di
 
 
 async def ask_user_tool(tool_input: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+    if context.runtime_services is not None:
+        response = await context.runtime_services.elicitation.request(
+            ElicitationRequest(
+                session_id=context.session_id,
+                turn_id=context.turn_id,
+                prompt=tool_input["question"],
+                options=tuple(tool_input.get("options", ())),
+                metadata={"tool": "ask_user"},
+            ),
+            runtime_context=context,
+        )
+        return {"question": tool_input["question"], "response": response.response}
     handler = context.ask_user_handler
-    if handler is None and context.runtime_services is not None:
-        handler = context.runtime_services.ask_user_handler
     if handler is None:
         raise ValueError("No ask_user handler is configured")
     response = await handler(tool_input["question"], tool_input.get("options"))
@@ -341,3 +351,4 @@ def cancelled_result(call_id: str, tool_name: str, message: str) -> ToolCallResu
 
 def json_output(data: Any) -> str:
     return json.dumps(data, ensure_ascii=True, sort_keys=True)
+from ..elicitation import ElicitationRequest

@@ -6,7 +6,9 @@ from typing import AsyncIterator
 from uuid import uuid4
 
 from ..contracts import MessageRole, RuntimeMessage, SessionCommand, SessionCommandType, SessionState, SessionStatus
-from ..definitions import AgentDefinition
+from ..definitions import AgentDefinition, PermissionMode
+from ..hooks import SessionEndPayload, SessionStartPayload
+from ..permissions import PermissionContext
 from ..runtime_services import DefaultTranscriptService, RuntimeServices
 from ..turn_engine.engine import TurnEngine, TurnStreamEvent, TurnStreamEventType
 from ..turn_engine.models import TranscriptEntry, TranscriptStore
@@ -50,6 +52,14 @@ class SessionController:
         self._cwd = cwd
         self._system_prompt = system_prompt
         self._messages: list[RuntimeMessage] = []
+        self._started = False
+        self.state.metadata.setdefault(
+            "permission_context",
+            PermissionContext(
+                session_id=session_id,
+                mode=agent.permission_mode or PermissionMode.DEFAULT,
+            ),
+        )
 
     @property
     def messages(self) -> tuple[RuntimeMessage, ...]:
@@ -60,6 +70,14 @@ class SessionController:
         return self._runtime_services
 
     async def start(self) -> None:
+        if not self._started:
+            await self._runtime_services.host.startup()
+            await self._runtime_services.host.ready()
+            await self._runtime_services.hook_bus.dispatch(
+                self.state.session_id,
+                SessionStartPayload(session_id=self.state.session_id),
+            )
+            self._started = True
         self.state.status = SessionStatus.READY
 
     def normalize_event(self, event: InboundEvent) -> SessionCommand:
@@ -97,6 +115,18 @@ class SessionController:
         self.state.status = SessionStatus.READY
         self.state.active_turn_id = None
 
+    async def close(self, final_status: str = "completed") -> None:
+        await self._runtime_services.hook_bus.dispatch(
+            self.state.session_id,
+            SessionEndPayload(
+                session_id=self.state.session_id,
+                final_status=final_status,
+            ),
+        )
+        if self._started:
+            await self._runtime_services.host.shutdown()
+            self._started = False
+
     async def stream_until_idle(self) -> AsyncIterator[TurnStreamEvent]:
         if self.state.status == SessionStatus.IDLE:
             await self.start()
@@ -122,18 +152,29 @@ class SessionController:
                 cwd=self._cwd,
                 messages=list(self._messages),
                 base_system_prompt=self._system_prompt,
-                runtime_context={"command_type": command.command_type.value},
+                runtime_context={
+                    "command_type": command.command_type.value,
+                    "permission_context": self.state.metadata.get("permission_context"),
+                },
             ):
                 if event.event_type == TurnStreamEventType.MESSAGE and event.message is not None:
                     await self._record_message(
                         event.message,
                         turn_id=self.state.active_turn_id,
                     )
+                await self._runtime_services.host.emit_turn_event(self.state.session_id, event)
+                if (
+                    event.event_type == TurnStreamEventType.TERMINAL
+                    and event.terminal is not None
+                    and event.terminal.stop_reason == "blocked"
+                ):
+                    self.state.status = SessionStatus.WAITING
                 yield event
             self.state.active_turn_id = None
             if self.state.status == SessionStatus.INTERRUPTED:
                 break
-            self.state.status = SessionStatus.READY
+            if self.state.status != SessionStatus.WAITING:
+                self.state.status = SessionStatus.READY
 
     async def run_until_idle(self) -> tuple[RuntimeMessage, ...]:
         produced: list[RuntimeMessage] = []

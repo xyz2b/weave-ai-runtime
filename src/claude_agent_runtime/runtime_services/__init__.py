@@ -5,7 +5,11 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping, Protocol, Sequence
 
 from ..contracts import RuntimeMessage
-from ..definitions import AgentDefinition, PermissionBehavior, PermissionDecision, ToolDefinition
+from ..definitions import AgentDefinition, ToolDefinition
+from ..elicitation import SharedElicitationService
+from ..hooks import HookBus
+from ..hosts.base import CallbackHostAdapter, HostRuntime, NullHostAdapter
+from ..permissions import PermissionEngine
 from ..tasking import TaskManager
 
 
@@ -23,27 +27,37 @@ class ContextContributionService(Protocol):
 
 
 class PermissionService(Protocol):
+    async def evaluate(
+        self,
+        request: Any,
+        *,
+        initial_decision: Any = None,
+        hook_result: Any = None,
+        runtime_context: Any = None,
+    ) -> Any: ...
+
     async def authorize(
         self,
         definition: ToolDefinition,
         tool_input: dict[str, Any],
-        decision: PermissionDecision,
+        decision: Any,
         context: Any,
-    ) -> PermissionDecision: ...
+    ) -> Any: ...
 
 
 class ElicitationService(Protocol):
+    async def request(self, request: Any, *, runtime_context: Any = None) -> Any: ...
+
     async def ask(
         self,
         question: str,
         options: Sequence[str] | None = None,
+        *,
+        session_id: str | None = None,
+        turn_id: str | None = None,
+        runtime_context: Any = None,
+        metadata: dict[str, Any] | None = None,
     ) -> Any: ...
-
-
-class HostRuntimeService(Protocol):
-    def current_notifications(self) -> Sequence[RuntimeMessage]: ...
-
-    async def emit_notification(self, message: RuntimeMessage) -> None: ...
 
 
 class ToolCatalogService(Protocol):
@@ -99,56 +113,6 @@ class NoopCompactionService:
 
 
 @dataclass(slots=True)
-class CallbackPermissionService:
-    handler: Any = None
-
-    async def authorize(
-        self,
-        definition: ToolDefinition,
-        tool_input: dict[str, Any],
-        decision: PermissionDecision,
-        context: Any,
-    ) -> PermissionDecision:
-        if self.handler is None:
-            return PermissionDecision(
-                PermissionBehavior.DENY,
-                message=decision.message or "Permission required",
-                details=dict(decision.details),
-            )
-        return await _maybe_await(self.handler(definition, tool_input, decision, context))
-
-
-@dataclass(slots=True)
-class CallbackElicitationService:
-    handler: Any = None
-
-    async def ask(
-        self,
-        question: str,
-        options: Sequence[str] | None = None,
-    ) -> Any:
-        if self.handler is None:
-            raise RuntimeError("No ask_user handler is configured")
-        return await _maybe_await(self.handler(question, options))
-
-
-@dataclass(slots=True)
-class DefaultHostService:
-    notification_provider: Callable[[], Sequence[RuntimeMessage]] | None = None
-    notification_sink: Callable[[RuntimeMessage], Any] | None = None
-
-    def current_notifications(self) -> tuple[RuntimeMessage, ...]:
-        if self.notification_provider is None:
-            return ()
-        return tuple(self.notification_provider())
-
-    async def emit_notification(self, message: RuntimeMessage) -> None:
-        if self.notification_sink is None:
-            return None
-        await _maybe_await(self.notification_sink(message))
-
-
-@dataclass(slots=True)
 class CallbackToolCatalogService:
     refresh_callback: Any = None
 
@@ -174,11 +138,12 @@ class DefaultTranscriptService:
 @dataclass(slots=True)
 class RuntimeServices:
     hooks: ContextContributionService = field(default_factory=NoopHookService)
-    permissions: PermissionService = field(default_factory=CallbackPermissionService)
-    elicitation: ElicitationService = field(default_factory=CallbackElicitationService)
+    hook_bus: HookBus = field(default_factory=HookBus)
+    permissions: PermissionService = field(default_factory=PermissionEngine)
+    elicitation: ElicitationService = field(default_factory=SharedElicitationService)
     memory: ContextContributionService = field(default_factory=NoopMemoryService)
     compaction: ContextContributionService = field(default_factory=NoopCompactionService)
-    host: HostRuntimeService = field(default_factory=DefaultHostService)
+    host: HostRuntime = field(default_factory=NullHostAdapter)
     tasks: DefaultTaskService = field(default_factory=DefaultTaskService)
     transcript: DefaultTranscriptService | None = None
     tool_catalog: ToolCatalogService = field(default_factory=CallbackToolCatalogService)
@@ -199,14 +164,10 @@ class RuntimeServices:
 
     @property
     def permission_handler(self) -> Any:
-        if isinstance(self.permissions, CallbackPermissionService) and self.permissions.handler is None:
-            return None
         return self.permissions.authorize
 
     @property
     def ask_user_handler(self) -> Any:
-        if isinstance(self.elicitation, CallbackElicitationService) and self.elicitation.handler is None:
-            return None
         return self.elicitation.ask
 
     @property
@@ -217,14 +178,10 @@ class RuntimeServices:
 
     @property
     def notification_provider(self) -> Any:
-        if isinstance(self.host, DefaultHostService) and self.host.notification_provider is None:
-            return None
         return self.host.current_notifications
 
     @property
     def notification_sink(self) -> Any:
-        if isinstance(self.host, DefaultHostService) and self.host.notification_sink is None:
-            return None
         return self.host.emit_notification
 
     def bind_execution(
@@ -236,6 +193,9 @@ class RuntimeServices:
         self.agent_runner = agent_runner
         self.skill_runner = skill_runner
 
+    def bind_host(self, host: HostRuntime) -> None:
+        self.host = host
+
     def configure_compat(
         self,
         *,
@@ -244,14 +204,27 @@ class RuntimeServices:
         tool_refresh_callback: Any = None,
         notification_provider: Callable[[], Sequence[RuntimeMessage]] | None = None,
         notification_sink: Callable[[RuntimeMessage], Any] | None = None,
+        turn_event_sink: Callable[[str, Any], Any] | None = None,
     ) -> None:
-        self.permissions = CallbackPermissionService(permission_handler)
-        self.elicitation = CallbackElicitationService(ask_user_handler)
-        self.tool_catalog = CallbackToolCatalogService(tool_refresh_callback)
-        self.host = DefaultHostService(
-            notification_provider=notification_provider,
-            notification_sink=notification_sink,
-        )
+        if tool_refresh_callback is not None or isinstance(self.tool_catalog, CallbackToolCatalogService):
+            self.tool_catalog = CallbackToolCatalogService(tool_refresh_callback)
+        if any(
+            value is not None
+            for value in (
+                permission_handler,
+                ask_user_handler,
+                notification_provider,
+                notification_sink,
+                turn_event_sink,
+            )
+        ):
+            self.host = CallbackHostAdapter(
+                permission_handler=permission_handler,
+                ask_user_handler=ask_user_handler,
+                notification_provider=notification_provider,
+                notification_sink=notification_sink,
+                turn_event_sink=turn_event_sink,
+            )
 
 
 async def _maybe_await(value: Any) -> Any:
@@ -261,15 +234,11 @@ async def _maybe_await(value: Any) -> Any:
 
 
 __all__ = [
-    "CallbackElicitationService",
-    "CallbackPermissionService",
     "CallbackToolCatalogService",
     "ContextContributionService",
-    "DefaultHostService",
     "DefaultTaskService",
     "DefaultTranscriptService",
     "ElicitationService",
-    "HostRuntimeService",
     "NoopCompactionService",
     "NoopHookService",
     "NoopMemoryService",

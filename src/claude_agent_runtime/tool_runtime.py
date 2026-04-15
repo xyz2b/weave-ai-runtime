@@ -6,8 +6,9 @@ from enum import StrEnum
 from fnmatch import fnmatch
 from pathlib import Path
 from typing import Any, Mapping, Protocol, Sequence
+from uuid import uuid4
 
-from .contracts import ExecutionResult, ExecutionStatus, RuntimeMessage
+from .contracts import ExecutionResult, ExecutionStatus, MessageRole, RuntimeMessage
 from .definitions import (
     InterruptBehavior,
     PermissionBehavior,
@@ -16,6 +17,9 @@ from .definitions import (
     ToolDefinition,
     ValidationOutcome,
 )
+from .elicitation import ElicitationRequest
+from .hooks import NotificationPayload, PostToolUseFailurePayload, PostToolUsePayload, PreToolUsePayload
+from .permissions import PermissionContext
 from .registries import ToolRegistry
 from .runtime_services import RuntimeServices
 from .tasking import TaskManager
@@ -112,6 +116,8 @@ class ToolContext:
     notification_sink: NotificationSink | None = None
     tool_refresh_callback: ToolRefreshCallback | None = None
     runtime_services: RuntimeServices | None = None
+    permission_context: PermissionContext | None = None
+    pending_hook_effect: Any = None
     metadata: dict[str, Any] = field(default_factory=dict)
     _interrupt_reason: str | None = None
 
@@ -149,6 +155,22 @@ class ToolContext:
 
     async def emit_notification(self, message: RuntimeMessage) -> None:
         self.notifications = (*self.notifications, message)
+        if (
+            self.runtime_services is not None
+            and not message.metadata.get("skip_hook_dispatch")
+            and self.runtime_services.hook_bus is not None
+        ):
+            hook_result = await maybe_await(
+                self.runtime_services.hook_bus.dispatch(
+                    self.session_id,
+                    NotificationPayload(
+                        session_id=self.session_id,
+                        message=message.text,
+                        level=str(message.metadata.get("level", "info")),
+                    ),
+                )
+            )
+            await _emit_hook_notifications(self, hook_result.notifications)
         if self.notification_sink is not None:
             await maybe_await(self.notification_sink(message))
             return
@@ -305,6 +327,27 @@ async def execute_tool_call(
             if validation.updated_input is not None:
                 normalized_input = validation.updated_input
 
+        pre_tool_hook = await _dispatch_hook(
+            context,
+            PreToolUsePayload(
+                session_id=context.session_id,
+                tool_name=definition.name,
+                tool_input=dict(normalized_input),
+                turn_id=context.turn_id,
+            ),
+        )
+        if pre_tool_hook.updated_input is not None:
+            normalized_input = pre_tool_hook.updated_input
+        context.pending_hook_effect = pre_tool_hook
+        if not pre_tool_hook.continue_execution:
+            return ToolCallResult(
+                call_id=call.call_id,
+                tool_name=definition.name,
+                status=ToolCallStatus.DENIED,
+                error="Tool use blocked by runtime hook",
+                metadata={"matched_hooks": list(pre_tool_hook.matched_owners)},
+            )
+
         permission_decision = PermissionDecision(PermissionBehavior.ALLOW)
         if definition.check_permissions is not None:
             permission_decision = await maybe_await(
@@ -312,24 +355,16 @@ async def execute_tool_call(
             )
         normalized_input = permission_decision.updated_input or normalized_input
 
-        if permission_decision.behavior == PermissionBehavior.DENY:
-            return ToolCallResult(
-                call_id=call.call_id,
-                tool_name=definition.name,
-                status=ToolCallStatus.DENIED,
-                error=permission_decision.message or "Tool use denied",
-                metadata=permission_decision.details,
+        if context.runtime_services is not None:
+            permission_decision = await context.runtime_services.permissions.authorize(
+                definition,
+                normalized_input,
+                permission_decision,
+                context,
             )
-
-        if permission_decision.behavior == PermissionBehavior.ASK:
-            if context.runtime_services is not None:
-                permission_decision = await context.runtime_services.permissions.authorize(
-                    definition,
-                    normalized_input,
-                    permission_decision,
-                    context,
-                )
-            elif context.permission_handler is None:
+            normalized_input = permission_decision.updated_input or normalized_input
+        elif permission_decision.behavior == PermissionBehavior.ASK:
+            if context.permission_handler is None:
                 return ToolCallResult(
                     call_id=call.call_id,
                     tool_name=definition.name,
@@ -337,22 +372,22 @@ async def execute_tool_call(
                     error=permission_decision.message or "Permission required",
                     metadata=permission_decision.details,
                 )
-            else:
-                permission_decision = await context.permission_handler(
-                    definition,
-                    normalized_input,
-                    permission_decision,
-                    context,
-                )
+            permission_decision = await context.permission_handler(
+                definition,
+                normalized_input,
+                permission_decision,
+                context,
+            )
             normalized_input = permission_decision.updated_input or normalized_input
-            if permission_decision.behavior != PermissionBehavior.ALLOW:
-                return ToolCallResult(
-                    call_id=call.call_id,
-                    tool_name=definition.name,
-                    status=ToolCallStatus.DENIED,
-                    error=permission_decision.message or "Tool use denied",
-                    metadata=permission_decision.details,
-                )
+
+        if permission_decision.behavior != PermissionBehavior.ALLOW:
+            return ToolCallResult(
+                call_id=call.call_id,
+                tool_name=definition.name,
+                status=ToolCallStatus.DENIED,
+                error=permission_decision.message or "Tool use denied",
+                metadata=permission_decision.details,
+            )
 
         if definition.execute is None:
             return ToolCallResult(
@@ -363,14 +398,44 @@ async def execute_tool_call(
             )
 
         raw_output = await maybe_await(definition.execute(normalized_input, context))
+        post_tool_hook = await _dispatch_hook(
+            context,
+            PostToolUsePayload(
+                session_id=context.session_id,
+                tool_name=definition.name,
+                tool_input=dict(normalized_input),
+                tool_result=raw_output,
+                turn_id=context.turn_id,
+            ),
+        )
+        if not post_tool_hook.continue_execution:
+            return ToolCallResult(
+                call_id=call.call_id,
+                tool_name=definition.name,
+                status=ToolCallStatus.DENIED,
+                error="Tool result blocked by runtime hook",
+                metadata={"matched_hooks": list(post_tool_hook.matched_owners)},
+            )
         return map_tool_output(definition.name, call.call_id, raw_output)
     except Exception as exc:  # pragma: no cover - defensive boundary
+        await _dispatch_hook(
+            context,
+            PostToolUseFailurePayload(
+                session_id=context.session_id,
+                tool_name=definition.name,
+                tool_input=dict(call.tool_input),
+                error_message=str(exc),
+                turn_id=context.turn_id,
+            ),
+        )
         return ToolCallResult(
             call_id=call.call_id,
             tool_name=definition.name,
             status=ToolCallStatus.ERROR,
             error=str(exc),
         )
+    finally:
+        context.pending_hook_effect = None
 
 
 def map_tool_output(tool_name: str, call_id: str, raw_output: Any) -> ToolCallResult:
@@ -538,3 +603,33 @@ async def maybe_await(value: Any) -> Any:
     if asyncio.iscoroutine(value):
         return await value
     return value
+
+
+async def _dispatch_hook(context: ToolContext, payload: Any) -> Any:
+    if context.runtime_services is None or context.runtime_services.hook_bus is None:
+        return _EmptyHookResult()
+    hook_result = await maybe_await(context.runtime_services.hook_bus.dispatch(context.session_id, payload))
+    await _emit_hook_notifications(context, hook_result.notifications)
+    return hook_result
+
+
+async def _emit_hook_notifications(context: ToolContext, notifications: Sequence[str]) -> None:
+    for notification in notifications:
+        if context.runtime_services is None:
+            continue
+        await context.emit_notification(
+            RuntimeMessage(
+                message_id=uuid4().hex,
+                role=MessageRole.NOTIFICATION,
+                content=notification,
+                metadata={"skip_hook_dispatch": True, "source": "hook"},
+            )
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class _EmptyHookResult:
+    matched_owners: tuple[str, ...] = ()
+    updated_input: dict[str, Any] | None = None
+    continue_execution: bool = True
+    notifications: tuple[str, ...] = ()

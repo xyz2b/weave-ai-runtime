@@ -1,3 +1,4 @@
+from .bus import HookBus, HookDispatchResult, HookRegistration
 from .models import (
     ElicitationPayload,
     ElicitationResultPayload,
@@ -23,9 +24,12 @@ from .models import (
 __all__ = [
     "ElicitationPayload",
     "ElicitationResultPayload",
+    "HookBus",
     "HookCommandDefinition",
+    "HookDispatchResult",
     "HookEffect",
     "HookMatcherDefinition",
+    "HookRegistration",
     "HostLifecyclePayload",
     "HostLifecyclePhase",
     "NotificationPayload",
@@ -41,4 +45,3 @@ __all__ = [
     "SubagentStopPayload",
     "UserPromptSubmitPayload",
 ]
-

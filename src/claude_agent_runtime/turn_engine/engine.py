@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, AsyncIterator, Mapping
@@ -18,7 +18,9 @@ from ..contracts import (
     ToolResultBlock,
     ToolUseBlock,
 )
-from ..definitions import AgentDefinition
+from ..definitions import AgentDefinition, PermissionMode
+from ..hooks import StopPayload, UserPromptSubmitPayload
+from ..permissions import PermissionContext
 from ..registries import AgentRegistry, SkillRegistry, ToolRegistry
 from ..runtime_services import DefaultTaskService, RuntimeServices
 from ..tasking import TaskManager
@@ -414,6 +416,7 @@ class TurnEngine:
         notifications = ()
         if self._runtime_services.notification_provider is not None:
             notifications = tuple(self._runtime_services.notification_provider())
+        permission_context = _coerce_permission_context(session_id, metadata)
         return ToolContext(
             session_id=session_id,
             turn_id=turn_id,
@@ -435,6 +438,7 @@ class TurnEngine:
             notification_sink=self._runtime_services.notification_sink,
             tool_refresh_callback=self._runtime_services.tool_refresh_callback,
             runtime_services=self._runtime_services,
+            permission_context=permission_context,
             metadata=dict(metadata or {}),
         )
 
@@ -550,6 +554,13 @@ class TurnEngine:
             )
             active_skills = self._skill_registry.resolve_active() if self._skill_registry is not None else ()
             runtime_metadata = self._merge_runtime_context(runtime_context)
+            runtime_metadata.setdefault(
+                "permission_context",
+                PermissionContext(
+                    session_id=session_id,
+                    mode=agent.permission_mode or PermissionMode.DEFAULT,
+                ),
+            )
             shared_memory_fragments = await self._collect_control_plane_fragments(
                 self._runtime_services.memory,
                 session_id=session_id,
@@ -578,6 +589,16 @@ class TurnEngine:
                 runtime_context=runtime_metadata,
             )
 
+            user_prompt_hook = await self._dispatch_hook(
+                session_id,
+                UserPromptSubmitPayload(
+                    session_id=session_id,
+                    prompt=_latest_user_prompt_text(working_messages),
+                    turn_id=turn_id,
+                    attachments=tuple(attachment.name for attachment in attachments or ()),
+                ),
+            )
+
             composition = self._compose_context(
                 session_id=session_id,
                 turn_id=turn_id,
@@ -588,7 +609,9 @@ class TurnEngine:
                 available_skills=[skill.name for skill in active_skills],
                 base_system_prompt=base_system_prompt,
                 memory_fragments=shared_memory_fragments + tuple(memory_fragments or ()),
-                hook_context=shared_hook_context + tuple(hook_context or ()),
+                hook_context=shared_hook_context
+                + user_prompt_hook.additional_context
+                + tuple(hook_context or ()),
                 compaction_fragments=shared_compaction_fragments + tuple(compaction_fragments or ()),
                 attachments=attachments or (),
                 runtime_context=runtime_metadata,
@@ -671,16 +694,44 @@ class TurnEngine:
                     discarded_content=discarded_blocks,
                     metadata={"reason": terminal.abort_reason or terminal.stop_reason},
                 )
+
+            if not tool_calls:
+                stop_hook = await self._dispatch_hook(
+                    session_id,
+                    StopPayload(
+                        session_id=session_id,
+                        reason=terminal.stop_reason or "completed",
+                        turn_id=turn_id,
+                    ),
+                )
+                if not stop_hook.continue_execution:
+                    terminal = replace(
+                        terminal,
+                        stop_reason="blocked",
+                        metadata={
+                            **terminal.metadata,
+                            "continuation_blocked": True,
+                            "matched_hooks": list(stop_hook.matched_owners),
+                        },
+                    )
+                state.completed = (
+                    terminal.error is None
+                    and terminal.stop_reason not in {"interrupted", "error", "blocked"}
+                )
+                yield TurnStreamEvent(
+                    event_type=TurnStreamEventType.TERMINAL,
+                    iteration=iteration_index,
+                    request=request,
+                    terminal=terminal,
+                )
+                return
+
             yield TurnStreamEvent(
                 event_type=TurnStreamEventType.TERMINAL,
                 iteration=iteration_index,
                 request=request,
                 terminal=terminal,
             )
-
-            if not tool_calls:
-                state.completed = terminal.error is None and terminal.stop_reason not in {"interrupted", "error"}
-                return
 
             if abort_signal.aborted:
                 state.completed = False
@@ -765,6 +816,26 @@ class TurnEngine:
             merged.update(runtime_context)
         return merged
 
+    async def _dispatch_hook(self, session_id: str, payload: Any) -> Any:
+        if self._runtime_services.hook_bus is None:
+            return _EmptyHookResult()
+        result = await maybe_await(self._runtime_services.hook_bus.dispatch(session_id, payload))
+        await self._emit_hook_notifications(session_id, result.notifications)
+        return result
+
+    async def _emit_hook_notifications(self, session_id: str, notifications: tuple[str, ...]) -> None:
+        for notification in notifications:
+            await maybe_await(
+                self._runtime_services.host.emit_notification(
+                    RuntimeMessage(
+                        message_id=uuid4().hex,
+                        role=MessageRole.NOTIFICATION,
+                        content=notification,
+                        metadata={"session_id": session_id, "source": "hook"},
+                    )
+                )
+            )
+
 
 def _assistant_message_metadata(terminal: ModelTerminalMetadata) -> dict[str, Any]:
     metadata: dict[str, Any] = {}
@@ -781,6 +852,13 @@ def _assistant_message_metadata(terminal: ModelTerminalMetadata) -> dict[str, An
     if terminal.error is not None:
         metadata["error"] = terminal.error
     return metadata
+
+
+def _latest_user_prompt_text(messages: list[RuntimeMessage]) -> str:
+    for message in reversed(messages):
+        if message.role == MessageRole.USER:
+            return message.text
+    return ""
 
 
 def _tool_calls_from_message(message: RuntimeMessage) -> list[ToolCall]:
@@ -861,3 +939,22 @@ def _tool_result_block(tool_result: ToolCallResult) -> ToolResultBlock:
         content=content,
         is_error=tool_result.status != ToolCallStatus.SUCCESS,
     )
+
+
+def _coerce_permission_context(
+    session_id: str,
+    metadata: Mapping[str, Any] | None,
+) -> PermissionContext:
+    if metadata is not None:
+        value = metadata.get("permission_context")
+        if isinstance(value, PermissionContext):
+            return value
+    return PermissionContext(session_id=session_id)
+
+
+@dataclass(frozen=True, slots=True)
+class _EmptyHookResult:
+    additional_context: tuple[str, ...] = ()
+    matched_owners: tuple[str, ...] = ()
+    continue_execution: bool = True
+    notifications: tuple[str, ...] = ()

@@ -64,6 +64,15 @@ class RuntimeAssembly:
     system_prompt: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
 
+    def bind_host(self, host: HostAdapter) -> BoundHostRuntime:
+        self.services.bind_host(host)
+        return BoundHostRuntime(
+            kernel=self.kernel,
+            host=host,
+            runtime=self,
+            services=self.services,
+        )
+
     def create_session(
         self,
         *,
@@ -101,6 +110,7 @@ class RuntimeAssembly:
             system_prompt=system_prompt,
         )
         await session.resume()
+        await session.start()
         session.enqueue_event(
             InboundEvent(
                 InboundEventType.USER_PROMPT,
@@ -127,6 +137,7 @@ class RuntimeAssembly:
             system_prompt=system_prompt,
         )
         await session.resume()
+        await session.start()
         session.enqueue_event(
             InboundEvent(
                 InboundEventType.USER_PROMPT,
@@ -233,7 +244,7 @@ def assemble_host_runtime(
         host = kernel.hosts.get(host_name)
         if host is None:
             raise KeyError(host_name)
-    return BoundHostRuntime(kernel=kernel, host=host, runtime=runtime, services=runtime.services)
+    return runtime.bind_host(host)
 
 
 def _assemble_runtime_stack(kernel: RuntimeKernel) -> RuntimeAssembly:

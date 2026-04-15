@@ -8,7 +8,10 @@ from typing import Any, Sequence
 from uuid import uuid4
 
 from .contracts import MessageRole, RuntimeMessage
-from .definitions import AgentDefinition, IsolationMode, SkillDefinition, ToolDefinition
+from .definitions import AgentDefinition, IsolationMode, PermissionBehavior, PermissionDecision, SkillDefinition, ToolDefinition
+from .hooks import SubagentStopPayload
+from .hosts.base import CallbackHostAdapter, NullHostAdapter
+from .permissions import PermissionContext, PermissionRequest, PermissionTarget
 from .registries import AgentRegistry, SkillRegistry, ToolRegistry
 from .runtime_services import DefaultTaskService, RuntimeServices
 from .tasking import TaskManager, TaskStatus
@@ -92,6 +95,9 @@ class AgentRuntime:
 
     async def invoke(self, invocation: AgentInvocation) -> AgentRunResult:
         agent = self._resolve_agent(invocation.agent_name)
+        denial = await self._authorize_agent(invocation, agent)
+        if denial is not None:
+            return denial
         if agent.name == "main-router":
             routed = await self._try_compat_route(invocation)
             if routed is not None:
@@ -161,6 +167,7 @@ class AgentRuntime:
                 cwd=invocation.cwd,
                 parent_tool_pool=invocation.parent_tool_pool,
                 parent_skill_pool=invocation.parent_skill_pool,
+                permission_context=invocation.metadata.get("permission_context"),
             )
             return AgentRunResult(
                 agent_name="main-router",
@@ -201,6 +208,7 @@ class AgentRuntime:
                 )
                 result.notification = notification
                 self._notifications.append(notification)
+                await self._runtime_services.host.emit_notification(notification)
                 return result
             except Exception as exc:  # pragma: no cover - defensive boundary
                 self._task_manager.update(task_id, status=TaskStatus.FAILED, error=str(exc))
@@ -237,15 +245,21 @@ class AgentRuntime:
             cwd=str(effective_cwd),
             messages=[prompt_message],
             base_system_prompt=invocation.metadata.get("system_prompt", ""),
-            runtime_context={"agent_name": agent.name, "background": invocation.background},
+            runtime_context={
+                "agent_name": agent.name,
+                "background": invocation.background,
+                "permission_context": invocation.metadata.get("permission_context"),
+            },
         )
-        return AgentRunResult(
+        result = AgentRunResult(
             agent_name=agent.name,
             status="completed" if turn_result.completed else "max_turns",
             messages=turn_result.messages,
             background=invocation.background or agent.background,
             isolation_mode=agent.isolation,
         )
+        await self._dispatch_subagent_stop(invocation.session_id, agent.name, result.status)
+        return result
 
     def _resolve_agent(self, name: str) -> AgentDefinition:
         agent = self._agent_registry.get(name)
@@ -295,3 +309,80 @@ class AgentRuntime:
         else:
             adapter = IsolationAdapter()
         return adapter.prepare(cwd)
+
+    async def _authorize_agent(
+        self,
+        invocation: AgentInvocation,
+        agent: AgentDefinition,
+    ) -> AgentRunResult | None:
+        if agent.name == "main-router" and not invocation.background:
+            return None
+        permission_context = invocation.metadata.get("permission_context")
+        initial = PermissionDecision(
+            PermissionBehavior.ASK
+            if (
+                invocation.background or agent.isolation not in {None, IsolationMode.NONE}
+            )
+            and _supports_permission_requests(self._runtime_services.host)
+            else PermissionBehavior.ALLOW
+        )
+        request = PermissionRequest(
+            session_id=invocation.session_id,
+            turn_id=None,
+            target=PermissionTarget.AGENT,
+            name=agent.name,
+            payload={"prompt": invocation.prompt, "background": invocation.background},
+            context=permission_context if isinstance(permission_context, PermissionContext) else None,
+            message=f"Agent '{agent.name}' requires permission",
+        )
+        runtime_context = _PermissionRuntimeContext(
+            runtime_services=self._runtime_services,
+            permission_context=permission_context if isinstance(permission_context, PermissionContext) else None,
+        )
+        outcome = await self._runtime_services.permissions.evaluate(  # type: ignore[attr-defined]
+            request,
+            initial_decision=initial,
+            runtime_context=runtime_context,
+        )
+        if outcome.behavior == PermissionBehavior.ALLOW:
+            return None
+        return AgentRunResult(
+            agent_name=agent.name,
+            status="denied",
+            messages=[
+                RuntimeMessage(
+                    message_id=uuid4().hex,
+                    role=MessageRole.NOTIFICATION,
+                    content=outcome.message or f"Agent '{agent.name}' was denied",
+                    metadata={"permission_denied": True},
+                )
+            ],
+            background=invocation.background or agent.background,
+            isolation_mode=agent.isolation,
+        )
+
+    async def _dispatch_subagent_stop(self, session_id: str, agent_name: str, status: str) -> None:
+        if self._runtime_services.hook_bus is None:
+            return
+        await self._runtime_services.hook_bus.dispatch(
+            session_id,
+            SubagentStopPayload(
+                session_id=session_id,
+                agent_name=agent_name,
+                status=status,
+            ),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class _PermissionRuntimeContext:
+    runtime_services: RuntimeServices
+    permission_context: PermissionContext | None = None
+
+
+def _supports_permission_requests(host: Any) -> bool:
+    if isinstance(host, CallbackHostAdapter):
+        return host.permission_handler is not None
+    if type(host) is NullHostAdapter:
+        return False
+    return True

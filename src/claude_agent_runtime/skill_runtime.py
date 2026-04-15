@@ -6,7 +6,9 @@ from typing import Any, Sequence
 
 from .agent_runtime import AgentInvocation, AgentRunResult, AgentRuntime
 from .contracts import MessageRole, RuntimeMessage
-from .definitions import SkillDefinition, SkillExecutionContext
+from .definitions import PermissionBehavior, PermissionDecision, SkillDefinition, SkillExecutionContext
+from .hosts.base import CallbackHostAdapter, NullHostAdapter
+from .permissions import PermissionContext, PermissionRequest, PermissionTarget
 from .registries import SkillRegistry
 from .runtime_services import RuntimeServices
 
@@ -44,8 +46,16 @@ class SkillExecutor:
         cwd: Path,
         parent_tool_pool=(),
         parent_skill_pool=(),
+        permission_context: PermissionContext | None = None,
     ) -> SkillExecutionResult:
         skill = self._resolve_skill(skill_name)
+        await self._authorize_skill(
+            skill,
+            arguments=arguments,
+            session_id=session_id,
+            permission_context=permission_context,
+        )
+        self._register_skill_hooks(skill, session_id=session_id)
         expanded = self._expand_skill_content(skill, session_id=session_id, arguments=arguments)
         if skill.execution_context == SkillExecutionContext.FORK:
             agent_result = await self._agent_runtime.invoke(
@@ -56,6 +66,7 @@ class SkillExecutor:
                     cwd=cwd,
                     parent_tool_pool=tuple(parent_tool_pool),
                     parent_skill_pool=tuple(parent_skill_pool),
+                    metadata={"permission_context": permission_context} if permission_context is not None else {},
                 )
             )
             return SkillExecutionResult(
@@ -83,6 +94,52 @@ class SkillExecutor:
             raise KeyError(skill_name)
         return skill
 
+    async def _authorize_skill(
+        self,
+        skill: SkillDefinition,
+        *,
+        arguments: Sequence[str],
+        session_id: str,
+        permission_context: PermissionContext | None,
+    ) -> None:
+        initial = PermissionDecision(
+            PermissionBehavior.ASK
+            if (skill.execution_context == SkillExecutionContext.FORK or skill.hooks)
+            and _supports_permission_requests(self._runtime_services.host)
+            else PermissionBehavior.ALLOW
+        )
+        request = PermissionRequest(
+            session_id=session_id,
+            turn_id=None,
+            target=PermissionTarget.SKILL,
+            name=skill.name,
+            payload={"arguments": list(arguments)},
+            context=permission_context,
+            message=f"Skill '{skill.name}' requires permission",
+        )
+        runtime_context = _PermissionRuntimeContext(
+            runtime_services=self._runtime_services,
+            permission_context=permission_context,
+        )
+        outcome = await self._runtime_services.permissions.evaluate(  # type: ignore[attr-defined]
+            request,
+            initial_decision=initial,
+            runtime_context=runtime_context,
+        )
+        if outcome.behavior != PermissionBehavior.ALLOW:
+            raise PermissionError(outcome.message or f"Skill '{skill.name}' was denied")
+
+    def _register_skill_hooks(self, skill: SkillDefinition, *, session_id: str) -> None:
+        if not skill.hooks:
+            return
+        owner = f"skill:{skill.name}"
+        self._runtime_services.hook_bus.release_owner(session_id, owner)
+        self._runtime_services.hook_bus.register_handlers(
+            session_id=session_id,
+            owner=owner,
+            hooks=skill.hooks,
+        )
+
     @staticmethod
     def _expand_skill_content(
         skill: SkillDefinition,
@@ -97,3 +154,17 @@ class SkillExecutor:
         if skill.origin.path is not None:
             expanded = expanded.replace("${CLAUDE_SKILL_DIR}", str(skill.origin.path.parent))
         return expanded
+
+
+@dataclass(frozen=True, slots=True)
+class _PermissionRuntimeContext:
+    runtime_services: RuntimeServices
+    permission_context: PermissionContext | None = None
+
+
+def _supports_permission_requests(host: Any) -> bool:
+    if isinstance(host, CallbackHostAdapter):
+        return host.permission_handler is not None
+    if type(host) is NullHostAdapter:
+        return False
+    return True
