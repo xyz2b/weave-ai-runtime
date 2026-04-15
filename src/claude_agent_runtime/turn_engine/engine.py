@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Mapping
 from uuid import uuid4
 
 from ..contracts import (
@@ -20,6 +20,7 @@ from ..contracts import (
 )
 from ..definitions import AgentDefinition
 from ..registries import AgentRegistry, SkillRegistry, ToolRegistry
+from ..runtime_services import DefaultTaskService, RuntimeServices
 from ..tasking import TaskManager
 from ..tool_runtime import (
     ToolCall,
@@ -29,8 +30,9 @@ from ..tool_runtime import (
     ToolRefreshCallback,
     ToolScheduler,
     assemble_main_thread_tool_pool,
+    maybe_await,
 )
-from .composer import PromptComposer
+from .composer import ContextAssembler, PromptComposer
 from .message_protocol import normalize_messages_for_api
 from .models import (
     ModelAbortSignal,
@@ -320,23 +322,50 @@ class TurnEngine:
         notification_sink=None,
         tool_refresh_callback: ToolRefreshCallback | None = None,
         task_manager: TaskManager | None = None,
+        runtime_services: RuntimeServices | None = None,
     ) -> None:
         self._model_client = model_client
         self._tool_registry = tool_registry
         self._agent_registry = agent_registry
         self._skill_registry = skill_registry
-        self._prompt_composer = prompt_composer or PromptComposer()
-        self._permission_handler = permission_handler
-        self._ask_user_handler = ask_user_handler
-        self._agent_runner = agent_runner
-        self._skill_runner = skill_runner
-        self._notification_provider = notification_provider
-        self._notification_sink = notification_sink
-        self._tool_refresh_callback = tool_refresh_callback
-        self._task_manager = task_manager or TaskManager()
+        self._runtime_services = runtime_services or RuntimeServices(
+            tasks=DefaultTaskService(task_manager or TaskManager())
+        )
+        if self._runtime_services.context_assembler is None:
+            self._runtime_services.context_assembler = prompt_composer or ContextAssembler()
+        elif prompt_composer is not None:
+            self._runtime_services.context_assembler = prompt_composer
+        if task_manager is not None and self._runtime_services.task_manager is not task_manager:
+            self._runtime_services.tasks = DefaultTaskService(task_manager)
+        if any(
+            value is not None
+            for value in (
+                permission_handler,
+                ask_user_handler,
+                notification_provider,
+                notification_sink,
+                tool_refresh_callback,
+            )
+        ):
+            self._runtime_services.configure_compat(
+                permission_handler=permission_handler,
+                ask_user_handler=ask_user_handler,
+                notification_provider=notification_provider,
+                notification_sink=notification_sink,
+                tool_refresh_callback=tool_refresh_callback,
+            )
+        if agent_runner is not None or skill_runner is not None:
+            self._runtime_services.bind_execution(
+                agent_runner=agent_runner,
+                skill_runner=skill_runner,
+            )
         self._active_scheduler: ToolScheduler | None = None
         self._active_tool_context: ToolContext | None = None
         self._active_abort_signal: ModelAbortSignal | None = None
+
+    @property
+    def runtime_services(self) -> RuntimeServices:
+        return self._runtime_services
 
     def configure_runtime(
         self,
@@ -349,13 +378,17 @@ class TurnEngine:
         notification_sink=None,
         tool_refresh_callback: ToolRefreshCallback | None = None,
     ) -> None:
-        self._permission_handler = permission_handler
-        self._ask_user_handler = ask_user_handler
-        self._agent_runner = agent_runner
-        self._skill_runner = skill_runner
-        self._notification_provider = notification_provider
-        self._notification_sink = notification_sink
-        self._tool_refresh_callback = tool_refresh_callback
+        self._runtime_services.configure_compat(
+            permission_handler=permission_handler,
+            ask_user_handler=ask_user_handler,
+            notification_provider=notification_provider,
+            notification_sink=notification_sink,
+            tool_refresh_callback=tool_refresh_callback,
+        )
+        self._runtime_services.bind_execution(
+            agent_runner=agent_runner,
+            skill_runner=skill_runner,
+        )
 
     def interrupt(self, reason: str = "interrupt") -> None:
         if self._active_abort_signal is not None:
@@ -379,8 +412,8 @@ class TurnEngine:
         metadata: dict[str, Any] | None = None,
     ) -> ToolContext:
         notifications = ()
-        if self._notification_provider is not None:
-            notifications = tuple(self._notification_provider())
+        if self._runtime_services.notification_provider is not None:
+            notifications = tuple(self._runtime_services.notification_provider())
         return ToolContext(
             session_id=session_id,
             turn_id=turn_id,
@@ -392,15 +425,16 @@ class TurnEngine:
             messages=tuple(messages),
             tool_pool=tuple(tool_pool),
             skill_pool=tuple(skill_pool),
-            permission_handler=self._permission_handler,
-            ask_user_handler=self._ask_user_handler,
-            agent_runner=self._agent_runner,
-            skill_runner=self._skill_runner,
-            task_manager=self._task_manager,
+            permission_handler=self._runtime_services.permission_handler,
+            ask_user_handler=self._runtime_services.ask_user_handler,
+            agent_runner=self._runtime_services.agent_runner,
+            skill_runner=self._runtime_services.skill_runner,
+            task_manager=self._runtime_services.task_manager,
             abort_signal=abort_signal,
             notifications=notifications,
-            notification_sink=self._notification_sink,
-            tool_refresh_callback=self._tool_refresh_callback,
+            notification_sink=self._runtime_services.notification_sink,
+            tool_refresh_callback=self._runtime_services.tool_refresh_callback,
+            runtime_services=self._runtime_services,
             metadata=dict(metadata or {}),
         )
 
@@ -415,6 +449,7 @@ class TurnEngine:
         base_system_prompt: str,
         memory_fragments: list[str] | None = None,
         hook_context: list[str] | None = None,
+        compaction_fragments: list[str] | None = None,
         attachments: list[MessageAttachment] | None = None,
         runtime_context: dict[str, object] | None = None,
     ) -> AsyncIterator[TurnStreamEvent]:
@@ -429,6 +464,7 @@ class TurnEngine:
             base_system_prompt=base_system_prompt,
             memory_fragments=memory_fragments,
             hook_context=hook_context,
+            compaction_fragments=compaction_fragments,
             attachments=attachments,
             runtime_context=runtime_context,
         ):
@@ -445,6 +481,7 @@ class TurnEngine:
         base_system_prompt: str,
         memory_fragments: list[str] | None = None,
         hook_context: list[str] | None = None,
+        compaction_fragments: list[str] | None = None,
         attachments: list[MessageAttachment] | None = None,
         runtime_context: dict[str, object] | None = None,
     ) -> TurnResult:
@@ -460,6 +497,7 @@ class TurnEngine:
             base_system_prompt=base_system_prompt,
             memory_fragments=memory_fragments,
             hook_context=hook_context,
+            compaction_fragments=compaction_fragments,
             attachments=attachments,
             runtime_context=runtime_context,
         ):
@@ -493,6 +531,7 @@ class TurnEngine:
         base_system_prompt: str,
         memory_fragments: list[str] | None = None,
         hook_context: list[str] | None = None,
+        compaction_fragments: list[str] | None = None,
         attachments: list[MessageAttachment] | None = None,
         runtime_context: dict[str, object] | None = None,
     ) -> AsyncIterator[TurnStreamEvent]:
@@ -510,8 +549,36 @@ class TurnEngine:
                 disallowed_tools=agent.disallowed_tools or None,
             )
             active_skills = self._skill_registry.resolve_active() if self._skill_registry is not None else ()
+            runtime_metadata = self._merge_runtime_context(runtime_context)
+            shared_memory_fragments = await self._collect_control_plane_fragments(
+                self._runtime_services.memory,
+                session_id=session_id,
+                turn_id=turn_id,
+                agent=agent,
+                cwd=cwd,
+                messages=tuple(working_messages),
+                runtime_context=runtime_metadata,
+            )
+            shared_hook_context = await self._collect_control_plane_fragments(
+                self._runtime_services.hooks,
+                session_id=session_id,
+                turn_id=turn_id,
+                agent=agent,
+                cwd=cwd,
+                messages=tuple(working_messages),
+                runtime_context=runtime_metadata,
+            )
+            shared_compaction_fragments = await self._collect_control_plane_fragments(
+                self._runtime_services.compaction,
+                session_id=session_id,
+                turn_id=turn_id,
+                agent=agent,
+                cwd=cwd,
+                messages=tuple(working_messages),
+                runtime_context=runtime_metadata,
+            )
 
-            composition = self._prompt_composer.compose(
+            composition = self._compose_context(
                 session_id=session_id,
                 turn_id=turn_id,
                 agent=agent,
@@ -520,10 +587,11 @@ class TurnEngine:
                 available_tools=[tool.name for tool in tool_pool],
                 available_skills=[skill.name for skill in active_skills],
                 base_system_prompt=base_system_prompt,
-                memory_fragments=memory_fragments or (),
-                hook_context=hook_context or (),
+                memory_fragments=shared_memory_fragments + tuple(memory_fragments or ()),
+                hook_context=shared_hook_context + tuple(hook_context or ()),
+                compaction_fragments=shared_compaction_fragments + tuple(compaction_fragments or ()),
                 attachments=attachments or (),
-                runtime_context=runtime_context or {},
+                runtime_context=runtime_metadata,
             )
             abort_signal = ModelAbortSignal()
             request = ModelRequest(
@@ -536,8 +604,8 @@ class TurnEngine:
                 model=agent.model,
                 effort=agent.effort,
                 abort_signal=abort_signal,
-                query_source=_query_source(runtime_context),
-                metadata=dict(runtime_context or {}),
+                query_source=_query_source(runtime_metadata),
+                metadata=dict(runtime_metadata),
             )
             yield TurnStreamEvent(
                 event_type=TurnStreamEventType.REQUEST_START,
@@ -627,7 +695,7 @@ class TurnEngine:
                 tool_pool=tool_pool,
                 skill_pool=active_skills,
                 abort_signal=abort_signal,
-                metadata=runtime_context,
+                metadata=runtime_metadata,
             )
             self._active_tool_context = tool_context
             self._active_scheduler = ToolScheduler(self._tool_registry)
@@ -666,6 +734,36 @@ class TurnEngine:
             iteration += 1
 
         state.completed = False
+
+    def _compose_context(self, **kwargs: Any) -> Any:
+        assembler = self._runtime_services.context_assembler
+        if assembler is None:
+            assembler = ContextAssembler()
+            self._runtime_services.context_assembler = assembler
+        if hasattr(assembler, "assemble"):
+            return assembler.assemble(**kwargs)
+        return assembler.compose(**kwargs)
+
+    async def _collect_control_plane_fragments(
+        self,
+        service: Any,
+        **kwargs: Any,
+    ) -> tuple[str, ...]:
+        if service is None or not hasattr(service, "collect"):
+            return ()
+        fragments = await maybe_await(service.collect(**kwargs))
+        if not fragments:
+            return ()
+        return tuple(str(fragment) for fragment in fragments)
+
+    def _merge_runtime_context(
+        self,
+        runtime_context: Mapping[str, object] | None,
+    ) -> dict[str, object]:
+        merged = dict(self._runtime_services.metadata)
+        if runtime_context:
+            merged.update(runtime_context)
+        return merged
 
 
 def _assistant_message_metadata(terminal: ModelTerminalMetadata) -> dict[str, Any]:

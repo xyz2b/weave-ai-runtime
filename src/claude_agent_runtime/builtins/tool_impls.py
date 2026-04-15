@@ -272,9 +272,12 @@ async def task_stop_tool(tool_input: dict[str, Any], context: ToolContext) -> di
 
 
 async def ask_user_tool(tool_input: dict[str, Any], context: ToolContext) -> dict[str, Any]:
-    if context.ask_user_handler is None:
+    handler = context.ask_user_handler
+    if handler is None and context.runtime_services is not None:
+        handler = context.runtime_services.ask_user_handler
+    if handler is None:
         raise ValueError("No ask_user handler is configured")
-    response = await context.ask_user_handler(tool_input["question"], tool_input.get("options"))
+    response = await handler(tool_input["question"], tool_input.get("options"))
     return {"question": tool_input["question"], "response": response}
 
 
@@ -312,6 +315,8 @@ def _resolve_path(cwd: Path, file_path: str) -> Path:
 
 
 def _task_manager(context: ToolContext):
+    if context.task_manager is None and context.runtime_services is not None:
+        context.task_manager = context.runtime_services.task_manager
     if context.task_manager is None:
         context.task_manager = TaskManager()
     return context.task_manager

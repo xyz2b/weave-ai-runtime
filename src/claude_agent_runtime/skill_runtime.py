@@ -8,6 +8,7 @@ from .agent_runtime import AgentInvocation, AgentRunResult, AgentRuntime
 from .contracts import MessageRole, RuntimeMessage
 from .definitions import SkillDefinition, SkillExecutionContext
 from .registries import SkillRegistry
+from .runtime_services import RuntimeServices
 
 
 @dataclass(slots=True)
@@ -24,9 +25,15 @@ class SkillExecutor:
         *,
         skill_registry: SkillRegistry,
         agent_runtime: AgentRuntime,
+        runtime_services: RuntimeServices | None = None,
     ) -> None:
         self._skill_registry = skill_registry
         self._agent_runtime = agent_runtime
+        self._runtime_services = runtime_services or agent_runtime.runtime_services
+
+    @property
+    def runtime_services(self) -> RuntimeServices:
+        return self._runtime_services
 
     async def execute(
         self,
@@ -90,4 +97,3 @@ class SkillExecutor:
         if skill.origin.path is not None:
             expanded = expanded.replace("${CLAUDE_SKILL_DIR}", str(skill.origin.path.parent))
         return expanded
-

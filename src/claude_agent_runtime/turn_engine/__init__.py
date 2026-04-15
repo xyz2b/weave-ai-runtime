@@ -12,6 +12,8 @@ from .models import (
 )
 
 __all__ = [
+    "ContextAssembler",
+    "ContextAssembly",
     "ModelAbortSignal",
     "ModelClient",
     "ModelRequest",
@@ -32,10 +34,15 @@ __all__ = [
 
 
 def __getattr__(name: str):
-    if name in {"PromptComposer", "PromptComposition"}:
-        from .composer import PromptComposer, PromptComposition
+    if name in {"ContextAssembler", "ContextAssembly", "PromptComposer", "PromptComposition"}:
+        from .composer import ContextAssembler, ContextAssembly, PromptComposer, PromptComposition
 
-        return {"PromptComposer": PromptComposer, "PromptComposition": PromptComposition}[name]
+        return {
+            "ContextAssembler": ContextAssembler,
+            "ContextAssembly": ContextAssembly,
+            "PromptComposer": PromptComposer,
+            "PromptComposition": PromptComposition,
+        }[name]
     if name in {"TurnEngine", "TurnResult", "TurnStreamEvent", "TurnStreamEventType"}:
         from .engine import TurnEngine, TurnResult, TurnStreamEvent, TurnStreamEventType
 

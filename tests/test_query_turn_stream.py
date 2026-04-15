@@ -3,7 +3,9 @@ import asyncio
 from claude_agent_runtime.contracts import MessageRole, TextBlock, ToolResultBlock
 from claude_agent_runtime.definitions import AgentDefinition, ToolDefinition, ToolTraits
 from claude_agent_runtime.registries import ToolRegistry
+from claude_agent_runtime.runtime_services import RuntimeServices
 from claude_agent_runtime.turn_engine import (
+    ContextAssembler,
     ModelRequest,
     ModelStreamEvent,
     ModelStreamEventType,
@@ -170,6 +172,7 @@ def test_tool_context_exposes_turn_scoped_runtime_state() -> None:
                 "has_abort_signal": context.abort_signal is not None,
                 "tool_names": [definition.name for definition in context.tool_pool],
                 "has_refresh_callback": context.tool_refresh_callback is not None,
+                "has_runtime_services": context.runtime_services is not None,
             },
         )
     )
@@ -236,7 +239,61 @@ def test_tool_context_exposes_turn_scoped_runtime_state() -> None:
     assert tool_result.content["has_abort_signal"] is True
     assert tool_result.content["tool_names"] == ["inspect_context"]
     assert tool_result.content["has_refresh_callback"] is True
+    assert tool_result.content["has_runtime_services"] is True
     assert result.messages[-1].text == "context captured"
+
+
+def test_runtime_services_contribute_context_during_request_assembly() -> None:
+    class StaticContributionService:
+        def __init__(self, *lines: str) -> None:
+            self._lines = lines
+
+        async def collect(self, **kwargs):
+            _ = kwargs
+            return self._lines
+
+    model_client = BatchedModelClient(
+        [
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-services"}),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "done"}),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+            ]
+        ]
+    )
+    services = RuntimeServices(
+        memory=StaticContributionService("Memory line"),
+        hooks=StaticContributionService("Hook line"),
+        compaction=StaticContributionService("Compaction line"),
+        context_assembler=ContextAssembler(),
+        metadata={"runtime_id": "unit-test"},
+    )
+    engine = TurnEngine(
+        model_client=model_client,
+        tool_registry=ToolRegistry(),
+        runtime_services=services,
+    )
+    agent = AgentDefinition(name="main-router", description="router", prompt="Answer")
+
+    asyncio.run(
+        engine.run_turn(
+            session_id="session",
+            turn_id="turn",
+            agent=agent,
+            cwd=".",
+            messages=[],
+            base_system_prompt="System",
+        )
+    )
+
+    request = model_client.requests[0]
+    assert request.turn_context.memory_fragments == ("Memory line",)
+    assert request.turn_context.hook_context == ("Hook line",)
+    assert request.turn_context.compaction_fragments == ("Compaction line",)
+    assert request.metadata["runtime_id"] == "unit-test"
+    assert "Memory line" in request.system_prompt
+    assert "Hook line" in request.system_prompt
+    assert "Compaction line" in request.system_prompt
 
 
 def test_interrupt_aborts_model_stream_and_discards_partial_output() -> None:

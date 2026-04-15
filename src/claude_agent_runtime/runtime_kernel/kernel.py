@@ -13,10 +13,12 @@ from ..diagnostics import Diagnostic, DiagnosticSeverity
 from ..errors import RegistryConflictError
 from ..hosts.base import BoundHostRuntime, HostAdapter, NullHostAdapter
 from ..registries import AgentRegistry, DefinitionDiscovery, SkillRegistry, ToolRegistry
+from ..runtime_services import DefaultTranscriptService, RuntimeServices
 from ..session_runtime import InMemoryTranscriptStore, InboundEvent, InboundEventType, SessionController
 from ..skill_runtime import SkillExecutionResult, SkillExecutor
 from ..tasking import TaskManager
 from ..tool_runtime import ToolContext
+from ..turn_engine.composer import ContextAssembler
 from ..turn_engine.engine import TurnEngine, TurnStreamEvent
 from ..turn_engine.models import ModelRequest, TranscriptStore
 from .config import RuntimeConfig
@@ -31,6 +33,7 @@ class RuntimeKernel:
     diagnostics: tuple[Diagnostic, ...] = ()
     model_client: Any = None
     transcript_store: Any = None
+    services: RuntimeServices | None = None
     hosts: dict[str, HostAdapter] = field(default_factory=dict)
 
 
@@ -52,6 +55,7 @@ class _UnconfiguredModelClient:
 @dataclass(slots=True)
 class RuntimeAssembly:
     kernel: RuntimeKernel
+    services: RuntimeServices
     turn_engine: TurnEngine
     agent_runtime: AgentRuntime
     skill_executor: SkillExecutor
@@ -77,6 +81,7 @@ class RuntimeAssembly:
             transcript_store=self.transcript_store,
             cwd=str(session_cwd),
             system_prompt=self.system_prompt if system_prompt is None else system_prompt,
+            runtime_services=self.services,
         )
 
     async def run_prompt(
@@ -204,6 +209,8 @@ def build_runtime_kernel(config: RuntimeConfig) -> RuntimeKernel:
         model_client=config.model_client,
         transcript_store=config.transcript_store,
     )
+    kernel.services = _build_runtime_services(kernel)
+    kernel.transcript_store = kernel.services.transcript_store
     for binding in config.host_bindings:
         kernel.hosts[binding.name] = binding.factory(binding.name, binding.config, kernel)
     return kernel
@@ -226,31 +233,38 @@ def assemble_host_runtime(
         host = kernel.hosts.get(host_name)
         if host is None:
             raise KeyError(host_name)
-    return BoundHostRuntime(kernel=kernel, host=host, runtime=runtime)
+    return BoundHostRuntime(kernel=kernel, host=host, runtime=runtime, services=runtime.services)
 
 
 def _assemble_runtime_stack(kernel: RuntimeKernel) -> RuntimeAssembly:
-    transcript_store = kernel.transcript_store or InMemoryTranscriptStore()
+    services = kernel.services or _build_runtime_services(kernel)
+    kernel.services = services
+    transcript_store = services.transcript_store
     kernel.transcript_store = transcript_store
-    task_manager = TaskManager()
+    task_manager = services.task_manager
     turn_engine = TurnEngine(
         model_client=kernel.model_client or _UnconfiguredModelClient(),
         tool_registry=kernel.tool_registry,
         agent_registry=kernel.agent_registry,
         skill_registry=kernel.skill_registry,
-        task_manager=task_manager,
+        runtime_services=services,
     )
     agent_runtime = AgentRuntime(
         turn_engine=turn_engine,
         agent_registry=kernel.agent_registry,
         tool_registry=kernel.tool_registry,
         skill_registry=kernel.skill_registry,
-        task_manager=task_manager,
+        runtime_services=services,
     )
-    skill_executor = SkillExecutor(skill_registry=kernel.skill_registry, agent_runtime=agent_runtime)
+    skill_executor = SkillExecutor(
+        skill_registry=kernel.skill_registry,
+        agent_runtime=agent_runtime,
+        runtime_services=services,
+    )
     agent_runtime.bind_skill_executor(skill_executor)
     runtime = RuntimeAssembly(
         kernel=kernel,
+        services=services,
         turn_engine=turn_engine,
         agent_runtime=agent_runtime,
         skill_executor=skill_executor,
@@ -259,15 +273,32 @@ def _assemble_runtime_stack(kernel: RuntimeKernel) -> RuntimeAssembly:
         system_prompt=kernel.config.system_prompt,
         metadata=dict(kernel.config.metadata),
     )
-    turn_engine.configure_runtime(
-        permission_handler=kernel.config.permission_handler,
-        ask_user_handler=kernel.config.ask_user_handler,
+    services.bind_execution(
         agent_runner=runtime.run_agent_tool,
         skill_runner=runtime.run_skill_tool,
+    )
+    services.configure_compat(
+        permission_handler=kernel.config.permission_handler,
+        ask_user_handler=kernel.config.ask_user_handler,
         notification_provider=lambda: agent_runtime.notifications,
         tool_refresh_callback=kernel.config.tool_refresh_callback,
     )
     return runtime
+
+
+def _build_runtime_services(kernel: RuntimeKernel) -> RuntimeServices:
+    transcript_store = kernel.transcript_store or InMemoryTranscriptStore()
+    services = RuntimeServices(
+        transcript=DefaultTranscriptService(transcript_store),
+        context_assembler=ContextAssembler(),
+        metadata=dict(kernel.config.metadata),
+    )
+    services.configure_compat(
+        permission_handler=kernel.config.permission_handler,
+        ask_user_handler=kernel.config.ask_user_handler,
+        tool_refresh_callback=kernel.config.tool_refresh_callback,
+    )
+    return services
 
 
 def _serialize_agent_run_result(result: AgentRunResult) -> dict[str, Any]:

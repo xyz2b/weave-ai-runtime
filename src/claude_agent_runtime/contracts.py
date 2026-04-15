@@ -149,6 +149,8 @@ class TurnContext:
     available_tools: tuple[str, ...] = ()
     available_skills: tuple[str, ...] = ()
     memory_fragments: tuple[str, ...] = ()
+    hook_context: tuple[str, ...] = ()
+    compaction_fragments: tuple[str, ...] = ()
     attachments: tuple[MessageAttachment, ...] = ()
     metadata: dict[str, Any] = field(default_factory=dict)
 

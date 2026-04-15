@@ -7,6 +7,7 @@ from uuid import uuid4
 
 from ..contracts import MessageRole, RuntimeMessage, SessionCommand, SessionCommandType, SessionState, SessionStatus
 from ..definitions import AgentDefinition
+from ..runtime_services import DefaultTranscriptService, RuntimeServices
 from ..turn_engine.engine import TurnEngine, TurnStreamEvent, TurnStreamEventType
 from ..turn_engine.models import TranscriptEntry, TranscriptStore
 
@@ -35,11 +36,17 @@ class SessionController:
         transcript_store: TranscriptStore,
         cwd: str,
         system_prompt: str,
+        runtime_services: RuntimeServices | None = None,
     ) -> None:
         self.state = SessionState(session_id=session_id, current_agent=agent.name)
         self._agent = agent
         self._turn_engine = turn_engine
-        self._transcript_store = transcript_store
+        self._runtime_services = runtime_services or RuntimeServices(
+            transcript=DefaultTranscriptService(transcript_store)
+        )
+        if self._runtime_services.transcript is None:
+            self._runtime_services.transcript = DefaultTranscriptService(transcript_store)
+        self._transcript_store = self._runtime_services.transcript_store
         self._cwd = cwd
         self._system_prompt = system_prompt
         self._messages: list[RuntimeMessage] = []
@@ -47,6 +54,10 @@ class SessionController:
     @property
     def messages(self) -> tuple[RuntimeMessage, ...]:
         return tuple(self._messages)
+
+    @property
+    def runtime_services(self) -> RuntimeServices:
+        return self._runtime_services
 
     async def start(self) -> None:
         self.state.status = SessionStatus.READY

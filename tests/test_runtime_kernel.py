@@ -93,6 +93,7 @@ project skill body
 
 def test_host_assembly_entrypoint_binds_host(tmp_path: Path) -> None:
     def factory(name: str, config: dict[str, str], kernel: object) -> NullHostAdapter:
+        assert getattr(kernel, "services", None) is not None
         _ = config, kernel
         return NullHostAdapter(name=name)
 
@@ -134,9 +135,15 @@ def test_runtime_assembly_provides_runnable_session_surface(tmp_path: Path) -> N
     )
 
     produced = asyncio.run(runtime.run_prompt("Hello runtime", session_id="session-1"))
+    session = runtime.create_session(session_id="session-2")
 
     assert produced[-1].role == MessageRole.ASSISTANT
     assert produced[-1].text == "assembled reply"
+    assert runtime.services is runtime.kernel.services
+    assert runtime.turn_engine.runtime_services is runtime.services
+    assert runtime.agent_runtime.runtime_services is runtime.services
+    assert runtime.skill_executor.runtime_services is runtime.services
+    assert session.runtime_services is runtime.services
     assert runtime.transcript_store is runtime.kernel.transcript_store
     assert len(model_client.requests) == 1
     assert model_client.requests[0].query_source == "user_prompt"

@@ -10,6 +10,7 @@ from uuid import uuid4
 from .contracts import MessageRole, RuntimeMessage
 from .definitions import AgentDefinition, IsolationMode, SkillDefinition, ToolDefinition
 from .registries import AgentRegistry, SkillRegistry, ToolRegistry
+from .runtime_services import DefaultTaskService, RuntimeServices
 from .tasking import TaskManager, TaskStatus
 from .tool_runtime import ToolCall, ToolCallStatus, ToolContext, ToolScheduler, assemble_subagent_tool_pool
 from .turn_engine.engine import TurnEngine
@@ -62,12 +63,18 @@ class AgentRuntime:
         tool_registry: ToolRegistry,
         skill_registry: SkillRegistry,
         task_manager: TaskManager | None = None,
+        runtime_services: RuntimeServices | None = None,
     ) -> None:
         self._turn_engine = turn_engine
         self._agent_registry = agent_registry
         self._tool_registry = tool_registry
         self._skill_registry = skill_registry
-        self._task_manager = task_manager or TaskManager()
+        self._runtime_services = runtime_services or RuntimeServices(
+            tasks=DefaultTaskService(task_manager or TaskManager())
+        )
+        if task_manager is not None and self._runtime_services.task_manager is not task_manager:
+            self._runtime_services.tasks = DefaultTaskService(task_manager)
+        self._task_manager = self._runtime_services.task_manager
         self._skill_executor: Any = None
         self._background_tasks: dict[str, asyncio.Task[AgentRunResult]] = {}
         self._notifications: list[RuntimeMessage] = []
@@ -75,6 +82,10 @@ class AgentRuntime:
     @property
     def notifications(self) -> tuple[RuntimeMessage, ...]:
         return tuple(self._notifications)
+
+    @property
+    def runtime_services(self) -> RuntimeServices:
+        return self._runtime_services
 
     def bind_skill_executor(self, skill_executor: Any) -> None:
         self._skill_executor = skill_executor

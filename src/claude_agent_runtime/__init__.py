@@ -34,6 +34,7 @@ from .definitions import (
     ToolTraits,
     ValidationOutcome,
 )
+from .runtime_services import RuntimeServices
 from .runtime_kernel import (
     BuiltinPackConfig,
     DefinitionSourcePaths,
@@ -46,6 +47,8 @@ from .runtime_kernel import (
     build_runtime_kernel,
 )
 from .turn_engine import (
+    ContextAssembler,
+    ContextAssembly,
     ModelAbortSignal,
     ModelClient,
     ModelRequest,
@@ -63,6 +66,8 @@ from .turn_engine import (
 __all__ = [
     "AgentDefinition",
     "BuiltinPackConfig",
+    "ContextAssembler",
+    "ContextAssembly",
     "ContentBlock",
     "ContentBlockType",
     "DefinitionOrigin",
@@ -91,6 +96,7 @@ __all__ = [
     "RuntimeAssembly",
     "RuntimeKernel",
     "RuntimeMessage",
+    "RuntimeServices",
     "SessionCommand",
     "SessionCommandType",
     "SessionState",

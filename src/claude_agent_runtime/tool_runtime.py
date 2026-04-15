@@ -17,6 +17,7 @@ from .definitions import (
     ValidationOutcome,
 )
 from .registries import ToolRegistry
+from .runtime_services import RuntimeServices
 from .tasking import TaskManager
 
 
@@ -110,6 +111,7 @@ class ToolContext:
     notifications: tuple[RuntimeMessage, ...] = ()
     notification_sink: NotificationSink | None = None
     tool_refresh_callback: ToolRefreshCallback | None = None
+    runtime_services: RuntimeServices | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
     _interrupt_reason: str | None = None
 
@@ -149,8 +151,16 @@ class ToolContext:
         self.notifications = (*self.notifications, message)
         if self.notification_sink is not None:
             await maybe_await(self.notification_sink(message))
+            return
+        if self.runtime_services is not None and self.runtime_services.notification_sink is not None:
+            await maybe_await(self.runtime_services.notification_sink(message))
 
     async def refresh_tools(self) -> tuple[ToolDefinition, ...]:
+        if self.runtime_services is not None and self.runtime_services.tool_refresh_callback is not None:
+            refreshed = await maybe_await(self.runtime_services.tool_refresh_callback(self))
+            if refreshed is not None:
+                self.tool_pool = tuple(refreshed)
+            return tuple(self.tool_pool)
         if self.tool_refresh_callback is None:
             return tuple(self.tool_pool)
         refreshed = await maybe_await(self.tool_refresh_callback(self))
@@ -312,7 +322,14 @@ async def execute_tool_call(
             )
 
         if permission_decision.behavior == PermissionBehavior.ASK:
-            if context.permission_handler is None:
+            if context.runtime_services is not None:
+                permission_decision = await context.runtime_services.permissions.authorize(
+                    definition,
+                    normalized_input,
+                    permission_decision,
+                    context,
+                )
+            elif context.permission_handler is None:
                 return ToolCallResult(
                     call_id=call.call_id,
                     tool_name=definition.name,
@@ -320,12 +337,13 @@ async def execute_tool_call(
                     error=permission_decision.message or "Permission required",
                     metadata=permission_decision.details,
                 )
-            permission_decision = await context.permission_handler(
-                definition,
-                normalized_input,
-                permission_decision,
-                context,
-            )
+            else:
+                permission_decision = await context.permission_handler(
+                    definition,
+                    normalized_input,
+                    permission_decision,
+                    context,
+                )
             normalized_input = permission_decision.updated_input or normalized_input
             if permission_decision.behavior != PermissionBehavior.ALLOW:
                 return ToolCallResult(
