@@ -321,6 +321,7 @@ agents:
 - `ModelClient` 保留 `stream()` 与 `complete()` 两类入口，但 runtime 需要根据 route / adapter capabilities 选择真实执行路径
 - 当 route 或 adapter 不支持 streaming 时，`TurnEngine` 应走 buffered completion path
 - buffered path 仍然需要回到统一的 message / tool call normalization，不能为 non-stream provider 另造一套上层消息协议
+- 第一版范围直接包含“完整响应后 tool call normalization”，不再拆出 text-only buffered 过渡阶段
 
 buffered / non-stream turn 语义建议固定为：
 
@@ -340,6 +341,7 @@ Why:
 Alternatives considered:
 
 - 继续把 `complete()` 保留为协议占位。拒绝，因为这会让 non-stream provider 永远没有正式落点。
+- 先做 buffered text-only completion，再把 tool call normalization 延后到下一版。拒绝，因为这会让 tool-capable non-stream provider 仍然没有正式执行落点，也会把 invocation-mode contract 人为拆成两个阶段。
 
 ### 5. 为 child agent run 建立 sidechain transcript / run record
 
@@ -474,21 +476,21 @@ agent tool / skill fork / background / future teammate
 
 ## Migration Plan
 
-1. 先新增 `AgentExecutionSpec`、`SpawnMode` 与 `AgentRunRecord` contract。
-2. 将 `agent` tool、background agent、forked skill 入口统一改为先生成 spec，再进入共享执行服务。
-3. 在 runtime config 中引入 named model routes、`ProviderBinding` 与 `ModelRouter`。
-4. 扩展 `ModelRequest` / `ModelClient` contract，显式引入 route identity、resolved capabilities 与 invocation mode。
-5. 让 `TurnEngine` 支持 stream 与 buffered completion 两类 provider path。
-6. 把 route resolution 写回 request metadata / sidechain record / tests。
-7. 增加 sidechain transcript store 或 child run record store。
-8. 引入 `ForkContextBuilder`，让 fork path 不再直接复制上下文。
-9. 扩展 layered capability trimming 与 route capability filter。
-10. 用 conformance tests 锁定 sync/background/fork/route/provider-path/sidechain 行为。
+1. 将已确认的 buffered-path 决议回写到 proposal / design / spec / tasks artifacts。
+2. 先新增 `AgentExecutionSpec`、`SpawnMode` 与 `AgentRunRecord` contract。
+3. 将 `agent` tool、background agent、forked skill 入口统一改为先生成 spec，再进入共享执行服务。
+4. 在 runtime config 中引入 named model routes、`ProviderBinding` 与 `ModelRouter`，让 kernel 显式装配 provider graph。
+5. 固定 route precedence、`model_route` / `model` 分工与 route-policy enforcement contract。
+6. 扩展 `ModelRequest` / `ModelClient` contract，显式引入 route identity、resolved capabilities 与 invocation mode。
+7. 让 `TurnEngine` 支持 stream 与 buffered completion 两类 provider path，并在 buffered path 内完成完整响应后的 tool-call normalization。
+8. 把 route resolution 写回 request metadata / sidechain record，并增加 child run record store。
+9. 引入 `ForkContextBuilder`，让 fork path 不再直接复制上下文。
+10. 扩展 layered capability trimming 与 route capability filter。
+11. 用 conformance matrix 锁定 sync/background/fork/route/provider-path/sidechain 行为后再推进默认启用。
 
 ## Open Questions
 
 - `model_route` 是否也应同步开放给 `SkillDefinition`，还是先要求 forked skill 通过 agent route 间接选择？
 - provider binding 是否需要支持按 provider family 复用共享 credential/base URL 模板，还是第一版只支持 fully-resolved named routes？
-- buffered completion path 第一版是否需要支持“完整响应后 tool call 解析”，还是先只要求文本 completion 与统一 terminal metadata？
 - sidechain transcript 是独立 store 更合适，还是先作为 transcript store 的扩展索引实现？
 - fork builder 第一版是否需要直接生成 provider-ready message history，还是只生成 provider-agnostic content blocks？
