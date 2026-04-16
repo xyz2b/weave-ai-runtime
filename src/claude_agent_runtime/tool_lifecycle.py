@@ -7,7 +7,14 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 from .contracts import RuntimeMessage, ToolResultBlock
-from .definitions import PermissionBehavior, PermissionMode, ToolCallStatus
+from .definitions import (
+    PermissionBehavior,
+    PermissionMode,
+    ToolCallStatus,
+    ToolClassifierInput,
+    ToolResultSummary,
+    ToolUsePresentation,
+)
 from .memory.models import MemoryEntry
 
 
@@ -293,12 +300,17 @@ class NotificationsHandle:
 @dataclass(slots=True)
 class CapabilityRefreshHandle:
     emitter: RefreshEmitter | None = None
+    supported_scopes: frozenset[str] = field(default_factory=frozenset)
     receipts: list[RefreshReceipt] = field(default_factory=list)
 
     def request(self, scope: str, reason: str) -> RefreshReceipt:
-        receipt = RefreshReceipt(scope=scope, reason=reason, accepted=True)
+        receipt = RefreshReceipt(
+            scope=scope,
+            reason=reason,
+            accepted=scope in self.supported_scopes,
+        )
         self.receipts.append(receipt)
-        if self.emitter is not None:
+        if receipt.accepted and self.emitter is not None:
             self.emitter(scope, reason)
         return receipt
 
@@ -483,7 +495,7 @@ class ToolOutcome:
     raw_output: Any | None = None
     error_message: str | None = None
     result_block: ToolResultBlock | None = None
-    result_summary: Any | None = None
+    result_summary: ToolResultSummary | None = None
     context_updates: tuple[ContextUpdate, ...] = ()
     completion_index: int = 0
     replay_index: int = 0
@@ -512,6 +524,8 @@ class ResolutionCompleted:
     replay_index: int
     resolution_status: ToolResolutionStatus
     canonical_tool_name: str | None
+    tool_use_presentation: ToolUsePresentation | None = None
+    classifier_input: ToolClassifierInput | None = None
     kind: str = "resolution_completed"
 
 
@@ -548,6 +562,7 @@ class OutcomeRecorded:
     replay_index: int
     completion_index: int
     status: ToolCallStatus
+    result_summary: ToolResultSummary | None = None
     kind: str = "outcome_recorded"
 
 
@@ -557,6 +572,7 @@ class ReplayCommitted:
     replay_index: int
     completion_index: int
     status: ToolCallStatus
+    result_summary: ToolResultSummary | None = None
     kind: str = "replay_committed"
 
 

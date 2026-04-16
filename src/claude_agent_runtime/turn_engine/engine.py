@@ -182,14 +182,19 @@ class _StreamAttemptState:
         self,
         *,
         abort_reason: str | None,
+        preserve_observed_tool_uses: bool = False,
     ) -> tuple[tuple[ContentBlock, ...], tuple[ContentBlock, ...], tuple[ToolCall, ...], ModelTerminalMetadata]:
-        discarded_blocks = tuple(self.blocks) + self._discard_pending_block()
         if self.message_stopped:
             committed_blocks = tuple(self.blocks)
             discarded_blocks = ()
             tool_calls = tuple(self.tool_calls)
+        elif preserve_observed_tool_uses and self.tool_calls:
+            committed_blocks = tuple(self.blocks)
+            discarded_blocks = self._discard_pending_block()
+            tool_calls = tuple(self.tool_calls)
         else:
             committed_blocks = ()
+            discarded_blocks = tuple(self.blocks) + self._discard_pending_block()
             tool_calls = ()
 
         terminal = ModelTerminalMetadata(
@@ -805,7 +810,10 @@ class TurnEngine:
                     self._active_abort_signal = None
 
                 assistant_blocks, discarded_blocks, tool_calls, terminal = attempt_state.finalize(
-                    abort_reason=abort_signal.reason
+                    abort_reason=abort_signal.reason,
+                    preserve_observed_tool_uses=_abort_reason_allows_tool_finalize(
+                        abort_signal.reason
+                    ),
                 )
                 if assistant_blocks:
                     assistant_message = RuntimeMessage(
@@ -886,7 +894,9 @@ class TurnEngine:
                     ),
                 )
 
-                if abort_signal.aborted:
+                if abort_signal.aborted and not (
+                    _abort_reason_allows_tool_finalize(abort_signal.reason) and tool_calls
+                ):
                     state.completed = False
                     self._active_tool_context = None
                     self._active_tool_executor = None
@@ -1127,6 +1137,10 @@ def _synthesized_stop_reason(
     if message_stopped:
         return "message_stop"
     return "incomplete"
+
+
+def _abort_reason_allows_tool_finalize(reason: str | None) -> bool:
+    return bool(reason and reason.startswith("tool_failure:"))
 
 
 def _tool_executor_metadata(tool_executor: Any) -> dict[str, Any] | None:

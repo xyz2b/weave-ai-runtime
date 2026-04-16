@@ -1,8 +1,14 @@
 import asyncio
+import time
 from pathlib import Path
 from typing import Any, Sequence
 
-from claude_agent_runtime.contracts import MessageRole, RuntimeMessage, ToolResultBlock
+from claude_agent_runtime.contracts import (
+    MessageRole,
+    RuntimeMessage,
+    ToolResultBlock,
+    ToolUseBlock,
+)
 from claude_agent_runtime.definitions import (
     AgentDefinition,
     InterruptBehavior,
@@ -16,8 +22,12 @@ from claude_agent_runtime.definitions import (
     ToolFailureClassifier,
     ToolFailureMode,
     ToolFailurePolicy,
+    ToolPresentationEmphasis,
     ToolRiskLevel,
+    ToolResultSummary,
+    ToolResultSummaryStatus,
     ToolTraits,
+    ToolUsePresentation,
     ValidationOutcome,
 )
 from claude_agent_runtime.memory.models import MemoryEntry
@@ -398,6 +408,88 @@ def test_t4_lane_conservative_downgrade(tmp_path: Path) -> None:
     assert resolved.scheduler_lane is not None
     assert resolved.scheduler_lane.lane_kind == ToolSchedulerLaneKind.EXCLUSIVE
     assert resolved.scheduler_lane.derivation_mode == ToolLaneDerivationMode.COARSE
+
+
+def test_t4b_disjoint_conflict_lanes_run_in_parallel(tmp_path: Path) -> None:
+    started_paths: list[str] = []
+    barrier = asyncio.Event()
+    start_lock = asyncio.Lock()
+
+    async def execute(tool_input: dict[str, str], _: ToolContext) -> dict[str, str]:
+        async with start_lock:
+            started_paths.append(tool_input["path"])
+            if len(started_paths) == 2:
+                barrier.set()
+        await asyncio.wait_for(barrier.wait(), timeout=0.2)
+        return {"path": tool_input["path"]}
+
+    semantics = ToolExecutionSemantics(
+        is_read_only=lambda _tool_input, _context: False,
+        is_concurrency_safe=lambda _tool_input, _context: True,
+        interrupt_behavior=lambda _tool_input, _context: InterruptBehavior.BLOCK,
+        failure_policy=lambda _tool_input, _context: ToolFailurePolicy(),
+        to_classifier_input=lambda tool_input, _context: ToolClassifierInput(
+            operation="write",
+            summary=f"write {tool_input['path']}",
+            target_paths=(tool_input["path"],),
+            risk_level=ToolRiskLevel.WRITE,
+            side_effects=True,
+            tags=("write",),
+        ),
+    )
+    registry = ToolRegistry()
+    registry.register(
+        ToolDefinition(
+            name="writer-a",
+            description="writer a",
+            input_schema={
+                "type": "object",
+                "properties": {"path": {"type": "string"}},
+                "required": ["path"],
+                "additionalProperties": False,
+            },
+            semantics=semantics,
+            execute=execute,
+        )
+    )
+    registry.register(
+        ToolDefinition(
+            name="writer-b",
+            description="writer b",
+            input_schema={
+                "type": "object",
+                "properties": {"path": {"type": "string"}},
+                "required": ["path"],
+                "additionalProperties": False,
+            },
+            semantics=semantics,
+            execute=execute,
+        )
+    )
+    context = _make_context(tmp_path, registry)
+    orchestrator = StreamingToolOrchestrator(context=context, executor_tier="buffered")
+
+    async def run_case():
+        started = time.perf_counter()
+        await orchestrator.observe_tool_call(
+            ToolCall("call-a", "writer-a", {"path": "a.txt"}),
+            assistant_message_id="assistant-1",
+        )
+        await orchestrator.observe_tool_call(
+            ToolCall("call-b", "writer-b", {"path": "b.txt"}),
+            assistant_message_id="assistant-1",
+        )
+        outcomes = await orchestrator.finalize()
+        return outcomes, time.perf_counter() - started
+
+    outcomes, elapsed = asyncio.run(run_case())
+
+    assert [outcome.status for outcome in outcomes] == [
+        ToolCallStatus.SUCCESS,
+        ToolCallStatus.SUCCESS,
+    ]
+    assert started_paths == ["a.txt", "b.txt"]
+    assert elapsed < 0.3
 
 
 def test_t5_fatal_sibling_cascade(tmp_path: Path) -> None:
@@ -884,6 +976,22 @@ def test_t11_progress_and_refresh_affect_subsequent_requests(tmp_path: Path) -> 
     assert "progress_emitted" in progress_events
 
 
+def test_t11b_unsupported_refresh_scope_is_rejected(tmp_path: Path) -> None:
+    context = ToolContext(
+        session_id="session",
+        turn_id="turn",
+        agent_name="main-router",
+        cwd=tmp_path,
+        tool_registry=ToolRegistry(),
+    )
+
+    receipt = context.refresh_capabilities.request("skill_pool", "refresh skills")
+
+    assert receipt.accepted is False
+    assert context.refresh_capabilities.receipts == [receipt]
+    assert context.call_updates == []
+
+
 def test_t12_legacy_trait_tool_compat_multiple_aliases(tmp_path: Path) -> None:
     registry = ToolRegistry()
     registry.register(
@@ -945,3 +1053,213 @@ def test_t12_legacy_trait_tool_compat_multiple_aliases(tmp_path: Path) -> None:
         {"tool_use_id": "call-a", "tool_name": "legacy-a", "status": "success"},
         {"tool_use_id": "call-b", "tool_name": "legacy-b", "status": "success"},
     ]
+
+
+def test_t13_fatal_failure_aborts_stream_and_preserves_observed_tool_use(tmp_path: Path) -> None:
+    class FatalAbortModelClient:
+        def __init__(self) -> None:
+            self.requests: list[ModelRequest] = []
+            self.normalized_model_capabilities = NormalizedModelCapabilities(
+                structured_tool_calls=True,
+                streaming_tool_call_deltas=True,
+                tool_call_finalize_boundary=True,
+                parseable_tool_calls_after_message=True,
+                multiple_tool_calls_per_message=True,
+                abort_signal_passthrough=True,
+            )
+            self.saw_abort = False
+            self._turn = 0
+
+        async def complete(self, request: ModelRequest):  # pragma: no cover - protocol completeness
+            raise NotImplementedError
+
+        async def stream(self, request: ModelRequest):
+            self.requests.append(request)
+            if self._turn == 0:
+                self._turn += 1
+                yield ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-fatal-1"})
+                yield ModelStreamEvent(
+                    ModelStreamEventType.CONTENT_BLOCK_START,
+                    {
+                        "block_type": "tool_use",
+                        "tool_use_id": "call-fatal-abort",
+                        "name": "fatal",
+                        "input": {},
+                    },
+                )
+                yield ModelStreamEvent(
+                    ModelStreamEventType.CONTENT_BLOCK_STOP,
+                    {
+                        "block_type": "tool_use",
+                        "tool_use_id": "call-fatal-abort",
+                    },
+                )
+                while True:
+                    await asyncio.sleep(0.01)
+                    if request.abort_signal is not None and request.abort_signal.aborted:
+                        self.saw_abort = True
+                        return
+                    yield ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "partial"})
+            yield ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-fatal-2"})
+            yield ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "done"})
+            yield ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"})
+
+    async def fatal(_: dict[str, Any], __: ToolContext) -> dict[str, Any]:
+        await asyncio.sleep(0.01)
+        return {"exit_code": 1, "stderr": "boom"}
+
+    registry = ToolRegistry()
+    registry.register(
+        ToolDefinition(
+            name="fatal",
+            description="fatal",
+            input_schema={"type": "object", "properties": {}, "additionalProperties": False},
+            semantics=ToolExecutionSemantics(
+                is_read_only=lambda _tool_input, _context: True,
+                is_concurrency_safe=lambda _tool_input, _context: True,
+                interrupt_behavior=lambda _tool_input, _context: InterruptBehavior.CANCEL,
+                failure_policy=lambda _tool_input, _context: ToolFailurePolicy(
+                    failure_mode=ToolFailureMode.FATAL,
+                    result_classifier=ToolFailureClassifier.NONZERO_EXIT_OR_EXCEPTION,
+                    cancel_running_siblings=True,
+                    block_queued_siblings=True,
+                    abort_model_stream=True,
+                    surfaced_status=ToolCallStatus.ERROR,
+                ),
+            ),
+            execute=fatal,
+        )
+    )
+    client = FatalAbortModelClient()
+    result = asyncio.run(
+        TurnEngine(model_client=client, tool_registry=registry).run_turn(
+            session_id="session",
+            turn_id="turn",
+            agent=_make_agent(),
+            cwd=str(tmp_path),
+            messages=[],
+            base_system_prompt="System",
+        )
+    )
+
+    assert client.saw_abort is True
+    assert result.completed is True
+    assistant_messages = [message for message in result.messages if message.role == MessageRole.ASSISTANT]
+    assert isinstance(assistant_messages[0].content[0], ToolUseBlock)
+    assert assistant_messages[0].text == ""
+    tool_message = next(message for message in result.messages if message.role == MessageRole.USER)
+    assert tool_message.metadata["tool_results"][0]["status"] == "error"
+
+
+def test_t14_lifecycle_events_surface_presentation_and_summary(tmp_path: Path) -> None:
+    registry = ToolRegistry()
+    registry.register(
+        ToolDefinition(
+            name="presented",
+            description="presented",
+            input_schema={
+                "type": "object",
+                "properties": {"path": {"type": "string"}},
+                "required": ["path"],
+                "additionalProperties": False,
+            },
+            semantics=ToolExecutionSemantics(
+                is_read_only=lambda _tool_input, _context: True,
+                is_concurrency_safe=lambda _tool_input, _context: True,
+                interrupt_behavior=lambda _tool_input, _context: InterruptBehavior.BLOCK,
+                failure_policy=lambda _tool_input, _context: ToolFailurePolicy(),
+                render_tool_use_message=lambda tool_input, _context: ToolUsePresentation(
+                    title="Read artifact",
+                    subtitle=tool_input["path"],
+                    emphasis=ToolPresentationEmphasis.LOW,
+                ),
+                render_tool_result_summary=lambda tool_input, _context: ToolResultSummary(
+                    title="Artifact loaded",
+                    summary=tool_input["path"],
+                    status=ToolResultSummaryStatus.SUCCESS,
+                    detail_lines=("cached",),
+                ),
+                to_classifier_input=lambda tool_input, _context: ToolClassifierInput(
+                    operation="presented",
+                    summary=tool_input["path"],
+                    target_paths=(tool_input["path"],),
+                    risk_level=ToolRiskLevel.READ,
+                    side_effects=False,
+                    tags=("read",),
+                ),
+            ),
+            execute=lambda tool_input, _context: {"path": tool_input["path"]},
+        )
+    )
+    client = ScriptedModelClient(
+        [
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-presented-1"}),
+                ModelStreamEvent(
+                    ModelStreamEventType.TOOL_CALL,
+                    {
+                        "tool_name": "presented",
+                        "tool_input": {"path": "artifact.txt"},
+                        "call_id": "call-presented",
+                    },
+                ),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "tool_use"}),
+            ],
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-presented-2"}),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "done"}),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+            ],
+        ]
+    )
+    events = _collect_turn_events(
+        TurnEngine(model_client=client, tool_registry=registry),
+        session_id="session",
+        turn_id="turn",
+        agent=_make_agent(),
+        cwd=str(tmp_path),
+        messages=[],
+        base_system_prompt="System",
+    )
+
+    resolution_event = next(
+        event.tool_event
+        for event in events
+        if event.event_type == TurnStreamEventType.TOOL_LIFECYCLE
+        and event.tool_event is not None
+        and event.tool_event.kind == "resolution_completed"
+    )
+    outcome_event = next(
+        event.tool_event
+        for event in events
+        if event.event_type == TurnStreamEventType.TOOL_LIFECYCLE
+        and event.tool_event is not None
+        and event.tool_event.kind == "outcome_recorded"
+    )
+    replay_event = next(
+        event.tool_event
+        for event in events
+        if event.event_type == TurnStreamEventType.TOOL_LIFECYCLE
+        and event.tool_event is not None
+        and event.tool_event.kind == "replay_committed"
+    )
+    tool_message = next(
+        event.message
+        for event in events
+        if event.event_type == TurnStreamEventType.MESSAGE
+        and event.message is not None
+        and event.message.role == MessageRole.USER
+    )
+
+    assert resolution_event.tool_use_presentation is not None
+    assert resolution_event.tool_use_presentation.title == "Read artifact"
+    assert outcome_event.result_summary is not None
+    assert outcome_event.result_summary.summary == "artifact.txt"
+    assert replay_event.result_summary is not None
+    assert replay_event.result_summary.detail_lines == ("cached",)
+    assert tool_message.metadata["tool_results"][0]["result_summary"] == {
+        "title": "Artifact loaded",
+        "summary": "artifact.txt",
+        "status": "success",
+        "detail_lines": ["cached"],
+    }

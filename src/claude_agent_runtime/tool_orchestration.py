@@ -65,9 +65,8 @@ class StreamingToolOrchestrator:
         self._model_capabilities = model_capabilities
         self._lifecycle_sink = lifecycle_sink
         self._completion_index = 0
-        self._active_concurrent: set[asyncio.Task[ToolOutcome]] = set()
-        self._serial_tail: asyncio.Task[ToolOutcome] | None = None
         self._scheduled_tasks: dict[str, asyncio.Task[ToolOutcome]] = {}
+        self._scheduled_lanes: dict[str, ToolSchedulerLane] = {}
         self._resolved_calls: dict[str, ResolvedToolCall] = {}
         self._outcomes: dict[int, ToolOutcome] = {}
         self._lifecycle_stages: dict[str, ToolLifecycleStage | None] = {}
@@ -127,6 +126,16 @@ class StreamingToolOrchestrator:
                 replay_index=resolved_call.replay_index,
                 resolution_status=resolved_call.resolution_status,
                 canonical_tool_name=resolved_call.canonical_tool_name,
+                tool_use_presentation=(
+                    resolved_call.resolved_semantics.tool_use_presentation
+                    if resolved_call.resolved_semantics is not None
+                    else None
+                ),
+                classifier_input=(
+                    resolved_call.resolved_semantics.classifier_input
+                    if resolved_call.resolved_semantics is not None
+                    else None
+                ),
             )
         )
         if resolved_call.resolution_status != ToolResolutionStatus.EXECUTABLE:
@@ -141,14 +150,11 @@ class StreamingToolOrchestrator:
                 lane_key=lane.lane_key if lane is not None else None,
             )
         )
-        wait_for = self._serial_tail
+        wait_for = self._dependencies_for_lane(lane)
         task = asyncio.create_task(self._run_scheduled_call(resolved_call, wait_for=wait_for))
         self._scheduled_tasks[resolved_call.envelope.tool_use_id] = task
-        if lane is not None and lane.lane_kind == ToolSchedulerLaneKind.CONCURRENT:
-            self._active_concurrent.add(task)
-            task.add_done_callback(self._active_concurrent.discard)
-        else:
-            self._serial_tail = task
+        if lane is not None:
+            self._scheduled_lanes[resolved_call.envelope.tool_use_id] = lane
         return resolved_call
 
     async def run_batch(
@@ -180,6 +186,7 @@ class StreamingToolOrchestrator:
                     replay_index=outcome.replay_index,
                     completion_index=outcome.completion_index,
                     status=outcome.status,
+                    result_summary=outcome.result_summary,
                 )
             )
             await self._apply_context_updates(outcome, ContextUpdatePhase.WITH_REPLAY)
@@ -207,12 +214,7 @@ class StreamingToolOrchestrator:
             content=result_blocks,
             metadata={
                 "tool_results": [
-                    {
-                        "tool_use_id": outcome.resolved_call.envelope.tool_use_id,
-                        "tool_name": outcome.resolved_call.canonical_tool_name
-                        or outcome.resolved_call.envelope.raw_tool_name,
-                        "status": outcome.status.value,
-                    }
+                    _tool_result_metadata_entry(outcome)
                     for outcome in outcomes
                 ]
             },
@@ -222,15 +224,12 @@ class StreamingToolOrchestrator:
         self,
         resolved_call: ResolvedToolCall,
         *,
-        wait_for: asyncio.Task[ToolOutcome] | None = None,
+        wait_for: Sequence[asyncio.Task[ToolOutcome]] = (),
     ) -> ToolOutcome:
         lane = resolved_call.scheduler_lane or ToolSchedulerLane(ToolSchedulerLaneKind.EXCLUSIVE)
         try:
             if wait_for is not None:
-                await wait_for
-            if lane.lane_kind != ToolSchedulerLaneKind.CONCURRENT:
-                while self._active_concurrent:
-                    await asyncio.gather(*tuple(self._active_concurrent), return_exceptions=True)
+                await asyncio.gather(*wait_for, return_exceptions=True)
             self._started_calls.add(resolved_call.envelope.tool_use_id)
             self._emit_lifecycle(
                 ExecutionStarted(
@@ -330,6 +329,7 @@ class StreamingToolOrchestrator:
                 replay_index=outcome.replay_index,
                 completion_index=outcome.completion_index,
                 status=outcome.status,
+                result_summary=outcome.result_summary,
             )
         )
 
@@ -371,6 +371,27 @@ class StreamingToolOrchestrator:
             shares_concurrency=False,
             derivation_mode=ToolLaneDerivationMode.COARSE,
         )
+
+    def _dependencies_for_lane(
+        self,
+        lane: ToolSchedulerLane | None,
+    ) -> tuple[asyncio.Task[ToolOutcome], ...]:
+        if lane is None:
+            return ()
+        dependencies: list[asyncio.Task[ToolOutcome]] = []
+        seen: set[int] = set()
+        for tool_use_id, task in self._scheduled_tasks.items():
+            if task.done():
+                continue
+            prior_lane = self._scheduled_lanes.get(tool_use_id)
+            if prior_lane is None or not _lanes_overlap(prior_lane, lane):
+                continue
+            marker = id(task)
+            if marker in seen:
+                continue
+            seen.add(marker)
+            dependencies.append(task)
+        return tuple(dependencies)
 
     def _classify_result(
         self,
@@ -424,6 +445,10 @@ class StreamingToolOrchestrator:
             return
         if outcome.status == ToolCallStatus.SUCCESS:
             return
+        if policy.abort_model_stream:
+            self._context.request_interrupt(
+                reason=f"tool_failure:{outcome.resolved_call.envelope.tool_use_id}"
+            )
         current_id = outcome.resolved_call.envelope.tool_use_id
         for tool_use_id, task in tuple(self._scheduled_tasks.items()):
             if tool_use_id == current_id or task.done():
@@ -565,3 +590,32 @@ def _tool_result_block(result: Any) -> ToolResultBlock:
         content=content,
         is_error=result.status != ToolCallStatus.SUCCESS,
     )
+
+
+def _lanes_overlap(left: ToolSchedulerLane, right: ToolSchedulerLane) -> bool:
+    if ToolSchedulerLaneKind.EXCLUSIVE in {left.lane_kind, right.lane_kind}:
+        return True
+    if ToolSchedulerLaneKind.CONCURRENT in {left.lane_kind, right.lane_kind}:
+        return False
+    left_domains = set(left.conflict_domains or ((left.lane_key,) if left.lane_key else ()))
+    right_domains = set(right.conflict_domains or ((right.lane_key,) if right.lane_key else ()))
+    if not left_domains or not right_domains:
+        return True
+    return not left_domains.isdisjoint(right_domains)
+
+
+def _tool_result_metadata_entry(outcome: ToolOutcome) -> dict[str, Any]:
+    entry = {
+        "tool_use_id": outcome.resolved_call.envelope.tool_use_id,
+        "tool_name": outcome.resolved_call.canonical_tool_name
+        or outcome.resolved_call.envelope.raw_tool_name,
+        "status": outcome.status.value,
+    }
+    if outcome.result_summary is not None:
+        entry["result_summary"] = {
+            "title": outcome.result_summary.title,
+            "summary": outcome.result_summary.summary,
+            "status": outcome.result_summary.status.value,
+            "detail_lines": list(outcome.result_summary.detail_lines),
+        }
+    return entry

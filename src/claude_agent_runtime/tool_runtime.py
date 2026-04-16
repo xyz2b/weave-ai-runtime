@@ -189,7 +189,10 @@ class ToolContext:
         if self.notifications_handle is None:
             self.notifications_handle = NotificationsHandle(emitter=self._record_notification)
         if self.refresh_capabilities is None:
-            self.refresh_capabilities = CapabilityRefreshHandle(emitter=self._record_refresh)
+            self.refresh_capabilities = CapabilityRefreshHandle(
+                emitter=self._record_refresh,
+                supported_scopes=_supported_refresh_scopes(self),
+            )
 
     async def emit_progress(
         self,
@@ -310,7 +313,8 @@ class ToolContext:
             emitter=call_context._record_notification
         )
         call_context.refresh_capabilities = CapabilityRefreshHandle(
-            emitter=call_context._record_refresh
+            emitter=call_context._record_refresh,
+            supported_scopes=_supported_refresh_scopes(call_context),
         )
         call_context.capability_context = ToolCapabilityContext(
             tool_use_id=tool_use_id,
@@ -1013,6 +1017,14 @@ def _guarded_memory_roots(context: ToolContext) -> tuple[Path, ...]:
         cwd=context.cwd,
     )
     return tuple(Path(root).resolve() for root in roots)
+
+
+def _supported_refresh_scopes(context: ToolContext) -> frozenset[str]:
+    if context.runtime_services is not None and context.runtime_services.tool_refresh_callback is not None:
+        return frozenset({"tool_pool"})
+    if context.tool_refresh_callback is not None:
+        return frozenset({"tool_pool"})
+    return frozenset()
 
 
 def _tool_available_in_pool(
