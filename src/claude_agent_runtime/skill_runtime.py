@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, Sequence
 from uuid import uuid4
 
+from .agent_execution import SpawnMode
 from .agent_runtime import AgentInvocation, AgentRunResult, AgentRuntime
 from .contracts import MessageRole, RuntimeMessage
 from .definitions import PermissionBehavior, PermissionDecision, SkillDefinition, SkillExecutionContext
@@ -56,6 +57,7 @@ class SkillExecutor:
         parent_skill_pool=(),
         permission_context: PermissionContext | None = None,
         turn_id: str | None = None,
+        parent_run_id: str | None = None,
         policy_state: ExecutionPolicyState | None = None,
     ) -> SkillExecutionResult:
         skill = self._resolve_skill(skill_name)
@@ -102,6 +104,11 @@ class SkillExecutor:
                     prompt=expanded,
                     session_id=session_id,
                     cwd=cwd,
+                    query_source="skill_fork",
+                    spawn_mode=SpawnMode.FORK,
+                    parent_run_id=parent_run_id,
+                    parent_turn_id=turn_id,
+                    requested_model=skill.model,
                     parent_tool_pool=resolved_policy.tool_pool,
                     parent_skill_pool=resolved_policy.skill_pool,
                     metadata={

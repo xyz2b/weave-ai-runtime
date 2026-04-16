@@ -27,10 +27,11 @@
 - 扩展 `ModelRequest` / `ModelClient` contract，把 route identity、provider、resolved capabilities 与 execution mode 变成结构化字段；adapter 需要显式暴露 normalized capabilities，而不是只靠宽泛 metadata 暗传
 - 让 `TurnEngine` 真正支持 `stream` 与 buffered / non-stream completion 两类 provider path；buffered path 第一版即支持完整响应后的 tool-call normalization，而不是让 `complete()` 继续停留在死接口状态
 - 在 `runtime_kernel` 中增加与 `HostBinding` 对称的 provider assembly boundary，例如 `ModelRoute` / `ProviderBinding` / `ModelRouter` 组装入口，让 runtime 自己拥有 provider control plane
-- 为 subagent、forked skill 与 background agent 增加 sidechain run record / transcript contract，保留 parent-child linkage、terminal metadata 与 child message history
+- 为 subagent、forked skill 与 background agent 增加 sidechain run record / transcript contract，保留 parent-child linkage、terminal metadata 与 child message history；第一版采用独立 child-run store，而不是把主 transcript store 扩展成 sidechain 索引
 - 增加 fork context builder，定义共享前缀与 worker-specific directive 的构造边界，为 prompt cache 复用预留稳定契约
 - 将 capability trimming 扩展成显式的分层策略，而不是只保留当前的 parent ceiling + frontmatter allow/disallow
 - 补充 provider / route conformance harness，覆盖 route selection、route metadata、resolved capabilities、invocation-mode selection、buffered completion path、完整响应后的 tool-call normalization 与 capability trimming 回归
+- `model_route` 第一版只开放给 `AgentDefinition`；skill 继续通过委派 agent 或 execution-time route hint 间接选择 route，避免 route ownership 在 agent/skill 两套 definition 上分叉
 
 ## Goals
 

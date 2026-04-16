@@ -1,25 +1,25 @@
 ## 0. Scope Locks and Rollout Gates
 
 - [x] 0.1 记录 buffered completion 范围决议：第一版直接支持完整响应后的 tool-call normalization，不采用 text-only 过渡阶段
-- [ ] 0.2 锁定 sidechain transcript 的落点：明确采用独立 child-run store 还是 transcript store 扩展索引
-- [ ] 0.3 锁定 `model_route` 的暴露面：明确第一版只开放给 `AgentDefinition`，还是同步开放给 `SkillDefinition`
+- [x] 0.2 锁定 sidechain transcript 的落点：明确采用独立 child-run store 还是 transcript store 扩展索引
+- [x] 0.3 锁定 `model_route` 的暴露面：明确第一版只开放给 `AgentDefinition`，还是同步开放给 `SkillDefinition`
 - [x] 0.4 将 buffered-path 决议与 route-policy requirement 回写到 `proposal.md`、`design.md`、`spec.md` 与 `tasks.md`，避免后续 implementation slice 在范围上漂移
 
 ## 1. Execution Contract Foundations
 
-- [ ] 1.0 Land Slice A (`agent_runtime.py`, execution models module, protocol fixtures) so structured child-run contract exists before dispatch and provider routing change
-- [ ] 1.1 新增 `AgentExecutionSpec`、`SpawnMode`、`AgentRunRecord` 与 parent-child linkage models
-- [ ] 1.2 固定 `run_id`、`parent_run_id`、`session_id`、`turn_id`、`query_source`、`requested_model_route`、`requested_model` 与 `metadata` 的字段语义、继承规则与稳定性约束
-- [ ] 1.3 固定 `AgentRunRecord` 的最小索引集、terminal status 集合，以及 sync/background/denied child 的最小写入要求
-- [ ] 1.4 增加最小 contract tests，证明 core execution contract 不会回落到非结构化 metadata
+- [x] 1.0 Land Slice A (`agent_runtime.py`, execution models module, protocol fixtures) so structured child-run contract exists before dispatch and provider routing change
+- [x] 1.1 新增 `AgentExecutionSpec`、`SpawnMode`、`AgentRunRecord` 与 parent-child linkage models
+- [x] 1.2 固定 `run_id`、`parent_run_id`、`session_id`、`turn_id`、`query_source`、`requested_model_route`、`requested_model` 与 `metadata` 的字段语义、继承规则与稳定性约束
+- [x] 1.3 固定 `AgentRunRecord` 的最小索引集、terminal status 集合，以及 sync/background/denied child 的最小写入要求
+- [x] 1.4 增加最小 contract tests，证明 core execution contract 不会回落到非结构化 metadata
 
 ## 2. Dispatcher / Execution Split
 
-- [ ] 2.0 Land Slice B (`agent_runtime.py`, dispatcher/service modules, compat shims) so dispatch and execution are separated before route-aware behavior lands
-- [ ] 2.1 从 `AgentRuntime.invoke()` 中抽出 `AgentDispatcher`，统一负责 sync、background、fork 与 future teammate 的入口判定、linkage 计算与 execution spec 构造
-- [ ] 2.2 引入 `AgentExecutionService.run(spec)`，统一负责 agent resolution、layered policy resolution、isolation preparation、shared `TurnEngine` 调用与 run-record lifecycle
-- [ ] 2.3 让 builtin `agent` tool、background agent 与 forked skill path 全部走 `AgentDispatcher -> AgentExecutionService`
-- [ ] 2.4 保留现有 `/agent`、`/skill`、`/tool` compat route，但将其收敛为 dispatcher 前的兼容 shim，而不是并行的执行引擎
+- [x] 2.0 Land Slice B (`agent_runtime.py`, dispatcher/service modules, compat shims) so dispatch and execution are separated before route-aware behavior lands
+- [x] 2.1 从 `AgentRuntime.invoke()` 中抽出 `AgentDispatcher`，统一负责 sync、background、fork 与 future teammate 的入口判定、linkage 计算与 execution spec 构造
+- [x] 2.2 引入 `AgentExecutionService.run(spec)`，统一负责 agent resolution、layered policy resolution、isolation preparation、shared `TurnEngine` 调用与 run-record lifecycle
+- [x] 2.3 让 builtin `agent` tool、background agent 与 forked skill path 全部走 `AgentDispatcher -> AgentExecutionService`
+- [x] 2.4 保留现有 `/agent`、`/skill`、`/tool` compat route，但将其收敛为 dispatcher 前的兼容 shim，而不是并行的执行引擎
 
 ## 3. Provider Control Plane Foundations
 

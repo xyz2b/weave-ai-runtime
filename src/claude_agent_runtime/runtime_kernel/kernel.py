@@ -165,6 +165,9 @@ class RuntimeAssembly:
                 session_id=context.session_id,
                 cwd=context.cwd,
                 background=background,
+                query_source="agent_tool",
+                parent_run_id=_coerce_optional_string(context.metadata.get("run_id")),
+                parent_turn_id=context.turn_id,
                 parent_tool_pool=context.tool_pool,
                 parent_skill_pool=context.skill_pool,
                 metadata=dict(context.metadata),
@@ -187,6 +190,7 @@ class RuntimeAssembly:
             parent_skill_pool=context.skill_pool,
             permission_context=context.permission_context,
             turn_id=context.turn_id,
+            parent_run_id=_coerce_optional_string(context.metadata.get("run_id")),
             policy_state=policy_state_from_metadata(context.metadata),
         )
         return _serialize_skill_execution_result(result)
@@ -352,6 +356,13 @@ def _serialize_message(message: RuntimeMessage) -> dict[str, Any]:
         "content": serialize_content_blocks(message.content),
         "metadata": dict(message.metadata),
     }
+
+
+def _coerce_optional_string(value: Any) -> str | None:
+    if value is None:
+        return None
+    stringified = str(value).strip()
+    return stringified or None
 
 
 def _register_builtin_tools(

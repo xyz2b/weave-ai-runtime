@@ -189,6 +189,7 @@ Alternatives considered:
 建议：
 
 - `AgentDefinition` 新增可选 `model_route`
+- 第一版不为 `SkillDefinition` 新增 `model_route`
 - `RuntimeConfig` 新增 `model_routes`、`provider_bindings` 与 `model_router`
 - route profile 至少包含：
   - `provider`
@@ -224,6 +225,7 @@ Alternatives considered:
 - 当 route 已经解析完成后，`model` 只能覆盖该 route 的 `default_model`，不能把请求重新路由到另一 provider
 - fork/background child 默认继承 parent route hint；只有显式允许 override 的入口才能切换 route
 - 如果 child 请求的 route 超出 parent policy 或 runtime-global route policy，runtime 应拒绝或回退到父级允许范围，而不是静默扩权
+- forked skill 第一版继续通过其 delegated agent 解析 route，不单独引入 skill-level route ownership；这样 route precedence 只需围绕 execution spec 与 agent definition 建模
 
 建议将这套 precedence 固定成独立 contract，而不是散落在调用方约定里。
 
@@ -362,6 +364,12 @@ Alternatives considered:
 
 主线程继续只接收对当前 continuation 必要的 `tool_result` / summary，而 child run 的完整消息历史与终态进入 sidechain record。
 
+sidechain transcript 的落点固定为独立 child-run store，而不是 transcript store 扩展索引：
+
+- 现有 `TranscriptStore` contract 只围绕主 session message append/load/replace 建模，不承担 child-run record 的索引与状态更新语义
+- child run record 需要稳定表达 `running` 到 terminal status 更新、denied/early-failed 最小记录，以及 host/test 可枚举的独立观测面
+- 因此第一版引入独立的 child-run store 或等价 sidechain service 接口，主 transcript contract 继续只服务 continuation 历史，不为 sidechain 引入额外写入语义
+
 Why:
 
 - 这样后台 agent、forked skill 与 future teammate 才有统一的观测面
@@ -490,7 +498,5 @@ agent tool / skill fork / background / future teammate
 
 ## Open Questions
 
-- `model_route` 是否也应同步开放给 `SkillDefinition`，还是先要求 forked skill 通过 agent route 间接选择？
 - provider binding 是否需要支持按 provider family 复用共享 credential/base URL 模板，还是第一版只支持 fully-resolved named routes？
-- sidechain transcript 是独立 store 更合适，还是先作为 transcript store 的扩展索引实现？
 - fork builder 第一版是否需要直接生成 provider-ready message history，还是只生成 provider-agnostic content blocks？

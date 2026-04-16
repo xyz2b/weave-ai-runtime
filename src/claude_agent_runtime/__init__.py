@@ -1,3 +1,12 @@
+from .agent_execution import (
+    AgentExecutionSpec,
+    AgentRunLinkage,
+    AgentRunRecord,
+    AgentRunStatus,
+    ChildRunStore,
+    InMemoryChildRunStore,
+    SpawnMode,
+)
 from .contracts import (
     ContentBlock,
     ContentBlockType,
@@ -131,7 +140,12 @@ from .turn_engine import (
 
 __all__ = [
     "AgentDefinition",
+    "AgentExecutionSpec",
+    "AgentRunLinkage",
+    "AgentRunRecord",
+    "AgentRunStatus",
     "BuiltinPackConfig",
+    "ChildRunStore",
     "ContextAssembler",
     "ContextAssembly",
     "ContentBlock",
@@ -149,6 +163,7 @@ __all__ = [
     "HookEffect",
     "HookRegistration",
     "InterruptBehavior",
+    "InMemoryChildRunStore",
     "IsolationMode",
     "MemoryScope",
     "MessageAttachment",
@@ -189,6 +204,7 @@ __all__ = [
     "SkillCatalog",
     "SkillExecutionContext",
     "SkillShell",
+    "SpawnMode",
     "ToolCallEnvelope",
     "ToolCallStatus",
     "ToolClassifierInput",
