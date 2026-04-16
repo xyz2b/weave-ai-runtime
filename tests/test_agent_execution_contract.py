@@ -1,13 +1,13 @@
 import asyncio
 from pathlib import Path
 
-from claude_agent_runtime.agent_execution import AgentRunStatus
+from claude_agent_runtime.agent_execution import AgentRunStatus, SpawnMode
 from claude_agent_runtime.agent_runtime import AgentInvocation, AgentRuntime
 from claude_agent_runtime.contracts import MessageRole
 from claude_agent_runtime.definitions import AgentDefinition, PermissionBehavior, PermissionDecision
 from claude_agent_runtime.registries import AgentRegistry, SkillRegistry, ToolRegistry
 from claude_agent_runtime.runtime_services import RuntimeServices
-from claude_agent_runtime.tasking import TaskManager
+from claude_agent_runtime.tasking import TaskManager, TaskStatus
 from claude_agent_runtime.turn_engine import ModelRequest, ModelStreamEvent, ModelStreamEventType, TurnEngine
 
 
@@ -34,6 +34,15 @@ class DenyingPermissionService:
     async def authorize(self, definition, tool_input, decision, context):  # pragma: no cover - protocol completeness
         _ = definition, tool_input, decision, context
         return PermissionDecision(PermissionBehavior.DENY, "blocked by policy")
+
+
+class FailingIsolationService:
+    async def prepare(self, **kwargs):
+        _ = kwargs
+        raise RuntimeError("isolation prepare failed")
+
+    async def cleanup(self, lease):  # pragma: no cover - protocol completeness
+        _ = lease
 
 
 def test_sync_agent_execution_spec_and_run_record_are_structured(tmp_path: Path) -> None:
@@ -156,10 +165,11 @@ def test_background_agent_writes_running_and_terminal_run_records(tmp_path: Path
         running_record = await runtime.run_store.get(initial.run_id)
         completed = await runtime.wait_for_background(initial.task_id)
         terminal_record = await runtime.run_store.get(initial.run_id)
-        return runtime, (initial, running_record, completed, terminal_record)
+        task = runtime.runtime_services.task_manager.get(initial.task_id)
+        return runtime, (initial, running_record, completed, terminal_record, task)
 
     _, payload = asyncio.run(scenario())
-    initial, running_record, completed, terminal_record = payload
+    initial, running_record, completed, terminal_record, task = payload
 
     assert initial.status == "running"
     assert initial.query_source == "background_agent"
@@ -169,11 +179,15 @@ def test_background_agent_writes_running_and_terminal_run_records(tmp_path: Path
     assert completed.status == "completed"
     assert completed.notification is not None
     assert completed.notification.role == MessageRole.NOTIFICATION
+    assert completed.notification.text == "Background agent 'verification' completed"
     assert terminal_record is not None
     assert terminal_record.status == AgentRunStatus.COMPLETED
     assert terminal_record.run_id == initial.run_id
     assert terminal_record.turn_id == initial.turn_id
     assert terminal_record.messages[-1].text == "background answer"
+    assert task is not None
+    assert task.status == TaskStatus.COMPLETED
+    assert task.metadata["agent_status"] == "completed"
 
 
 def test_denied_agent_still_produces_minimal_run_record(tmp_path: Path) -> None:
@@ -224,3 +238,167 @@ def test_denied_agent_still_produces_minimal_run_record(tmp_path: Path) -> None:
     assert record.request_metadata["run_id"] == result.run_id
     assert record.terminal_metadata["permission_denied"] is True
     assert record.messages[0].metadata["permission_denied"] is True
+
+
+def test_explicit_spawn_mode_sync_overrides_background_agent_default(tmp_path: Path) -> None:
+    async def scenario():
+        model_client = FakeModelClient(
+            [
+                [
+                    ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-sync-override"}),
+                    ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "sync override"}),
+                    ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+                ]
+            ]
+        )
+        agent_registry = AgentRegistry()
+        agent_registry.register(
+            AgentDefinition(
+                name="verification",
+                description="verify",
+                prompt="verify",
+                background=True,
+            )
+        )
+        runtime = AgentRuntime(
+            turn_engine=TurnEngine(
+                model_client=model_client,
+                tool_registry=ToolRegistry(),
+                agent_registry=agent_registry,
+                skill_registry=SkillRegistry(),
+                task_manager=TaskManager(),
+            ),
+            agent_registry=agent_registry,
+            tool_registry=ToolRegistry(),
+            skill_registry=SkillRegistry(),
+            task_manager=TaskManager(),
+        )
+        result = await runtime.invoke(
+            AgentInvocation(
+                agent_name="verification",
+                prompt="run checks",
+                session_id="session-sync-override",
+                cwd=tmp_path,
+                spawn_mode=SpawnMode.SYNC,
+            )
+        )
+        return runtime, model_client, result
+
+    runtime, model_client, result = asyncio.run(scenario())
+
+    assert result.status == "completed"
+    assert result.background is False
+    assert result.task_id is None
+    assert result.execution_spec is not None
+    assert result.execution_spec.spawn_mode == SpawnMode.SYNC
+    assert result.execution_spec.background is False
+    assert result.query_source == "agent_invocation"
+    assert model_client.requests[0].query_source == "agent_invocation"
+    assert runtime.runtime_services.task_manager.list() == ()
+
+
+def test_background_denied_agent_marks_task_failed_and_emits_denied_notification(tmp_path: Path) -> None:
+    async def scenario():
+        model_client = FakeModelClient([])
+        agent_registry = AgentRegistry()
+        agent_registry.register(
+            AgentDefinition(name="verification", description="verify", prompt="verify")
+        )
+        services = RuntimeServices(permissions=DenyingPermissionService())
+        runtime = AgentRuntime(
+            turn_engine=TurnEngine(
+                model_client=model_client,
+                tool_registry=ToolRegistry(),
+                agent_registry=agent_registry,
+                skill_registry=SkillRegistry(),
+                task_manager=TaskManager(),
+                runtime_services=services,
+            ),
+            agent_registry=agent_registry,
+            tool_registry=ToolRegistry(),
+            skill_registry=SkillRegistry(),
+            task_manager=TaskManager(),
+            runtime_services=services,
+        )
+        initial = await runtime.invoke(
+            AgentInvocation(
+                agent_name="verification",
+                prompt="blocked run",
+                session_id="session-background-denied",
+                cwd=tmp_path,
+                background=True,
+            )
+        )
+        completed = await runtime.wait_for_background(initial.task_id)
+        record = await runtime.run_store.get(initial.run_id)
+        task = runtime.runtime_services.task_manager.get(initial.task_id)
+        return runtime, initial, completed, record, task
+
+    runtime, initial, completed, record, task = asyncio.run(scenario())
+
+    assert initial.status == "running"
+    assert completed.status == "denied"
+    assert completed.notification is not None
+    assert completed.notification.text == "Background agent 'verification' was denied: blocked by policy"
+    assert record is not None
+    assert record.status == AgentRunStatus.DENIED
+    assert task is not None
+    assert task.status == TaskStatus.FAILED
+    assert task.error == "blocked by policy"
+    assert task.metadata["agent_status"] == "denied"
+    assert runtime.notifications[-1].text == completed.notification.text
+
+
+def test_background_failure_marks_task_failed_and_emits_failure_notification(tmp_path: Path) -> None:
+    async def scenario():
+        model_client = FakeModelClient([])
+        agent_registry = AgentRegistry()
+        agent_registry.register(
+            AgentDefinition(name="verification", description="verify", prompt="verify")
+        )
+        services = RuntimeServices(isolation=FailingIsolationService())
+        runtime = AgentRuntime(
+            turn_engine=TurnEngine(
+                model_client=model_client,
+                tool_registry=ToolRegistry(),
+                agent_registry=agent_registry,
+                skill_registry=SkillRegistry(),
+                task_manager=TaskManager(),
+                runtime_services=services,
+            ),
+            agent_registry=agent_registry,
+            tool_registry=ToolRegistry(),
+            skill_registry=SkillRegistry(),
+            task_manager=TaskManager(),
+            runtime_services=services,
+        )
+        initial = await runtime.invoke(
+            AgentInvocation(
+                agent_name="verification",
+                prompt="failing run",
+                session_id="session-background-failed",
+                cwd=tmp_path,
+                background=True,
+            )
+        )
+        error = None
+        try:
+            await runtime.wait_for_background(initial.task_id)
+        except RuntimeError as exc:
+            error = str(exc)
+        task = runtime.runtime_services.task_manager.get(initial.task_id)
+        record = await runtime.run_store.get(initial.run_id)
+        return runtime, initial, error, task, record
+
+    runtime, initial, error, task, record = asyncio.run(scenario())
+
+    assert initial.status == "running"
+    assert error == "isolation prepare failed"
+    assert task is not None
+    assert task.status == TaskStatus.FAILED
+    assert task.error == "isolation prepare failed"
+    assert task.metadata["agent_status"] == "failed"
+    assert record is not None
+    assert record.status == AgentRunStatus.FAILED
+    assert record.terminal_metadata["error"] == "isolation prepare failed"
+    assert runtime.notifications[-1].text == "Background agent 'verification' failed: isolation prepare failed"

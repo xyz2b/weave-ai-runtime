@@ -109,6 +109,7 @@ class SubagentStopPayload:
     session_id: str
     agent_name: str
     status: str
+    turn_id: str | None = None
     phase: RuntimeHookPhase = RuntimeHookPhase.SUBAGENT_STOP
 
 
@@ -162,4 +163,3 @@ class HostLifecyclePayload:
     host_name: str
     phase: HostLifecyclePhase
     metadata: dict[str, Any] = field(default_factory=dict)
-

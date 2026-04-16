@@ -114,26 +114,33 @@ class AgentExecutionService:
 
         agent = self.resolve_agent(execution_spec.agent_name)
         policy = self.resolve_execution_policy(invocation, agent)
-        denial = await self._authorize_agent(execution_spec, invocation, agent, policy)
-        if denial is not None:
-            return denial
 
         request_metadata = self._policy_request_metadata(execution_spec, policy)
         isolation_lease: IsolationLease | None = None
-        effective_tools = policy.tool_pool
-        effective_skills = policy.skill_pool
-        effective_agent = replace(
-            agent,
-            tools=tuple(tool.name for tool in effective_tools),
-            skills=tuple(skill.name for skill in effective_skills),
-            model=execution_spec.requested_model or agent.model,
-            permission_mode=policy.permission_context.mode,
-            memory=policy.memory_scope,
-            isolation=policy.isolation_mode,
-        )
-        memory_service = self._runtime_services.memory
         owner = self._register_invocation_hooks(execution_spec)
         try:
+            denial = await self._authorize_agent(execution_spec, invocation, agent, policy)
+            if denial is not None:
+                await self._dispatch_subagent_stop(
+                    execution_spec.session_id,
+                    execution_spec.turn_id,
+                    agent.name,
+                    denial.status,
+                )
+                return denial
+
+            effective_tools = policy.tool_pool
+            effective_skills = policy.skill_pool
+            effective_agent = replace(
+                agent,
+                tools=tuple(tool.name for tool in effective_tools),
+                skills=tuple(skill.name for skill in effective_skills),
+                model=execution_spec.requested_model or agent.model,
+                permission_mode=policy.permission_context.mode,
+                memory=policy.memory_scope,
+                isolation=policy.isolation_mode,
+            )
+            memory_service = self._runtime_services.memory
             isolation_lease = await self._prepare_isolation(execution_spec, agent, policy)
             if memory_service is not None and hasattr(memory_service, "start_session"):
                 await _maybe_await(
@@ -184,7 +191,12 @@ class AgentExecutionService:
                 execution_spec=execution_spec,
                 run_record=run_record,
             )
-            await self._dispatch_subagent_stop(execution_spec.session_id, agent.name, result.status)
+            await self._dispatch_subagent_stop(
+                execution_spec.session_id,
+                execution_spec.turn_id,
+                agent.name,
+                result.status,
+            )
             return result
         except Exception as exc:
             failed_record = self._build_run_record(
@@ -195,6 +207,12 @@ class AgentExecutionService:
                 terminal_metadata={"error": str(exc)},
             )
             await self._run_store.upsert(failed_record)
+            await self._dispatch_subagent_stop(
+                execution_spec.session_id,
+                execution_spec.turn_id,
+                agent.name,
+                AgentRunStatus.FAILED.value,
+            )
             raise
         finally:
             if owner is not None and self._runtime_services.hook_bus is not None:
@@ -404,7 +422,13 @@ class AgentExecutionService:
             messages=tuple(messages),
         )
 
-    async def _dispatch_subagent_stop(self, session_id: str, agent_name: str, status: str) -> None:
+    async def _dispatch_subagent_stop(
+        self,
+        session_id: str,
+        turn_id: str | None,
+        agent_name: str,
+        status: str,
+    ) -> None:
         if self._runtime_services.hook_bus is None:
             return
         await self._runtime_services.hook_bus.dispatch(
@@ -413,6 +437,7 @@ class AgentExecutionService:
                 session_id=session_id,
                 agent_name=agent_name,
                 status=status,
+                turn_id=turn_id,
             ),
         )
 

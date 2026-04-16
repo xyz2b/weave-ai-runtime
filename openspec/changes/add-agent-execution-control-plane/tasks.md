@@ -20,6 +20,7 @@
 - [x] 2.2 引入 `AgentExecutionService.run(spec)`，统一负责 agent resolution、layered policy resolution、isolation preparation、shared `TurnEngine` 调用与 run-record lifecycle
 - [x] 2.3 让 builtin `agent` tool、background agent 与 forked skill path 全部走 `AgentDispatcher -> AgentExecutionService`
 - [x] 2.4 保留现有 `/agent`、`/skill`、`/tool` compat route，但将其收敛为 dispatcher 前的兼容 shim，而不是并行的执行引擎
+- [x] 2.5 加固 dispatcher/execution terminal semantics：显式 `spawn_mode` override 必须压过遗留 background 标记，background task/notification 不得把 `denied` 或 `failed` 伪装成 `completed`，forked child 的 `SubagentStop` hooks 必须覆盖 denied / early-failed 终态
 
 ## 3. Provider Control Plane Foundations
 

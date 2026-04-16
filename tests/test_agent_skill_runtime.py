@@ -15,7 +15,9 @@ from claude_agent_runtime.definitions import (
     ToolDefinition,
     ToolTraits,
 )
+from claude_agent_runtime.hooks import RuntimeHookPhase
 from claude_agent_runtime.isolation import BaseIsolationAdapter, IsolationManager, IsolationRequest
+from claude_agent_runtime.permissions import PermissionTarget
 from claude_agent_runtime.registries import AgentRegistry, SkillRegistry, ToolRegistry
 from claude_agent_runtime.runtime_kernel import BuiltinPackConfig, RuntimeConfig, assemble_runtime
 from claude_agent_runtime.runtime_services import RuntimeServices
@@ -37,6 +39,39 @@ class FakeModelClient:
         batch = self._event_batches.pop(0)
         for event in batch:
             yield event
+
+
+class AllowingPermissionService:
+    async def evaluate(self, request, *, initial_decision=None, hook_result=None, runtime_context=None):
+        _ = request, initial_decision, hook_result, runtime_context
+        return PermissionDecision(PermissionBehavior.ALLOW)
+
+    async def authorize(self, definition, tool_input, decision, context):  # pragma: no cover - protocol completeness
+        _ = definition, tool_input, decision, context
+        return PermissionDecision(PermissionBehavior.ALLOW)
+
+
+class SkillAllowedAgentDeniedPermissionService:
+    async def evaluate(self, request, *, initial_decision=None, hook_result=None, runtime_context=None):
+        _ = initial_decision, hook_result, runtime_context
+        if request.target == PermissionTarget.SKILL:
+            return PermissionDecision(PermissionBehavior.ALLOW)
+        if request.target == PermissionTarget.AGENT:
+            return PermissionDecision(PermissionBehavior.DENY, "blocked child agent")
+        return PermissionDecision(PermissionBehavior.ALLOW)
+
+    async def authorize(self, definition, tool_input, decision, context):  # pragma: no cover - protocol completeness
+        _ = definition, tool_input, decision, context
+        return PermissionDecision(PermissionBehavior.ALLOW)
+
+
+class FailingIsolationService:
+    async def prepare(self, **kwargs):
+        _ = kwargs
+        raise RuntimeError("isolation prepare failed")
+
+    async def cleanup(self, lease):  # pragma: no cover - protocol completeness
+        _ = lease
 
 
 def test_agent_runtime_routes_and_skill_executor_supports_inline_and_fork(
@@ -556,6 +591,130 @@ def test_inline_skill_hooks_are_released_after_turn(tmp_path: Path) -> None:
 
     assert first_block.content == {"echo": "rewritten"}
     assert second_block.content == {"echo": "original"}
+
+
+def test_forked_skill_subagent_stop_hook_observes_denied_child(tmp_path: Path) -> None:
+    async def scenario():
+        hits: list[tuple[str, str]] = []
+
+        async def on_subagent_stop(payload):
+            hits.append((payload.agent_name, payload.status))
+
+        agent_registry = AgentRegistry()
+        agent_registry.register(
+            AgentDefinition(name="general-purpose", description="general", prompt="general")
+        )
+        skill_registry = SkillRegistry()
+        skill_registry.register(
+            SkillDefinition(
+                name="fork-skill",
+                description="fork",
+                content="Forked skill",
+                execution_context=SkillExecutionContext.FORK,
+                agent="general-purpose",
+                hooks={RuntimeHookPhase.SUBAGENT_STOP.value: {"handler": on_subagent_stop}},
+            )
+        )
+        services = RuntimeServices(permissions=SkillAllowedAgentDeniedPermissionService())
+        runtime = AgentRuntime(
+            turn_engine=TurnEngine(
+                model_client=FakeModelClient([]),
+                tool_registry=ToolRegistry(),
+                agent_registry=agent_registry,
+                skill_registry=skill_registry,
+                task_manager=TaskManager(),
+                runtime_services=services,
+            ),
+            agent_registry=agent_registry,
+            tool_registry=ToolRegistry(),
+            skill_registry=skill_registry,
+            task_manager=TaskManager(),
+            runtime_services=services,
+        )
+        skill_executor = SkillExecutor(
+            skill_registry=skill_registry,
+            agent_runtime=runtime,
+            runtime_services=services,
+        )
+        runtime.bind_skill_executor(skill_executor)
+        result = await skill_executor.execute(
+            "fork-skill",
+            arguments=(),
+            session_id="session-hook-denied",
+            cwd=tmp_path,
+        )
+        return result, hits
+
+    result, hits = asyncio.run(scenario())
+
+    assert result.agent_result is not None
+    assert result.agent_result.status == "denied"
+    assert hits == [("general-purpose", "denied")]
+
+
+def test_forked_skill_subagent_stop_hook_observes_failed_child(tmp_path: Path) -> None:
+    async def scenario():
+        hits: list[tuple[str, str]] = []
+
+        async def on_subagent_stop(payload):
+            hits.append((payload.agent_name, payload.status))
+
+        agent_registry = AgentRegistry()
+        agent_registry.register(
+            AgentDefinition(name="general-purpose", description="general", prompt="general")
+        )
+        skill_registry = SkillRegistry()
+        skill_registry.register(
+            SkillDefinition(
+                name="fork-skill",
+                description="fork",
+                content="Forked skill",
+                execution_context=SkillExecutionContext.FORK,
+                agent="general-purpose",
+                hooks={RuntimeHookPhase.SUBAGENT_STOP.value: {"handler": on_subagent_stop}},
+            )
+        )
+        services = RuntimeServices(
+            permissions=AllowingPermissionService(),
+            isolation=FailingIsolationService(),
+        )
+        runtime = AgentRuntime(
+            turn_engine=TurnEngine(
+                model_client=FakeModelClient([]),
+                tool_registry=ToolRegistry(),
+                agent_registry=agent_registry,
+                skill_registry=skill_registry,
+                task_manager=TaskManager(),
+                runtime_services=services,
+            ),
+            agent_registry=agent_registry,
+            tool_registry=ToolRegistry(),
+            skill_registry=skill_registry,
+            task_manager=TaskManager(),
+            runtime_services=services,
+        )
+        skill_executor = SkillExecutor(
+            skill_registry=skill_registry,
+            agent_runtime=runtime,
+            runtime_services=services,
+        )
+        runtime.bind_skill_executor(skill_executor)
+        error = None
+        try:
+            await skill_executor.execute(
+                "fork-skill",
+                arguments=(),
+                session_id="session-hook-failed",
+                cwd=tmp_path,
+            )
+        except RuntimeError as exc:
+            error = str(exc)
+        return error, hits
+
+    error, hits = asyncio.run(scenario())
+
+    assert error == "isolation prepare failed"
+    assert hits == [("general-purpose", "failed")]
 
 
 def test_forked_skill_and_subagent_preserve_policy_and_isolation_ceilings(

@@ -111,6 +111,7 @@
 - `background`
   - 表示该次 child run 是否以异步后台模式运行
   - 不应与 `spawn_mode` 冲突；如两者同时出现，以显式 `spawn_mode` 为准
+  - dispatch 是否走后台路径，必须由最终解析后的 `spawn_mode` 决定，而不是继续读取遗留 boolean 标记
 - `metadata`
   - 保留非核心扩展位
   - 不得承载已经拥有一等字段的核心 contract，例如 route identity、spawn mode、run linkage
@@ -136,6 +137,7 @@
 - sync child 至少写一次终态 `AgentRunRecord`
 - background child 至少写两次：启动时 `running`，结束时 terminal status
 - denied child 也必须写 run record，不能因为未进入模型调用就丢失 observability
+- background child 的 host-visible task status / notification 也必须反映真实 terminal status，不能把 `denied` 或 `failed` 统一伪装成 `completed`
 - child run record 的完整消息历史进入 sidechain；主 transcript 只保留 continuation 必需消息与 tool results
 
 Why:
@@ -164,6 +166,7 @@ runtime 需要区分两层职责：
   - 构造 child run context
   - 调用共享 `TurnEngine`
   - 记录 sidechain transcript / terminal metadata
+  - 对 `denied`、`failed` 与成功终态统一分发 child terminal observability，例如携带 child `turn_id` 的 `SubagentStop`
 
 Why:
 
@@ -173,6 +176,7 @@ Why:
 Alternatives considered:
 
 - 让 `AgentRuntime.invoke()` 继续同时承担 dispatch 和 execution。拒绝，因为随着 route、fork、transcript 增长，这个入口会继续膨胀。
+- 让 background runner 自己推断 terminal status，并把 denied/failed 统一折叠成 completed。拒绝，因为这会破坏 child run observability contract，也会让 host/task 面与 sidechain record 失真。
 
 ### 3. 用 named model route 和 provider binding，而不是把 transport 细节塞进 `model`
 
