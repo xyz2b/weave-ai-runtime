@@ -6,13 +6,14 @@ from enum import StrEnum
 from typing import Any, AsyncIterator
 from uuid import uuid4
 
+from ..compaction import latest_compaction_payload
 from ..contracts import MessageRole, RuntimeMessage, SessionCommand, SessionCommandType, SessionState, SessionStatus
 from ..definitions import AgentDefinition, PermissionMode
 from ..hooks import SessionEndPayload, SessionStartPayload
 from ..permissions import PermissionContext
 from ..runtime_services import DefaultTranscriptService, RuntimeServices
 from ..turn_engine.engine import TurnEngine, TurnStreamEvent, TurnStreamEventType
-from ..turn_engine.models import TranscriptEntry, TranscriptStore
+from ..turn_engine.models import TranscriptEntry, TranscriptSession, TranscriptStore
 
 
 class InboundEventType(StrEnum):
@@ -123,6 +124,7 @@ class SessionController:
     async def resume(self) -> None:
         transcript = await self._transcript_store.load(self.state.session_id)
         self._messages = [entry.message for entry in transcript.entries]
+        self._sync_compaction_state()
         self.state.status = SessionStatus.READY
         self.state.active_turn_id = None
 
@@ -146,8 +148,8 @@ class SessionController:
             command = self.state.queued_commands.pop(0)
             self.state.status = SessionStatus.RUNNING
             self.state.active_turn_id = uuid4().hex
-            turn_start_index = len(self._messages)
             last_terminal = None
+            turn_message_ids: list[str] = []
             message = RuntimeMessage(
                 message_id=uuid4().hex,
                 role=_role_for_command(command.command_type),
@@ -158,6 +160,14 @@ class SessionController:
                 message,
                 turn_id=self.state.active_turn_id,
             )
+            turn_message_ids.append(message.message_id)
+            runtime_context = {
+                "command_type": command.command_type.value,
+                "permission_context": self.state.metadata.get("permission_context"),
+            }
+            continuation = self.state.metadata.get("compaction_continuation")
+            if isinstance(continuation, dict):
+                runtime_context["compaction_continuation"] = dict(continuation)
             async for event in self._turn_engine.run_turn_stream(
                 session_id=self.state.session_id,
                 turn_id=self.state.active_turn_id,
@@ -165,16 +175,19 @@ class SessionController:
                 cwd=self._cwd,
                 messages=list(self._messages),
                 base_system_prompt=self._system_prompt,
-                runtime_context={
-                    "command_type": command.command_type.value,
-                    "permission_context": self.state.metadata.get("permission_context"),
-                },
+                runtime_context=runtime_context,
             ):
+                if event.event_type == TurnStreamEventType.COMPACTION and event.compacted_messages:
+                    await self._apply_compaction(
+                        event.compacted_messages,
+                        turn_id=self.state.active_turn_id,
+                    )
                 if event.event_type == TurnStreamEventType.MESSAGE and event.message is not None:
                     await self._record_message(
                         event.message,
                         turn_id=self.state.active_turn_id,
                     )
+                    turn_message_ids.append(event.message.message_id)
                 await self._runtime_services.host.emit_turn_event(self.state.session_id, event)
                 if (
                     event.event_type == TurnStreamEventType.TERMINAL
@@ -185,7 +198,8 @@ class SessionController:
                 if event.event_type == TurnStreamEventType.TERMINAL and event.terminal is not None:
                     last_terminal = event.terminal
                 yield event
-            turn_messages = tuple(self._messages[turn_start_index:])
+            current_turn_ids = set(turn_message_ids)
+            turn_messages = tuple(message for message in self._messages if message.message_id in current_turn_ids)
             if (
                 command.command_type == SessionCommandType.USER_PROMPT
                 and self.state.status != SessionStatus.WAITING
@@ -219,6 +233,44 @@ class SessionController:
                 message=message,
             )
         )
+        self._sync_compaction_state()
+
+    async def _apply_compaction(
+        self,
+        messages: tuple[RuntimeMessage, ...],
+        *,
+        turn_id: str | None,
+    ) -> None:
+        transcript = await self._transcript_store.load(self.state.session_id)
+        existing_entries = {entry.message.message_id: entry for entry in transcript.entries}
+        rewritten_entries: list[TranscriptEntry] = []
+        for message in messages:
+            existing = existing_entries.get(message.message_id)
+            if existing is not None:
+                rewritten_entries.append(
+                    TranscriptEntry(
+                        session_id=existing.session_id,
+                        turn_id=existing.turn_id,
+                        message=message,
+                        created_at=existing.created_at,
+                    )
+                )
+                continue
+            rewritten_entries.append(
+                TranscriptEntry(
+                    session_id=self.state.session_id,
+                    turn_id=turn_id,
+                    message=message,
+                )
+            )
+        self._messages = list(messages)
+        await self._transcript_store.replace(
+            TranscriptSession(
+                session_id=self.state.session_id,
+                entries=tuple(rewritten_entries),
+            )
+        )
+        self._sync_compaction_state()
 
     async def _persist_turn_memory(
         self,
@@ -267,6 +319,31 @@ class SessionController:
             },
         )
         await self._runtime_services.host.emit_notification(notification)
+
+    def _sync_compaction_state(self) -> None:
+        payload = latest_compaction_payload(self._messages)
+        if payload is None:
+            self.state.metadata.pop("compaction", None)
+            self.state.metadata.pop("compaction_summary", None)
+            self.state.metadata.pop("compaction_boundary", None)
+            self.state.metadata.pop("compaction_continuation", None)
+            return
+        self.state.metadata["compaction"] = payload
+        summary = payload.get("summary")
+        boundary = payload.get("boundary")
+        continuation = payload.get("continuation")
+        if isinstance(summary, dict):
+            self.state.metadata["compaction_summary"] = dict(summary)
+        else:
+            self.state.metadata.pop("compaction_summary", None)
+        if isinstance(boundary, dict):
+            self.state.metadata["compaction_boundary"] = dict(boundary)
+        else:
+            self.state.metadata.pop("compaction_boundary", None)
+        if isinstance(continuation, dict):
+            self.state.metadata["compaction_continuation"] = dict(continuation)
+        else:
+            self.state.metadata.pop("compaction_continuation", None)
 
 
 def _role_for_command(command_type: SessionCommandType) -> MessageRole:

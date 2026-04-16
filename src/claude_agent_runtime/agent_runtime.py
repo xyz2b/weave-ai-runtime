@@ -256,6 +256,7 @@ class AgentRuntime:
             messages=[prompt_message],
             base_system_prompt=invocation.metadata.get("system_prompt", ""),
             runtime_context={
+                **dict(invocation.metadata),
                 "agent_name": agent.name,
                 "background": invocation.background,
                 "permission_context": invocation.metadata.get("permission_context"),

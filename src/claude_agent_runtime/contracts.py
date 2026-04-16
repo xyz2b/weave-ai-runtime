@@ -151,6 +151,9 @@ class TurnContext:
     memory_fragments: tuple[str, ...] = ()
     hook_context: tuple[str, ...] = ()
     compaction_fragments: tuple[str, ...] = ()
+    compaction_summary: dict[str, Any] | None = None
+    compaction_boundary: dict[str, Any] | None = None
+    compaction_continuation: dict[str, Any] | None = None
     attachments: tuple[MessageAttachment, ...] = ()
     metadata: dict[str, Any] = field(default_factory=dict)
 

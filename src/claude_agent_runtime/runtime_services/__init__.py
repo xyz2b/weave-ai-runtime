@@ -4,6 +4,7 @@ import asyncio
 from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping, Protocol, Sequence
 
+from ..compaction import CompactionManager, CompactionPolicy, CompactionResult, evaluate_context_pressure
 from ..contracts import RuntimeMessage
 from ..definitions import AgentDefinition, ToolDefinition
 from ..elicitation import SharedElicitationService
@@ -14,6 +15,30 @@ from ..tasking import TaskManager
 
 
 class ContextContributionService(Protocol):
+    async def collect(
+        self,
+        *,
+        session_id: str,
+        turn_id: str,
+        agent: AgentDefinition,
+        cwd: str,
+        messages: Sequence[RuntimeMessage],
+        runtime_context: Mapping[str, Any] | None = None,
+    ) -> Sequence[str]: ...
+
+
+class CompactionService(Protocol):
+    async def prepare_turn(
+        self,
+        *,
+        session_id: str,
+        turn_id: str,
+        agent: AgentDefinition,
+        cwd: str,
+        messages: Sequence[RuntimeMessage],
+        runtime_context: Mapping[str, Any] | None = None,
+    ) -> CompactionResult: ...
+
     async def collect(
         self,
         *,
@@ -98,6 +123,24 @@ class NoopMemoryService:
 
 @dataclass(slots=True)
 class NoopCompactionService:
+    async def prepare_turn(
+        self,
+        *,
+        session_id: str,
+        turn_id: str,
+        agent: AgentDefinition,
+        cwd: str,
+        messages: Sequence[RuntimeMessage],
+        runtime_context: Mapping[str, Any] | None = None,
+    ) -> CompactionResult:
+        _ = session_id, turn_id, agent, cwd, runtime_context
+        policy = CompactionPolicy(enabled=False)
+        return CompactionResult(
+            messages=tuple(messages),
+            policy=policy,
+            pressure=evaluate_context_pressure(messages, policy),
+        )
+
     async def collect(
         self,
         *,
@@ -142,7 +185,7 @@ class RuntimeServices:
     permissions: PermissionService = field(default_factory=PermissionEngine)
     elicitation: ElicitationService = field(default_factory=SharedElicitationService)
     memory: ContextContributionService = field(default_factory=NoopMemoryService)
-    compaction: ContextContributionService = field(default_factory=NoopCompactionService)
+    compaction: CompactionService | ContextContributionService = field(default_factory=CompactionManager)
     host: HostRuntime = field(default_factory=NullHostAdapter)
     tasks: DefaultTaskService = field(default_factory=DefaultTaskService)
     transcript: DefaultTranscriptService | None = None
@@ -235,6 +278,7 @@ async def _maybe_await(value: Any) -> Any:
 
 __all__ = [
     "CallbackToolCatalogService",
+    "CompactionService",
     "ContextContributionService",
     "DefaultTaskService",
     "DefaultTranscriptService",

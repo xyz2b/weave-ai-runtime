@@ -32,6 +32,9 @@ class ContextAssembler:
         memory_fragments: Sequence[str] = (),
         hook_context: Sequence[str] = (),
         compaction_fragments: Sequence[str] = (),
+        compaction_summary: dict[str, Any] | None = None,
+        compaction_boundary: dict[str, Any] | None = None,
+        compaction_continuation: dict[str, Any] | None = None,
         attachments: Sequence[MessageAttachment] = (),
         runtime_context: dict[str, Any] | None = None,
     ) -> ContextAssembly:
@@ -60,6 +63,11 @@ class ContextAssembler:
             memory_fragments=tuple(memory_fragments),
             hook_context=tuple(hook_context),
             compaction_fragments=tuple(compaction_fragments),
+            compaction_summary=dict(compaction_summary) if compaction_summary is not None else None,
+            compaction_boundary=dict(compaction_boundary) if compaction_boundary is not None else None,
+            compaction_continuation=(
+                dict(compaction_continuation) if compaction_continuation is not None else None
+            ),
             attachments=tuple(attachments),
             metadata=runtime_context or {},
         )

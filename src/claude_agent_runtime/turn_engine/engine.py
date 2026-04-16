@@ -6,6 +6,15 @@ from pathlib import Path
 from typing import Any, AsyncIterator, Mapping
 from uuid import uuid4
 
+from ..compaction import (
+    CompactionPolicy,
+    CompactionResult,
+    evaluate_context_pressure,
+    serialize_compaction_boundary,
+    serialize_compaction_continuation,
+    serialize_compaction_result,
+    serialize_compaction_summary,
+)
 from ..contracts import (
     ContentBlock,
     ContentBlockType,
@@ -47,6 +56,7 @@ from .models import (
 
 
 class TurnStreamEventType(StrEnum):
+    COMPACTION = "compaction"
     REQUEST_START = "request_start"
     STREAM_PROGRESS = "stream_progress"
     MESSAGE = "message"
@@ -61,6 +71,7 @@ class TurnStreamEvent:
     request: ModelRequest | None = None
     model_event: ModelStreamEvent | None = None
     message: RuntimeMessage | None = None
+    compacted_messages: tuple[RuntimeMessage, ...] = ()
     terminal: ModelTerminalMetadata | None = None
     discarded_content: tuple[ContentBlock, ...] = ()
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -546,7 +557,6 @@ class TurnEngine:
         while iteration < max_iterations:
             iteration_index = iteration + 1
             state.iterations = iteration_index
-            api_messages = normalize_messages_for_api(working_messages)
             tool_pool = assemble_main_thread_tool_pool(
                 self._tool_registry,
                 allowed_tools=agent.tools or None,
@@ -561,6 +571,29 @@ class TurnEngine:
                     mode=agent.permission_mode or PermissionMode.DEFAULT,
                 ),
             )
+            compaction_result = await self._prepare_compaction(
+                session_id=session_id,
+                turn_id=turn_id,
+                agent=agent,
+                cwd=cwd,
+                messages=tuple(working_messages),
+                runtime_context=runtime_metadata,
+            )
+            compaction_payload = (
+                serialize_compaction_result(compaction_result)
+                if compaction_result.applied or compaction_result.fragments
+                else None
+            )
+            if compaction_result.applied:
+                working_messages = list(compaction_result.messages)
+                yield TurnStreamEvent(
+                    event_type=TurnStreamEventType.COMPACTION,
+                    iteration=iteration_index,
+                    compacted_messages=tuple(working_messages),
+                    metadata={"compaction": compaction_payload} if compaction_payload is not None else {},
+                )
+
+            api_messages = normalize_messages_for_api(working_messages)
             shared_memory_fragments = await self._collect_control_plane_fragments(
                 self._runtime_services.memory,
                 session_id=session_id,
@@ -579,15 +612,7 @@ class TurnEngine:
                 messages=tuple(working_messages),
                 runtime_context=runtime_metadata,
             )
-            shared_compaction_fragments = await self._collect_control_plane_fragments(
-                self._runtime_services.compaction,
-                session_id=session_id,
-                turn_id=turn_id,
-                agent=agent,
-                cwd=cwd,
-                messages=tuple(working_messages),
-                runtime_context=runtime_metadata,
-            )
+            shared_compaction_fragments = tuple(compaction_result.fragments)
 
             user_prompt_hook = await self._dispatch_hook(
                 session_id,
@@ -613,10 +638,16 @@ class TurnEngine:
                 + user_prompt_hook.additional_context
                 + tuple(hook_context or ()),
                 compaction_fragments=shared_compaction_fragments + tuple(compaction_fragments or ()),
+                compaction_summary=serialize_compaction_summary(compaction_result.summary),
+                compaction_boundary=serialize_compaction_boundary(compaction_result.boundary),
+                compaction_continuation=serialize_compaction_continuation(compaction_result.continuation),
                 attachments=attachments or (),
                 runtime_context=runtime_metadata,
             )
             abort_signal = ModelAbortSignal()
+            request_metadata = dict(runtime_metadata)
+            if compaction_payload is not None:
+                request_metadata["compaction"] = compaction_payload
             request = ModelRequest(
                 system_prompt=composition.system_prompt,
                 turn_context=composition.turn_context,
@@ -628,7 +659,7 @@ class TurnEngine:
                 effort=agent.effort,
                 abort_signal=abort_signal,
                 query_source=_query_source(runtime_metadata),
-                metadata=dict(runtime_metadata),
+                metadata=request_metadata,
             )
             yield TurnStreamEvent(
                 event_type=TurnStreamEventType.REQUEST_START,
@@ -806,6 +837,48 @@ class TurnEngine:
         if not fragments:
             return ()
         return tuple(str(fragment) for fragment in fragments)
+
+    async def _prepare_compaction(
+        self,
+        *,
+        session_id: str,
+        turn_id: str,
+        agent: AgentDefinition,
+        cwd: str,
+        messages: tuple[RuntimeMessage, ...],
+        runtime_context: Mapping[str, object] | None,
+    ) -> CompactionResult:
+        service = self._runtime_services.compaction
+        if service is not None and hasattr(service, "prepare_turn"):
+            prepared = await maybe_await(
+                service.prepare_turn(
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    agent=agent,
+                    cwd=cwd,
+                    messages=messages,
+                    runtime_context=runtime_context,
+                )
+            )
+            if prepared is not None:
+                return prepared
+
+        fragments = await self._collect_control_plane_fragments(
+            service,
+            session_id=session_id,
+            turn_id=turn_id,
+            agent=agent,
+            cwd=cwd,
+            messages=messages,
+            runtime_context=runtime_context,
+        )
+        policy = CompactionPolicy.from_runtime_context(runtime_context)
+        return CompactionResult(
+            messages=messages,
+            policy=policy,
+            pressure=evaluate_context_pressure(messages, policy),
+            fragments=fragments,
+        )
 
     def _merge_runtime_context(
         self,
