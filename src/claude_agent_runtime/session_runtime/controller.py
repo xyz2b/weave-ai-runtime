@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import AsyncIterator
+from typing import Any, AsyncIterator
 from uuid import uuid4
 
 from ..contracts import MessageRole, RuntimeMessage, SessionCommand, SessionCommandType, SessionState, SessionStatus
@@ -73,6 +74,16 @@ class SessionController:
         if not self._started:
             await self._runtime_services.host.startup()
             await self._runtime_services.host.ready()
+            memory_service = self._runtime_services.memory
+            if memory_service is not None and hasattr(memory_service, "start_session"):
+                await _maybe_await(
+                    memory_service.start_session(
+                        session_id=self.state.session_id,
+                        agent=self._agent,
+                        cwd=self._cwd,
+                        set_default=True,
+                    )
+                )
             await self._runtime_services.hook_bus.dispatch(
                 self.state.session_id,
                 SessionStartPayload(session_id=self.state.session_id),
@@ -135,6 +146,8 @@ class SessionController:
             command = self.state.queued_commands.pop(0)
             self.state.status = SessionStatus.RUNNING
             self.state.active_turn_id = uuid4().hex
+            turn_start_index = len(self._messages)
+            last_terminal = None
             message = RuntimeMessage(
                 message_id=uuid4().hex,
                 role=_role_for_command(command.command_type),
@@ -169,7 +182,16 @@ class SessionController:
                     and event.terminal.stop_reason == "blocked"
                 ):
                     self.state.status = SessionStatus.WAITING
+                if event.event_type == TurnStreamEventType.TERMINAL and event.terminal is not None:
+                    last_terminal = event.terminal
                 yield event
+            turn_messages = tuple(self._messages[turn_start_index:])
+            if (
+                command.command_type == SessionCommandType.USER_PROMPT
+                and self.state.status != SessionStatus.WAITING
+                and not _memory_updates_owned(command.payload.get("metadata"), turn_messages)
+            ):
+                await self._persist_turn_memory(turn_messages, terminal=last_terminal)
             self.state.active_turn_id = None
             if self.state.status == SessionStatus.INTERRUPTED:
                 break
@@ -198,6 +220,54 @@ class SessionController:
             )
         )
 
+    async def _persist_turn_memory(
+        self,
+        messages: tuple[RuntimeMessage, ...],
+        *,
+        terminal: Any,
+    ) -> None:
+        if terminal is None or terminal.abort_reason is not None or terminal.error is not None:
+            return
+        memory_service = self._runtime_services.memory
+        if memory_service is None or not hasattr(memory_service, "record_turn"):
+            return
+        persisted = await _maybe_await(
+            memory_service.record_turn(
+                session_id=self.state.session_id,
+                agent=self._agent,
+                cwd=self._cwd,
+                messages=messages,
+            )
+        )
+        if not persisted:
+            return
+
+        records = [
+            {"path": str(document.path), "scope": document.scope.value, "title": document.title}
+            for document in persisted
+        ]
+        history = self.state.metadata.setdefault("memory_updates", [])
+        if isinstance(history, list):
+            history.extend(records)
+
+        summary = ", ".join(document.title for document in persisted[:2])
+        if len(persisted) > 2:
+            summary = f"{summary}, ..."
+        notification = RuntimeMessage(
+            message_id=uuid4().hex,
+            role=MessageRole.NOTIFICATION,
+            content=(
+                f"Saved {len(persisted)} memory update(s) to {persisted[0].scope.value} scope"
+                + (f": {summary}" if summary else "")
+            ),
+            metadata={
+                "memory_update": True,
+                "memory_scope": persisted[0].scope.value,
+                "memory_paths": [str(document.path) for document in persisted],
+            },
+        )
+        await self._runtime_services.host.emit_notification(notification)
+
 
 def _role_for_command(command_type: SessionCommandType) -> MessageRole:
     if command_type == SessionCommandType.SYSTEM_MESSAGE:
@@ -205,3 +275,18 @@ def _role_for_command(command_type: SessionCommandType) -> MessageRole:
     if command_type == SessionCommandType.TASK_NOTIFICATION:
         return MessageRole.NOTIFICATION
     return MessageRole.USER
+
+
+def _memory_updates_owned(
+    metadata: object,
+    messages: tuple[RuntimeMessage, ...],
+) -> bool:
+    if isinstance(metadata, dict) and metadata.get("memory_update_owned"):
+        return True
+    return any(message.metadata.get("memory_update_owned") for message in messages)
+
+
+async def _maybe_await(value: Any) -> Any:
+    if asyncio.iscoroutine(value):
+        return await value
+    return value

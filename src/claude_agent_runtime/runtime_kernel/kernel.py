@@ -12,6 +12,7 @@ from ..definitions import AgentDefinition, SkillDefinition, ToolDefinition
 from ..diagnostics import Diagnostic, DiagnosticSeverity
 from ..errors import RegistryConflictError
 from ..hosts.base import BoundHostRuntime, HostAdapter, NullHostAdapter
+from ..memory import MemoryManagerService
 from ..registries import AgentRegistry, DefinitionDiscovery, SkillRegistry, ToolRegistry
 from ..runtime_services import DefaultTranscriptService, RuntimeServices
 from ..session_runtime import InMemoryTranscriptStore, InboundEvent, InboundEventType, SessionController
@@ -301,6 +302,7 @@ def _build_runtime_services(kernel: RuntimeKernel) -> RuntimeServices:
     transcript_store = kernel.transcript_store or InMemoryTranscriptStore()
     services = RuntimeServices(
         transcript=DefaultTranscriptService(transcript_store),
+        memory=MemoryManagerService(project_root=kernel.config.working_directory),
         context_assembler=ContextAssembler(),
         metadata=dict(kernel.config.metadata),
     )

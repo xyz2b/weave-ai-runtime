@@ -1,10 +1,13 @@
-from dataclasses import dataclass, field
-from typing import Any
+from .manager import MemoryManager, MemoryManagerService
+from .models import MemoryDocument, MemoryEntry, ResolvedMemoryScope
+from .providers import FileMemoryProvider, MemoryProvider
 
-
-@dataclass(frozen=True, slots=True)
-class MemoryEntry:
-    title: str
-    content: str
-    metadata: dict[str, Any] = field(default_factory=dict)
-
+__all__ = [
+    "FileMemoryProvider",
+    "MemoryDocument",
+    "MemoryEntry",
+    "MemoryManager",
+    "MemoryManagerService",
+    "MemoryProvider",
+    "ResolvedMemoryScope",
+]

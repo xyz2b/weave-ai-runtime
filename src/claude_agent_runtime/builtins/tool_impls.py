@@ -8,13 +8,13 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-from ..definitions import PermissionBehavior, PermissionDecision, ValidationOutcome
+from ..definitions import AgentDefinition, PermissionBehavior, PermissionDecision, ValidationOutcome
 from ..tasking import TaskManager, TaskStatus
 from ..tool_runtime import ToolCallResult, ToolCallStatus, ToolContext
 
 
 async def read_file_tool(tool_input: dict[str, Any], context: ToolContext) -> dict[str, Any]:
-    path = _resolve_path(context.cwd, tool_input["file_path"])
+    path = _resolve_path(context.cwd, tool_input["file_path"], context=context)
     offset = tool_input.get("offset", 0)
     limit = tool_input.get("limit")
     content = path.read_text(encoding="utf-8")
@@ -29,20 +29,26 @@ async def read_file_tool(tool_input: dict[str, Any], context: ToolContext) -> di
 
 
 async def glob_tool(tool_input: dict[str, Any], context: ToolContext) -> dict[str, Any]:
-    root = _resolve_path(context.cwd, tool_input.get("root", "."))
+    root = _resolve_path(context.cwd, tool_input.get("root", "."), context=context)
     pattern = tool_input["pattern"]
-    matches = sorted(str(path) for path in root.glob(pattern))
+    matches = sorted(
+        str(path)
+        for path in root.glob(pattern)
+        if _path_allowed(path.resolve(), context)
+    )
     return {"root": str(root), "pattern": pattern, "matches": matches}
 
 
 async def grep_tool(tool_input: dict[str, Any], context: ToolContext) -> dict[str, Any]:
-    root = _resolve_path(context.cwd, tool_input.get("path", "."))
+    root = _resolve_path(context.cwd, tool_input.get("path", "."), context=context)
     pattern = re.compile(
         tool_input["pattern"],
         0 if tool_input.get("case_sensitive", False) else re.IGNORECASE,
     )
     results: list[dict[str, Any]] = []
     for file_path in sorted(path for path in root.rglob("*") if path.is_file()):
+        if not _path_allowed(file_path.resolve(), context):
+            continue
         try:
             for line_number, line in enumerate(file_path.read_text(encoding="utf-8").splitlines(), start=1):
                 if pattern.search(line):
@@ -59,7 +65,7 @@ async def grep_tool(tool_input: dict[str, Any], context: ToolContext) -> dict[st
 
 
 def validate_read_tool(tool_input: dict[str, Any], context: ToolContext) -> ValidationOutcome:
-    path = _resolve_path(context.cwd, tool_input["file_path"])
+    path = _resolve_path(context.cwd, tool_input["file_path"], context=context)
     if not path.exists():
         return ValidationOutcome(False, f"File does not exist: {path}")
     if not path.is_file():
@@ -68,7 +74,7 @@ def validate_read_tool(tool_input: dict[str, Any], context: ToolContext) -> Vali
 
 
 def validate_edit_tool(tool_input: dict[str, Any], context: ToolContext) -> ValidationOutcome:
-    path = _resolve_path(context.cwd, tool_input["file_path"])
+    path = _resolve_path(context.cwd, tool_input["file_path"], context=context)
     if not path.exists() and tool_input["old_string"] != "":
         return ValidationOutcome(False, f"File does not exist: {path}")
     if path.exists() and not path.is_file():
@@ -79,7 +85,7 @@ def validate_edit_tool(tool_input: dict[str, Any], context: ToolContext) -> Vali
 
 
 def validate_write_tool(tool_input: dict[str, Any], context: ToolContext) -> ValidationOutcome:
-    path = _resolve_path(context.cwd, tool_input["file_path"])
+    path = _resolve_path(context.cwd, tool_input["file_path"], context=context)
     if path.exists() and not path.is_file():
         return ValidationOutcome(False, f"Path is not a file: {path}")
     return ValidationOutcome(True)
@@ -93,7 +99,7 @@ def ask_permission(_: dict[str, Any], __: ToolContext) -> PermissionDecision:
 
 
 async def edit_file_tool(tool_input: dict[str, Any], context: ToolContext) -> dict[str, Any]:
-    path = _resolve_path(context.cwd, tool_input["file_path"])
+    path = _resolve_path(context.cwd, tool_input["file_path"], context=context)
     old_string = tool_input["old_string"]
     new_string = tool_input["new_string"]
     replace_all = tool_input.get("replace_all", False)
@@ -111,7 +117,7 @@ async def edit_file_tool(tool_input: dict[str, Any], context: ToolContext) -> di
 
 
 async def write_file_tool(tool_input: dict[str, Any], context: ToolContext) -> dict[str, Any]:
-    path = _resolve_path(context.cwd, tool_input["file_path"])
+    path = _resolve_path(context.cwd, tool_input["file_path"], context=context)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(tool_input["content"], encoding="utf-8")
     return {"file_path": str(path), "bytes_written": len(tool_input["content"].encode("utf-8"))}
@@ -124,7 +130,7 @@ def validate_bash_tool(tool_input: dict[str, Any], _: ToolContext) -> Validation
 
 
 async def bash_tool(tool_input: dict[str, Any], context: ToolContext) -> dict[str, Any]:
-    cwd = _resolve_path(context.cwd, tool_input.get("cwd", "."))
+    cwd = _resolve_path(context.cwd, tool_input.get("cwd", "."), context=context)
     timeout_ms = tool_input.get("timeout_ms", 30_000)
     process = await asyncio.create_subprocess_shell(
         tool_input["command"],
@@ -319,9 +325,12 @@ def validate_skill_registry_entry(tool_input: dict[str, Any], context: ToolConte
     return ValidationOutcome(False, f"Unknown skill: {tool_input['skill']}")
 
 
-def _resolve_path(cwd: Path, file_path: str) -> Path:
+def _resolve_path(cwd: Path, file_path: str, *, context: ToolContext | None = None) -> Path:
     path = Path(file_path)
-    return path if path.is_absolute() else (cwd / path).resolve()
+    resolved = path if path.is_absolute() else (cwd / path).resolve()
+    if context is not None and not _path_allowed(resolved, context):
+        raise ValueError(f"Path is reserved for runtime memory and cannot be accessed directly: {resolved}")
+    return resolved
 
 
 def _task_manager(context: ToolContext):
@@ -352,3 +361,47 @@ def cancelled_result(call_id: str, tool_name: str, message: str) -> ToolCallResu
 def json_output(data: Any) -> str:
     return json.dumps(data, ensure_ascii=True, sort_keys=True)
 from ..elicitation import ElicitationRequest
+
+
+def _path_allowed(path: Path, context: ToolContext) -> bool:
+    if _looks_like_memory_directory(path):
+        return False
+    for root in _guarded_memory_roots(context):
+        if _is_relative_to(path, root):
+            return False
+    return True
+
+
+def _guarded_memory_roots(context: ToolContext) -> tuple[Path, ...]:
+    if context.runtime_services is None:
+        return ()
+    memory_service = getattr(context.runtime_services, "memory", None)
+    if memory_service is None or not hasattr(memory_service, "guarded_roots"):
+        return ()
+    agent = None
+    if context.agent_registry is not None:
+        agent = context.agent_registry.get(context.agent_name)
+    if agent is None:
+        agent = AgentDefinition(name=context.agent_name, description="", prompt="")
+    roots = memory_service.guarded_roots(
+        session_id=context.session_id,
+        agent=agent,
+        cwd=context.cwd,
+    )
+    return tuple(Path(root).resolve() for root in roots)
+
+
+def _is_relative_to(path: Path, root: Path) -> bool:
+    try:
+        path.resolve().relative_to(root.resolve())
+        return True
+    except ValueError:
+        return False
+
+
+def _looks_like_memory_directory(path: Path) -> bool:
+    parts = path.resolve().parts
+    for index in range(len(parts) - 1):
+        if parts[index] == ".claude" and parts[index + 1] == "memory":
+            return True
+    return False

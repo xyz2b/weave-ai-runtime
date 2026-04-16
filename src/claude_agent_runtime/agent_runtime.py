@@ -233,6 +233,16 @@ class AgentRuntime:
             tools=tuple(tool.name for tool in effective_tools),
             skills=tuple(skill.name for skill in effective_skills),
         )
+        memory_service = self._runtime_services.memory
+        if memory_service is not None and hasattr(memory_service, "start_session"):
+            await _maybe_await(
+                memory_service.start_session(
+                    session_id=invocation.session_id,
+                    agent=effective_agent,
+                    cwd=effective_cwd,
+                    set_default=False,
+                )
+            )
         prompt_message = RuntimeMessage(
             message_id=uuid4().hex,
             role=MessageRole.USER,
@@ -386,3 +396,9 @@ def _supports_permission_requests(host: Any) -> bool:
     if type(host) is NullHostAdapter:
         return False
     return True
+
+
+async def _maybe_await(value: Any) -> Any:
+    if asyncio.iscoroutine(value):
+        return await value
+    return value
