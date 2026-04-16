@@ -24,7 +24,6 @@ from ..contracts import (
     RuntimeMessage,
     TextBlock,
     ThinkingBlock,
-    ToolResultBlock,
     ToolUseBlock,
 )
 from ..definitions import AgentDefinition, PermissionMode
@@ -40,11 +39,11 @@ from ..hooks import StopPayload, UserPromptSubmitPayload
 from ..permissions import PermissionContext
 from ..registries import AgentRegistry, SkillRegistry, ToolRegistry
 from ..runtime_services import DefaultTaskService, RuntimeServices
+from ..tool_executors import select_tool_executor
+from ..tool_lifecycle import ToolLifecycleEvent
 from ..tasking import TaskManager
 from ..tool_runtime import (
     ToolCall,
-    ToolCallResult,
-    ToolCallStatus,
     ToolContext,
     ToolRefreshCallback,
     ToolScheduler,
@@ -67,6 +66,7 @@ class TurnStreamEventType(StrEnum):
     COMPACTION = "compaction"
     REQUEST_START = "request_start"
     STREAM_PROGRESS = "stream_progress"
+    TOOL_LIFECYCLE = "tool_lifecycle"
     MESSAGE = "message"
     MESSAGE_DISCARDED = "message_discarded"
     TERMINAL = "terminal"
@@ -78,6 +78,7 @@ class TurnStreamEvent:
     iteration: int
     request: ModelRequest | None = None
     model_event: ModelStreamEvent | None = None
+    tool_event: ToolLifecycleEvent | None = None
     message: RuntimeMessage | None = None
     compacted_messages: tuple[RuntimeMessage, ...] = ()
     terminal: ModelTerminalMetadata | None = None
@@ -135,7 +136,9 @@ class _StreamAttemptState:
     blocks: list[ContentBlock] = field(default_factory=list)
     pending_block: _PendingBlock | None = None
     tool_calls: list[ToolCall] = field(default_factory=list)
+    new_tool_calls: list[ToolCall] = field(default_factory=list)
     message_stopped: bool = False
+    pending_tool_use_closed_at_message_stop: bool = False
     request_id: str | None = None
     ttft_ms: float | None = None
     usage: dict[str, Any] = field(default_factory=dict)
@@ -165,6 +168,11 @@ class _StreamAttemptState:
             return
         if event.event_type == ModelStreamEventType.MESSAGE_STOP:
             self.message_stopped = True
+            if (
+                self.pending_block is not None
+                and self.pending_block.block_type == ContentBlockType.TOOL_USE
+            ):
+                self.pending_tool_use_closed_at_message_stop = True
             self._finalize_pending_block()
             return
         if event.event_type == ModelStreamEventType.ERROR:
@@ -194,6 +202,11 @@ class _StreamAttemptState:
             metadata=dict(self.metadata),
         )
         return committed_blocks, discarded_blocks, tool_calls, terminal
+
+    def drain_new_tool_calls(self) -> tuple[ToolCall, ...]:
+        drained = tuple(self.new_tool_calls)
+        self.new_tool_calls.clear()
+        return drained
 
     def _merge_terminal_fields(self, event: ModelStreamEvent) -> None:
         terminal = event.terminal
@@ -301,7 +314,9 @@ class _StreamAttemptState:
         )
         block = ToolUseBlock(tool_use_id=call_id, name=tool_name, input=tool_input)
         self.blocks.append(block)
-        self.tool_calls.append(ToolCall(call_id=call_id, tool_name=tool_name, tool_input=tool_input))
+        tool_call = ToolCall(call_id=call_id, tool_name=tool_name, tool_input=tool_input)
+        self.tool_calls.append(tool_call)
+        self.new_tool_calls.append(tool_call)
 
     def _finalize_pending_block(self) -> None:
         if self.pending_block is None:
@@ -309,13 +324,13 @@ class _StreamAttemptState:
         block = self.pending_block.to_block()
         self.blocks.append(block)
         if isinstance(block, ToolUseBlock):
-            self.tool_calls.append(
-                ToolCall(
-                    call_id=block.tool_use_id,
-                    tool_name=block.name,
-                    tool_input=dict(block.input),
-                )
+            tool_call = ToolCall(
+                call_id=block.tool_use_id,
+                tool_name=block.name,
+                tool_input=dict(block.input),
             )
+            self.tool_calls.append(tool_call)
+            self.new_tool_calls.append(tool_call)
         self.pending_block = None
 
     def _discard_pending_block(self) -> tuple[ContentBlock, ...]:
@@ -382,6 +397,7 @@ class TurnEngine:
             )
         self._active_scheduler: ToolScheduler | None = None
         self._active_tool_context: ToolContext | None = None
+        self._active_tool_executor: Any = None
         self._active_abort_signal: ModelAbortSignal | None = None
 
     @property
@@ -416,6 +432,8 @@ class TurnEngine:
             self._active_abort_signal.abort(reason)
         if self._active_tool_context is not None:
             self._active_tool_context.request_interrupt(reason)
+        if self._active_tool_executor is not None and hasattr(self._active_tool_executor, "interrupt"):
+            self._active_tool_executor.interrupt(reason)
         if self._active_scheduler is not None:
             self._active_scheduler.interrupt(reason)
 
@@ -673,6 +691,19 @@ class TurnEngine:
                     runtime_context=sanitized_runtime_context,
                 )
                 abort_signal = ModelAbortSignal()
+                assistant_message_id = uuid4().hex
+                tool_context = self.create_tool_context(
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    agent_name=agent.name,
+                    cwd=Path(composition.turn_context.cwd),
+                    messages=tuple(working_messages),
+                    tool_pool=tool_pool,
+                    skill_pool=active_skills,
+                    abort_signal=abort_signal,
+                    metadata=runtime_metadata,
+                )
+                pending_tool_turn_events: list[TurnStreamEvent] = []
                 request_metadata = dict(sanitized_runtime_context)
                 if compaction_payload is not None:
                     request_metadata["compaction"] = compaction_payload
@@ -689,6 +720,39 @@ class TurnEngine:
                     query_source=_query_source(request_metadata),
                     metadata=request_metadata,
                 )
+                tool_executor = select_tool_executor(
+                    self._model_client,
+                    context=tool_context,
+                    lifecycle_sink=lambda tool_event: pending_tool_turn_events.append(
+                        TurnStreamEvent(
+                            event_type=TurnStreamEventType.TOOL_LIFECYCLE,
+                            iteration=iteration_index,
+                            request=request,
+                            tool_event=tool_event,
+                            metadata={"tool_executor": _tool_executor_metadata(tool_executor)},
+                        )
+                    ),
+                    request=request,
+                )
+                self._active_tool_context = tool_context
+                self._active_tool_executor = tool_executor
+                if tool_executor is not None:
+                    request_metadata = {
+                        **request_metadata,
+                        "tool_executor": _tool_executor_metadata(tool_executor),
+                        "model_capabilities": _serialize_model_capabilities(
+                            tool_executor.model_capabilities
+                        ),
+                    }
+                    request = replace(request, metadata=request_metadata)
+                    tool_context.selected_executor_tier = tool_executor.initial_tier.value
+                    tool_context.model_capabilities = tool_executor.model_capabilities
+                    if tool_context.query_context is not None:
+                        tool_context.query_context = replace(
+                            tool_context.query_context,
+                            selected_executor_tier=tool_executor.initial_tier.value,
+                            model_capabilities=tool_executor.model_capabilities,
+                        )
                 yield TurnStreamEvent(
                     event_type=TurnStreamEventType.REQUEST_START,
                     iteration=iteration_index,
@@ -706,6 +770,20 @@ class TurnEngine:
                             request=request,
                             model_event=event,
                         )
+                        if tool_executor is not None:
+                            new_tool_calls = attempt_state.drain_new_tool_calls()
+                            if new_tool_calls and not (
+                                event.event_type == ModelStreamEventType.MESSAGE_STOP
+                                and attempt_state.pending_tool_use_closed_at_message_stop
+                            ):
+                                await tool_executor.observe_stream_calls(
+                                    new_tool_calls,
+                                    assistant_message_id=assistant_message_id,
+                                    provider_request_id=attempt_state.request_id,
+                                    block_offset=len(attempt_state.tool_calls) - len(new_tool_calls),
+                                )
+                        while pending_tool_turn_events:
+                            yield pending_tool_turn_events.pop(0)
                 except Exception as exc:
                     error_event = ModelStreamEvent(
                         event_type=ModelStreamEventType.ERROR,
@@ -731,7 +809,7 @@ class TurnEngine:
                 )
                 if assistant_blocks:
                     assistant_message = RuntimeMessage(
-                        message_id=uuid4().hex,
+                        message_id=assistant_message_id,
                         role=MessageRole.ASSISTANT,
                         content=assistant_blocks,
                         metadata=_assistant_message_metadata(terminal),
@@ -744,6 +822,14 @@ class TurnEngine:
                         message=assistant_message,
                         terminal=terminal,
                     )
+                    tool_context.messages = tuple(working_messages)
+                    if tool_context.query_context is not None:
+                        tool_context.query_context = replace(
+                            tool_context.query_context,
+                            messages=tuple(working_messages),
+                        )
+                while pending_tool_turn_events:
+                    yield pending_tool_turn_events.pop(0)
                 if discarded_blocks:
                     yield TurnStreamEvent(
                         event_type=TurnStreamEventType.MESSAGE_DISCARDED,
@@ -777,6 +863,8 @@ class TurnEngine:
                         terminal.error is None
                         and terminal.stop_reason not in {"interrupted", "error", "blocked"}
                     )
+                    self._active_tool_context = None
+                    self._active_tool_executor = None
                     yield TurnStreamEvent(
                         event_type=TurnStreamEventType.TERMINAL,
                         iteration=iteration_index,
@@ -789,49 +877,42 @@ class TurnEngine:
                     event_type=TurnStreamEventType.TERMINAL,
                     iteration=iteration_index,
                     request=request,
-                    terminal=terminal,
+                    terminal=replace(
+                        terminal,
+                        metadata={
+                            **terminal.metadata,
+                            "tool_executor": _tool_executor_metadata(tool_executor),
+                        },
+                    ),
                 )
 
                 if abort_signal.aborted:
                     state.completed = False
+                    self._active_tool_context = None
+                    self._active_tool_executor = None
                     return
 
-                tool_context = self.create_tool_context(
-                    session_id=session_id,
-                    turn_id=turn_id,
-                    agent_name=agent.name,
-                    cwd=Path(composition.turn_context.cwd),
-                    messages=tuple(working_messages),
-                    tool_pool=tool_pool,
-                    skill_pool=active_skills,
-                    abort_signal=abort_signal,
-                    metadata=runtime_metadata,
-                )
-                self._active_tool_context = tool_context
-                self._active_scheduler = ToolScheduler(self._tool_registry)
-                try:
-                    tool_results = await self._active_scheduler.run(tool_calls, tool_context)
-                finally:
-                    self._active_scheduler = None
+                if tool_executor is None:
+                    state.completed = False
                     self._active_tool_context = None
-
-                tool_result_blocks = tuple(_tool_result_block(tool_result) for tool_result in tool_results)
-                if tool_result_blocks:
-                    tool_message = RuntimeMessage(
-                        message_id=uuid4().hex,
-                        role=MessageRole.USER,
-                        content=tool_result_blocks,
-                        metadata={
-                            "tool_results": [
-                                {
-                                    "tool_use_id": tool_result.call_id,
-                                    "tool_name": tool_result.tool_name,
-                                    "status": tool_result.status.value,
-                                }
-                                for tool_result in tool_results
-                            ]
-                        },
+                    self._active_tool_executor = None
+                    return
+                try:
+                    outcomes = await tool_executor.finalize(
+                        tool_calls,
+                        assistant_message_id=assistant_message_id,
+                        provider_request_id=terminal.request_id,
+                        has_pending_tool_use=attempt_state.pending_tool_use_closed_at_message_stop,
                     )
+                finally:
+                    self._active_tool_context = None
+                    self._active_tool_executor = None
+
+                while pending_tool_turn_events:
+                    yield pending_tool_turn_events.pop(0)
+
+                tool_message = tool_executor.orchestrator.tool_result_message(outcomes)
+                if tool_message is not None:
                     working_messages.append(tool_message)
                     yield TurnStreamEvent(
                         event_type=TurnStreamEventType.MESSAGE,
@@ -1048,16 +1129,29 @@ def _synthesized_stop_reason(
     return "incomplete"
 
 
-def _tool_result_block(tool_result: ToolCallResult) -> ToolResultBlock:
-    if tool_result.status == ToolCallStatus.SUCCESS:
-        content = tool_result.output
-    else:
-        content = tool_result.error or ""
-    return ToolResultBlock(
-        tool_use_id=tool_result.call_id,
-        content=content,
-        is_error=tool_result.status != ToolCallStatus.SUCCESS,
-    )
+def _tool_executor_metadata(tool_executor: Any) -> dict[str, Any] | None:
+    if tool_executor is None:
+        return None
+    metadata = {
+        "initial_tier": tool_executor.initial_tier.value,
+        "effective_tier": tool_executor.effective_tier.value,
+    }
+    if tool_executor.downgrade_reason is not None:
+        metadata["downgrade_reason"] = tool_executor.downgrade_reason
+    return metadata
+
+
+def _serialize_model_capabilities(capabilities: Any) -> dict[str, Any] | None:
+    if capabilities is None:
+        return None
+    return {
+        "structured_tool_calls": capabilities.structured_tool_calls,
+        "streaming_tool_call_deltas": capabilities.streaming_tool_call_deltas,
+        "tool_call_finalize_boundary": capabilities.tool_call_finalize_boundary,
+        "parseable_tool_calls_after_message": capabilities.parseable_tool_calls_after_message,
+        "multiple_tool_calls_per_message": capabilities.multiple_tool_calls_per_message,
+        "abort_signal_passthrough": capabilities.abort_signal_passthrough,
+    }
 
 
 def _coerce_permission_context(

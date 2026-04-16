@@ -62,8 +62,58 @@ class PermissionBehavior(StrEnum):
     DENY = "deny"
 
 
+class ToolCallStatus(StrEnum):
+    SUCCESS = "success"
+    ERROR = "error"
+    CANCELLED = "cancelled"
+    DENIED = "denied"
+
+
+class ToolFailureMode(StrEnum):
+    REPORT_ONLY = "report_only"
+    ERROR_RESULT = "error_result"
+    FATAL = "fatal"
+
+
+class ToolFailureClassifier(StrEnum):
+    EXCEPTION_ONLY = "exception_only"
+    NONZERO_EXIT_OR_EXCEPTION = "nonzero_exit_or_exception"
+    CUSTOM = "custom"
+
+
+class ToolPresentationEmphasis(StrEnum):
+    LOW = "low"
+    NORMAL = "normal"
+    HIGH = "high"
+
+
+class ToolResultSummaryStatus(StrEnum):
+    SUCCESS = "success"
+    DENIED = "denied"
+    CANCELLED = "cancelled"
+    ERROR = "error"
+
+
+class ToolRiskLevel(StrEnum):
+    READ = "read"
+    WRITE = "write"
+    EXEC = "exec"
+    NETWORK = "network"
+    DELEGATE = "delegate"
+
+
 EffortValue = str | int
 ToolInput = Mapping[str, Any]
+
+
+ToolInputResolver = Callable[[ToolInput, Any], Awaitable[Any] | Any]
+
+
+def _return(value: Any) -> Callable[[ToolInput, Any], Any]:
+    def _resolver(_: ToolInput, __: Any) -> Any:
+        return value
+
+    return _resolver
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,6 +157,87 @@ class ToolTraits:
     interrupt_behavior: InterruptBehavior = InterruptBehavior.BLOCK
 
 
+@dataclass(frozen=True, slots=True)
+class ToolFailurePolicy:
+    failure_mode: ToolFailureMode = ToolFailureMode.REPORT_ONLY
+    result_classifier: ToolFailureClassifier = ToolFailureClassifier.EXCEPTION_ONLY
+    cancel_running_siblings: bool = False
+    block_queued_siblings: bool = False
+    abort_model_stream: bool = False
+    surfaced_status: ToolCallStatus = ToolCallStatus.ERROR
+
+
+@dataclass(frozen=True, slots=True)
+class ToolUsePresentation:
+    title: str
+    subtitle: str | None = None
+    icon_hint: str | None = None
+    emphasis: ToolPresentationEmphasis = ToolPresentationEmphasis.NORMAL
+
+
+@dataclass(frozen=True, slots=True)
+class ToolResultSummary:
+    title: str
+    summary: str
+    status: ToolResultSummaryStatus
+    detail_lines: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class ToolClassifierInput:
+    operation: str
+    summary: str
+    target_paths: tuple[str, ...] = ()
+    target_urls: tuple[str, ...] = ()
+    risk_level: ToolRiskLevel = ToolRiskLevel.READ
+    side_effects: bool = False
+    tags: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class ToolExecutionSemantics:
+    is_read_only: ToolInputResolver = field(default_factory=lambda: _return(False))
+    is_concurrency_safe: ToolInputResolver = field(default_factory=lambda: _return(False))
+    interrupt_behavior: ToolInputResolver = field(
+        default_factory=lambda: _return(InterruptBehavior.BLOCK)
+    )
+    failure_policy: ToolInputResolver = field(
+        default_factory=lambda: _return(ToolFailurePolicy())
+    )
+    render_tool_use_message: ToolInputResolver = field(default_factory=lambda: _return(None))
+    render_tool_result_summary: ToolInputResolver = field(default_factory=lambda: _return(None))
+    to_classifier_input: ToolInputResolver = field(default_factory=lambda: _return(None))
+
+    @classmethod
+    def from_traits(cls, traits: ToolTraits) -> "ToolExecutionSemantics":
+        failure_mode = ToolFailureMode.FATAL if traits.destructive else ToolFailureMode.REPORT_ONLY
+        failure_policy = ToolFailurePolicy(
+            failure_mode=failure_mode,
+            result_classifier=ToolFailureClassifier.EXCEPTION_ONLY,
+            cancel_running_siblings=traits.destructive,
+            block_queued_siblings=traits.destructive,
+            abort_model_stream=traits.destructive,
+            surfaced_status=ToolCallStatus.ERROR,
+        )
+        return cls(
+            is_read_only=_return(traits.read_only),
+            is_concurrency_safe=_return(traits.read_only and traits.concurrency_safe),
+            interrupt_behavior=_return(traits.interrupt_behavior),
+            failure_policy=_return(failure_policy),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedToolExecutionSemantics:
+    read_only: bool
+    concurrency_safe: bool
+    interrupt_behavior: InterruptBehavior
+    failure_policy: ToolFailurePolicy
+    tool_use_presentation: ToolUsePresentation | None = None
+    tool_result_summary: ToolResultSummary | None = None
+    classifier_input: ToolClassifierInput | None = None
+
+
 class ToolValidator(Protocol):
     def __call__(
         self,
@@ -141,6 +272,7 @@ class ToolDefinition:
     search_hint: str | None = None
     prompt: str | None = None
     traits: ToolTraits = field(default_factory=ToolTraits)
+    semantics: ToolExecutionSemantics | None = None
     validate_input: ToolValidator | None = None
     check_permissions: ToolPermissionChecker | None = None
     execute: ToolExecutor | None = None
@@ -151,6 +283,10 @@ class ToolDefinition:
 
     def matches(self, name: str) -> bool:
         return name == self.name or name in self.aliases
+
+    @property
+    def execution_semantics(self) -> ToolExecutionSemantics:
+        return self.semantics or ToolExecutionSemantics.from_traits(self.traits)
 
 
 @dataclass(frozen=True, slots=True)
@@ -202,4 +338,3 @@ class SkillDefinition:
     origin: DefinitionOrigin = field(
         default_factory=lambda: DefinitionOrigin(DefinitionSource.BUNDLED)
     )
-

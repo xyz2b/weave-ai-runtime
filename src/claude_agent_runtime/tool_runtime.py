@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass, field
-from enum import StrEnum
+from dataclasses import dataclass, field, replace
 from fnmatch import fnmatch
 from pathlib import Path
 from typing import Any, Mapping, Protocol, Sequence
@@ -10,10 +9,13 @@ from uuid import uuid4
 
 from .contracts import ExecutionResult, ExecutionStatus, MessageRole, RuntimeMessage
 from .definitions import (
+    AgentDefinition,
     InterruptBehavior,
     PermissionBehavior,
     PermissionDecision,
+    PermissionMode,
     SkillDefinition,
+    ToolCallStatus,
     ToolDefinition,
     ValidationOutcome,
 )
@@ -23,13 +25,26 @@ from .permissions import PermissionContext
 from .registries import ToolRegistry
 from .runtime_services import RuntimeServices
 from .tasking import TaskManager
-
-
-class ToolCallStatus(StrEnum):
-    SUCCESS = "success"
-    ERROR = "error"
-    CANCELLED = "cancelled"
-    DENIED = "denied"
+from .tool_lifecycle import (
+    AgentCatalog,
+    AppState,
+    CapabilityRefreshHandle,
+    CapabilityRefreshRequested,
+    CatalogEntryView,
+    FileState,
+    MemoryAccess,
+    NotificationEmitted,
+    NotificationsHandle,
+    PermissionContextView,
+    PermissionRuleView,
+    ProgressHandle,
+    QueryAbortHandle,
+    QueryContext,
+    ResolvedToolCall,
+    SkillCatalog,
+    ToolCapabilityContext,
+    ToolCatalog,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,7 +134,62 @@ class ToolContext:
     permission_context: PermissionContext | None = None
     pending_hook_effect: Any = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    query_context: QueryContext | None = None
+    app_state: AppState | None = None
+    file_state: FileState | None = None
+    progress: ProgressHandle | None = None
+    notifications_handle: NotificationsHandle | None = None
+    refresh_capabilities: CapabilityRefreshHandle | None = None
+    memory_access: MemoryAccess | None = None
+    tool_catalog: ToolCatalog | None = None
+    agent_catalog_view: AgentCatalog | None = None
+    skill_catalog_view: SkillCatalog | None = None
+    permission_context_view: PermissionContextView | None = None
+    capability_context: ToolCapabilityContext | None = None
+    tool_use_id: str | None = None
+    replay_index: int | None = None
+    canonical_tool_name: str | None = None
+    selected_executor_tier: str = "none"
+    model_capabilities: Any = None
+    progress_callback: Any = None
+    notification_callback: Any = None
+    refresh_callback: Any = None
+    call_updates: list[Any] = field(default_factory=list)
     _interrupt_reason: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.app_state is None:
+            self.app_state = AppState()
+        if self.file_state is None:
+            self.file_state = FileState(guarded_roots=_guarded_memory_roots(self))
+        if self.memory_access is None:
+            self.memory_access = MemoryAccess()
+        if self.permission_context_view is None:
+            self.permission_context_view = _coerce_permission_context_view(self.permission_context)
+        if self.tool_catalog is None:
+            self.tool_catalog = _tool_catalog_view(self.tool_pool)
+        if self.agent_catalog_view is None:
+            self.agent_catalog_view = _agent_catalog_view(self.agent_registry)
+        if self.skill_catalog_view is None:
+            self.skill_catalog_view = _skill_catalog_view(self.skill_pool)
+        if self.query_context is None:
+            self.query_context = QueryContext(
+                session_id=self.session_id,
+                turn_id=self.turn_id,
+                agent_name=self.agent_name,
+                cwd=self.cwd,
+                messages=tuple(self.messages),
+                selected_executor_tier=self.selected_executor_tier,
+                model_capabilities=self.model_capabilities,
+                abort_handle=QueryAbortHandle(self.abort_signal),
+                continuation_metadata=dict(self.metadata),
+            )
+        if self.progress is None:
+            self.progress = ProgressHandle(emitter=self._emit_progress_event)
+        if self.notifications_handle is None:
+            self.notifications_handle = NotificationsHandle(emitter=self._record_notification)
+        if self.refresh_capabilities is None:
+            self.refresh_capabilities = CapabilityRefreshHandle(emitter=self._record_refresh)
 
     async def emit_progress(
         self,
@@ -129,6 +199,8 @@ class ToolContext:
         progress: float | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> None:
+        if self.progress is not None:
+            self.progress.update(tool_name, message, progress)
         if self.progress_sink is None:
             return
         await self.progress_sink.emit(
@@ -154,6 +226,11 @@ class ToolContext:
         return self._interrupt_reason
 
     async def emit_notification(self, message: RuntimeMessage) -> None:
+        if self.notifications_handle is not None and not message.metadata.get("skip_runtime_notification"):
+            self.notifications_handle.emit(
+                message.text,
+                str(message.metadata.get("level", "info")),
+            )
         self.notifications = (*self.notifications, message)
         if (
             self.runtime_services is not None
@@ -178,17 +255,102 @@ class ToolContext:
             await maybe_await(self.runtime_services.notification_sink(message))
 
     async def refresh_tools(self) -> tuple[ToolDefinition, ...]:
+        if self.refresh_capabilities is not None:
+            self.refresh_capabilities.request("tool_pool", "compat_refresh_tools")
         if self.runtime_services is not None and self.runtime_services.tool_refresh_callback is not None:
             refreshed = await maybe_await(self.runtime_services.tool_refresh_callback(self))
             if refreshed is not None:
                 self.tool_pool = tuple(refreshed)
+                self.tool_catalog = _tool_catalog_view(self.tool_pool)
             return tuple(self.tool_pool)
         if self.tool_refresh_callback is None:
             return tuple(self.tool_pool)
         refreshed = await maybe_await(self.tool_refresh_callback(self))
         if refreshed is not None:
             self.tool_pool = tuple(refreshed)
+            self.tool_catalog = _tool_catalog_view(self.tool_pool)
         return tuple(self.tool_pool)
+
+    def for_call(
+        self,
+        *,
+        tool_use_id: str,
+        replay_index: int,
+        assistant_message_id: str,
+        canonical_tool_name: str | None,
+        executor_tier: str,
+        model_capabilities: Any,
+    ) -> "ToolContext":
+        call_context = replace(
+            self,
+            tool_use_id=tool_use_id,
+            replay_index=replay_index,
+            canonical_tool_name=canonical_tool_name,
+            selected_executor_tier=executor_tier,
+            model_capabilities=model_capabilities,
+            query_context=QueryContext(
+                session_id=self.session_id,
+                turn_id=self.turn_id,
+                agent_name=self.agent_name,
+                cwd=self.cwd,
+                messages=tuple(self.messages),
+                selected_executor_tier=executor_tier,
+                model_capabilities=model_capabilities,
+                abort_handle=QueryAbortHandle(self.abort_signal),
+                continuation_metadata=dict(self.metadata),
+            ),
+            progress=None,
+            notifications_handle=None,
+            refresh_capabilities=None,
+            capability_context=None,
+            call_updates=[],
+        )
+        call_context.progress = ProgressHandle(emitter=call_context._emit_progress_event)
+        call_context.notifications_handle = NotificationsHandle(
+            emitter=call_context._record_notification
+        )
+        call_context.refresh_capabilities = CapabilityRefreshHandle(
+            emitter=call_context._record_refresh
+        )
+        call_context.capability_context = ToolCapabilityContext(
+            tool_use_id=tool_use_id,
+            canonical_tool_name=canonical_tool_name,
+            assistant_message_id=assistant_message_id,
+            replay_index=replay_index,
+            executor_tier=executor_tier,
+            query_context=call_context.query_context,
+            tool_catalog=call_context.tool_catalog or _tool_catalog_view(call_context.tool_pool),
+            agent_catalog=call_context.agent_catalog_view or _agent_catalog_view(call_context.agent_registry),
+            skill_catalog=call_context.skill_catalog_view or _skill_catalog_view(call_context.skill_pool),
+            permission_context=call_context.permission_context_view
+            or _coerce_permission_context_view(call_context.permission_context),
+            app_state=call_context.app_state or AppState(),
+            file_state=call_context.file_state or FileState(),
+            progress=call_context.progress,
+            notifications=call_context.notifications_handle,
+            refresh_capabilities=call_context.refresh_capabilities,
+            memory_access=call_context.memory_access or MemoryAccess(),
+        )
+        return call_context
+
+    def _emit_progress_event(
+        self,
+        progress_id: str,
+        message: str,
+        percent: float | None,
+    ) -> None:
+        if self.progress_callback is not None:
+            self.progress_callback(progress_id, message, percent, self)
+
+    def _record_notification(self, message: str, level: str) -> None:
+        self.call_updates.append(NotificationEmitted(level=level, message=message))
+        if self.notification_callback is not None:
+            self.notification_callback(message, level, self)
+
+    def _record_refresh(self, scope: str, reason: str) -> None:
+        self.call_updates.append(CapabilityRefreshRequested(scope=scope, reason=reason))
+        if self.refresh_callback is not None:
+            self.refresh_callback(scope, reason, self)
 
 
 @dataclass(frozen=True, slots=True)
@@ -215,6 +377,13 @@ class ToolCallResult:
         if self.status == ToolCallStatus.DENIED:
             return ExecutionResult(status=ExecutionStatus.FAILED, error=self.error, metadata=self.metadata)
         return ExecutionResult(status=ExecutionStatus.FAILED, error=self.error, metadata=self.metadata)
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutedToolCall:
+    result: ToolCallResult
+    context_updates: tuple[Any, ...] = ()
+    result_summary: Any = None
 
 
 class ToolScheduler:
@@ -446,6 +615,118 @@ async def execute_tool_call(
         context.pending_hook_effect = None
 
 
+async def execute_resolved_tool_call(
+    resolved_call: ResolvedToolCall,
+    context: ToolContext,
+) -> ExecutedToolCall:
+    definition = resolved_call.tool_definition_ref
+    if definition is None:
+        return ExecutedToolCall(
+            result=ToolCallResult(
+                call_id=resolved_call.envelope.tool_use_id,
+                tool_name=resolved_call.canonical_tool_name or resolved_call.envelope.raw_tool_name,
+                status=ToolCallStatus.ERROR,
+                error="Resolved tool call is missing a definition",
+            )
+        )
+    call_context = context.for_call(
+        tool_use_id=resolved_call.envelope.tool_use_id,
+        replay_index=resolved_call.replay_index,
+        assistant_message_id=resolved_call.envelope.assistant_message_id,
+        canonical_tool_name=resolved_call.canonical_tool_name,
+        executor_tier=resolved_call.capability_context.executor_tier,
+        model_capabilities=resolved_call.capability_context.query_context.model_capabilities,
+    )
+    try:
+        interrupt_behavior = (
+            resolved_call.resolved_semantics.interrupt_behavior
+            if resolved_call.resolved_semantics is not None
+            else definition.traits.interrupt_behavior
+        )
+        if context.interrupted() and interrupt_behavior == InterruptBehavior.CANCEL:
+            return ExecutedToolCall(
+                result=ToolCallResult(
+                    call_id=resolved_call.envelope.tool_use_id,
+                    tool_name=definition.name,
+                    status=ToolCallStatus.CANCELLED,
+                    error=context.interrupt_reason or "Tool execution interrupted",
+                )
+            )
+        if definition.execute is None:
+            return ExecutedToolCall(
+                result=ToolCallResult(
+                    call_id=resolved_call.envelope.tool_use_id,
+                    tool_name=definition.name,
+                    status=ToolCallStatus.ERROR,
+                    error=f"Tool '{definition.name}' has no execution handler",
+                )
+            )
+        execution_input = dict(resolved_call.execution_input or {})
+        raw_output = await maybe_await(definition.execute(execution_input, call_context))
+        post_tool_hook = await _dispatch_hook(
+            call_context,
+            PostToolUsePayload(
+                session_id=call_context.session_id,
+                tool_name=definition.name,
+                tool_input=dict(execution_input),
+                tool_result=raw_output,
+                turn_id=call_context.turn_id,
+            ),
+        )
+        if not post_tool_hook.continue_execution:
+            return ExecutedToolCall(
+                result=ToolCallResult(
+                    call_id=resolved_call.envelope.tool_use_id,
+                    tool_name=definition.name,
+                    status=ToolCallStatus.DENIED,
+                    error="Tool result blocked by runtime hook",
+                    metadata={"matched_hooks": list(post_tool_hook.matched_owners)},
+                ),
+                context_updates=tuple(call_context.call_updates),
+            )
+        return ExecutedToolCall(
+            result=map_tool_output(definition.name, resolved_call.envelope.tool_use_id, raw_output),
+            context_updates=tuple(call_context.call_updates),
+            result_summary=(
+                resolved_call.resolved_semantics.tool_result_summary
+                if resolved_call.resolved_semantics is not None
+                else None
+            ),
+        )
+    except asyncio.CancelledError:
+        return ExecutedToolCall(
+            result=ToolCallResult(
+                call_id=resolved_call.envelope.tool_use_id,
+                tool_name=definition.name,
+                status=ToolCallStatus.CANCELLED,
+                error="Tool execution cancelled",
+            ),
+            context_updates=tuple(call_context.call_updates),
+        )
+    except Exception as exc:  # pragma: no cover - defensive boundary
+        await _dispatch_hook(
+            call_context,
+            PostToolUseFailurePayload(
+                session_id=call_context.session_id,
+                tool_name=definition.name,
+                tool_input=dict(resolved_call.execution_input or {}),
+                error_message=str(exc),
+                turn_id=call_context.turn_id,
+            ),
+        )
+        return ExecutedToolCall(
+            result=ToolCallResult(
+                call_id=resolved_call.envelope.tool_use_id,
+                tool_name=definition.name,
+                status=ToolCallStatus.ERROR,
+                error=str(exc),
+            ),
+            context_updates=tuple(call_context.call_updates),
+        )
+    finally:
+        call_context.pending_hook_effect = None
+
+
 def map_tool_output(tool_name: str, call_id: str, raw_output: Any) -> ToolCallResult:
     if isinstance(raw_output, ToolCallResult):
         return raw_output
@@ -641,6 +922,97 @@ class _EmptyHookResult:
     updated_input: dict[str, Any] | None = None
     continue_execution: bool = True
     notifications: tuple[str, ...] = ()
+
+
+def _tool_catalog_view(pool: Sequence[ToolDefinition]) -> ToolCatalog:
+    return ToolCatalog(
+        tuple(
+            CatalogEntryView(
+                name=definition.name,
+                aliases=definition.aliases,
+                description=definition.description,
+                source_label=definition.origin.label,
+                metadata=dict(definition.metadata),
+            )
+            for definition in pool
+        )
+    )
+
+
+def _agent_catalog_view(registry: Any) -> AgentCatalog:
+    if registry is None or not hasattr(registry, "definitions"):
+        return AgentCatalog(())
+    return AgentCatalog(
+        tuple(
+            CatalogEntryView(
+                name=definition.name,
+                aliases=(),
+                description=definition.description,
+                source_label=definition.origin.label,
+                metadata=dict(definition.metadata),
+            )
+            for definition in registry.definitions()
+        )
+    )
+
+
+def _skill_catalog_view(pool: Sequence[SkillDefinition]) -> SkillCatalog:
+    return SkillCatalog(
+        tuple(
+            CatalogEntryView(
+                name=definition.name,
+                aliases=(),
+                description=definition.description,
+                source_label=definition.origin.label,
+                metadata=dict(definition.metadata),
+            )
+            for definition in pool
+        )
+    )
+
+
+def _coerce_permission_context_view(
+    context: PermissionContext | None,
+) -> PermissionContextView:
+    permission_context = context or PermissionContext(session_id="")
+    mode = permission_context.mode
+    return PermissionContextView(
+        effective_mode=mode,
+        interactive_prompts_allowed=mode not in {PermissionMode.DONT_ASK, PermissionMode.BUBBLE},
+        bubbles_to_caller=mode == PermissionMode.BUBBLE,
+        requires_host_mediation=mode != PermissionMode.BYPASS_PERMISSIONS,
+        rules=tuple(
+            PermissionRuleView(
+                target_type=(
+                    rule.target.value if getattr(rule, "target", None) is not None else "tool"
+                ),
+                selector=rule.selector,
+                behavior=rule.behavior,
+                message=rule.message,
+                source=str(rule.metadata.get("source")) if rule.metadata.get("source") else None,
+            )
+            for rule in permission_context.rules
+        ),
+    )
+
+
+def _guarded_memory_roots(context: ToolContext) -> tuple[Path, ...]:
+    if context.runtime_services is None:
+        return ()
+    memory_service = getattr(context.runtime_services, "memory", None)
+    if memory_service is None or not hasattr(memory_service, "guarded_roots"):
+        return ()
+    agent = None
+    if context.agent_registry is not None and hasattr(context.agent_registry, "get"):
+        agent = context.agent_registry.get(context.agent_name)
+    if agent is None:
+        agent = AgentDefinition(name=context.agent_name, description="", prompt="")
+    roots = memory_service.guarded_roots(
+        session_id=context.session_id,
+        agent=agent,
+        cwd=context.cwd,
+    )
+    return tuple(Path(root).resolve() for root in roots)
 
 
 def _tool_available_in_pool(

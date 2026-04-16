@@ -1,11 +1,24 @@
 from __future__ import annotations
 
+from typing import Any
+
 from ..definitions import (
     DefinitionOrigin,
     DefinitionSource,
     InterruptBehavior,
+    ToolCallStatus,
+    ToolClassifierInput,
     ToolDefinition,
+    ToolExecutionSemantics,
+    ToolFailureClassifier,
+    ToolFailureMode,
+    ToolFailurePolicy,
+    ToolPresentationEmphasis,
+    ToolResultSummary,
+    ToolResultSummaryStatus,
+    ToolRiskLevel,
     ToolTraits,
+    ToolUsePresentation,
 )
 from .tool_impls import (
     agent_tool,
@@ -38,6 +51,73 @@ from .tool_impls import (
 )
 
 
+def _static_semantics(
+    *,
+    read_only: bool = False,
+    concurrency_safe: bool = False,
+    interrupt_behavior: InterruptBehavior = InterruptBehavior.BLOCK,
+    failure_policy: ToolFailurePolicy | None = None,
+    tool_use_presentation=None,
+    tool_result_summary=None,
+    classifier_input=None,
+) -> ToolExecutionSemantics:
+    return ToolExecutionSemantics(
+        is_read_only=lambda _tool_input, _context: read_only,
+        is_concurrency_safe=lambda _tool_input, _context: concurrency_safe,
+        interrupt_behavior=lambda _tool_input, _context: interrupt_behavior,
+        failure_policy=lambda _tool_input, _context: failure_policy or ToolFailurePolicy(),
+        render_tool_use_message=tool_use_presentation or (lambda _tool_input, _context: None),
+        render_tool_result_summary=tool_result_summary or (lambda _tool_input, _context: None),
+        to_classifier_input=classifier_input or (lambda _tool_input, _context: None),
+    )
+
+
+def _file_semantics(
+    *,
+    operation: str,
+    read_only: bool,
+    concurrency_safe: bool,
+    summary: str,
+    risk_level: ToolRiskLevel,
+    failure_policy: ToolFailurePolicy | None = None,
+) -> ToolExecutionSemantics:
+    return _static_semantics(
+        read_only=read_only,
+        concurrency_safe=concurrency_safe,
+        failure_policy=failure_policy,
+        tool_use_presentation=lambda tool_input, _context: ToolUsePresentation(
+            title=summary,
+            subtitle=tool_input.get("file_path"),
+            emphasis=(
+                ToolPresentationEmphasis.LOW
+                if read_only
+                else ToolPresentationEmphasis.NORMAL
+            ),
+        ),
+        tool_result_summary=lambda tool_input, _context: ToolResultSummary(
+            title=summary,
+            summary=tool_input.get("file_path", summary),
+            status=(
+                ToolResultSummaryStatus.SUCCESS
+                if read_only
+                else ToolResultSummaryStatus.SUCCESS
+            ),
+        ),
+        classifier_input=lambda tool_input, _context: ToolClassifierInput(
+            operation=operation,
+            summary=f"{summary}: {tool_input.get('file_path', '')}".strip(": "),
+            target_paths=(
+                (str(tool_input["file_path"]),)
+                if tool_input.get("file_path") is not None
+                else ()
+            ),
+            risk_level=risk_level,
+            side_effects=not read_only,
+            tags=("filesystem", operation),
+        ),
+    )
+
+
 def builtin_tools() -> tuple[ToolDefinition, ...]:
     origin = DefinitionOrigin(DefinitionSource.BUNDLED)
     return (
@@ -57,6 +137,13 @@ def builtin_tools() -> tuple[ToolDefinition, ...]:
                 "additionalProperties": False,
             },
             traits=ToolTraits(read_only=True, concurrency_safe=True),
+            semantics=_file_semantics(
+                operation="read_file",
+                read_only=True,
+                concurrency_safe=True,
+                summary="Read file",
+                risk_level=ToolRiskLevel.READ,
+            ),
             validate_input=validate_read_tool,
             execute=read_file_tool,
             origin=origin,
@@ -76,6 +163,22 @@ def builtin_tools() -> tuple[ToolDefinition, ...]:
                 "additionalProperties": False,
             },
             traits=ToolTraits(read_only=True, concurrency_safe=True),
+            semantics=_static_semantics(
+                read_only=True,
+                concurrency_safe=True,
+                tool_use_presentation=lambda tool_input, _context: ToolUsePresentation(
+                    title="Match paths",
+                    subtitle=tool_input.get("pattern"),
+                    emphasis=ToolPresentationEmphasis.LOW,
+                ),
+                classifier_input=lambda tool_input, _context: ToolClassifierInput(
+                    operation="glob",
+                    summary=f"Match paths: {tool_input['pattern']}",
+                    risk_level=ToolRiskLevel.READ,
+                    side_effects=False,
+                    tags=("filesystem", "glob"),
+                ),
+            ),
             execute=glob_tool,
             origin=origin,
         ),
@@ -95,6 +198,25 @@ def builtin_tools() -> tuple[ToolDefinition, ...]:
                 "additionalProperties": False,
             },
             traits=ToolTraits(read_only=True, concurrency_safe=True),
+            semantics=_static_semantics(
+                read_only=True,
+                concurrency_safe=True,
+                tool_use_presentation=lambda tool_input, _context: ToolUsePresentation(
+                    title="Search files",
+                    subtitle=tool_input.get("pattern"),
+                    emphasis=ToolPresentationEmphasis.LOW,
+                ),
+                classifier_input=lambda tool_input, _context: ToolClassifierInput(
+                    operation="grep",
+                    summary=f"Search files: {tool_input['pattern']}",
+                    target_paths=(
+                        (str(tool_input["path"]),) if tool_input.get("path") is not None else ()
+                    ),
+                    risk_level=ToolRiskLevel.READ,
+                    side_effects=False,
+                    tags=("filesystem", "search"),
+                ),
+            ),
             execute=grep_tool,
             origin=origin,
         ),
@@ -113,6 +235,18 @@ def builtin_tools() -> tuple[ToolDefinition, ...]:
                 "required": ["file_path", "old_string", "new_string"],
                 "additionalProperties": False,
             },
+            semantics=_file_semantics(
+                operation="edit_file",
+                read_only=False,
+                concurrency_safe=False,
+                summary="Edit file",
+                risk_level=ToolRiskLevel.WRITE,
+                failure_policy=ToolFailurePolicy(
+                    failure_mode=ToolFailureMode.ERROR_RESULT,
+                    result_classifier=ToolFailureClassifier.EXCEPTION_ONLY,
+                    surfaced_status=ToolCallStatus.ERROR,
+                ),
+            ),
             validate_input=validate_edit_tool,
             check_permissions=ask_permission,
             execute=edit_file_tool,
@@ -132,6 +266,18 @@ def builtin_tools() -> tuple[ToolDefinition, ...]:
                 "additionalProperties": False,
             },
             traits=ToolTraits(destructive=True),
+            semantics=_file_semantics(
+                operation="write_file",
+                read_only=False,
+                concurrency_safe=False,
+                summary="Write file",
+                risk_level=ToolRiskLevel.WRITE,
+                failure_policy=ToolFailurePolicy(
+                    failure_mode=ToolFailureMode.ERROR_RESULT,
+                    result_classifier=ToolFailureClassifier.EXCEPTION_ONLY,
+                    surfaced_status=ToolCallStatus.ERROR,
+                ),
+            ),
             validate_input=validate_write_tool,
             check_permissions=ask_permission,
             execute=write_file_tool,
@@ -151,6 +297,33 @@ def builtin_tools() -> tuple[ToolDefinition, ...]:
                 "required": ["command"],
                 "additionalProperties": False,
             },
+            semantics=_static_semantics(
+                read_only=False,
+                concurrency_safe=False,
+                failure_policy=ToolFailurePolicy(
+                    failure_mode=ToolFailureMode.FATAL,
+                    result_classifier=ToolFailureClassifier.NONZERO_EXIT_OR_EXCEPTION,
+                    cancel_running_siblings=True,
+                    block_queued_siblings=True,
+                    abort_model_stream=True,
+                    surfaced_status=ToolCallStatus.ERROR,
+                ),
+                tool_use_presentation=lambda tool_input, _context: ToolUsePresentation(
+                    title="Run shell command",
+                    subtitle=tool_input.get("command"),
+                    emphasis=ToolPresentationEmphasis.HIGH,
+                ),
+                classifier_input=lambda tool_input, _context: ToolClassifierInput(
+                    operation="bash",
+                    summary=f"Execute shell command: {tool_input['command']}",
+                    target_paths=(
+                        (str(tool_input["cwd"]),) if tool_input.get("cwd") is not None else ()
+                    ),
+                    risk_level=ToolRiskLevel.EXEC,
+                    side_effects=True,
+                    tags=("shell", "exec"),
+                ),
+            ),
             validate_input=validate_bash_tool,
             check_permissions=ask_permission,
             execute=bash_tool,
@@ -170,6 +343,23 @@ def builtin_tools() -> tuple[ToolDefinition, ...]:
                 "additionalProperties": False,
             },
             traits=ToolTraits(read_only=True, concurrency_safe=True),
+            semantics=_static_semantics(
+                read_only=True,
+                concurrency_safe=True,
+                tool_use_presentation=lambda tool_input, _context: ToolUsePresentation(
+                    title="Fetch URL",
+                    subtitle=tool_input.get("url"),
+                    emphasis=ToolPresentationEmphasis.LOW,
+                ),
+                classifier_input=lambda tool_input, _context: ToolClassifierInput(
+                    operation="web_fetch",
+                    summary=f"Fetch URL: {tool_input['url']}",
+                    target_urls=(str(tool_input["url"]),),
+                    risk_level=ToolRiskLevel.NETWORK,
+                    side_effects=False,
+                    tags=("network", "fetch"),
+                ),
+            ),
             validate_input=validate_url_tool,
             execute=web_fetch_tool,
             origin=origin,
@@ -188,6 +378,22 @@ def builtin_tools() -> tuple[ToolDefinition, ...]:
                 "additionalProperties": False,
             },
             traits=ToolTraits(read_only=True, concurrency_safe=True),
+            semantics=_static_semantics(
+                read_only=True,
+                concurrency_safe=True,
+                tool_use_presentation=lambda tool_input, _context: ToolUsePresentation(
+                    title="Search web",
+                    subtitle=tool_input.get("query"),
+                    emphasis=ToolPresentationEmphasis.LOW,
+                ),
+                classifier_input=lambda tool_input, _context: ToolClassifierInput(
+                    operation="web_search",
+                    summary=f"Search web: {tool_input['query']}",
+                    risk_level=ToolRiskLevel.NETWORK,
+                    side_effects=False,
+                    tags=("network", "search"),
+                ),
+            ),
             validate_input=validate_web_search,
             execute=web_search_tool,
             origin=origin,
@@ -206,6 +412,22 @@ def builtin_tools() -> tuple[ToolDefinition, ...]:
                 "required": ["agent", "prompt"],
                 "additionalProperties": False,
             },
+            semantics=_static_semantics(
+                read_only=False,
+                concurrency_safe=False,
+                tool_use_presentation=lambda tool_input, _context: ToolUsePresentation(
+                    title="Run agent",
+                    subtitle=tool_input.get("agent"),
+                    emphasis=ToolPresentationEmphasis.NORMAL,
+                ),
+                classifier_input=lambda tool_input, _context: ToolClassifierInput(
+                    operation="agent",
+                    summary=f"Delegate to agent: {tool_input['agent']}",
+                    risk_level=ToolRiskLevel.DELEGATE,
+                    side_effects=True,
+                    tags=("delegate", "agent"),
+                ),
+            ),
             validate_input=validate_agent_registry_entry,
             execute=agent_tool,
             origin=origin,
@@ -226,6 +448,22 @@ def builtin_tools() -> tuple[ToolDefinition, ...]:
                 "required": ["skill"],
                 "additionalProperties": False,
             },
+            semantics=_static_semantics(
+                read_only=False,
+                concurrency_safe=False,
+                tool_use_presentation=lambda tool_input, _context: ToolUsePresentation(
+                    title="Run skill",
+                    subtitle=tool_input.get("skill"),
+                    emphasis=ToolPresentationEmphasis.NORMAL,
+                ),
+                classifier_input=lambda tool_input, _context: ToolClassifierInput(
+                    operation="skill",
+                    summary=f"Run skill: {tool_input['skill']}",
+                    risk_level=ToolRiskLevel.DELEGATE,
+                    side_effects=True,
+                    tags=("delegate", "skill"),
+                ),
+            ),
             validate_input=validate_skill_registry_entry,
             execute=skill_tool,
             origin=origin,
@@ -257,6 +495,17 @@ def builtin_tools() -> tuple[ToolDefinition, ...]:
                 "additionalProperties": False,
             },
             traits=ToolTraits(read_only=True, concurrency_safe=True),
+            semantics=_static_semantics(
+                read_only=True,
+                concurrency_safe=True,
+                classifier_input=lambda tool_input, _context: ToolClassifierInput(
+                    operation="task_get",
+                    summary=f"Inspect task: {tool_input['task_id']}",
+                    risk_level=ToolRiskLevel.READ,
+                    side_effects=False,
+                    tags=("task", "read"),
+                ),
+            ),
             execute=task_get_tool,
             origin=origin,
         ),
@@ -290,6 +539,17 @@ def builtin_tools() -> tuple[ToolDefinition, ...]:
                 "additionalProperties": False,
             },
             traits=ToolTraits(read_only=True, concurrency_safe=True),
+            semantics=_static_semantics(
+                read_only=True,
+                concurrency_safe=True,
+                classifier_input=lambda _tool_input, _context: ToolClassifierInput(
+                    operation="task_list",
+                    summary="List tasks",
+                    risk_level=ToolRiskLevel.READ,
+                    side_effects=False,
+                    tags=("task", "read"),
+                ),
+            ),
             execute=task_list_tool,
             origin=origin,
         ),
@@ -304,6 +564,22 @@ def builtin_tools() -> tuple[ToolDefinition, ...]:
                 "additionalProperties": False,
             },
             traits=ToolTraits(destructive=True),
+            semantics=_static_semantics(
+                read_only=False,
+                concurrency_safe=False,
+                failure_policy=ToolFailurePolicy(
+                    failure_mode=ToolFailureMode.ERROR_RESULT,
+                    result_classifier=ToolFailureClassifier.EXCEPTION_ONLY,
+                    surfaced_status=ToolCallStatus.ERROR,
+                ),
+                classifier_input=lambda tool_input, _context: ToolClassifierInput(
+                    operation="task_stop",
+                    summary=f"Stop task: {tool_input['task_id']}",
+                    risk_level=ToolRiskLevel.WRITE,
+                    side_effects=True,
+                    tags=("task", "write"),
+                ),
+            ),
             check_permissions=ask_permission,
             execute=task_stop_tool,
             origin=origin,
@@ -338,6 +614,18 @@ def builtin_tools() -> tuple[ToolDefinition, ...]:
                 "additionalProperties": False,
             },
             traits=ToolTraits(interrupt_behavior=InterruptBehavior.CANCEL),
+            semantics=_static_semantics(
+                read_only=True,
+                concurrency_safe=True,
+                interrupt_behavior=InterruptBehavior.CANCEL,
+                classifier_input=lambda tool_input, _context: ToolClassifierInput(
+                    operation="sleep",
+                    summary=f"Sleep for {tool_input['seconds']} seconds",
+                    risk_level=ToolRiskLevel.READ,
+                    side_effects=False,
+                    tags=("timing",),
+                ),
+            ),
             validate_input=validate_sleep_tool,
             execute=sleep_tool,
             origin=origin,

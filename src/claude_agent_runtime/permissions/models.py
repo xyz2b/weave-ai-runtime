@@ -69,7 +69,10 @@ class PermissionOutcome:
             behavior=self.behavior,
             message=self.message,
             updated_input=None if self.updated_input is None else dict(self.updated_input),
-            details=dict(self.details),
+            details={
+                **dict(self.details),
+                **({"source": self.source} if self.source is not None else {}),
+            },
         )
 
 

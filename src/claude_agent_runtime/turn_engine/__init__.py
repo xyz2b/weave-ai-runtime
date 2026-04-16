@@ -1,4 +1,5 @@
 from .models import (
+    ModelCapabilityProvider,
     ModelAbortSignal,
     ModelClient,
     ModelRequest,
@@ -6,14 +7,17 @@ from .models import (
     ModelStreamEvent,
     ModelStreamEventType,
     ModelTerminalMetadata,
+    NormalizedModelCapabilities,
     TranscriptEntry,
     TranscriptSession,
     TranscriptStore,
+    ToolExecutorTier,
 )
 
 __all__ = [
     "ContextAssembler",
     "ContextAssembly",
+    "ModelCapabilityProvider",
     "ModelAbortSignal",
     "ModelClient",
     "ModelRequest",
@@ -21,11 +25,13 @@ __all__ = [
     "ModelStreamEvent",
     "ModelStreamEventType",
     "ModelTerminalMetadata",
+    "NormalizedModelCapabilities",
     "PromptComposer",
     "PromptComposition",
     "TranscriptEntry",
     "TranscriptSession",
     "TranscriptStore",
+    "ToolExecutorTier",
     "TurnStreamEvent",
     "TurnStreamEventType",
     "TurnEngine",

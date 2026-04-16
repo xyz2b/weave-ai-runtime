@@ -20,6 +20,13 @@ class ModelStreamEventType(StrEnum):
     ERROR = "error"
 
 
+class ToolExecutorTier(StrEnum):
+    FULL_STREAMING = "full_streaming"
+    BUFFERED = "buffered"
+    BATCH = "batch"
+    NONE = "none"
+
+
 class ModelAbortSignal:
     __slots__ = ("_event", "_reason")
 
@@ -52,6 +59,23 @@ class ModelTerminalMetadata:
     error: str | None = None
     abort_reason: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class NormalizedModelCapabilities:
+    structured_tool_calls: bool = True
+    streaming_tool_call_deltas: bool = False
+    tool_call_finalize_boundary: bool = False
+    parseable_tool_calls_after_message: bool = True
+    multiple_tool_calls_per_message: bool = True
+    abort_signal_passthrough: bool = True
+
+
+class ModelCapabilityProvider(Protocol):
+    def tool_capabilities(
+        self,
+        request: "ModelRequest",
+    ) -> NormalizedModelCapabilities: ...
 
 
 @dataclass(frozen=True, slots=True)
