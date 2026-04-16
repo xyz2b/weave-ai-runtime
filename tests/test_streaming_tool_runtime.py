@@ -52,9 +52,12 @@ from claude_agent_runtime.tool_orchestration import StreamingToolOrchestrator
 from claude_agent_runtime.tool_resolution import resolve_tool_call
 from claude_agent_runtime.tool_runtime import ToolCall, ToolContext
 from claude_agent_runtime.turn_engine import (
+    ModelInvocationMode,
     ModelRequest,
+    ModelResponse,
     ModelStreamEvent,
     ModelStreamEventType,
+    ModelTerminalMetadata,
     NormalizedModelCapabilities,
     TurnEngine,
     TurnStreamEventType,
@@ -131,6 +134,34 @@ class EarlyStartModelClient:
         yield ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-early-2"})
         yield ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "done"})
         yield ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"})
+
+
+class CompleteOnlyModelClient:
+    def __init__(
+        self,
+        responses: Sequence[ModelResponse],
+        *,
+        capabilities: NormalizedModelCapabilities | None = None,
+    ) -> None:
+        self._responses = list(responses)
+        self.requests: list[ModelRequest] = []
+        self.normalized_model_capabilities = capabilities or NormalizedModelCapabilities(
+            structured_tool_calls=True,
+            streaming_tool_call_deltas=False,
+            tool_call_finalize_boundary=False,
+            parseable_tool_calls_after_message=True,
+            multiple_tool_calls_per_message=True,
+            abort_signal_passthrough=True,
+            supports_streaming=False,
+        )
+
+    async def complete(self, request: ModelRequest) -> ModelResponse:
+        self.requests.append(request)
+        return self._responses.pop(0)
+
+    async def stream(self, request: ModelRequest):
+        _ = request
+        raise AssertionError("stream() should not be used for complete-only clients")
 
 
 def _make_agent() -> AgentDefinition:
@@ -1263,3 +1294,125 @@ def test_t14_lifecycle_events_surface_presentation_and_summary(tmp_path: Path) -
         "status": "success",
         "detail_lines": ["cached"],
     }
+
+
+def test_t15_buffered_completion_without_tools(tmp_path: Path) -> None:
+    client = CompleteOnlyModelClient(
+        [
+            ModelResponse(
+                message=RuntimeMessage(
+                    message_id="buffered-no-tools",
+                    role=MessageRole.ASSISTANT,
+                    content="buffered answer",
+                ),
+                stop_reason="end_turn",
+                request_id="req-buffered-no-tools",
+                terminal=ModelTerminalMetadata(
+                    stop_reason="end_turn",
+                    request_id="req-buffered-no-tools",
+                    usage={"output_tokens": 3},
+                ),
+            )
+        ]
+    )
+
+    result = asyncio.run(
+        TurnEngine(model_client=client, tool_registry=ToolRegistry()).run_turn(
+            session_id="session",
+            turn_id="turn",
+            agent=_make_agent(),
+            cwd=str(tmp_path),
+            messages=[],
+            base_system_prompt="System",
+        )
+    )
+
+    assert client.requests[0].invocation_mode == ModelInvocationMode.BUFFERED_COMPLETION
+    assert result.completed is True
+    assert result.messages[-1].text == "buffered answer"
+    assert result.request_id == "req-buffered-no-tools"
+    assert result.usage == {"output_tokens": 3}
+
+
+def test_t16_buffered_completion_tool_results_preserve_order(tmp_path: Path) -> None:
+    async def slow(_: dict[str, str], __: ToolContext) -> dict[str, str]:
+        await asyncio.sleep(0.05)
+        return {"name": "slow"}
+
+    async def fast(_: dict[str, str], __: ToolContext) -> dict[str, str]:
+        await asyncio.sleep(0.01)
+        return {"name": "fast"}
+
+    registry = ToolRegistry()
+    registry.register(
+        ToolDefinition(
+            name="slow",
+            description="slow",
+            input_schema={"type": "object", "properties": {}, "additionalProperties": False},
+            semantics=_read_semantics(),
+            execute=slow,
+        )
+    )
+    registry.register(
+        ToolDefinition(
+            name="fast",
+            description="fast",
+            input_schema={"type": "object", "properties": {}, "additionalProperties": False},
+            semantics=_read_semantics(),
+            execute=fast,
+        )
+    )
+    client = CompleteOnlyModelClient(
+        [
+            ModelResponse(
+                message=RuntimeMessage(
+                    message_id="buffered-tools-1",
+                    role=MessageRole.ASSISTANT,
+                    content=(
+                        ToolUseBlock(tool_use_id="call-slow", name="slow", input={}),
+                        ToolUseBlock(tool_use_id="call-fast", name="fast", input={}),
+                    ),
+                ),
+                stop_reason="tool_use",
+                request_id="req-buffered-tools-1",
+                terminal=ModelTerminalMetadata(
+                    stop_reason="tool_use",
+                    request_id="req-buffered-tools-1",
+                ),
+            ),
+            ModelResponse(
+                message=RuntimeMessage(
+                    message_id="buffered-tools-2",
+                    role=MessageRole.ASSISTANT,
+                    content="done",
+                ),
+                stop_reason="end_turn",
+                request_id="req-buffered-tools-2",
+                terminal=ModelTerminalMetadata(
+                    stop_reason="end_turn",
+                    request_id="req-buffered-tools-2",
+                ),
+            ),
+        ]
+    )
+
+    result = asyncio.run(
+        TurnEngine(model_client=client, tool_registry=registry).run_turn(
+            session_id="session",
+            turn_id="turn",
+            agent=_make_agent(),
+            cwd=str(tmp_path),
+            messages=[],
+            base_system_prompt="System",
+        )
+    )
+
+    assert client.requests[0].invocation_mode == ModelInvocationMode.BUFFERED_COMPLETION
+    assert client.requests[0].metadata["tool_executor"]["initial_tier"] == "buffered"
+    tool_message = next(message for message in result.messages if message.role == MessageRole.USER)
+    blocks = [block for block in tool_message.content if isinstance(block, ToolResultBlock)]
+    assert [block.tool_use_id for block in blocks] == ["call-slow", "call-fast"]
+    assert result.attempts[0].stop_reason == "tool_use"
+    assert result.attempts[0].request_id == "req-buffered-tools-1"
+    assert result.attempts[-1].stop_reason == "end_turn"
+    assert result.attempts[-1].request_id == "req-buffered-tools-2"

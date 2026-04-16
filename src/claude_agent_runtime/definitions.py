@@ -297,6 +297,7 @@ class AgentDefinition:
     tools: tuple[str, ...] = ()
     disallowed_tools: tuple[str, ...] = ()
     model: str | None = None
+    model_route: str | None = None
     effort: EffortValue | None = None
     permission_mode: PermissionMode | None = None
     max_turns: int | None = None

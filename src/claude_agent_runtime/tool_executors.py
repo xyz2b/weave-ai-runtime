@@ -197,6 +197,8 @@ def model_capabilities_for(
     *,
     request: Any = None,
 ) -> NormalizedModelCapabilities:
+    if request is not None and isinstance(getattr(request, "resolved_capabilities", None), NormalizedModelCapabilities):
+        return request.resolved_capabilities
     if hasattr(model_client, "tool_capabilities"):
         capabilities = model_client.tool_capabilities(request)
         if isinstance(capabilities, NormalizedModelCapabilities):

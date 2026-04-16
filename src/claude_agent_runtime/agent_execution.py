@@ -6,7 +6,9 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from .contracts import RuntimeMessage
+from .definitions import IsolationMode, PermissionMode
 from .execution_policy import ExecutionPolicyState
+from .turn_engine.models import ModelInvocationMode, NormalizedModelCapabilities
 
 
 class SpawnMode(StrEnum):
@@ -53,6 +55,13 @@ class AgentExecutionSpec:
     parent_policy_state: ExecutionPolicyState | None = None
     requested_model_route: str | None = None
     requested_model: str | None = None
+    resolved_model_route: str | None = None
+    provider_name: str | None = None
+    resolved_capabilities: NormalizedModelCapabilities | None = None
+    invocation_mode: ModelInvocationMode | None = None
+    requested_permission_mode: PermissionMode | None = None
+    requested_isolation: IsolationMode | None = None
+    max_turns: int | None = None
     background: bool = False
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -81,6 +90,9 @@ class AgentRunRecord:
     requested_model_route: str | None = None
     requested_model: str | None = None
     resolved_model_route: str | None = None
+    provider_name: str | None = None
+    resolved_capabilities: dict[str, Any] | None = None
+    invocation_mode: str | None = None
     request_metadata: dict[str, Any] = field(default_factory=dict)
     terminal_metadata: dict[str, Any] = field(default_factory=dict)
     messages: tuple[RuntimeMessage, ...] = ()

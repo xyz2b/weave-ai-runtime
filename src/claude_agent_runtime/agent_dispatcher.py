@@ -78,6 +78,9 @@ class AgentDispatcher:
             or _coerce_optional_string(invocation.metadata.get("requested_model_route")),
             requested_model=invocation.requested_model
             or _coerce_optional_string(invocation.metadata.get("requested_model")),
+            requested_permission_mode=invocation.requested_permission_mode,
+            requested_isolation=invocation.requested_isolation,
+            max_turns=invocation.max_turns,
             background=spawn_mode is SpawnMode.BACKGROUND,
             metadata=dict(invocation.metadata),
         )

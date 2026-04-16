@@ -6,9 +6,17 @@ from claude_agent_runtime.agent_runtime import AgentInvocation, AgentRuntime
 from claude_agent_runtime.contracts import MessageRole
 from claude_agent_runtime.definitions import AgentDefinition, PermissionBehavior, PermissionDecision
 from claude_agent_runtime.registries import AgentRegistry, SkillRegistry, ToolRegistry
+from claude_agent_runtime.runtime_kernel import ModelRouteBinding
 from claude_agent_runtime.runtime_services import RuntimeServices
 from claude_agent_runtime.tasking import TaskManager, TaskStatus
-from claude_agent_runtime.turn_engine import ModelRequest, ModelStreamEvent, ModelStreamEventType, TurnEngine
+from claude_agent_runtime.turn_engine import (
+    ModelInvocationMode,
+    ModelRequest,
+    ModelStreamEvent,
+    ModelStreamEventType,
+    NormalizedModelCapabilities,
+    TurnEngine,
+)
 
 
 class FakeModelClient:
@@ -402,3 +410,145 @@ def test_background_failure_marks_task_failed_and_emits_failure_notification(tmp
     assert record.status == AgentRunStatus.FAILED
     assert record.terminal_metadata["error"] == "isolation prepare failed"
     assert runtime.notifications[-1].text == "Background agent 'verification' failed: isolation prepare failed"
+
+
+def test_route_resolution_uses_request_scoped_clients_and_persists_metadata(tmp_path: Path) -> None:
+    async def scenario():
+        route_a_client = FakeModelClient(
+            [
+                [
+                    ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-route-a-1"}),
+                    ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "route a"}),
+                    ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+                ],
+                [
+                    ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-route-a-2"}),
+                    ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "route a override"}),
+                    ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+                ],
+            ]
+        )
+        route_b_client = FakeModelClient(
+            [
+                [
+                    ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-route-b-1"}),
+                    ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "route b"}),
+                    ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+                ],
+                [
+                    ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-route-b-2"}),
+                    ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "route b explicit"}),
+                    ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+                ],
+            ]
+        )
+        agent_registry = AgentRegistry()
+        agent_registry.register(
+            AgentDefinition(
+                name="reviewer",
+                description="review",
+                prompt="review",
+                model_route="route-a",
+                model="route-a-default",
+            )
+        )
+        agent_registry.register(
+            AgentDefinition(
+                name="analyst",
+                description="analyze",
+                prompt="analyze",
+                model_route="route-b",
+                model="route-b-default",
+            )
+        )
+        runtime = AgentRuntime(
+            turn_engine=TurnEngine(
+                model_client=route_a_client,
+                tool_registry=ToolRegistry(),
+                agent_registry=agent_registry,
+                skill_registry=SkillRegistry(),
+                task_manager=TaskManager(),
+            ),
+            agent_registry=agent_registry,
+            tool_registry=ToolRegistry(),
+            skill_registry=SkillRegistry(),
+            task_manager=TaskManager(),
+            model_routes={
+                "route-a": ModelRouteBinding(
+                    client=route_a_client,
+                    default_model="route-a-default",
+                    provider_name="provider-a",
+                    capabilities=NormalizedModelCapabilities(),
+                ),
+                "route-b": ModelRouteBinding(
+                    client=route_b_client,
+                    default_model="route-b-default",
+                    provider_name="provider-b",
+                    capabilities=NormalizedModelCapabilities(),
+                ),
+            },
+            default_model_route="route-a",
+        )
+        first = await runtime.invoke(
+            AgentInvocation(
+                agent_name="reviewer",
+                prompt="first",
+                session_id="session-route",
+                cwd=tmp_path,
+            )
+        )
+        second = await runtime.invoke(
+            AgentInvocation(
+                agent_name="reviewer",
+                prompt="second",
+                session_id="session-route",
+                cwd=tmp_path,
+                requested_model="custom-route-a-model",
+            )
+        )
+        third = await runtime.invoke(
+            AgentInvocation(
+                agent_name="analyst",
+                prompt="third",
+                session_id="session-route",
+                cwd=tmp_path,
+            )
+        )
+        fourth = await runtime.invoke(
+            AgentInvocation(
+                agent_name="reviewer",
+                prompt="fourth",
+                session_id="session-route",
+                cwd=tmp_path,
+                requested_model_route="route-b",
+                requested_model="custom-route-b-model",
+            )
+        )
+        record = await runtime.run_store.get(fourth.run_id)
+        return route_a_client, route_b_client, (first, second, third, fourth, record)
+
+    route_a_client, route_b_client, payload = asyncio.run(scenario())
+    first, second, third, fourth, record = payload
+
+    assert route_a_client.requests[0].resolved_model_route == "route-a"
+    assert route_a_client.requests[0].provider_name == "provider-a"
+    assert route_a_client.requests[0].model == "route-a-default"
+    assert route_a_client.requests[1].resolved_model_route == "route-a"
+    assert route_a_client.requests[1].model == "custom-route-a-model"
+    assert route_b_client.requests[0].resolved_model_route == "route-b"
+    assert route_b_client.requests[0].provider_name == "provider-b"
+    assert route_b_client.requests[0].model == "route-b-default"
+    assert route_b_client.requests[1].requested_model_route == "route-b"
+    assert route_b_client.requests[1].resolved_model_route == "route-b"
+    assert route_b_client.requests[1].model == "custom-route-b-model"
+    assert route_b_client.requests[1].invocation_mode == ModelInvocationMode.STREAM
+    assert first.execution_spec is not None
+    assert first.execution_spec.resolved_model_route == "route-a"
+    assert third.execution_spec is not None
+    assert third.execution_spec.resolved_model_route == "route-b"
+    assert fourth.execution_spec is not None
+    assert fourth.execution_spec.resolved_model_route == "route-b"
+    assert record is not None
+    assert record.resolved_model_route == "route-b"
+    assert record.provider_name == "provider-b"
+    assert record.invocation_mode == ModelInvocationMode.STREAM.value

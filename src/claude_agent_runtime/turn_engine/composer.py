@@ -28,6 +28,7 @@ class ContextAssembler:
         messages: Sequence[RuntimeMessage],
         available_tools: Sequence[str],
         available_skills: Sequence[str],
+        available_agents: Sequence[AgentDefinition] = (),
         base_system_prompt: str,
         memory_fragments: Sequence[str] = (),
         hook_context: Sequence[str] = (),
@@ -39,6 +40,12 @@ class ContextAssembler:
         runtime_context: dict[str, Any] | None = None,
     ) -> ContextAssembly:
         sections: list[str] = [base_system_prompt.strip(), agent.prompt.strip()]
+        if available_agents:
+            agent_lines = [
+                f"- {definition.name}: {definition.description}"
+                for definition in available_agents
+            ]
+            sections.append("Agents:\n" + "\n".join(agent_lines))
         if memory_fragments:
             sections.append("Memory:\n" + "\n".join(memory_fragments))
         if hook_context:
@@ -60,6 +67,7 @@ class ContextAssembler:
             messages=tuple(messages),
             available_tools=tuple(available_tools),
             available_skills=tuple(available_skills),
+            available_agents=tuple(definition.name for definition in available_agents),
             memory_fragments=tuple(memory_fragments),
             hook_context=tuple(hook_context),
             compaction_fragments=tuple(compaction_fragments),

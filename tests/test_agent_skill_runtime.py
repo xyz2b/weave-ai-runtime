@@ -23,7 +23,14 @@ from claude_agent_runtime.runtime_kernel import BuiltinPackConfig, RuntimeConfig
 from claude_agent_runtime.runtime_services import RuntimeServices
 from claude_agent_runtime.skill_runtime import SkillExecutor
 from claude_agent_runtime.tasking import TaskManager
-from claude_agent_runtime.turn_engine import ModelRequest, ModelStreamEvent, ModelStreamEventType, TurnEngine
+from claude_agent_runtime.tool_runtime import ToolCall, ToolCallStatus, ToolContext, ToolScheduler
+from claude_agent_runtime.turn_engine import (
+    ModelRequest,
+    ModelStreamEvent,
+    ModelStreamEventType,
+    TurnEngine,
+    TurnStreamEventType,
+)
 
 
 class FakeModelClient:
@@ -72,6 +79,231 @@ class FailingIsolationService:
 
     async def cleanup(self, lease):  # pragma: no cover - protocol completeness
         _ = lease
+
+
+def test_main_thread_request_exposes_available_agents_and_agents_prompt(tmp_path: Path) -> None:
+    model_client = FakeModelClient(
+        [
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-agents"}),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "done"}),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+            ]
+        ]
+    )
+    agent_registry = AgentRegistry()
+    agent_registry.register(AgentDefinition(name="main-router", description="router", prompt="route"))
+    agent_registry.register(AgentDefinition(name="verification", description="verify", prompt="verify"))
+    agent_registry.register(AgentDefinition(name="planner", description="plan", prompt="plan"))
+
+    asyncio.run(
+        TurnEngine(
+            model_client=model_client,
+            tool_registry=ToolRegistry(),
+            agent_registry=agent_registry,
+            skill_registry=SkillRegistry(),
+            task_manager=TaskManager(),
+        ).run_turn(
+            session_id="session-agents",
+            turn_id="turn-agents",
+            agent=agent_registry.get("main-router"),
+            cwd=str(tmp_path),
+            messages=[],
+            base_system_prompt="System",
+        )
+    )
+
+    request = model_client.requests[0]
+    assert request.turn_context.available_agents == ("verification", "planner")
+    assert "Agents:" in request.system_prompt
+    assert "- verification: verify" in request.system_prompt
+    assert "- planner: plan" in request.system_prompt
+    assert "main-router" not in request.turn_context.available_agents
+
+
+def test_agent_tool_v1_contract_normalizes_and_returns_structured_payload(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    model_client = FakeModelClient(
+        [
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-agent-structured"}),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "subagent answer"}),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+            ]
+        ]
+    )
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            model_client=model_client,
+            builtins=BuiltinPackConfig(
+                agents_enabled=False,
+                extra_agents=[
+                    AgentDefinition(name="main-router", description="router", prompt="route", tools=("*",)),
+                    AgentDefinition(name="verification", description="verify", prompt="verify"),
+                ],
+            ),
+        )
+    )
+    context = ToolContext(
+        session_id="session-agent-tool",
+        turn_id="turn-agent-tool",
+        agent_name="main-router",
+        cwd=tmp_path,
+        tool_registry=runtime.kernel.tool_registry,
+        agent_registry=runtime.kernel.agent_registry,
+        skill_registry=runtime.kernel.skill_registry,
+        agent_runner=runtime.run_agent_tool,
+    )
+
+    result = asyncio.run(
+        ToolScheduler(runtime.kernel.tool_registry).run(
+            [
+                ToolCall(
+                    "call-agent",
+                    "agent",
+                    {
+                        "agent": "verification",
+                        "prompt": "run checks",
+                        "background": True,
+                        "spawn_mode": "sync",
+                        "cwd": "workspace",
+                        "model": "override-model",
+                        "model_route": "reviewer-route",
+                        "reason": "need specialist",
+                        "permission_mode": "dontAsk",
+                        "isolation": "worktree",
+                        "max_turns": 1,
+                    },
+                )
+            ],
+            context,
+        )
+    )[0]
+
+    assert result.status == ToolCallStatus.SUCCESS
+    payload = result.output
+    assert payload["agent"] == "verification"
+    assert payload["status"] == "completed"
+    assert payload["background"] is False
+    assert payload["run_id"]
+    assert payload["turn_id"]
+    assert payload["task_id"] is None
+    assert payload["query_source"] == "agent_tool"
+    assert payload["requested_model"] == "override-model"
+    assert payload["requested_model_route"] == "reviewer-route"
+    assert payload["resolved_model_route"] == "reviewer-route"
+    assert payload["isolation_mode"] == "worktree"
+    assert payload["terminal_metadata"] == {
+        "stop_reason": "end_turn",
+        "request_id": "req-agent-structured",
+    }
+    assert payload["messages"][-1]["content"][0]["text"] == "subagent answer"
+
+    request = model_client.requests[0]
+    assert request.turn_context.cwd == str(workspace.resolve())
+    assert request.model == "override-model"
+    assert request.requested_model_route == "reviewer-route"
+    assert request.resolved_model_route == "reviewer-route"
+    assert request.metadata["delegation_reason"] == "need specialist"
+
+
+def test_agent_tool_rejects_invalid_cwd_input(tmp_path: Path) -> None:
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            model_client=FakeModelClient([]),
+            builtins=BuiltinPackConfig(
+                agents_enabled=False,
+                extra_agents=[
+                    AgentDefinition(name="main-router", description="router", prompt="route", tools=("*",)),
+                    AgentDefinition(name="verification", description="verify", prompt="verify"),
+                ],
+            ),
+        )
+    )
+    context = ToolContext(
+        session_id="session-invalid-agent-tool",
+        turn_id="turn-invalid-agent-tool",
+        agent_name="main-router",
+        cwd=tmp_path,
+        tool_registry=runtime.kernel.tool_registry,
+        agent_registry=runtime.kernel.agent_registry,
+        skill_registry=runtime.kernel.skill_registry,
+        agent_runner=runtime.run_agent_tool,
+    )
+
+    result = asyncio.run(
+        ToolScheduler(runtime.kernel.tool_registry).run(
+            [
+                ToolCall(
+                    "call-invalid-agent",
+                    "agent",
+                    {
+                        "agent": "verification",
+                        "prompt": "run checks",
+                        "cwd": "missing-workspace",
+                    },
+                )
+            ],
+            context,
+        )
+    )[0]
+
+    assert result.status == ToolCallStatus.ERROR
+    assert "cwd does not exist" in (result.error or "")
+
+
+def test_session_stream_surfaces_child_run_events(tmp_path: Path) -> None:
+    async def scenario():
+        model_client = FakeModelClient(
+            [
+                [
+                    ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-child-main-1"}),
+                    ModelStreamEvent(
+                        ModelStreamEventType.TOOL_CALL,
+                        {
+                            "tool_name": "agent",
+                            "tool_input": {"agent": "verification", "prompt": "run checks"},
+                            "call_id": "call-child-agent",
+                        },
+                    ),
+                    ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "tool_use"}),
+                ],
+                [
+                    ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-child-sub"}),
+                    ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "subagent answer"}),
+                    ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+                ],
+                [
+                    ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-child-main-2"}),
+                    ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "done"}),
+                    ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+                ],
+            ]
+        )
+        runtime = assemble_runtime(
+            RuntimeConfig(
+                working_directory=tmp_path,
+                model_client=model_client,
+                builtins=BuiltinPackConfig(
+                    extra_agents=[
+                        AgentDefinition(name="verification", description="verify", prompt="verify")
+                    ]
+                ),
+            )
+        )
+        return [event async for event in runtime.stream_prompt("Run agent tool", session_id="session-child-events")]
+
+    events = asyncio.run(scenario())
+
+    child_events = [event for event in events if event.event_type == TurnStreamEventType.CHILD_RUN]
+    assert len(child_events) == 1
+    assert child_events[0].child_run is not None
+    assert child_events[0].child_run.agent_name == "verification"
+    assert child_events[0].child_run.status.value == "completed"
+    assert child_events[0].child_run.messages[-1].text == "subagent answer"
 
 
 def test_agent_runtime_routes_and_skill_executor_supports_inline_and_fork(

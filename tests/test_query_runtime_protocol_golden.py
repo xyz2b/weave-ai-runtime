@@ -451,74 +451,71 @@ def test_headless_host_can_consume_runtime_turn_event_stream_without_reimplement
                 }
             )
 
-    assert host_view == [
-        {
-            "role": "assistant",
-            "content": [
-                {
-                    "type": "tool_use",
-                    "tool_use_id": "call-agent-1",
-                    "name": "agent",
-                    "input": {"agent": "verification", "prompt": "run checks"},
-                }
-            ],
-            "metadata": {
-                "stop_reason": "tool_use",
-                "request_id": "req-host-main-1",
-            },
-        },
-        {
+    assert host_view[0] == {
+        "role": "assistant",
+        "content": [
+            {
+                "type": "tool_use",
+                "tool_use_id": "call-agent-1",
+                "name": "agent",
+                "input": {"agent": "verification", "prompt": "run checks"},
+            }
+        ],
+        "metadata": {
             "stop_reason": "tool_use",
             "request_id": "req-host-main-1",
         },
-        {
-            "role": "user",
-            "content": [
-                {
-                    "type": "tool_result",
-                    "tool_use_id": "call-agent-1",
-                    "content": {
-                        "agent": "verification",
-                        "status": "completed",
-                        "background": False,
-                        "messages": [
-                            {
-                                "role": "assistant",
-                                "content": [{"type": "text", "text": "subagent answer"}],
-                                "metadata": {
-                                    "stop_reason": "end_turn",
-                                    "request_id": "req-host-sub",
-                                },
-                            }
-                        ],
-                        "isolation_mode": "worktree",
-                    },
-                    "is_error": False,
-                }
-            ],
-            "metadata": {
-                "tool_results": [
-                    {
-                        "tool_use_id": "call-agent-1",
-                        "tool_name": "agent",
-                        "status": "success",
-                    }
-                ]
-            },
-        },
+    }
+    assert host_view[1] == {
+        "stop_reason": "tool_use",
+        "request_id": "req-host-main-1",
+    }
+    assert host_view[2]["role"] == "user"
+    assert host_view[2]["metadata"] == {
+        "tool_results": [
+            {
+                "tool_use_id": "call-agent-1",
+                "tool_name": "agent",
+                "status": "success",
+            }
+        ]
+    }
+    tool_result = host_view[2]["content"][0]
+    assert tool_result["type"] == "tool_result"
+    assert tool_result["tool_use_id"] == "call-agent-1"
+    assert tool_result["is_error"] is False
+    assert tool_result["content"]["agent"] == "verification"
+    assert tool_result["content"]["status"] == "completed"
+    assert tool_result["content"]["background"] is False
+    assert tool_result["content"]["run_id"]
+    assert tool_result["content"]["turn_id"]
+    assert tool_result["content"]["messages"] == [
         {
             "role": "assistant",
-            "content": [{"type": "text", "text": "agent delegation done"}],
+            "content": [{"type": "text", "text": "subagent answer"}],
             "metadata": {
                 "stop_reason": "end_turn",
-                "request_id": "req-host-main-2",
+                "request_id": "req-host-sub",
             },
-        },
-        {
+        }
+    ]
+    assert tool_result["content"]["isolation_mode"] == "worktree"
+    assert tool_result["content"]["terminal_metadata"] == {
+        "stop_reason": "end_turn",
+        "request_id": "req-host-sub",
+    }
+    assert host_view[3] == {
+        "role": "assistant",
+        "content": [{"type": "text", "text": "agent delegation done"}],
+        "metadata": {
             "stop_reason": "end_turn",
             "request_id": "req-host-main-2",
         },
-    ]
+    }
+    assert host_view[4] == {
+        "stop_reason": "end_turn",
+        "request_id": "req-host-main-2",
+    }
     assert all(
         not (
             isinstance(item, dict)

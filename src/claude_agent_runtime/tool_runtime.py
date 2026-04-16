@@ -85,6 +85,14 @@ class AgentRunner(Protocol):
         context: "ToolContext",
         *,
         background: bool = False,
+        spawn_mode: str | None = None,
+        cwd: str | None = None,
+        model: str | None = None,
+        model_route: str | None = None,
+        reason: str | None = None,
+        permission_mode: str | None = None,
+        isolation: str | None = None,
+        max_turns: int | None = None,
     ) -> Any: ...
 
 

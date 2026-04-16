@@ -4,9 +4,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Mapping
 
+from ..agent_execution import ChildRunStore
 from ..definitions import AgentDefinition, DefinitionSource, SkillDefinition, ToolDefinition
 from ..hosts.base import HostFactory
-from ..turn_engine.models import ModelClient, TranscriptStore
+from ..turn_engine.models import ModelClient, NormalizedModelCapabilities, TranscriptStore
 
 if TYPE_CHECKING:
     from ..tool_runtime import AskUserHandler, PermissionHandler, ToolRefreshCallback
@@ -66,6 +67,14 @@ class HostBinding:
     config: Mapping[str, Any] = field(default_factory=dict)
 
 
+@dataclass(frozen=True, slots=True)
+class ModelRouteBinding:
+    client: ModelClient
+    default_model: str | None = None
+    provider_name: str | None = None
+    capabilities: NormalizedModelCapabilities | None = None
+
+
 @dataclass(slots=True)
 class RuntimeConfig:
     runtime_id: str = "default"
@@ -74,7 +83,10 @@ class RuntimeConfig:
     builtins: BuiltinPackConfig = field(default_factory=BuiltinPackConfig)
     host_bindings: tuple[HostBinding, ...] = ()
     model_client: ModelClient | None = None
+    model_routes: dict[str, ModelRouteBinding] = field(default_factory=dict)
+    default_model_route: str | None = None
     transcript_store: TranscriptStore | None = None
+    child_run_store: ChildRunStore | None = None
     default_agent: str = "main-router"
     system_prompt: str = ""
     permission_handler: PermissionHandler | None = None

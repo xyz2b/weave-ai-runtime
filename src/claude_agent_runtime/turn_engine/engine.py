@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, AsyncIterator, Mapping
 from uuid import uuid4
 
+from ..agent_execution import AgentRunRecord
 from ..compaction import (
     CompactionPolicy,
     CompactionResult,
@@ -39,7 +41,7 @@ from ..hooks import StopPayload, UserPromptSubmitPayload
 from ..permissions import PermissionContext
 from ..registries import AgentRegistry, SkillRegistry, ToolRegistry
 from ..runtime_services import DefaultTaskService, RuntimeServices
-from ..tool_executors import select_tool_executor
+from ..tool_executors import model_capabilities_for, select_tool_executor
 from ..tool_lifecycle import ToolLifecycleEvent
 from ..tasking import TaskManager
 from ..tool_runtime import (
@@ -55,14 +57,17 @@ from .message_protocol import normalize_messages_for_api
 from .models import (
     ModelAbortSignal,
     ModelClient,
+    ModelInvocationMode,
     ModelRequest,
     ModelStreamEvent,
     ModelStreamEventType,
     ModelTerminalMetadata,
+    NormalizedModelCapabilities,
 )
 
 
 class TurnStreamEventType(StrEnum):
+    CHILD_RUN = "child_run"
     COMPACTION = "compaction"
     REQUEST_START = "request_start"
     STREAM_PROGRESS = "stream_progress"
@@ -79,6 +84,7 @@ class TurnStreamEvent:
     request: ModelRequest | None = None
     model_event: ModelStreamEvent | None = None
     tool_event: ToolLifecycleEvent | None = None
+    child_run: AgentRunRecord | None = None
     message: RuntimeMessage | None = None
     compacted_messages: tuple[RuntimeMessage, ...] = ()
     terminal: ModelTerminalMetadata | None = None
@@ -404,6 +410,7 @@ class TurnEngine:
         self._active_tool_context: ToolContext | None = None
         self._active_tool_executor: Any = None
         self._active_abort_signal: ModelAbortSignal | None = None
+        self._child_run_events: dict[tuple[str, str], list[AgentRunRecord]] = {}
 
     @property
     def runtime_services(self) -> RuntimeServices:
@@ -430,6 +437,24 @@ class TurnEngine:
         self._runtime_services.bind_execution(
             agent_runner=agent_runner,
             skill_runner=skill_runner,
+        )
+
+    async def emit_child_run(self, record: AgentRunRecord) -> None:
+        if record.parent_turn_id is not None:
+            key = (record.session_id, record.parent_turn_id)
+            queue = self._child_run_events.get(key)
+            if queue is not None:
+                queue.append(record)
+                return
+        await maybe_await(
+            self._runtime_services.host.emit_turn_event(
+                record.session_id,
+                TurnStreamEvent(
+                    event_type=TurnStreamEventType.CHILD_RUN,
+                    iteration=0,
+                    child_run=record,
+                ),
+            )
         )
 
     def interrupt(self, reason: str = "interrupt") -> None:
@@ -498,6 +523,7 @@ class TurnEngine:
         compaction_fragments: list[str] | None = None,
         attachments: list[MessageAttachment] | None = None,
         runtime_context: dict[str, object] | None = None,
+        model_client_override: ModelClient | None = None,
     ) -> AsyncIterator[TurnStreamEvent]:
         state = _TurnRunState()
         async for event in self._run_turn_stream_impl(
@@ -513,6 +539,7 @@ class TurnEngine:
             compaction_fragments=compaction_fragments,
             attachments=attachments,
             runtime_context=runtime_context,
+            model_client_override=model_client_override,
         ):
             yield event
 
@@ -530,6 +557,7 @@ class TurnEngine:
         compaction_fragments: list[str] | None = None,
         attachments: list[MessageAttachment] | None = None,
         runtime_context: dict[str, object] | None = None,
+        model_client_override: ModelClient | None = None,
     ) -> TurnResult:
         result = TurnResult()
         state = _TurnRunState()
@@ -546,6 +574,7 @@ class TurnEngine:
             compaction_fragments=compaction_fragments,
             attachments=attachments,
             runtime_context=runtime_context,
+            model_client_override=model_client_override,
         ):
             if event.event_type == TurnStreamEventType.MESSAGE and event.message is not None:
                 result.messages.append(event.message)
@@ -580,11 +609,14 @@ class TurnEngine:
         compaction_fragments: list[str] | None = None,
         attachments: list[MessageAttachment] | None = None,
         runtime_context: dict[str, object] | None = None,
+        model_client_override: ModelClient | None = None,
     ) -> AsyncIterator[TurnStreamEvent]:
         max_iterations = agent.max_turns or 4
         working_messages = list(messages)
         iteration = 0
         runtime_context = dict(runtime_context or {})
+        child_run_key = (session_id, turn_id)
+        self._child_run_events[child_run_key] = []
         runtime_context.setdefault(
             "permission_context",
             PermissionContext(
@@ -614,6 +646,7 @@ class TurnEngine:
 
         try:
             while iteration < max_iterations:
+                model_client = model_client_override or self._model_client
                 iteration_index = iteration + 1
                 state.iterations = iteration_index
                 runtime_metadata = self._merge_runtime_context(runtime_context)
@@ -683,6 +716,10 @@ class TurnEngine:
                     messages=api_messages,
                     available_tools=[tool.name for tool in tool_pool],
                     available_skills=[skill.name for skill in active_skills],
+                    available_agents=self._available_agents_for_request(
+                        current_agent=agent,
+                        runtime_context=sanitized_runtime_context,
+                    ),
                     base_system_prompt=base_system_prompt,
                     memory_fragments=shared_memory_fragments + tuple(memory_fragments or ()),
                     hook_context=shared_hook_context
@@ -712,6 +749,14 @@ class TurnEngine:
                 request_metadata = dict(sanitized_runtime_context)
                 if compaction_payload is not None:
                     request_metadata["compaction"] = compaction_payload
+                requested_capabilities = _coerce_model_capabilities(
+                    runtime_metadata.get("resolved_capabilities")
+                )
+                resolved_capabilities = requested_capabilities or model_capabilities_for(model_client)
+                invocation_mode = (
+                    _coerce_invocation_mode(runtime_metadata.get("invocation_mode"))
+                    or _select_invocation_mode(resolved_capabilities)
+                )
                 request = ModelRequest(
                     system_prompt=composition.system_prompt,
                     turn_context=composition.turn_context,
@@ -723,10 +768,15 @@ class TurnEngine:
                     effort=agent.effort,
                     abort_signal=abort_signal,
                     query_source=_query_source(request_metadata),
+                    requested_model_route=_string_value(runtime_metadata.get("requested_model_route")),
+                    resolved_model_route=_string_value(runtime_metadata.get("resolved_model_route")),
+                    provider_name=_string_value(runtime_metadata.get("provider_name")),
+                    resolved_capabilities=resolved_capabilities,
+                    invocation_mode=invocation_mode,
                     metadata=request_metadata,
                 )
                 tool_executor = select_tool_executor(
-                    self._model_client,
+                    model_client,
                     context=tool_context,
                     lifecycle_sink=lambda tool_event: pending_tool_turn_events.append(
                         TurnStreamEvent(
@@ -765,56 +815,104 @@ class TurnEngine:
                 )
 
                 attempt_state = _StreamAttemptState()
+                pending_tool_use_closed_at_message_stop = False
                 self._active_abort_signal = abort_signal
                 try:
-                    async for event in self._model_client.stream(request):
-                        attempt_state.observe(event)
+                    if request.invocation_mode == ModelInvocationMode.BUFFERED_COMPLETION:
+                        assistant_blocks, tool_calls, terminal, response_events, assistant_message_id = (
+                            await self._complete_buffered_attempt(
+                                model_client=model_client,
+                                request=request,
+                                assistant_message_id=assistant_message_id,
+                                abort_reason=abort_signal.reason,
+                            )
+                        )
+                        for event in response_events:
+                            yield TurnStreamEvent(
+                                event_type=TurnStreamEventType.STREAM_PROGRESS,
+                                iteration=iteration_index,
+                                request=request,
+                                model_event=event,
+                            )
+                    else:
+                        async for event in model_client.stream(request):
+                            attempt_state.observe(event)
+                            yield TurnStreamEvent(
+                                event_type=TurnStreamEventType.STREAM_PROGRESS,
+                                iteration=iteration_index,
+                                request=request,
+                                model_event=event,
+                            )
+                            if tool_executor is not None:
+                                new_tool_calls = attempt_state.drain_new_tool_calls()
+                                if new_tool_calls and not (
+                                    event.event_type == ModelStreamEventType.MESSAGE_STOP
+                                    and attempt_state.pending_tool_use_closed_at_message_stop
+                                ):
+                                    await tool_executor.observe_stream_calls(
+                                        new_tool_calls,
+                                        assistant_message_id=assistant_message_id,
+                                        provider_request_id=attempt_state.request_id,
+                                        block_offset=len(attempt_state.tool_calls) - len(new_tool_calls),
+                                    )
+                            while pending_tool_turn_events:
+                                yield pending_tool_turn_events.pop(0)
+                        pending_tool_use_closed_at_message_stop = (
+                            attempt_state.pending_tool_use_closed_at_message_stop
+                        )
+                except Exception as exc:
+                    if request.invocation_mode == ModelInvocationMode.BUFFERED_COMPLETION:
+                        error_event = ModelStreamEvent(
+                            event_type=ModelStreamEventType.ERROR,
+                            payload={"error": str(exc)},
+                            terminal=ModelTerminalMetadata(
+                                stop_reason="error",
+                                error=str(exc),
+                                abort_reason=abort_signal.reason,
+                            ),
+                        )
+                        assistant_blocks = ()
+                        tool_calls = ()
+                        terminal = error_event.terminal or ModelTerminalMetadata(
+                            stop_reason="error",
+                            error=str(exc),
+                            abort_reason=abort_signal.reason,
+                        )
                         yield TurnStreamEvent(
                             event_type=TurnStreamEventType.STREAM_PROGRESS,
                             iteration=iteration_index,
                             request=request,
-                            model_event=event,
+                            model_event=error_event,
                         )
-                        if tool_executor is not None:
-                            new_tool_calls = attempt_state.drain_new_tool_calls()
-                            if new_tool_calls and not (
-                                event.event_type == ModelStreamEventType.MESSAGE_STOP
-                                and attempt_state.pending_tool_use_closed_at_message_stop
-                            ):
-                                await tool_executor.observe_stream_calls(
-                                    new_tool_calls,
-                                    assistant_message_id=assistant_message_id,
-                                    provider_request_id=attempt_state.request_id,
-                                    block_offset=len(attempt_state.tool_calls) - len(new_tool_calls),
-                                )
-                        while pending_tool_turn_events:
-                            yield pending_tool_turn_events.pop(0)
-                except Exception as exc:
-                    error_event = ModelStreamEvent(
-                        event_type=ModelStreamEventType.ERROR,
-                        payload={"error": str(exc)},
-                        terminal=ModelTerminalMetadata(
-                            stop_reason="error",
-                            error=str(exc),
-                            abort_reason=abort_signal.reason,
-                        ),
-                    )
-                    attempt_state.observe(error_event)
-                    yield TurnStreamEvent(
-                        event_type=TurnStreamEventType.STREAM_PROGRESS,
-                        iteration=iteration_index,
-                        request=request,
-                        model_event=error_event,
-                    )
+                    else:
+                        error_event = ModelStreamEvent(
+                            event_type=ModelStreamEventType.ERROR,
+                            payload={"error": str(exc)},
+                            terminal=ModelTerminalMetadata(
+                                stop_reason="error",
+                                error=str(exc),
+                                abort_reason=abort_signal.reason,
+                            ),
+                        )
+                        attempt_state.observe(error_event)
+                        yield TurnStreamEvent(
+                            event_type=TurnStreamEventType.STREAM_PROGRESS,
+                            iteration=iteration_index,
+                            request=request,
+                            model_event=error_event,
+                        )
                 finally:
                     self._active_abort_signal = None
 
-                assistant_blocks, discarded_blocks, tool_calls, terminal = attempt_state.finalize(
-                    abort_reason=abort_signal.reason,
-                    preserve_observed_tool_uses=_abort_reason_allows_tool_finalize(
-                        abort_signal.reason
-                    ),
-                )
+                if request.invocation_mode == ModelInvocationMode.BUFFERED_COMPLETION:
+                    discarded_blocks = ()
+                else:
+                    assistant_blocks, discarded_blocks, tool_calls, terminal = attempt_state.finalize(
+                        abort_reason=abort_signal.reason,
+                        preserve_observed_tool_uses=_abort_reason_allows_tool_finalize(
+                            abort_signal.reason
+                        ),
+                    )
                 if assistant_blocks:
                     assistant_message = RuntimeMessage(
                         message_id=assistant_message_id,
@@ -838,6 +936,12 @@ class TurnEngine:
                         )
                 while pending_tool_turn_events:
                     yield pending_tool_turn_events.pop(0)
+                for child_event in self._drain_child_run_events(
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    iteration=iteration_index,
+                ):
+                    yield child_event
                 if discarded_blocks:
                     yield TurnStreamEvent(
                         event_type=TurnStreamEventType.MESSAGE_DISCARDED,
@@ -912,7 +1016,7 @@ class TurnEngine:
                         tool_calls,
                         assistant_message_id=assistant_message_id,
                         provider_request_id=terminal.request_id,
-                        has_pending_tool_use=attempt_state.pending_tool_use_closed_at_message_stop,
+                        has_pending_tool_use=pending_tool_use_closed_at_message_stop,
                     )
                 finally:
                     self._active_tool_context = None
@@ -920,6 +1024,13 @@ class TurnEngine:
 
                 while pending_tool_turn_events:
                     yield pending_tool_turn_events.pop(0)
+                for child_event in self._drain_child_run_events(
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    iteration=iteration_index,
+                    request=request,
+                ):
+                    yield child_event
 
                 tool_message = tool_executor.orchestrator.tool_result_message(outcomes)
                 if tool_message is not None:
@@ -931,11 +1042,19 @@ class TurnEngine:
                         message=tool_message,
                         terminal=terminal,
                     )
+                for child_event in self._drain_child_run_events(
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    iteration=iteration_index,
+                    request=request,
+                ):
+                    yield child_event
 
                 iteration += 1
 
             state.completed = False
         finally:
+            self._child_run_events.pop(child_run_key, None)
             if self._runtime_services.hook_bus is not None:
                 self._runtime_services.hook_bus.release_turn(session_id, turn_id)
 
@@ -1033,6 +1152,55 @@ class TurnEngine:
         await self._emit_hook_notifications(session_id, result.notifications)
         return result
 
+    async def _complete_buffered_attempt(
+        self,
+        *,
+        model_client: ModelClient,
+        request: ModelRequest,
+        assistant_message_id: str,
+        abort_reason: str | None,
+    ) -> tuple[
+        tuple[ContentBlock, ...],
+        tuple[ToolCall, ...],
+        ModelTerminalMetadata,
+        tuple[ModelStreamEvent, ...],
+        str,
+    ]:
+        response = await maybe_await(model_client.complete(request))
+        terminal = _terminal_from_response(response, abort_reason=abort_reason)
+        tool_calls = tuple(_tool_calls_from_message(response.message))
+        if terminal.stop_reason == "tool_use" and not tool_calls:
+            raise ValueError(
+                "Buffered completion returned stop_reason 'tool_use' without ToolUseBlock content"
+            )
+        resolved_message_id = response.message.message_id or assistant_message_id
+        return (
+            tuple(response.message.content),
+            tool_calls,
+            terminal,
+            tuple(response.events),
+            resolved_message_id,
+        )
+
+    def _available_agents_for_request(
+        self,
+        *,
+        current_agent: AgentDefinition,
+        runtime_context: Mapping[str, object] | None,
+    ) -> tuple[AgentDefinition, ...]:
+        if self._agent_registry is None:
+            return ()
+        if runtime_context and (
+            runtime_context.get("run_id") is not None
+            or runtime_context.get("parent_run_id") is not None
+        ):
+            return ()
+        return tuple(
+            definition
+            for definition in self._agent_registry.definitions()
+            if definition.name != current_agent.name
+        )
+
     async def _emit_hook_notifications(self, session_id: str, notifications: tuple[str, ...]) -> None:
         for notification in notifications:
             await maybe_await(
@@ -1045,6 +1213,29 @@ class TurnEngine:
                     )
                 )
             )
+
+    def _drain_child_run_events(
+        self,
+        *,
+        session_id: str,
+        turn_id: str,
+        iteration: int,
+        request: ModelRequest | None = None,
+    ) -> tuple[TurnStreamEvent, ...]:
+        queue = self._child_run_events.get((session_id, turn_id))
+        if not queue:
+            return ()
+        drained = tuple(queue)
+        queue.clear()
+        return tuple(
+            TurnStreamEvent(
+                event_type=TurnStreamEventType.CHILD_RUN,
+                iteration=iteration,
+                request=request,
+                child_run=record,
+            )
+            for record in drained
+        )
 
 
 def _assistant_message_metadata(terminal: ModelTerminalMetadata) -> dict[str, Any]:
@@ -1062,6 +1253,26 @@ def _assistant_message_metadata(terminal: ModelTerminalMetadata) -> dict[str, An
     if terminal.error is not None:
         metadata["error"] = terminal.error
     return metadata
+
+
+def _terminal_from_response(
+    response: Any,
+    *,
+    abort_reason: str | None,
+) -> ModelTerminalMetadata:
+    existing = response.terminal or ModelTerminalMetadata()
+    usage = dict(existing.usage)
+    if response.usage:
+        usage = dict(response.usage)
+    return ModelTerminalMetadata(
+        stop_reason=response.stop_reason or existing.stop_reason or _synthesized_stop_reason(abort_reason, True, None),
+        usage=usage,
+        request_id=response.request_id or existing.request_id,
+        ttft_ms=response.ttft_ms if response.ttft_ms is not None else existing.ttft_ms,
+        error=existing.error,
+        abort_reason=existing.abort_reason or abort_reason,
+        metadata=dict(existing.metadata),
+    )
 
 
 def _latest_user_prompt_text(messages: list[RuntimeMessage]) -> str:
@@ -1165,6 +1376,7 @@ def _serialize_model_capabilities(capabilities: Any) -> dict[str, Any] | None:
         "parseable_tool_calls_after_message": capabilities.parseable_tool_calls_after_message,
         "multiple_tool_calls_per_message": capabilities.multiple_tool_calls_per_message,
         "abort_signal_passthrough": capabilities.abort_signal_passthrough,
+        "supports_streaming": capabilities.supports_streaming,
     }
 
 
@@ -1185,3 +1397,41 @@ class _EmptyHookResult:
     matched_owners: tuple[str, ...] = ()
     continue_execution: bool = True
     notifications: tuple[str, ...] = ()
+
+
+def _coerce_model_capabilities(value: object) -> NormalizedModelCapabilities | None:
+    if isinstance(value, NormalizedModelCapabilities):
+        return value
+    if not isinstance(value, dict):
+        return None
+    try:
+        return NormalizedModelCapabilities(
+            structured_tool_calls=bool(value.get("structured_tool_calls", True)),
+            streaming_tool_call_deltas=bool(value.get("streaming_tool_call_deltas", False)),
+            tool_call_finalize_boundary=bool(value.get("tool_call_finalize_boundary", False)),
+            parseable_tool_calls_after_message=bool(value.get("parseable_tool_calls_after_message", True)),
+            multiple_tool_calls_per_message=bool(value.get("multiple_tool_calls_per_message", True)),
+            abort_signal_passthrough=bool(value.get("abort_signal_passthrough", True)),
+            supports_streaming=bool(value.get("supports_streaming", True)),
+        )
+    except Exception:
+        return None
+
+
+def _coerce_invocation_mode(value: object) -> ModelInvocationMode | None:
+    if isinstance(value, ModelInvocationMode):
+        return value
+    if value is None:
+        return None
+    try:
+        return ModelInvocationMode(str(value))
+    except ValueError:
+        return None
+
+
+def _select_invocation_mode(
+    capabilities: NormalizedModelCapabilities | None,
+) -> ModelInvocationMode:
+    if capabilities is not None and not capabilities.supports_streaming:
+        return ModelInvocationMode.BUFFERED_COMPLETION
+    return ModelInvocationMode.STREAM

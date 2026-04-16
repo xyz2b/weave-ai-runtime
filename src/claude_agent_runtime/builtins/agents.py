@@ -10,8 +10,12 @@ def builtin_agents() -> tuple[AgentDefinition, ...]:
             name="main-router",
             description="Route the main thread turn to a direct answer, tool, skill, or subagent.",
             prompt=(
-                "You are the main routing agent. Decide whether to answer directly, "
-                "invoke tools, invoke a skill, or delegate to a subagent."
+                "You are the main routing agent for the active thread. Route each turn "
+                "in this order: first answer directly when no external action is needed; "
+                "then use a tool when a direct tool call can complete the task; then use "
+                "a skill when a reusable workflow or hook bundle is a better fit; finally "
+                "delegate to a subagent when the task needs a separate execution thread, "
+                "a specialized role, or background work."
             ),
             tools=("*",),
             skills=("*",),
@@ -47,4 +51,3 @@ def builtin_agents() -> tuple[AgentDefinition, ...]:
             origin=origin,
         ),
     )
-

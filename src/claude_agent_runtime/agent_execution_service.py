@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Any, Sequence
+from typing import TYPE_CHECKING, Any, Mapping, Sequence
 from uuid import uuid4
 
 from .agent_execution import (
@@ -26,8 +26,10 @@ from .hosts.base import CallbackHostAdapter, NullHostAdapter
 from .isolation import IsolationLease, serialize_isolation_lease
 from .permissions import PermissionContext, PermissionRequest, PermissionTarget
 from .registries import AgentRegistry, SkillRegistry, ToolRegistry
+from .runtime_kernel.config import ModelRouteBinding
 from .runtime_services import RuntimeServices
 from .turn_engine.engine import TurnEngine
+from .turn_engine.models import ModelInvocationMode, NormalizedModelCapabilities
 
 if TYPE_CHECKING:
     from .agent_runtime import AgentInvocation, AgentRunResult
@@ -43,6 +45,8 @@ class AgentExecutionService:
         skill_registry: SkillRegistry,
         runtime_services: RuntimeServices,
         run_store: ChildRunStore,
+        model_routes: Mapping[str, ModelRouteBinding] | None = None,
+        default_model_route: str | None = None,
     ) -> None:
         self._turn_engine = turn_engine
         self._agent_registry = agent_registry
@@ -50,6 +54,8 @@ class AgentExecutionService:
         self._skill_registry = skill_registry
         self._runtime_services = runtime_services
         self._run_store = run_store
+        self._model_routes = dict(model_routes or {})
+        self._default_model_route = default_model_route
 
     @property
     def run_store(self) -> ChildRunStore:
@@ -69,7 +75,10 @@ class AgentExecutionService:
         self,
         invocation: AgentInvocation,
         agent: AgentDefinition,
+        *,
+        execution_spec: AgentExecutionSpec | None = None,
     ) -> ExecutionPolicy:
+        policy_agent = self._apply_execution_overrides(agent, execution_spec)
         parent_state = policy_state_from_metadata(invocation.metadata)
         parent_policy = parent_state.effective if parent_state is not None else None
         base_tool_pool = (
@@ -98,7 +107,7 @@ class AgentExecutionService:
                 else PermissionContext(session_id=invocation.session_id)
             )
         return resolve_agent_execution_policy(
-            agent,
+            policy_agent,
             parent_policy=parent_policy,
             base_tool_pool=base_tool_pool,
             base_skill_pool=base_skill_pool,
@@ -113,7 +122,29 @@ class AgentExecutionService:
         from .agent_runtime import AgentRunResult
 
         agent = self.resolve_agent(execution_spec.agent_name)
-        policy = self.resolve_execution_policy(invocation, agent)
+        resolved_route_name, route_binding = self._resolve_model_route(agent, execution_spec)
+        resolved_model = (
+            execution_spec.requested_model
+            or agent.model
+            or (route_binding.default_model if route_binding is not None else None)
+        )
+        resolved_capabilities = (
+            route_binding.capabilities if route_binding is not None else execution_spec.resolved_capabilities
+        )
+        execution_spec = replace(
+            execution_spec,
+            requested_model=resolved_model,
+            resolved_model_route=resolved_route_name,
+            provider_name=route_binding.provider_name if route_binding is not None else None,
+            resolved_capabilities=resolved_capabilities,
+            invocation_mode=_select_invocation_mode(resolved_capabilities),
+        )
+        requested_agent = self._apply_execution_overrides(agent, execution_spec)
+        policy = self.resolve_execution_policy(
+            invocation,
+            agent,
+            execution_spec=execution_spec,
+        )
 
         request_metadata = self._policy_request_metadata(execution_spec, policy)
         isolation_lease: IsolationLease | None = None
@@ -132,10 +163,10 @@ class AgentExecutionService:
             effective_tools = policy.tool_pool
             effective_skills = policy.skill_pool
             effective_agent = replace(
-                agent,
+                requested_agent,
                 tools=tuple(tool.name for tool in effective_tools),
                 skills=tuple(skill.name for skill in effective_skills),
-                model=execution_spec.requested_model or agent.model,
+                model=execution_spec.requested_model or requested_agent.model,
                 permission_mode=policy.permission_context.mode,
                 memory=policy.memory_scope,
                 isolation=policy.isolation_mode,
@@ -167,6 +198,7 @@ class AgentExecutionService:
                 messages=list(execution_spec.prompt_messages),
                 base_system_prompt=execution_spec.base_system_prompt,
                 runtime_context=runtime_context,
+                model_client_override=route_binding.client if route_binding is not None else None,
             )
             run_status = AgentRunStatus.COMPLETED if turn_result.completed else AgentRunStatus.MAX_TURNS
             run_record = self._build_run_record(
@@ -178,6 +210,7 @@ class AgentExecutionService:
                 messages=tuple(turn_result.messages),
             )
             await self._run_store.upsert(run_record)
+            await self._turn_engine.emit_child_run(run_record)
             result = AgentRunResult(
                 agent_name=agent.name,
                 status=run_status.value,
@@ -207,6 +240,7 @@ class AgentExecutionService:
                 terminal_metadata={"error": str(exc)},
             )
             await self._run_store.upsert(failed_record)
+            await self._turn_engine.emit_child_run(failed_record)
             await self._dispatch_subagent_stop(
                 execution_spec.session_id,
                 execution_spec.turn_id,
@@ -226,7 +260,11 @@ class AgentExecutionService:
         execution_spec: AgentExecutionSpec,
     ) -> AgentRunRecord:
         agent = self.resolve_agent(execution_spec.agent_name)
-        policy = self.resolve_execution_policy(invocation, agent)
+        policy = self.resolve_execution_policy(
+            invocation,
+            agent,
+            execution_spec=execution_spec,
+        )
         running_record = self._build_run_record(
             execution_spec,
             agent_name=agent.name,
@@ -234,6 +272,7 @@ class AgentExecutionService:
             request_metadata=self._policy_request_metadata(execution_spec, policy),
         )
         await self._run_store.upsert(running_record)
+        await self._turn_engine.emit_child_run(running_record)
         return running_record
 
     async def _prepare_isolation(
@@ -318,6 +357,7 @@ class AgentExecutionService:
             messages=(denied_message,),
         )
         await self._run_store.upsert(denied_record)
+        await self._turn_engine.emit_child_run(denied_record)
         return AgentRunResult(
             agent_name=agent.name,
             status=AgentRunStatus.DENIED.value,
@@ -366,6 +406,13 @@ class AgentExecutionService:
             "query_source": execution_spec.query_source,
             "requested_model_route": execution_spec.requested_model_route,
             "requested_model": execution_spec.requested_model,
+            "resolved_model_route": execution_spec.resolved_model_route,
+            "provider_name": execution_spec.provider_name,
+            "resolved_capabilities": _serialize_capabilities(execution_spec.resolved_capabilities),
+            "invocation_mode": execution_spec.invocation_mode,
+            "requested_permission_mode": execution_spec.requested_permission_mode,
+            "requested_isolation": execution_spec.requested_isolation,
+            "max_turns": execution_spec.max_turns,
             "permission_context": policy_state.effective.permission_context,
             EXECUTION_POLICY_STATE_KEY: policy_state,
             "isolation": serialize_isolation_lease(isolation_lease),
@@ -390,9 +437,39 @@ class AgentExecutionService:
                 "query_source": execution_spec.query_source,
                 "requested_model_route": execution_spec.requested_model_route,
                 "requested_model": execution_spec.requested_model,
+                "resolved_model_route": execution_spec.resolved_model_route,
+                "provider_name": execution_spec.provider_name,
+                "resolved_capabilities": _serialize_capabilities(execution_spec.resolved_capabilities),
+                "invocation_mode": execution_spec.invocation_mode,
+                "requested_permission_mode": (
+                    execution_spec.requested_permission_mode.value
+                    if execution_spec.requested_permission_mode is not None
+                    else None
+                ),
+                "requested_isolation": (
+                    execution_spec.requested_isolation.value
+                    if execution_spec.requested_isolation is not None
+                    else None
+                ),
+                "max_turns": execution_spec.max_turns,
                 "permission_context": policy.permission_context,
                 EXECUTION_POLICY_STATE_KEY: ExecutionPolicyState(policy),
             }
+        )
+
+    def _apply_execution_overrides(
+        self,
+        agent: AgentDefinition,
+        execution_spec: AgentExecutionSpec | None,
+    ) -> AgentDefinition:
+        if execution_spec is None:
+            return agent
+        max_turns = _resolve_max_turns(agent.max_turns, execution_spec.max_turns)
+        return replace(
+            agent,
+            permission_mode=execution_spec.requested_permission_mode or agent.permission_mode,
+            isolation=execution_spec.requested_isolation or agent.isolation,
+            max_turns=max_turns,
         )
 
     def _build_run_record(
@@ -417,10 +494,36 @@ class AgentExecutionService:
             query_source=execution_spec.query_source,
             requested_model_route=execution_spec.requested_model_route,
             requested_model=execution_spec.requested_model,
+            resolved_model_route=execution_spec.resolved_model_route,
+            provider_name=execution_spec.provider_name,
+            resolved_capabilities=_serialize_capabilities(execution_spec.resolved_capabilities),
+            invocation_mode=(
+                execution_spec.invocation_mode.value
+                if execution_spec.invocation_mode is not None
+                else None
+            ),
             request_metadata=dict(request_metadata),
             terminal_metadata=dict(terminal_metadata or {}),
             messages=tuple(messages),
         )
+
+    def _resolve_model_route(
+        self,
+        agent: AgentDefinition,
+        execution_spec: AgentExecutionSpec,
+    ) -> tuple[str | None, ModelRouteBinding | None]:
+        inherited_route = (
+            _coerce_optional_string(execution_spec.metadata.get("resolved_model_route"))
+            or _coerce_optional_string(execution_spec.metadata.get("requested_model_route"))
+        )
+        resolved_route = (
+            execution_spec.requested_model_route
+            or agent.model_route
+            or inherited_route
+            or self._default_model_route
+        )
+        binding = self._model_routes.get(resolved_route) if resolved_route is not None else None
+        return resolved_route, binding
 
     async def _dispatch_subagent_stop(
         self,
@@ -471,6 +574,47 @@ def _terminal_metadata_from_turn_result(turn_result: Any) -> dict[str, Any]:
     if turn_result.usage:
         metadata["usage"] = dict(turn_result.usage)
     return metadata
+
+
+def _resolve_max_turns(agent_limit: int | None, requested_limit: int | None) -> int | None:
+    if agent_limit is None:
+        return requested_limit
+    if requested_limit is None:
+        return agent_limit
+    return min(agent_limit, requested_limit)
+
+
+def _coerce_optional_string(value: Any) -> str | None:
+    if value is None:
+        return None
+    normalized = str(value).strip()
+    return normalized or None
+
+
+def _select_invocation_mode(
+    capabilities: NormalizedModelCapabilities | None,
+) -> ModelInvocationMode:
+    if capabilities is not None and not capabilities.supports_streaming:
+        return ModelInvocationMode.BUFFERED_COMPLETION
+    return ModelInvocationMode.STREAM
+
+
+def _serialize_capabilities(
+    capabilities: NormalizedModelCapabilities | None,
+) -> dict[str, Any] | None:
+    if capabilities is None:
+        return None
+    return {
+        "structured_tool_calls": capabilities.structured_tool_calls,
+        "streaming_tool_call_deltas": capabilities.streaming_tool_call_deltas,
+        "tool_call_finalize_boundary": capabilities.tool_call_finalize_boundary,
+        "parseable_tool_calls_after_message": capabilities.parseable_tool_calls_after_message,
+        "multiple_tool_calls_per_message": capabilities.multiple_tool_calls_per_message,
+        "abort_signal_passthrough": capabilities.abort_signal_passthrough,
+        "supports_streaming": capabilities.supports_streaming,
+    }
+
+
 async def _maybe_await(value: Any) -> Any:
     if asyncio.iscoroutine(value):
         return await value

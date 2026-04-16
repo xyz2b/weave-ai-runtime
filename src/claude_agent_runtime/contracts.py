@@ -148,6 +148,7 @@ class TurnContext:
     messages: tuple[RuntimeMessage, ...]
     available_tools: tuple[str, ...] = ()
     available_skills: tuple[str, ...] = ()
+    available_agents: tuple[str, ...] = ()
     memory_fragments: tuple[str, ...] = ()
     hook_context: tuple[str, ...] = ()
     compaction_fragments: tuple[str, ...] = ()

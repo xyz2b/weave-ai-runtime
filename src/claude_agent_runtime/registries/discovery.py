@@ -213,6 +213,7 @@ class DefinitionDiscovery:
             disallowed_tools=coerce_string_list(frontmatter.get("disallowedTools")),
             skills=coerce_string_list(frontmatter.get("skills")),
             model=self._optional_string(frontmatter.get("model")),
+            model_route=self._optional_string(frontmatter.get("modelRoute")),
             effort=self._coerce_effort(frontmatter.get("effort")),
             permission_mode=self._coerce_permission_mode(frontmatter.get("permissionMode")),
             max_turns=self._coerce_positive_int(frontmatter.get("maxTurns")),

@@ -27,6 +27,11 @@ class ToolExecutorTier(StrEnum):
     NONE = "none"
 
 
+class ModelInvocationMode(StrEnum):
+    STREAM = "stream"
+    BUFFERED_COMPLETION = "buffered_completion"
+
+
 class ModelAbortSignal:
     __slots__ = ("_event", "_reason")
 
@@ -69,6 +74,7 @@ class NormalizedModelCapabilities:
     parseable_tool_calls_after_message: bool = True
     multiple_tool_calls_per_message: bool = True
     abort_signal_passthrough: bool = True
+    supports_streaming: bool = True
 
 
 class ModelCapabilityProvider(Protocol):
@@ -100,6 +106,11 @@ class ModelRequest:
     effort: EffortValue | None = None
     abort_signal: ModelAbortSignal | None = None
     query_source: str | None = None
+    requested_model_route: str | None = None
+    resolved_model_route: str | None = None
+    provider_name: str | None = None
+    resolved_capabilities: NormalizedModelCapabilities | None = None
+    invocation_mode: ModelInvocationMode | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
 

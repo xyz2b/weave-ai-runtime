@@ -10,10 +10,11 @@ from .agent_dispatcher import AgentDispatcher
 from .agent_execution import AgentExecutionSpec, AgentRunRecord, ChildRunStore, InMemoryChildRunStore, SpawnMode
 from .agent_execution_service import AgentExecutionService
 from .contracts import MessageRole, RuntimeMessage
-from .definitions import IsolationMode, SkillDefinition, ToolDefinition
+from .definitions import IsolationMode, PermissionMode, SkillDefinition, ToolDefinition
 from .execution_policy import policy_state_from_metadata
 from .registries import AgentRegistry, SkillRegistry, ToolRegistry
 from .runtime_services import DefaultTaskService, RuntimeServices
+from .runtime_kernel.config import ModelRouteBinding
 from .tasking import TaskManager
 from .tool_runtime import ToolCall, ToolCallStatus, ToolScheduler
 from .turn_engine.engine import TurnEngine
@@ -32,6 +33,9 @@ class AgentInvocation:
     parent_turn_id: str | None = None
     requested_model_route: str | None = None
     requested_model: str | None = None
+    requested_permission_mode: PermissionMode | None = None
+    requested_isolation: IsolationMode | None = None
+    max_turns: int | None = None
     parent_tool_pool: tuple[ToolDefinition, ...] = ()
     parent_skill_pool: tuple[SkillDefinition, ...] = ()
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -65,6 +69,8 @@ class AgentRuntime:
         task_manager: TaskManager | None = None,
         runtime_services: RuntimeServices | None = None,
         run_store: ChildRunStore | None = None,
+        model_routes: dict[str, ModelRouteBinding] | None = None,
+        default_model_route: str | None = None,
     ) -> None:
         self._turn_engine = turn_engine
         self._agent_registry = agent_registry
@@ -83,6 +89,8 @@ class AgentRuntime:
             skill_registry=skill_registry,
             runtime_services=self._runtime_services,
             run_store=self._run_store,
+            model_routes=model_routes,
+            default_model_route=default_model_route,
         )
         self._dispatcher = AgentDispatcher(
             execution_service=self._execution_service,

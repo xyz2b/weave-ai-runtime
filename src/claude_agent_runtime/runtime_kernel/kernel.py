@@ -5,10 +5,11 @@ from pathlib import Path
 from typing import Any, AsyncIterator
 from uuid import uuid4
 
+from ..agent_execution import SpawnMode
 from ..agent_runtime import AgentInvocation, AgentRunResult, AgentRuntime
 from ..builtins import load_builtin_pack
 from ..contracts import RuntimeMessage, serialize_content_blocks
-from ..definitions import AgentDefinition, SkillDefinition, ToolDefinition
+from ..definitions import AgentDefinition, IsolationMode, PermissionMode, SkillDefinition, ToolDefinition
 from ..diagnostics import Diagnostic, DiagnosticSeverity
 from ..errors import RegistryConflictError
 from ..hosts.base import BoundHostRuntime, HostAdapter, NullHostAdapter
@@ -157,20 +158,37 @@ class RuntimeAssembly:
         context: ToolContext,
         *,
         background: bool = False,
+        spawn_mode: str | None = None,
+        cwd: str | None = None,
+        model: str | None = None,
+        model_route: str | None = None,
+        reason: str | None = None,
+        permission_mode: str | None = None,
+        isolation: str | None = None,
+        max_turns: int | None = None,
     ) -> dict[str, Any]:
+        metadata = dict(context.metadata)
+        if reason is not None:
+            metadata["delegation_reason"] = reason
         result = await self.agent_runtime.invoke(
             AgentInvocation(
                 agent_name=agent_name,
                 prompt=prompt,
                 session_id=context.session_id,
-                cwd=context.cwd,
+                cwd=_resolve_invocation_cwd(context.cwd, cwd),
                 background=background,
                 query_source="agent_tool",
+                spawn_mode=_coerce_spawn_mode(spawn_mode),
                 parent_run_id=_coerce_optional_string(context.metadata.get("run_id")),
                 parent_turn_id=context.turn_id,
+                requested_model_route=_coerce_optional_string(model_route),
+                requested_model=_coerce_optional_string(model),
+                requested_permission_mode=_coerce_permission_mode(permission_mode),
+                requested_isolation=_coerce_isolation_mode(isolation),
+                max_turns=max_turns,
                 parent_tool_pool=context.tool_pool,
                 parent_skill_pool=context.skill_pool,
-                metadata=dict(context.metadata),
+                metadata=metadata,
             )
         )
         return _serialize_agent_run_result(result)
@@ -226,7 +244,7 @@ def build_runtime_kernel(config: RuntimeConfig) -> RuntimeKernel:
         agent_registry=agent_registry,
         skill_registry=skill_registry,
         diagnostics=tuple(diagnostics),
-        model_client=config.model_client,
+        model_client=_default_model_client(config),
         transcript_store=config.transcript_store,
     )
     kernel.services = _build_runtime_services(kernel)
@@ -275,6 +293,9 @@ def _assemble_runtime_stack(kernel: RuntimeKernel) -> RuntimeAssembly:
         tool_registry=kernel.tool_registry,
         skill_registry=kernel.skill_registry,
         runtime_services=services,
+        run_store=kernel.config.child_run_store,
+        model_routes=kernel.config.model_routes,
+        default_model_route=kernel.config.default_model_route,
     )
     skill_executor = SkillExecutor(
         skill_registry=kernel.skill_registry,
@@ -323,18 +344,28 @@ def _build_runtime_services(kernel: RuntimeKernel) -> RuntimeServices:
 
 
 def _serialize_agent_run_result(result: AgentRunResult) -> dict[str, Any]:
+    run_record = result.run_record
     payload: dict[str, Any] = {
         "agent": result.agent_name,
         "status": result.status,
         "background": result.background,
+        "run_id": result.run_id,
+        "parent_run_id": result.parent_run_id,
+        "turn_id": result.turn_id,
+        "query_source": result.query_source,
         "messages": [_serialize_message(message) for message in result.messages],
+        "task_id": result.task_id,
+        "requested_model": (
+            result.execution_spec.requested_model if result.execution_spec is not None else None
+        ),
+        "requested_model_route": (
+            result.execution_spec.requested_model_route if result.execution_spec is not None else None
+        ),
+        "resolved_model_route": run_record.resolved_model_route if run_record is not None else None,
+        "isolation_mode": result.isolation_mode.value if result.isolation_mode is not None else None,
+        "terminal_metadata": dict(run_record.terminal_metadata) if run_record is not None else {},
+        "notification": _serialize_message(result.notification) if result.notification is not None else None,
     }
-    if result.task_id is not None:
-        payload["task_id"] = result.task_id
-    if result.isolation_mode is not None:
-        payload["isolation_mode"] = result.isolation_mode.value
-    if result.notification is not None:
-        payload["notification"] = _serialize_message(result.notification)
     return payload
 
 
@@ -363,6 +394,46 @@ def _coerce_optional_string(value: Any) -> str | None:
         return None
     stringified = str(value).strip()
     return stringified or None
+
+
+def _resolve_invocation_cwd(base_cwd: Path, requested_cwd: str | None) -> Path:
+    if requested_cwd is None:
+        return base_cwd
+    resolved = Path(requested_cwd)
+    if not resolved.is_absolute():
+        resolved = (base_cwd / resolved).resolve()
+    return resolved
+
+
+def _coerce_spawn_mode(value: str | None) -> SpawnMode | None:
+    normalized = _coerce_optional_string(value)
+    if normalized is None:
+        return None
+    return SpawnMode(normalized)
+
+
+def _coerce_permission_mode(value: str | None) -> PermissionMode | None:
+    normalized = _coerce_optional_string(value)
+    if normalized is None:
+        return None
+    return PermissionMode(normalized)
+
+
+def _coerce_isolation_mode(value: str | None) -> IsolationMode | None:
+    normalized = _coerce_optional_string(value)
+    if normalized is None:
+        return None
+    return IsolationMode(normalized)
+
+
+def _default_model_client(config: RuntimeConfig) -> Any:
+    if config.model_client is not None:
+        return config.model_client
+    if config.default_model_route is not None:
+        binding = config.model_routes.get(config.default_model_route)
+        if binding is not None:
+            return binding.client
+    return None
 
 
 def _register_builtin_tools(

@@ -8,7 +8,15 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-from ..definitions import AgentDefinition, PermissionBehavior, PermissionDecision, ValidationOutcome
+from ..agent_execution import SpawnMode
+from ..definitions import (
+    AgentDefinition,
+    IsolationMode,
+    PermissionBehavior,
+    PermissionDecision,
+    PermissionMode,
+    ValidationOutcome,
+)
 from ..tasking import TaskManager, TaskStatus
 from ..tool_runtime import ToolCallResult, ToolCallStatus, ToolContext
 
@@ -209,19 +217,90 @@ async def web_search_tool(tool_input: dict[str, Any], _: ToolContext) -> dict[st
 
 
 def validate_agent_tool(tool_input: dict[str, Any], context: ToolContext) -> ValidationOutcome:
-    if context.tool_registry is None:
-        return ValidationOutcome(True)
-    return ValidationOutcome(True)
+    registry_outcome = validate_agent_registry_entry(tool_input, context)
+    if not registry_outcome.valid:
+        return registry_outcome
+
+    normalized = dict(tool_input)
+    spawn_mode = _normalize_optional_string(tool_input.get("spawn_mode"))
+    if spawn_mode is not None:
+        if spawn_mode not in {SpawnMode.SYNC.value, SpawnMode.BACKGROUND.value}:
+            return ValidationOutcome(False, f"Invalid spawn_mode: {spawn_mode}")
+        normalized["spawn_mode"] = spawn_mode
+        normalized["background"] = spawn_mode == SpawnMode.BACKGROUND.value
+    else:
+        normalized["background"] = bool(tool_input.get("background", False))
+
+    cwd = _normalize_optional_string(tool_input.get("cwd"))
+    if cwd is not None:
+        try:
+            resolved_cwd = _resolve_path(context.cwd, cwd, context=context)
+        except ValueError as exc:
+            return ValidationOutcome(False, str(exc))
+        if not resolved_cwd.exists():
+            return ValidationOutcome(False, f"cwd does not exist: {resolved_cwd}")
+        if not resolved_cwd.is_dir():
+            return ValidationOutcome(False, f"cwd is not a directory: {resolved_cwd}")
+        normalized["cwd"] = str(resolved_cwd)
+
+    model = _normalize_optional_string(tool_input.get("model"))
+    if model is not None:
+        normalized["model"] = model
+
+    model_route = _normalize_optional_string(tool_input.get("model_route"))
+    if model_route is not None:
+        normalized["model_route"] = model_route
+
+    reason = _normalize_optional_string(tool_input.get("reason"))
+    if reason is not None:
+        normalized["reason"] = reason
+
+    permission_mode = _normalize_optional_string(tool_input.get("permission_mode"))
+    if permission_mode is not None:
+        try:
+            normalized["permission_mode"] = PermissionMode(permission_mode).value
+        except ValueError:
+            return ValidationOutcome(False, f"Invalid permission_mode: {permission_mode}")
+
+    isolation = _normalize_optional_string(tool_input.get("isolation"))
+    if isolation is not None:
+        try:
+            normalized["isolation"] = IsolationMode(isolation).value
+        except ValueError:
+            return ValidationOutcome(False, f"Invalid isolation: {isolation}")
+
+    max_turns = tool_input.get("max_turns")
+    if max_turns is not None:
+        if not isinstance(max_turns, int) or max_turns < 1:
+            return ValidationOutcome(False, "max_turns must be a positive integer")
+        normalized["max_turns"] = max_turns
+
+    return ValidationOutcome(True, updated_input=normalized)
 
 
 async def agent_tool(tool_input: dict[str, Any], context: ToolContext) -> Any:
     if context.agent_runner is None:
         raise ValueError("No agent runner is configured")
+    invocation_kwargs: dict[str, Any] = {
+        "background": tool_input.get("background", False),
+    }
+    for key in (
+        "spawn_mode",
+        "cwd",
+        "model",
+        "model_route",
+        "reason",
+        "permission_mode",
+        "isolation",
+        "max_turns",
+    ):
+        if key in tool_input and tool_input.get(key) is not None:
+            invocation_kwargs[key] = tool_input[key]
     return await context.agent_runner(
         tool_input["agent"],
         tool_input["prompt"],
         context,
-        background=tool_input.get("background", False),
+        **invocation_kwargs,
     )
 
 
@@ -338,6 +417,13 @@ def _resolve_path(cwd: Path, file_path: str, *, context: ToolContext | None = No
     if context is not None and not _path_allowed(resolved, context):
         raise ValueError(f"Path is reserved for runtime memory and cannot be accessed directly: {resolved}")
     return resolved
+
+
+def _normalize_optional_string(value: object) -> str | None:
+    if value is None:
+        return None
+    normalized = str(value).strip()
+    return normalized or None
 
 
 def _task_manager(context: ToolContext):
