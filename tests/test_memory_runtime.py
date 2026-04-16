@@ -314,8 +314,8 @@ def test_delegated_agent_uses_explicit_project_memory_scope(tmp_path: Path) -> N
     worker_fragments = model_client.requests[1].turn_context.memory_fragments
 
     assert any("temporary refactor notes" in fragment for fragment in main_fragments)
-    assert any("Use pytest via `pytest -q`." in fragment for fragment in worker_fragments)
-    assert not any("temporary refactor notes" in fragment for fragment in worker_fragments)
+    assert any("temporary refactor notes" in fragment for fragment in worker_fragments)
+    assert not any("Use pytest via `pytest -q`." in fragment for fragment in worker_fragments)
 
 
 def _load_claude_memory_fixture(tmp_path: Path) -> Path:

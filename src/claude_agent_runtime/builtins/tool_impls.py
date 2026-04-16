@@ -320,6 +320,13 @@ def validate_agent_registry_entry(tool_input: dict[str, Any], context: ToolConte
 
 def validate_skill_registry_entry(tool_input: dict[str, Any], context: ToolContext) -> ValidationOutcome:
     registry = context.skill_registry
+    if registry is not None and registry.get(tool_input["skill"]) is None:
+        return ValidationOutcome(False, f"Unknown skill: {tool_input['skill']}")
+    if context.skill_pool and not any(skill.name == tool_input["skill"] for skill in context.skill_pool):
+        return ValidationOutcome(
+            False,
+            f"Skill '{tool_input['skill']}' is not available in the current execution policy",
+        )
     if registry is None or registry.get(tool_input["skill"]) is not None:
         return ValidationOutcome(True)
     return ValidationOutcome(False, f"Unknown skill: {tool_input['skill']}")

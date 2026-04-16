@@ -18,6 +18,7 @@ class HookRegistration:
     phase: RuntimeHookPhase
     registration_id: str
     handler: HookHandler
+    turn_id: str | None = None
     matcher: str | None = None
     once: bool = False
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -52,6 +53,7 @@ class HookBus:
         owner: str,
         phase: RuntimeHookPhase | str,
         handler: HookHandler,
+        turn_id: str | None = None,
         matcher: str | None = None,
         once: bool = False,
         metadata: Mapping[str, Any] | None = None,
@@ -62,6 +64,7 @@ class HookBus:
             phase=RuntimeHookPhase(str(phase)),
             registration_id=uuid4().hex,
             handler=handler,
+            turn_id=turn_id,
             matcher=matcher,
             once=once,
             metadata=dict(metadata or {}),
@@ -75,6 +78,7 @@ class HookBus:
         session_id: str,
         owner: str,
         hooks: Mapping[str, Any],
+        turn_id: str | None = None,
     ) -> tuple[HookRegistration, ...]:
         registrations: list[HookRegistration] = []
         for raw_phase, raw_entries in hooks.items():
@@ -94,6 +98,7 @@ class HookBus:
                         owner=owner,
                         phase=phase,
                         handler=parsed["handler"],
+                        turn_id=turn_id,
                         matcher=parsed.get("matcher"),
                         once=bool(parsed.get("once", False)),
                         metadata=parsed.get("metadata"),
@@ -110,6 +115,14 @@ class HookBus:
     def clear_session(self, session_id: str) -> None:
         self._registrations.pop(session_id, None)
 
+    def release_turn(self, session_id: str, turn_id: str | None) -> None:
+        if turn_id is None:
+            return
+        registrations = self._registrations.get(session_id, [])
+        self._registrations[session_id] = [
+            registration for registration in registrations if registration.turn_id != turn_id
+        ]
+
     async def dispatch(
         self,
         session_id: str,
@@ -118,11 +131,14 @@ class HookBus:
         phase = RuntimeHookPhase(str(getattr(payload, "phase")))
         registrations = tuple(self._registrations.get(session_id, ()))
         target = _match_target(payload)
+        payload_turn_id = getattr(payload, "turn_id", None)
         matched: list[HookRegistration] = []
         effects: list[HookEffect] = []
         to_remove: set[str] = set()
         for registration in registrations:
             if registration.phase != phase:
+                continue
+            if registration.turn_id is not None and registration.turn_id != payload_turn_id:
                 continue
             if not _matches(registration.matcher, target):
                 continue

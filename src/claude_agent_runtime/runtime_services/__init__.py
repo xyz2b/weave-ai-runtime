@@ -10,6 +10,7 @@ from ..definitions import AgentDefinition, ToolDefinition
 from ..elicitation import SharedElicitationService
 from ..hooks import HookBus
 from ..hosts.base import CallbackHostAdapter, HostRuntime, NullHostAdapter
+from ..isolation import IsolationManager
 from ..permissions import PermissionEngine
 from ..tasking import TaskManager
 
@@ -184,6 +185,7 @@ class RuntimeServices:
     hook_bus: HookBus = field(default_factory=HookBus)
     permissions: PermissionService = field(default_factory=PermissionEngine)
     elicitation: ElicitationService = field(default_factory=SharedElicitationService)
+    isolation: IsolationManager = field(default_factory=IsolationManager)
     memory: ContextContributionService = field(default_factory=NoopMemoryService)
     compaction: CompactionService | ContextContributionService = field(default_factory=CompactionManager)
     host: HostRuntime = field(default_factory=NullHostAdapter)

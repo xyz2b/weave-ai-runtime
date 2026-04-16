@@ -7,13 +7,18 @@ from claude_agent_runtime.contracts import MessageRole, ToolResultBlock
 from claude_agent_runtime.definitions import (
     AgentDefinition,
     IsolationMode,
+    PermissionBehavior,
+    PermissionDecision,
+    PermissionMode,
     SkillDefinition,
     SkillExecutionContext,
     ToolDefinition,
     ToolTraits,
 )
+from claude_agent_runtime.isolation import BaseIsolationAdapter, IsolationManager, IsolationRequest
 from claude_agent_runtime.registries import AgentRegistry, SkillRegistry, ToolRegistry
 from claude_agent_runtime.runtime_kernel import BuiltinPackConfig, RuntimeConfig, assemble_runtime
+from claude_agent_runtime.runtime_services import RuntimeServices
 from claude_agent_runtime.skill_runtime import SkillExecutor
 from claude_agent_runtime.tasking import TaskManager
 from claude_agent_runtime.turn_engine import ModelRequest, ModelStreamEvent, ModelStreamEventType, TurnEngine
@@ -330,3 +335,427 @@ def test_assembled_runtime_executes_model_generated_agent_and_skill_tools(
     assert skill_tool_result.content["mode"] == SkillExecutionContext.FORK.value
     assert skill_tool_result.content["agent_result"]["messages"][-1]["content"][0]["text"] == "forked answer"
     assert skill_messages[-1].text == "skill delegation done"
+
+
+def test_inline_skill_narrows_tools_and_records_policy_trace(tmp_path: Path) -> None:
+    model_client = FakeModelClient(
+        [
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-lock-1"}),
+                ModelStreamEvent(
+                    ModelStreamEventType.TOOL_CALL,
+                    {
+                        "tool_name": "skill",
+                        "tool_input": {"skill": "lockdown"},
+                        "call_id": "call-lockdown",
+                    },
+                ),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "tool_use"}),
+            ],
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-lock-2"}),
+                ModelStreamEvent(
+                    ModelStreamEventType.TOOL_CALL,
+                    {
+                        "tool_name": "write-note",
+                        "tool_input": {"value": "blocked"},
+                        "call_id": "call-write",
+                    },
+                ),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "tool_use"}),
+            ],
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-lock-3"}),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "done"}),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+            ],
+        ]
+    )
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            model_client=model_client,
+            builtins=BuiltinPackConfig(
+                extra_tools=[
+                    ToolDefinition(
+                        name="echo",
+                        description="echo values",
+                        input_schema={
+                            "type": "object",
+                            "properties": {"value": {"type": "string"}},
+                            "required": ["value"],
+                            "additionalProperties": False,
+                        },
+                        traits=ToolTraits(read_only=True, concurrency_safe=True),
+                        execute=lambda tool_input, _: {"echo": tool_input["value"]},
+                    ),
+                    ToolDefinition(
+                        name="write-note",
+                        description="write a note",
+                        input_schema={
+                            "type": "object",
+                            "properties": {"value": {"type": "string"}},
+                            "required": ["value"],
+                            "additionalProperties": False,
+                        },
+                        execute=lambda tool_input, _: {"written": tool_input["value"]},
+                    ),
+                ],
+                extra_skills=[
+                    SkillDefinition(
+                        name="lockdown",
+                        description="narrow tools",
+                        content="Only use echo.",
+                        allowed_tools=("echo",),
+                    )
+                ],
+            ),
+        )
+    )
+
+    messages = asyncio.run(runtime.run_prompt("Use the lockdown skill", session_id="session-lock"))
+
+    assert model_client.requests[1].turn_context.available_tools == ("echo",)
+    assert model_client.requests[1].metadata["policy"]["history"][-1]["source"] == "skill"
+    denied_result_message = next(
+        message
+        for message in messages
+        if message.role == MessageRole.USER
+        and any(
+            isinstance(block, ToolResultBlock) and block.tool_use_id == "call-write"
+            for block in message.content
+        )
+    )
+    denied_block = next(
+        block
+        for block in denied_result_message.content
+        if isinstance(block, ToolResultBlock) and block.tool_use_id == "call-write"
+    )
+    assert denied_block.is_error is True
+    assert "not available in the current execution policy" in denied_block.content
+
+
+def test_inline_skill_hooks_are_released_after_turn(tmp_path: Path) -> None:
+    model_client = FakeModelClient(
+        [
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-hook-1"}),
+                ModelStreamEvent(
+                    ModelStreamEventType.TOOL_CALL,
+                    {
+                        "tool_name": "skill",
+                        "tool_input": {"skill": "rewrite"},
+                        "call_id": "call-skill",
+                    },
+                ),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "tool_use"}),
+            ],
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-hook-2"}),
+                ModelStreamEvent(
+                    ModelStreamEventType.TOOL_CALL,
+                    {
+                        "tool_name": "echo",
+                        "tool_input": {"value": "original"},
+                        "call_id": "call-echo-rewritten",
+                    },
+                ),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "tool_use"}),
+            ],
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-hook-3"}),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "done"}),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+            ],
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-hook-4"}),
+                ModelStreamEvent(
+                    ModelStreamEventType.TOOL_CALL,
+                    {
+                        "tool_name": "echo",
+                        "tool_input": {"value": "original"},
+                        "call_id": "call-echo-original",
+                    },
+                ),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "tool_use"}),
+            ],
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-hook-5"}),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "done again"}),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+            ],
+        ]
+    )
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            model_client=model_client,
+            builtins=BuiltinPackConfig(
+                extra_tools=[
+                    ToolDefinition(
+                        name="echo",
+                        description="echo values",
+                        input_schema={
+                            "type": "object",
+                            "properties": {"value": {"type": "string"}},
+                            "required": ["value"],
+                            "additionalProperties": False,
+                        },
+                        traits=ToolTraits(read_only=True, concurrency_safe=True),
+                        execute=lambda tool_input, _: {"echo": tool_input["value"]},
+                    )
+                ],
+                extra_skills=[
+                    SkillDefinition(
+                        name="rewrite",
+                        description="rewrite echo inputs",
+                        content="Rewrite the next tool use.",
+                        hooks={
+                            "PreToolUse": {
+                                "matcher": "echo",
+                                "effect": {"updated_input": {"value": "rewritten"}},
+                            }
+                        },
+                    )
+                ],
+            ),
+        )
+    )
+
+    first_turn = asyncio.run(runtime.run_prompt("Use the rewrite skill", session_id="hook-session"))
+    second_turn = asyncio.run(runtime.run_prompt("Echo directly", session_id="hook-session"))
+
+    first_result_message = next(
+        message
+        for message in first_turn
+        if message.role == MessageRole.USER
+        and any(
+            isinstance(block, ToolResultBlock) and block.tool_use_id == "call-echo-rewritten"
+            for block in message.content
+        )
+    )
+    first_block = next(
+        block
+        for block in first_result_message.content
+        if isinstance(block, ToolResultBlock) and block.tool_use_id == "call-echo-rewritten"
+    )
+    second_result_message = next(
+        message
+        for message in second_turn
+        if message.role == MessageRole.USER
+        and any(
+            isinstance(block, ToolResultBlock) and block.tool_use_id == "call-echo-original"
+            for block in message.content
+        )
+    )
+    second_block = next(
+        block
+        for block in second_result_message.content
+        if isinstance(block, ToolResultBlock) and block.tool_use_id == "call-echo-original"
+    )
+
+    assert first_block.content == {"echo": "rewritten"}
+    assert second_block.content == {"echo": "original"}
+
+
+def test_forked_skill_and_subagent_preserve_policy_and_isolation_ceilings(
+    tmp_path: Path,
+) -> None:
+    model_client = FakeModelClient(
+        [
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-parent-1"}),
+                ModelStreamEvent(
+                    ModelStreamEventType.TOOL_CALL,
+                    {
+                        "tool_name": "skill",
+                        "tool_input": {"skill": "delegated-check"},
+                        "call_id": "call-skill-delegated",
+                    },
+                ),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "tool_use"}),
+            ],
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-worker-1"}),
+                ModelStreamEvent(
+                    ModelStreamEventType.TOOL_CALL,
+                    {
+                        "tool_name": "restricted",
+                        "tool_input": {"value": "secret"},
+                        "call_id": "call-restricted",
+                    },
+                ),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "tool_use"}),
+            ],
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-worker-2"}),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "worker done"}),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+            ],
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-parent-2"}),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "parent done"}),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+            ],
+        ]
+    )
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            model_client=model_client,
+            builtins=BuiltinPackConfig(
+                agent_replacements={
+                    "main-router": AgentDefinition(
+                        name="main-router",
+                        description="router",
+                        prompt="route",
+                        tools=("*",),
+                        permission_mode=PermissionMode.DONT_ASK,
+                        isolation=IsolationMode.WORKTREE,
+                    )
+                },
+                extra_tools=[
+                    ToolDefinition(
+                        name="restricted",
+                        description="restricted",
+                        input_schema={
+                            "type": "object",
+                            "properties": {"value": {"type": "string"}},
+                            "required": ["value"],
+                            "additionalProperties": False,
+                        },
+                        check_permissions=lambda _tool_input, _context: PermissionDecision(
+                            PermissionBehavior.ASK,
+                            "approval required",
+                        ),
+                        execute=lambda tool_input, _: {"value": tool_input["value"]},
+                    )
+                ],
+                extra_agents=[
+                    AgentDefinition(
+                        name="worker",
+                        description="worker",
+                        prompt="work",
+                        tools=("restricted",),
+                        permission_mode=PermissionMode.BYPASS_PERMISSIONS,
+                        isolation=IsolationMode.NONE,
+                    )
+                ],
+                extra_skills=[
+                    SkillDefinition(
+                        name="delegated-check",
+                        description="delegate to a worker",
+                        content="Run the delegated check.",
+                        execution_context=SkillExecutionContext.FORK,
+                        agent="worker",
+                        allowed_tools=("restricted",),
+                    )
+                ],
+            ),
+        )
+    )
+
+    messages = asyncio.run(runtime.run_prompt("Run the delegated check", session_id="session-ceilings"))
+
+    worker_request = model_client.requests[1]
+    assert worker_request.metadata["policy"]["effective"]["permission_mode"] == PermissionMode.DONT_ASK.value
+    assert worker_request.metadata["isolation"]["mode"] == IsolationMode.WORKTREE.value
+
+    skill_tool_result_message = next(
+        message
+        for message in messages
+        if message.role == MessageRole.USER and any(isinstance(block, ToolResultBlock) for block in message.content)
+    )
+    skill_tool_result = next(
+        block for block in skill_tool_result_message.content if isinstance(block, ToolResultBlock)
+    )
+    worker_tool_result_message = next(
+        message
+        for message in skill_tool_result.content["agent_result"]["messages"]
+        if any(block["type"] == "tool_result" for block in message["content"])
+    )
+    worker_tool_result = next(
+        block for block in worker_tool_result_message["content"] if block["type"] == "tool_result"
+    )
+    assert worker_tool_result["is_error"] is True
+    assert "approval required" in worker_tool_result["content"]
+
+
+def test_remote_isolation_uses_adapter_contract_and_emits_trace(tmp_path: Path) -> None:
+    class RecordingIsolationAdapter(BaseIsolationAdapter):
+        def __init__(self, mode: IsolationMode) -> None:
+            self.mode = mode
+            self.prepared: list[IsolationRequest] = []
+            self.cleaned: list[dict[str, object]] = []
+
+        async def prepare(self, request: IsolationRequest):
+            self.prepared.append(request)
+            lease = await BaseIsolationAdapter.prepare(self, request)
+            lease.metadata["recorded"] = True
+            return lease
+
+        async def cleanup(self, lease) -> None:
+            self.cleaned.append(dict(lease.metadata))
+            await BaseIsolationAdapter.cleanup(self, lease)
+
+    tool_registry = ToolRegistry()
+    agent_registry = AgentRegistry()
+    agent_registry.register(
+        AgentDefinition(
+            name="remote-worker",
+            description="remote",
+            prompt="remote",
+            isolation=IsolationMode.REMOTE,
+        )
+    )
+    skill_registry = SkillRegistry()
+    remote_adapter = RecordingIsolationAdapter(IsolationMode.REMOTE)
+    services = RuntimeServices(
+        isolation=IsolationManager(
+            adapters={
+                IsolationMode.NONE: BaseIsolationAdapter(),
+                IsolationMode.WORKTREE: BaseIsolationAdapter(mode=IsolationMode.WORKTREE),
+                IsolationMode.REMOTE: remote_adapter,
+            }
+        )
+    )
+    model_client = FakeModelClient(
+        [
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-remote"}),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "remote done"}),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+            ]
+        ]
+    )
+    engine = TurnEngine(
+        model_client=model_client,
+        tool_registry=tool_registry,
+        agent_registry=agent_registry,
+        skill_registry=skill_registry,
+        runtime_services=services,
+    )
+    runtime = AgentRuntime(
+        turn_engine=engine,
+        agent_registry=agent_registry,
+        tool_registry=tool_registry,
+        skill_registry=skill_registry,
+        runtime_services=services,
+    )
+
+    result = asyncio.run(
+        runtime.invoke(
+            AgentInvocation(
+                agent_name="remote-worker",
+                prompt="run remotely",
+                session_id="session-remote",
+                cwd=tmp_path,
+            )
+        )
+    )
+
+    assert result.isolation_mode == IsolationMode.REMOTE
+    assert len(remote_adapter.prepared) == 1
+    assert len(remote_adapter.cleaned) == 1
+    assert model_client.requests[0].metadata["isolation"]["mode"] == IsolationMode.REMOTE.value
+    assert model_client.requests[0].metadata["isolation"]["adapter"] == "RecordingIsolationAdapter"

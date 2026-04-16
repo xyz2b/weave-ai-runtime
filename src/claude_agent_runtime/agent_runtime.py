@@ -9,13 +9,22 @@ from uuid import uuid4
 
 from .contracts import MessageRole, RuntimeMessage
 from .definitions import AgentDefinition, IsolationMode, PermissionBehavior, PermissionDecision, SkillDefinition, ToolDefinition
+from .execution_policy import (
+    EXECUTION_POLICY_STATE_KEY,
+    ExecutionPolicy,
+    ExecutionPolicyState,
+    policy_state_from_metadata,
+    resolve_agent_execution_policy,
+    serialize_runtime_metadata,
+)
 from .hooks import SubagentStopPayload
 from .hosts.base import CallbackHostAdapter, NullHostAdapter
+from .isolation import IsolationLease, serialize_isolation_lease
 from .permissions import PermissionContext, PermissionRequest, PermissionTarget
 from .registries import AgentRegistry, SkillRegistry, ToolRegistry
 from .runtime_services import DefaultTaskService, RuntimeServices
 from .tasking import TaskManager, TaskStatus
-from .tool_runtime import ToolCall, ToolCallStatus, ToolContext, ToolScheduler, assemble_subagent_tool_pool
+from .tool_runtime import ToolCall, ToolCallStatus, ToolContext, ToolScheduler
 from .turn_engine.engine import TurnEngine
 
 
@@ -40,21 +49,6 @@ class AgentRunResult:
     background: bool = False
     isolation_mode: IsolationMode | None = None
     notification: RuntimeMessage | None = None
-
-
-class IsolationAdapter:
-    mode = IsolationMode.NONE
-
-    def prepare(self, cwd: Path) -> Path:
-        return cwd
-
-
-class WorktreeIsolationAdapter(IsolationAdapter):
-    mode = IsolationMode.WORKTREE
-
-
-class RemoteIsolationAdapter(IsolationAdapter):
-    mode = IsolationMode.REMOTE
 
 
 class AgentRuntime:
@@ -90,12 +84,17 @@ class AgentRuntime:
     def runtime_services(self) -> RuntimeServices:
         return self._runtime_services
 
+    @property
+    def tool_registry(self) -> ToolRegistry:
+        return self._tool_registry
+
     def bind_skill_executor(self, skill_executor: Any) -> None:
         self._skill_executor = skill_executor
 
     async def invoke(self, invocation: AgentInvocation) -> AgentRunResult:
         agent = self._resolve_agent(invocation.agent_name)
-        denial = await self._authorize_agent(invocation, agent)
+        resolved_policy = self._resolve_execution_policy(invocation, agent)
+        denial = await self._authorize_agent(invocation, agent, resolved_policy)
         if denial is not None:
             return denial
         if agent.name == "main-router":
@@ -104,8 +103,8 @@ class AgentRuntime:
                 return routed
 
         if invocation.background or agent.background:
-            return self._start_background(invocation, agent)
-        return await self._run_agent(invocation, agent)
+            return self._start_background(invocation, agent, resolved_policy)
+        return await self._run_agent(invocation, agent, resolved_policy)
 
     async def wait_for_background(self, task_id: str) -> AgentRunResult:
         return await self._background_tasks[task_id]
@@ -168,6 +167,8 @@ class AgentRuntime:
                 parent_tool_pool=invocation.parent_tool_pool,
                 parent_skill_pool=invocation.parent_skill_pool,
                 permission_context=invocation.metadata.get("permission_context"),
+                turn_id=invocation.metadata.get("turn_id"),
+                policy_state=policy_state_from_metadata(invocation.metadata),
             )
             return AgentRunResult(
                 agent_name="main-router",
@@ -191,14 +192,19 @@ class AgentRuntime:
             )
         return None
 
-    def _start_background(self, invocation: AgentInvocation, agent: AgentDefinition) -> AgentRunResult:
+    def _start_background(
+        self,
+        invocation: AgentInvocation,
+        agent: AgentDefinition,
+        policy: ExecutionPolicy,
+    ) -> AgentRunResult:
         task_id = uuid4().hex
         self._task_manager.create(task_id, title=f"agent:{agent.name}", metadata={"agent": agent.name})
 
         async def runner() -> AgentRunResult:
             self._task_manager.update(task_id, status=TaskStatus.RUNNING)
             try:
-                result = await self._run_agent(invocation, agent)
+                result = await self._run_agent(invocation, agent, policy)
                 self._task_manager.update(task_id, status=TaskStatus.COMPLETED)
                 notification = RuntimeMessage(
                     message_id=uuid4().hex,
@@ -221,56 +227,76 @@ class AgentRuntime:
             status="running",
             task_id=task_id,
             background=True,
-            isolation_mode=agent.isolation,
+            isolation_mode=policy.isolation_mode,
         )
 
-    async def _run_agent(self, invocation: AgentInvocation, agent: AgentDefinition) -> AgentRunResult:
-        effective_cwd = self._prepare_isolation(agent.isolation, invocation.cwd)
-        effective_tools = self._resolve_tool_pool(agent, invocation.parent_tool_pool)
-        effective_skills = self._resolve_skill_pool(agent, invocation.parent_skill_pool)
+    async def _run_agent(
+        self,
+        invocation: AgentInvocation,
+        agent: AgentDefinition,
+        policy: ExecutionPolicy,
+    ) -> AgentRunResult:
+        turn_id = uuid4().hex
+        isolation_lease = await self._prepare_isolation(invocation, agent, policy)
+        effective_tools = policy.tool_pool
+        effective_skills = policy.skill_pool
         effective_agent = replace(
             agent,
             tools=tuple(tool.name for tool in effective_tools),
             skills=tuple(skill.name for skill in effective_skills),
+            permission_mode=policy.permission_context.mode,
+            memory=policy.memory_scope,
+            isolation=policy.isolation_mode,
         )
         memory_service = self._runtime_services.memory
-        if memory_service is not None and hasattr(memory_service, "start_session"):
-            await _maybe_await(
-                memory_service.start_session(
-                    session_id=invocation.session_id,
-                    agent=effective_agent,
-                    cwd=effective_cwd,
-                    set_default=False,
+        owner = self._register_invocation_hooks(invocation, turn_id=turn_id)
+        try:
+            if memory_service is not None and hasattr(memory_service, "start_session"):
+                await _maybe_await(
+                    memory_service.start_session(
+                        session_id=invocation.session_id,
+                        agent=effective_agent,
+                        cwd=isolation_lease.working_directory,
+                        set_default=False,
+                    )
                 )
+            prompt_message = RuntimeMessage(
+                message_id=uuid4().hex,
+                role=MessageRole.USER,
+                content=invocation.prompt,
             )
-        prompt_message = RuntimeMessage(
-            message_id=uuid4().hex,
-            role=MessageRole.USER,
-            content=invocation.prompt,
-        )
-        turn_result = await self._turn_engine.run_turn(
-            session_id=invocation.session_id,
-            turn_id=uuid4().hex,
-            agent=effective_agent,
-            cwd=str(effective_cwd),
-            messages=[prompt_message],
-            base_system_prompt=invocation.metadata.get("system_prompt", ""),
-            runtime_context={
+            child_policy_state = ExecutionPolicyState(policy)
+            runtime_context = {
                 **dict(invocation.metadata),
                 "agent_name": agent.name,
                 "background": invocation.background,
-                "permission_context": invocation.metadata.get("permission_context"),
-            },
-        )
-        result = AgentRunResult(
-            agent_name=agent.name,
-            status="completed" if turn_result.completed else "max_turns",
-            messages=turn_result.messages,
-            background=invocation.background or agent.background,
-            isolation_mode=agent.isolation,
-        )
-        await self._dispatch_subagent_stop(invocation.session_id, agent.name, result.status)
-        return result
+                "turn_id": turn_id,
+                "permission_context": policy.permission_context,
+                EXECUTION_POLICY_STATE_KEY: child_policy_state,
+                "isolation": serialize_isolation_lease(isolation_lease),
+            }
+            turn_result = await self._turn_engine.run_turn(
+                session_id=invocation.session_id,
+                turn_id=turn_id,
+                agent=effective_agent,
+                cwd=str(isolation_lease.working_directory),
+                messages=[prompt_message],
+                base_system_prompt=invocation.metadata.get("system_prompt", ""),
+                runtime_context=runtime_context,
+            )
+            result = AgentRunResult(
+                agent_name=agent.name,
+                status="completed" if turn_result.completed else "max_turns",
+                messages=turn_result.messages,
+                background=invocation.background or agent.background,
+                isolation_mode=policy.isolation_mode,
+            )
+            await self._dispatch_subagent_stop(invocation.session_id, agent.name, result.status)
+            return result
+        finally:
+            if owner is not None and self._runtime_services.hook_bus is not None:
+                self._runtime_services.hook_bus.release_owner(invocation.session_id, owner)
+            await self._runtime_services.isolation.cleanup(isolation_lease)
 
     def _resolve_agent(self, name: str) -> AgentDefinition:
         agent = self._agent_registry.get(name)
@@ -278,61 +304,77 @@ class AgentRuntime:
             raise KeyError(name)
         return agent
 
-    def _resolve_tool_pool(
+    def _resolve_execution_policy(
         self,
+        invocation: AgentInvocation,
         agent: AgentDefinition,
-        parent_pool: Sequence[ToolDefinition],
-    ) -> tuple[ToolDefinition, ...]:
-        if parent_pool:
-            return assemble_subagent_tool_pool(
-                self._tool_registry,
-                parent_pool=parent_pool,
-                allowed_tools=agent.tools or None,
-                disallowed_tools=agent.disallowed_tools or None,
+    ) -> ExecutionPolicy:
+        parent_state = policy_state_from_metadata(invocation.metadata)
+        parent_policy = parent_state.effective if parent_state is not None else None
+        base_tool_pool = (
+            tuple(invocation.parent_tool_pool)
+            if invocation.parent_tool_pool
+            else (
+                parent_policy.tool_pool
+                if parent_policy is not None
+                else self._tool_registry.definitions()
             )
-        return assemble_subagent_tool_pool(
-            self._tool_registry,
-            parent_pool=self._tool_registry.definitions(),
-            allowed_tools=agent.tools or None,
-            disallowed_tools=agent.disallowed_tools or None,
+        )
+        base_skill_pool = (
+            tuple(invocation.parent_skill_pool)
+            if invocation.parent_skill_pool
+            else (
+                parent_policy.skill_pool
+                if parent_policy is not None
+                else self._skill_registry.resolve_active()
+            )
+        )
+        permission_context = invocation.metadata.get("permission_context")
+        if not isinstance(permission_context, PermissionContext):
+            permission_context = (
+                parent_policy.permission_context
+                if parent_policy is not None
+                else PermissionContext(session_id=invocation.session_id)
+            )
+        return resolve_agent_execution_policy(
+            agent,
+            parent_policy=parent_policy,
+            base_tool_pool=base_tool_pool,
+            base_skill_pool=base_skill_pool,
+            permission_context=permission_context,
         )
 
-    def _resolve_skill_pool(
+    async def _prepare_isolation(
         self,
+        invocation: AgentInvocation,
         agent: AgentDefinition,
-        parent_pool: Sequence[SkillDefinition],
-    ) -> tuple[SkillDefinition, ...]:
-        available = tuple(parent_pool) if parent_pool else self._skill_registry.resolve_active()
-        if not agent.skills or agent.skills == ("*",):
-            return available
-        selected = []
-        for skill in available:
-            if skill.name in agent.skills:
-                selected.append(skill)
-        return tuple(selected)
-
-    def _prepare_isolation(self, mode: IsolationMode | None, cwd: Path) -> Path:
-        adapter: IsolationAdapter
-        if mode == IsolationMode.WORKTREE:
-            adapter = WorktreeIsolationAdapter()
-        elif mode == IsolationMode.REMOTE:
-            adapter = RemoteIsolationAdapter()
-        else:
-            adapter = IsolationAdapter()
-        return adapter.prepare(cwd)
+        policy: ExecutionPolicy,
+    ) -> IsolationLease:
+        return await self._runtime_services.isolation.prepare(
+            session_id=invocation.session_id,
+            agent_name=agent.name,
+            mode=policy.isolation_mode,
+            cwd=invocation.cwd,
+            metadata={
+                "background": invocation.background or agent.background,
+                "policy": serialize_runtime_metadata({EXECUTION_POLICY_STATE_KEY: ExecutionPolicyState(policy)})[
+                    "policy"
+                ],
+            },
+        )
 
     async def _authorize_agent(
         self,
         invocation: AgentInvocation,
         agent: AgentDefinition,
+        policy: ExecutionPolicy,
     ) -> AgentRunResult | None:
         if agent.name == "main-router" and not invocation.background:
             return None
-        permission_context = invocation.metadata.get("permission_context")
         initial = PermissionDecision(
             PermissionBehavior.ASK
             if (
-                invocation.background or agent.isolation not in {None, IsolationMode.NONE}
+                invocation.background or policy.isolation_mode != IsolationMode.NONE
             )
             and _supports_permission_requests(self._runtime_services.host)
             else PermissionBehavior.ALLOW
@@ -343,12 +385,12 @@ class AgentRuntime:
             target=PermissionTarget.AGENT,
             name=agent.name,
             payload={"prompt": invocation.prompt, "background": invocation.background},
-            context=permission_context if isinstance(permission_context, PermissionContext) else None,
+            context=policy.permission_context,
             message=f"Agent '{agent.name}' requires permission",
         )
         runtime_context = _PermissionRuntimeContext(
             runtime_services=self._runtime_services,
-            permission_context=permission_context if isinstance(permission_context, PermissionContext) else None,
+            permission_context=policy.permission_context,
         )
         outcome = await self._runtime_services.permissions.evaluate(  # type: ignore[attr-defined]
             request,
@@ -369,8 +411,26 @@ class AgentRuntime:
                 )
             ],
             background=invocation.background or agent.background,
-            isolation_mode=agent.isolation,
+            isolation_mode=policy.isolation_mode,
         )
+
+    def _register_invocation_hooks(
+        self,
+        invocation: AgentInvocation,
+        *,
+        turn_id: str,
+    ) -> str | None:
+        hooks = invocation.metadata.get("skill_hooks")
+        if not isinstance(hooks, dict) or self._runtime_services.hook_bus is None:
+            return None
+        owner = str(invocation.metadata.get("skill_hook_owner") or f"skill:delegated:{uuid4().hex}")
+        self._runtime_services.hook_bus.register_handlers(
+            session_id=invocation.session_id,
+            owner=owner,
+            hooks=hooks,
+            turn_id=turn_id,
+        )
+        return owner
 
     async def _dispatch_subagent_stop(self, session_id: str, agent_name: str, status: str) -> None:
         if self._runtime_services.hook_bus is None:

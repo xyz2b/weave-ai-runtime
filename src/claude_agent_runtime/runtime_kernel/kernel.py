@@ -23,6 +23,7 @@ from ..turn_engine.composer import ContextAssembler
 from ..turn_engine.engine import TurnEngine, TurnStreamEvent
 from ..turn_engine.models import ModelRequest, TranscriptStore
 from .config import RuntimeConfig
+from ..execution_policy import policy_state_from_metadata
 
 
 @dataclass(slots=True)
@@ -184,6 +185,9 @@ class RuntimeAssembly:
             cwd=context.cwd,
             parent_tool_pool=context.tool_pool,
             parent_skill_pool=context.skill_pool,
+            permission_context=context.permission_context,
+            turn_id=context.turn_id,
+            policy_state=policy_state_from_metadata(context.metadata),
         )
         return _serialize_skill_execution_result(result)
 

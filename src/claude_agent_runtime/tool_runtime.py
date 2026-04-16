@@ -282,6 +282,14 @@ class ToolScheduler:
                 status=ToolCallStatus.ERROR,
                 error=f"Unknown tool: {call.tool_name}",
             )
+        if context.tool_pool and not _tool_available_in_pool(call.tool_name, context.tool_pool):
+            return ToolCallResult(
+                call_id=call.call_id,
+                tool_name=call.tool_name,
+                status=ToolCallStatus.DENIED,
+                error=f"Tool '{call.tool_name}' is not available in the current execution policy",
+                metadata={"available_tools": [tool.name for tool in context.tool_pool]},
+            )
         try:
             task = asyncio.current_task()
             if task is not None:
@@ -633,3 +641,10 @@ class _EmptyHookResult:
     updated_input: dict[str, Any] | None = None
     continue_execution: bool = True
     notifications: tuple[str, ...] = ()
+
+
+def _tool_available_in_pool(
+    requested_name: str,
+    pool: Sequence[ToolDefinition],
+) -> bool:
+    return any(definition.matches(requested_name) for definition in pool)

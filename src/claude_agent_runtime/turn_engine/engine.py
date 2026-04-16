@@ -28,6 +28,14 @@ from ..contracts import (
     ToolUseBlock,
 )
 from ..definitions import AgentDefinition, PermissionMode
+from ..execution_policy import (
+    EXECUTION_POLICY_STATE_KEY,
+    ExecutionPolicyState,
+    build_root_execution_policy,
+    policy_state_from_metadata,
+    resolve_skill_pool,
+    serialize_runtime_metadata,
+)
 from ..hooks import StopPayload, UserPromptSubmitPayload
 from ..permissions import PermissionContext
 from ..registries import AgentRegistry, SkillRegistry, ToolRegistry
@@ -553,269 +561,292 @@ class TurnEngine:
         max_iterations = agent.max_turns or 4
         working_messages = list(messages)
         iteration = 0
-
-        while iteration < max_iterations:
-            iteration_index = iteration + 1
-            state.iterations = iteration_index
-            tool_pool = assemble_main_thread_tool_pool(
+        runtime_context = dict(runtime_context or {})
+        runtime_context.setdefault(
+            "permission_context",
+            PermissionContext(
+                session_id=session_id,
+                mode=agent.permission_mode or PermissionMode.DEFAULT,
+            ),
+        )
+        policy_state = policy_state_from_metadata(runtime_context)
+        if policy_state is None:
+            root_tool_pool = assemble_main_thread_tool_pool(
                 self._tool_registry,
                 allowed_tools=agent.tools or None,
                 disallowed_tools=agent.disallowed_tools or None,
             )
             active_skills = self._skill_registry.resolve_active() if self._skill_registry is not None else ()
-            runtime_metadata = self._merge_runtime_context(runtime_context)
-            runtime_metadata.setdefault(
-                "permission_context",
-                PermissionContext(
+            root_skill_pool = resolve_skill_pool(active_skills, agent.skills)
+            root_policy = build_root_execution_policy(
+                agent,
+                tool_pool=root_tool_pool,
+                skill_pool=root_skill_pool,
+                permission_context=runtime_context["permission_context"],
+                memory_scope=self._resolve_memory_scope(session_id=session_id, agent=agent, cwd=cwd),
+                isolation_mode=agent.isolation,
+            )
+            policy_state = ExecutionPolicyState(root_policy)
+            runtime_context[EXECUTION_POLICY_STATE_KEY] = policy_state
+
+        try:
+            while iteration < max_iterations:
+                iteration_index = iteration + 1
+                state.iterations = iteration_index
+                runtime_metadata = self._merge_runtime_context(runtime_context)
+                runtime_metadata[EXECUTION_POLICY_STATE_KEY] = policy_state
+                runtime_metadata["permission_context"] = policy_state.effective.permission_context
+                tool_pool = policy_state.effective.tool_pool
+                active_skills = policy_state.effective.skill_pool
+                sanitized_runtime_context = serialize_runtime_metadata(runtime_metadata)
+                compaction_result = await self._prepare_compaction(
                     session_id=session_id,
-                    mode=agent.permission_mode or PermissionMode.DEFAULT,
-                ),
-            )
-            compaction_result = await self._prepare_compaction(
-                session_id=session_id,
-                turn_id=turn_id,
-                agent=agent,
-                cwd=cwd,
-                messages=tuple(working_messages),
-                runtime_context=runtime_metadata,
-            )
-            compaction_payload = (
-                serialize_compaction_result(compaction_result)
-                if compaction_result.applied or compaction_result.fragments
-                else None
-            )
-            if compaction_result.applied:
-                working_messages = list(compaction_result.messages)
-                yield TurnStreamEvent(
-                    event_type=TurnStreamEventType.COMPACTION,
-                    iteration=iteration_index,
-                    compacted_messages=tuple(working_messages),
-                    metadata={"compaction": compaction_payload} if compaction_payload is not None else {},
+                    turn_id=turn_id,
+                    agent=agent,
+                    cwd=cwd,
+                    messages=tuple(working_messages),
+                    runtime_context=sanitized_runtime_context,
+                )
+                compaction_payload = (
+                    serialize_compaction_result(compaction_result)
+                    if compaction_result.applied or compaction_result.fragments
+                    else None
+                )
+                if compaction_result.applied:
+                    working_messages = list(compaction_result.messages)
+                    yield TurnStreamEvent(
+                        event_type=TurnStreamEventType.COMPACTION,
+                        iteration=iteration_index,
+                        compacted_messages=tuple(working_messages),
+                        metadata={"compaction": compaction_payload} if compaction_payload is not None else {},
+                    )
+
+                api_messages = normalize_messages_for_api(working_messages)
+                shared_memory_fragments = await self._collect_control_plane_fragments(
+                    self._runtime_services.memory,
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    agent=agent,
+                    cwd=cwd,
+                    messages=tuple(working_messages),
+                    runtime_context=sanitized_runtime_context,
+                )
+                shared_hook_context = await self._collect_control_plane_fragments(
+                    self._runtime_services.hooks,
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    agent=agent,
+                    cwd=cwd,
+                    messages=tuple(working_messages),
+                    runtime_context=sanitized_runtime_context,
+                )
+                shared_compaction_fragments = tuple(compaction_result.fragments)
+
+                user_prompt_hook = await self._dispatch_hook(
+                    session_id,
+                    UserPromptSubmitPayload(
+                        session_id=session_id,
+                        prompt=_latest_user_prompt_text(working_messages),
+                        turn_id=turn_id,
+                        attachments=tuple(attachment.name for attachment in attachments or ()),
+                    ),
                 )
 
-            api_messages = normalize_messages_for_api(working_messages)
-            shared_memory_fragments = await self._collect_control_plane_fragments(
-                self._runtime_services.memory,
-                session_id=session_id,
-                turn_id=turn_id,
-                agent=agent,
-                cwd=cwd,
-                messages=tuple(working_messages),
-                runtime_context=runtime_metadata,
-            )
-            shared_hook_context = await self._collect_control_plane_fragments(
-                self._runtime_services.hooks,
-                session_id=session_id,
-                turn_id=turn_id,
-                agent=agent,
-                cwd=cwd,
-                messages=tuple(working_messages),
-                runtime_context=runtime_metadata,
-            )
-            shared_compaction_fragments = tuple(compaction_result.fragments)
-
-            user_prompt_hook = await self._dispatch_hook(
-                session_id,
-                UserPromptSubmitPayload(
+                composition = self._compose_context(
                     session_id=session_id,
-                    prompt=_latest_user_prompt_text(working_messages),
                     turn_id=turn_id,
-                    attachments=tuple(attachment.name for attachment in attachments or ()),
-                ),
-            )
+                    agent=agent,
+                    cwd=cwd,
+                    messages=api_messages,
+                    available_tools=[tool.name for tool in tool_pool],
+                    available_skills=[skill.name for skill in active_skills],
+                    base_system_prompt=base_system_prompt,
+                    memory_fragments=shared_memory_fragments + tuple(memory_fragments or ()),
+                    hook_context=shared_hook_context
+                    + user_prompt_hook.additional_context
+                    + tuple(hook_context or ()),
+                    compaction_fragments=shared_compaction_fragments + tuple(compaction_fragments or ()),
+                    compaction_summary=serialize_compaction_summary(compaction_result.summary),
+                    compaction_boundary=serialize_compaction_boundary(compaction_result.boundary),
+                    compaction_continuation=serialize_compaction_continuation(compaction_result.continuation),
+                    attachments=attachments or (),
+                    runtime_context=sanitized_runtime_context,
+                )
+                abort_signal = ModelAbortSignal()
+                request_metadata = dict(sanitized_runtime_context)
+                if compaction_payload is not None:
+                    request_metadata["compaction"] = compaction_payload
+                request = ModelRequest(
+                    system_prompt=composition.system_prompt,
+                    turn_context=composition.turn_context,
+                    messages=composition.messages,
+                    tools=tool_pool,
+                    skills=active_skills,
+                    agent=agent,
+                    model=agent.model,
+                    effort=agent.effort,
+                    abort_signal=abort_signal,
+                    query_source=_query_source(request_metadata),
+                    metadata=request_metadata,
+                )
+                yield TurnStreamEvent(
+                    event_type=TurnStreamEventType.REQUEST_START,
+                    iteration=iteration_index,
+                    request=request,
+                )
 
-            composition = self._compose_context(
-                session_id=session_id,
-                turn_id=turn_id,
-                agent=agent,
-                cwd=cwd,
-                messages=api_messages,
-                available_tools=[tool.name for tool in tool_pool],
-                available_skills=[skill.name for skill in active_skills],
-                base_system_prompt=base_system_prompt,
-                memory_fragments=shared_memory_fragments + tuple(memory_fragments or ()),
-                hook_context=shared_hook_context
-                + user_prompt_hook.additional_context
-                + tuple(hook_context or ()),
-                compaction_fragments=shared_compaction_fragments + tuple(compaction_fragments or ()),
-                compaction_summary=serialize_compaction_summary(compaction_result.summary),
-                compaction_boundary=serialize_compaction_boundary(compaction_result.boundary),
-                compaction_continuation=serialize_compaction_continuation(compaction_result.continuation),
-                attachments=attachments or (),
-                runtime_context=runtime_metadata,
-            )
-            abort_signal = ModelAbortSignal()
-            request_metadata = dict(runtime_metadata)
-            if compaction_payload is not None:
-                request_metadata["compaction"] = compaction_payload
-            request = ModelRequest(
-                system_prompt=composition.system_prompt,
-                turn_context=composition.turn_context,
-                messages=composition.messages,
-                tools=tool_pool,
-                skills=active_skills,
-                agent=agent,
-                model=agent.model,
-                effort=agent.effort,
-                abort_signal=abort_signal,
-                query_source=_query_source(runtime_metadata),
-                metadata=request_metadata,
-            )
-            yield TurnStreamEvent(
-                event_type=TurnStreamEventType.REQUEST_START,
-                iteration=iteration_index,
-                request=request,
-            )
-
-            attempt_state = _StreamAttemptState()
-            self._active_abort_signal = abort_signal
-            try:
-                async for event in self._model_client.stream(request):
-                    attempt_state.observe(event)
+                attempt_state = _StreamAttemptState()
+                self._active_abort_signal = abort_signal
+                try:
+                    async for event in self._model_client.stream(request):
+                        attempt_state.observe(event)
+                        yield TurnStreamEvent(
+                            event_type=TurnStreamEventType.STREAM_PROGRESS,
+                            iteration=iteration_index,
+                            request=request,
+                            model_event=event,
+                        )
+                except Exception as exc:
+                    error_event = ModelStreamEvent(
+                        event_type=ModelStreamEventType.ERROR,
+                        payload={"error": str(exc)},
+                        terminal=ModelTerminalMetadata(
+                            stop_reason="error",
+                            error=str(exc),
+                            abort_reason=abort_signal.reason,
+                        ),
+                    )
+                    attempt_state.observe(error_event)
                     yield TurnStreamEvent(
                         event_type=TurnStreamEventType.STREAM_PROGRESS,
                         iteration=iteration_index,
                         request=request,
-                        model_event=event,
+                        model_event=error_event,
                     )
-            except Exception as exc:
-                error_event = ModelStreamEvent(
-                    event_type=ModelStreamEventType.ERROR,
-                    payload={"error": str(exc)},
-                    terminal=ModelTerminalMetadata(
-                        stop_reason="error",
-                        error=str(exc),
-                        abort_reason=abort_signal.reason,
-                    ),
-                )
-                attempt_state.observe(error_event)
-                yield TurnStreamEvent(
-                    event_type=TurnStreamEventType.STREAM_PROGRESS,
-                    iteration=iteration_index,
-                    request=request,
-                    model_event=error_event,
-                )
-            finally:
-                self._active_abort_signal = None
+                finally:
+                    self._active_abort_signal = None
 
-            assistant_blocks, discarded_blocks, tool_calls, terminal = attempt_state.finalize(
-                abort_reason=abort_signal.reason
-            )
-            if assistant_blocks:
-                assistant_message = RuntimeMessage(
-                    message_id=uuid4().hex,
-                    role=MessageRole.ASSISTANT,
-                    content=assistant_blocks,
-                    metadata=_assistant_message_metadata(terminal),
+                assistant_blocks, discarded_blocks, tool_calls, terminal = attempt_state.finalize(
+                    abort_reason=abort_signal.reason
                 )
-                working_messages.append(assistant_message)
-                yield TurnStreamEvent(
-                    event_type=TurnStreamEventType.MESSAGE,
-                    iteration=iteration_index,
-                    request=request,
-                    message=assistant_message,
-                    terminal=terminal,
-                )
-            if discarded_blocks:
-                yield TurnStreamEvent(
-                    event_type=TurnStreamEventType.MESSAGE_DISCARDED,
-                    iteration=iteration_index,
-                    request=request,
-                    terminal=terminal,
-                    discarded_content=discarded_blocks,
-                    metadata={"reason": terminal.abort_reason or terminal.stop_reason},
-                )
-
-            if not tool_calls:
-                stop_hook = await self._dispatch_hook(
-                    session_id,
-                    StopPayload(
-                        session_id=session_id,
-                        reason=terminal.stop_reason or "completed",
-                        turn_id=turn_id,
-                    ),
-                )
-                if not stop_hook.continue_execution:
-                    terminal = replace(
-                        terminal,
-                        stop_reason="blocked",
-                        metadata={
-                            **terminal.metadata,
-                            "continuation_blocked": True,
-                            "matched_hooks": list(stop_hook.matched_owners),
-                        },
+                if assistant_blocks:
+                    assistant_message = RuntimeMessage(
+                        message_id=uuid4().hex,
+                        role=MessageRole.ASSISTANT,
+                        content=assistant_blocks,
+                        metadata=_assistant_message_metadata(terminal),
                     )
-                state.completed = (
-                    terminal.error is None
-                    and terminal.stop_reason not in {"interrupted", "error", "blocked"}
-                )
+                    working_messages.append(assistant_message)
+                    yield TurnStreamEvent(
+                        event_type=TurnStreamEventType.MESSAGE,
+                        iteration=iteration_index,
+                        request=request,
+                        message=assistant_message,
+                        terminal=terminal,
+                    )
+                if discarded_blocks:
+                    yield TurnStreamEvent(
+                        event_type=TurnStreamEventType.MESSAGE_DISCARDED,
+                        iteration=iteration_index,
+                        request=request,
+                        terminal=terminal,
+                        discarded_content=discarded_blocks,
+                        metadata={"reason": terminal.abort_reason or terminal.stop_reason},
+                    )
+
+                if not tool_calls:
+                    stop_hook = await self._dispatch_hook(
+                        session_id,
+                        StopPayload(
+                            session_id=session_id,
+                            reason=terminal.stop_reason or "completed",
+                            turn_id=turn_id,
+                        ),
+                    )
+                    if not stop_hook.continue_execution:
+                        terminal = replace(
+                            terminal,
+                            stop_reason="blocked",
+                            metadata={
+                                **terminal.metadata,
+                                "continuation_blocked": True,
+                                "matched_hooks": list(stop_hook.matched_owners),
+                            },
+                        )
+                    state.completed = (
+                        terminal.error is None
+                        and terminal.stop_reason not in {"interrupted", "error", "blocked"}
+                    )
+                    yield TurnStreamEvent(
+                        event_type=TurnStreamEventType.TERMINAL,
+                        iteration=iteration_index,
+                        request=request,
+                        terminal=terminal,
+                    )
+                    return
+
                 yield TurnStreamEvent(
                     event_type=TurnStreamEventType.TERMINAL,
                     iteration=iteration_index,
                     request=request,
                     terminal=terminal,
                 )
-                return
 
-            yield TurnStreamEvent(
-                event_type=TurnStreamEventType.TERMINAL,
-                iteration=iteration_index,
-                request=request,
-                terminal=terminal,
-            )
+                if abort_signal.aborted:
+                    state.completed = False
+                    return
 
-            if abort_signal.aborted:
-                state.completed = False
-                return
-
-            tool_context = self.create_tool_context(
-                session_id=session_id,
-                turn_id=turn_id,
-                agent_name=agent.name,
-                cwd=Path(composition.turn_context.cwd),
-                messages=tuple(working_messages),
-                tool_pool=tool_pool,
-                skill_pool=active_skills,
-                abort_signal=abort_signal,
-                metadata=runtime_metadata,
-            )
-            self._active_tool_context = tool_context
-            self._active_scheduler = ToolScheduler(self._tool_registry)
-            try:
-                tool_results = await self._active_scheduler.run(tool_calls, tool_context)
-            finally:
-                self._active_scheduler = None
-                self._active_tool_context = None
-
-            tool_result_blocks = tuple(_tool_result_block(tool_result) for tool_result in tool_results)
-            if tool_result_blocks:
-                tool_message = RuntimeMessage(
-                    message_id=uuid4().hex,
-                    role=MessageRole.USER,
-                    content=tool_result_blocks,
-                    metadata={
-                        "tool_results": [
-                            {
-                                "tool_use_id": tool_result.call_id,
-                                "tool_name": tool_result.tool_name,
-                                "status": tool_result.status.value,
-                            }
-                            for tool_result in tool_results
-                        ]
-                    },
+                tool_context = self.create_tool_context(
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    agent_name=agent.name,
+                    cwd=Path(composition.turn_context.cwd),
+                    messages=tuple(working_messages),
+                    tool_pool=tool_pool,
+                    skill_pool=active_skills,
+                    abort_signal=abort_signal,
+                    metadata=runtime_metadata,
                 )
-                working_messages.append(tool_message)
-                yield TurnStreamEvent(
-                    event_type=TurnStreamEventType.MESSAGE,
-                    iteration=iteration_index,
-                    request=request,
-                    message=tool_message,
-                    terminal=terminal,
-                )
+                self._active_tool_context = tool_context
+                self._active_scheduler = ToolScheduler(self._tool_registry)
+                try:
+                    tool_results = await self._active_scheduler.run(tool_calls, tool_context)
+                finally:
+                    self._active_scheduler = None
+                    self._active_tool_context = None
 
-            iteration += 1
+                tool_result_blocks = tuple(_tool_result_block(tool_result) for tool_result in tool_results)
+                if tool_result_blocks:
+                    tool_message = RuntimeMessage(
+                        message_id=uuid4().hex,
+                        role=MessageRole.USER,
+                        content=tool_result_blocks,
+                        metadata={
+                            "tool_results": [
+                                {
+                                    "tool_use_id": tool_result.call_id,
+                                    "tool_name": tool_result.tool_name,
+                                    "status": tool_result.status.value,
+                                }
+                                for tool_result in tool_results
+                            ]
+                        },
+                    )
+                    working_messages.append(tool_message)
+                    yield TurnStreamEvent(
+                        event_type=TurnStreamEventType.MESSAGE,
+                        iteration=iteration_index,
+                        request=request,
+                        message=tool_message,
+                        terminal=terminal,
+                    )
 
-        state.completed = False
+                iteration += 1
+
+            state.completed = False
+        finally:
+            if self._runtime_services.hook_bus is not None:
+                self._runtime_services.hook_bus.release_turn(session_id, turn_id)
 
     def _compose_context(self, **kwargs: Any) -> Any:
         assembler = self._runtime_services.context_assembler
@@ -888,6 +919,21 @@ class TurnEngine:
         if runtime_context:
             merged.update(runtime_context)
         return merged
+
+    def _resolve_memory_scope(
+        self,
+        *,
+        session_id: str,
+        agent: AgentDefinition,
+        cwd: str,
+    ):
+        memory_service = self._runtime_services.memory
+        if memory_service is not None and hasattr(memory_service, "resolve_context"):
+            resolved = memory_service.resolve_context(session_id=session_id, agent=agent, cwd=cwd)
+            scope = getattr(resolved, "scope", None)
+            if scope is not None:
+                return scope
+        return agent.memory
 
     async def _dispatch_hook(self, session_id: str, payload: Any) -> Any:
         if self._runtime_services.hook_bus is None:
