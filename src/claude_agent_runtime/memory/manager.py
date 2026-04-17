@@ -581,17 +581,22 @@ class LongTermMemory:
                     limit=policy.embedding_shortlist_limit or pool_limit,
                 )
             )
-            valid_embedding_hits = tuple(
-                hit for hit in embedding_hits if isinstance(hit, MemoryRetrievalRankedHit) and hit.doc_id in candidate_index
-            )
-            if valid_embedding_hits:
-                for hit in valid_embedding_hits:
-                    candidate = candidate_index[hit.doc_id]
-                    candidate.embedding_score = float(hit.score)
-                    candidate.combined_score = candidate.lexical_score + (
-                        policy.embedding_score_weight * float(hit.score)
-                    )
-                embedding_doc_ids = tuple(hit.doc_id for hit in valid_embedding_hits)
+            embedding_scores: dict[str, float] = {}
+            ordered_embedding_doc_ids: list[str] = []
+            for hit in embedding_hits:
+                if not isinstance(hit, MemoryRetrievalRankedHit) or hit.doc_id not in candidate_index:
+                    continue
+                if hit.doc_id not in embedding_scores:
+                    ordered_embedding_doc_ids.append(hit.doc_id)
+                    embedding_scores[hit.doc_id] = float(hit.score)
+                    continue
+                embedding_scores[hit.doc_id] = max(embedding_scores[hit.doc_id], float(hit.score))
+            if ordered_embedding_doc_ids:
+                for doc_id in ordered_embedding_doc_ids:
+                    candidate = candidate_index[doc_id]
+                    candidate.embedding_score = embedding_scores[doc_id]
+                    candidate.combined_score += policy.embedding_score_weight * embedding_scores[doc_id]
+                embedding_doc_ids = tuple(ordered_embedding_doc_ids)
                 filter_reasons.append("embedding_shortlist")
 
         divergence = _detect_shortlist_divergence(lexical_doc_ids, embedding_doc_ids)
@@ -599,7 +604,6 @@ class LongTermMemory:
             lexical_doc_ids=lexical_doc_ids,
             embedding_doc_ids=embedding_doc_ids,
             candidate_index=candidate_index,
-            pool_limit=pool_limit,
         )
         combined_candidates = sorted(
             candidate_pool,
@@ -729,14 +733,11 @@ class LongTermMemory:
         lexical_doc_ids: Sequence[str],
         embedding_doc_ids: Sequence[str],
         candidate_index: Mapping[str, _ScoredManifestCandidate],
-        pool_limit: int,
     ) -> tuple[_ScoredManifestCandidate, ...]:
         ordered_ids: list[str] = []
         for doc_id in (*lexical_doc_ids, *embedding_doc_ids):
             if doc_id in candidate_index and doc_id not in ordered_ids:
                 ordered_ids.append(doc_id)
-            if len(ordered_ids) >= pool_limit:
-                break
         return tuple(candidate_index[doc_id] for doc_id in ordered_ids)
 
     def _rerank_candidates(

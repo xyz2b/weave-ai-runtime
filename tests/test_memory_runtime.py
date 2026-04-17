@@ -648,6 +648,53 @@ def test_embedding_shortlist_can_add_semantic_candidate_and_report_divergence(tm
     assert embedding_provider.calls
 
 
+def test_hybrid_retrieval_keeps_embedding_candidate_when_lexical_pool_saturates(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    memory_root = project_root / ".claude" / "memory" / "documents" / "shared"
+    for index in range(8):
+        _write_v2_memory_artifact(
+            memory_root / f"lexical-{index}.md",
+            title=f"Lexical Candidate {index}",
+            content=f"Verify service changes with a targeted check {index} before broader validation.",
+            scope="project",
+            memory_kind="workflow_command",
+            tags=("verification", "service"),
+        )
+    _write_v2_memory_artifact(
+        memory_root / "semantic-rust-checks.md",
+        title="Semantic Rust Checks",
+        content="Run cargo test -q before broader Rust review passes.",
+        scope="project",
+        memory_kind="workflow_command",
+        tags=("rust", "compile"),
+    )
+
+    embedding_provider = FakeEmbeddingShortlistProvider({"Semantic Rust Checks": 0.95})
+    rerank_provider = FakeRerankProvider(("Semantic Rust Checks", "Lexical Candidate 0"))
+    manager = MemoryManager(
+        project_root=project_root,
+        retrieval_policy=MemoryRetrievalPolicy(embedding_score_weight=0.0),
+        embedding_shortlist_provider=embedding_provider,
+        rerank_provider=rerank_provider,
+    )
+    agent = AgentDefinition(name="main-router", description="router", prompt="route")
+    manager.initialize_session(session_id="session-embedding-saturated", agent=agent, cwd=project_root)
+
+    fragments, trace = manager.collect_with_trace(
+        session_id="session-embedding-saturated",
+        turn_id="turn-embedding-saturated",
+        agent=agent,
+        cwd=project_root,
+        messages=(_user_message("msg-embedding-saturated", "How should I verify service changes?"),),
+    )
+
+    assert "Semantic Rust Checks" in fragments[0]
+    assert len(trace["lexical_doc_ids"]) == 6
+    assert len(trace["candidate_doc_ids"]) == len(trace["lexical_doc_ids"]) + len(trace["divergence"]["embedding_only"])
+    assert rerank_provider.calls
+    assert "Semantic Rust Checks" in rerank_provider.calls[0][1]
+
+
 def test_long_term_retrieval_rerank_skips_when_deterministic_choice_is_clear(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     memory_root = project_root / ".claude" / "memory" / "documents" / "shared"
@@ -850,6 +897,55 @@ def test_long_term_retrieval_applies_contested_stale_and_confidence_controls(tmp
     assert "confidence_below_threshold" in trace["applied_filters"]
     assert "contested_entry" in trace["decays"]
     assert "stale_beyond_threshold" in trace["decays"]
+
+
+def test_embedding_shortlist_preserves_contested_decay_penalties(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    memory_root = project_root / ".claude" / "memory" / "documents" / "shared"
+    _write_v2_memory_artifact(
+        memory_root / "fresh-pytest.md",
+        title="Fresh Pytest Workflow",
+        content="Use pytest -q first for fast Python verification.",
+        scope="project",
+        memory_kind="workflow_command",
+        tags=("pytest", "python"),
+        extra_metadata={"confidence": 0.95},
+    )
+    _write_v2_memory_artifact(
+        memory_root / "contested-pytest.md",
+        title="Contested Pytest Workflow",
+        content="Run the full test suite before every small Python change.",
+        scope="project",
+        memory_kind="workflow_command",
+        tags=("pytest", "python"),
+        extra_metadata={"contested": True, "confidence": 0.9},
+    )
+
+    embedding_provider = FakeEmbeddingShortlistProvider({"Contested Pytest Workflow": 1.0})
+    manager = MemoryManager(
+        project_root=project_root,
+        retrieval_limit=1,
+        retrieval_policy=MemoryRetrievalPolicy(
+            contested_policy="decay",
+            contested_decay_penalty=10.0,
+        ),
+        embedding_shortlist_provider=embedding_provider,
+    )
+    agent = AgentDefinition(name="main-router", description="router", prompt="route")
+    manager.initialize_session(session_id="session-embedding-decay", agent=agent, cwd=project_root)
+
+    fragments, trace = manager.collect_with_trace(
+        session_id="session-embedding-decay",
+        turn_id="turn-embedding-decay",
+        agent=agent,
+        cwd=project_root,
+        messages=(_user_message("msg-embedding-decay", "How should I run pytest for Python changes?"),),
+    )
+
+    assert "Fresh Pytest Workflow" in fragments[0]
+    assert "embedding_shortlist" in trace["applied_filters"]
+    assert "contested_entry" in trace["decays"]
+    assert embedding_provider.calls
 
 
 def test_scope_mismatched_long_term_artifact_is_excluded_from_manifest(tmp_path: Path) -> None:
