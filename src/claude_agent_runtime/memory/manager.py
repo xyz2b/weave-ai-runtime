@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -41,7 +42,7 @@ _STOPWORDS = {
 
 
 @dataclass(slots=True)
-class MemoryManager:
+class LongTermMemory:
     provider: MemoryProvider = field(default_factory=FileMemoryProvider)
     project_root: Path | None = None
     user_root: Path = field(default_factory=lambda: Path.home() / ".claude")
@@ -68,6 +69,7 @@ class MemoryManager:
             context = self.resolve_context(session_id=session_id, agent=agent, cwd=cwd)
             if session_id not in self._session_defaults:
                 self._session_defaults[session_id] = context
+        self.provider.prepare_context(context)
         _ = self.provider.load_entrypoint(context)
         return context
 
@@ -103,13 +105,33 @@ class MemoryManager:
         else:
             boundary_root = working_dir
             memory_root = boundary_root / ".claude" / "memory"
+        documents_dir = memory_root / "documents"
+        manifests_dir = memory_root / "manifests"
+        agents_dir = memory_root / "agents"
+        sessions_dir = memory_root / "sessions"
+        consolidations_dir = memory_root / "consolidations"
         return ResolvedMemoryScope(
             session_id=session_id,
             scope=scope,
             boundary_root=boundary_root,
             memory_root=memory_root,
             entrypoint_path=memory_root / "MEMORY.md",
-            documents_dir=memory_root / "documents",
+            documents_dir=documents_dir,
+            shared_documents_dir=documents_dir / "shared",
+            preferences_documents_dir=documents_dir / "preferences",
+            conventions_documents_dir=documents_dir / "conventions",
+            topics_documents_dir=documents_dir / "topics",
+            manifests_dir=manifests_dir,
+            long_term_manifest_path=manifests_dir / "long-term-manifest.json",
+            agent_manifest_path=manifests_dir / "agent-manifest.json",
+            session_manifest_path=manifests_dir / "session-manifest.json",
+            consolidation_manifest_path=manifests_dir / "consolidation-manifest.json",
+            agents_dir=agents_dir,
+            sessions_dir=sessions_dir,
+            consolidations_dir=consolidations_dir,
+            consolidation_checkpoints_dir=consolidations_dir / "checkpoints",
+            consolidation_logs_dir=consolidations_dir / "logs",
+            consolidation_staging_dir=consolidations_dir / "staging",
         )
 
     def guarded_roots(
@@ -139,8 +161,12 @@ class MemoryManager:
     ) -> tuple[str, ...]:
         context = self.resolve_context(session_id=session_id, agent=agent, cwd=cwd)
         entrypoint = self.provider.load_entrypoint(context)
-        documents = self.provider.list_documents(context)
-        relevant = self._retrieve_relevant(_latest_user_text(messages), documents)
+        query = _latest_user_text(messages)
+        relevant, _ = self._collect_layered_retrieval(
+            context=context,
+            agent=agent,
+            query=query,
+        )
         fragments: list[str] = []
         if entrypoint is not None and entrypoint.content.strip():
             fragments.append(entrypoint.render())
@@ -158,6 +184,171 @@ class MemoryManager:
         context = self.resolve_context(session_id=session_id, agent=agent, cwd=cwd)
         entries = self._extract_entries(messages)
         return self.provider.persist_entries(context, entries)
+
+    def collect_with_trace(
+        self,
+        *,
+        session_id: str,
+        turn_id: str,
+        agent: AgentDefinition,
+        cwd: str | Path,
+        messages: Sequence[RuntimeMessage],
+    ) -> tuple[tuple[str, ...], dict[str, Any]]:
+        context = self.resolve_context(session_id=session_id, agent=agent, cwd=cwd)
+        entrypoint = self.provider.load_entrypoint(context)
+        relevant, trace = self._collect_layered_retrieval(
+            context=context,
+            agent=agent,
+            query=_latest_user_text(messages),
+        )
+        fragments: list[str] = []
+        if entrypoint is not None and entrypoint.content.strip():
+            fragments.append(entrypoint.render())
+        fragments.extend(document.render() for document in relevant)
+        deduped = tuple(dict.fromkeys(fragment for fragment in fragments if fragment.strip()))
+        trace["turn_id"] = turn_id
+        return deduped, trace
+
+    def _collect_layered_retrieval(
+        self,
+        *,
+        context: ResolvedMemoryScope,
+        agent: AgentDefinition,
+        query: str,
+    ) -> tuple[tuple[MemoryDocument, ...], dict[str, Any]]:
+        applied_filters: list[str] = []
+        selected_doc_ids: list[str] = []
+        budget_decisions: list[dict[str, Any]] = []
+        materialized: list[MemoryDocument] = []
+        seen_paths: set[Path] = set()
+
+        agent_documents = self._load_agent_namespace_documents(context, agent.name)
+        selected_agent_documents = tuple(agent_documents[:1])
+        materialized.extend(selected_agent_documents)
+        seen_paths.update(document.path for document in selected_agent_documents)
+        budget_decisions.append(
+            {
+                "layer": "agent_namespace",
+                "budget": 1,
+                "available": len(agent_documents),
+                "selected": len(selected_agent_documents),
+            }
+        )
+        if selected_agent_documents:
+            applied_filters.append("layer:agent_namespace")
+            selected_doc_ids.extend(str(document.path.relative_to(context.memory_root)) for document in selected_agent_documents)
+
+        shortlist, shortlist_trace = self._shortlist_long_term_documents(context=context, query=query)
+        selected_long_term: list[MemoryDocument] = []
+        for document in shortlist:
+            if document.path in seen_paths:
+                continue
+            selected_long_term.append(document)
+            seen_paths.add(document.path)
+        materialized.extend(selected_long_term)
+        applied_filters.extend(shortlist_trace["applied_filters"])
+        selected_doc_ids.extend(shortlist_trace["selected_doc_ids"])
+        budget_decisions.append(shortlist_trace["budget"])
+
+        session_summary = self._load_session_summary_document(context)
+        selected_session: tuple[MemoryDocument, ...] = ()
+        if session_summary is not None and session_summary.path not in seen_paths:
+            selected_session = (session_summary,)
+            materialized.append(session_summary)
+            seen_paths.add(session_summary.path)
+            applied_filters.append("layer:session_summary")
+            selected_doc_ids.append(str(session_summary.path.relative_to(context.memory_root)))
+        budget_decisions.append(
+            {
+                "layer": "session_summary",
+                "budget": 1,
+                "available": 1 if session_summary is not None else 0,
+                "selected": len(selected_session),
+            }
+        )
+
+        trace = {
+            "applied_filters": tuple(dict.fromkeys(applied_filters)),
+            "selected_doc_ids": tuple(selected_doc_ids),
+            "budget_decisions": tuple(budget_decisions),
+        }
+        return tuple(materialized), trace
+
+    def _shortlist_long_term_documents(
+        self,
+        *,
+        context: ResolvedMemoryScope,
+        query: str,
+    ) -> tuple[tuple[MemoryDocument, ...], dict[str, Any]]:
+        manifest = self.provider.load_long_term_manifest(context) or {}
+        raw_entries = manifest.get("entries", ())
+        if not isinstance(raw_entries, list):
+            raw_entries = []
+        query_tokens = _tokenize(query)
+        if not query_tokens:
+            return (), {
+                "applied_filters": ("query_tokens:none",),
+                "selected_doc_ids": (),
+                "budget": {"layer": "shared_long_term", "budget": self.retrieval_limit, "available": 0, "selected": 0},
+            }
+
+        scored: list[tuple[float, str, str]] = []
+        for entry in raw_entries:
+            if not isinstance(entry, dict):
+                continue
+            if entry.get("contested") is True:
+                continue
+            path = entry.get("path")
+            title = entry.get("title")
+            summary = entry.get("summary")
+            if not isinstance(path, str) or not isinstance(title, str):
+                continue
+            lexical_tokens = _tokenize(f"{title} {summary or ''} {' '.join(entry.get('tags', ())) }")
+            overlap = len(query_tokens & lexical_tokens)
+            if overlap <= 0:
+                continue
+            title_overlap = len(query_tokens & _tokenize(title))
+            tag_overlap = len(query_tokens & set(str(tag).lower() for tag in entry.get("tags", ())))
+            stale_penalty = 0.5 if _stale_entry(entry.get("stale_after")) else 0.0
+            score = float(overlap) + float(title_overlap) + (0.5 * float(tag_overlap)) - stale_penalty
+            scored.append((score, path, str(entry.get("doc_id") or path)))
+
+        scored.sort(key=lambda item: (-item[0], item[1]))
+        selected = scored[: self.retrieval_limit]
+        documents = self.provider.materialize_documents(context, [path for _, path, _ in selected])
+        return documents, {
+            "applied_filters": ("manifest_header_prefilter", "lexical_shortlist", "hard_filter+boost+decay"),
+            "selected_doc_ids": tuple(doc_id for _, _, doc_id in selected),
+            "budget": {
+                "layer": "shared_long_term",
+                "budget": self.retrieval_limit,
+                "available": len(scored),
+                "selected": len(selected),
+            },
+        }
+
+    def _load_agent_namespace_documents(
+        self,
+        context: ResolvedMemoryScope,
+        agent_name: str,
+    ) -> tuple[MemoryDocument, ...]:
+        namespace_dir = context.agent_namespace_documents_dir(agent_name)
+        if not namespace_dir.exists():
+            return ()
+        documents: list[MemoryDocument] = []
+        for path in sorted(namespace_dir.rglob("*.md")):
+            relative_path = path.relative_to(context.memory_root).as_posix()
+            materialized = self.provider.materialize_documents(context, (relative_path,))
+            documents.extend(materialized)
+        return tuple(documents)
+
+    def _load_session_summary_document(self, context: ResolvedMemoryScope) -> MemoryDocument | None:
+        summary_path = context.session_summary_path()
+        if not summary_path.exists() or not summary_path.is_file():
+            return None
+        relative_path = summary_path.relative_to(context.memory_root).as_posix()
+        documents = self.provider.materialize_documents(context, (relative_path,))
+        return documents[0] if documents else None
 
     def _retrieve_relevant(
         self,
@@ -203,8 +394,8 @@ class MemoryManager:
 
 
 @dataclass(slots=True)
-class MemoryManagerService:
-    manager: MemoryManager = field(default_factory=MemoryManager)
+class LongTermMemoryService:
+    manager: LongTermMemory = field(default_factory=LongTermMemory)
 
     def __init__(
         self,
@@ -219,7 +410,7 @@ class MemoryManagerService:
         if manager is not None:
             self.manager = manager
             return
-        self.manager = MemoryManager(
+        self.manager = LongTermMemory(
             provider=provider or FileMemoryProvider(),
             project_root=project_root,
             user_root=user_root or (Path.home() / ".claude"),
@@ -237,13 +428,16 @@ class MemoryManagerService:
         messages: Sequence[RuntimeMessage],
         runtime_context: Mapping[str, Any] | None = None,
     ) -> tuple[str, ...]:
-        _ = turn_id, runtime_context
-        return self.manager.collect(
+        fragments, trace = self.manager.collect_with_trace(
             session_id=session_id,
+            turn_id=turn_id,
             agent=agent,
             cwd=cwd,
             messages=messages,
         )
+        if isinstance(runtime_context, dict):
+            runtime_context["memory_retrieval"] = trace
+        return fragments
 
     async def start_session(
         self,
@@ -301,6 +495,10 @@ class MemoryManagerService:
         cwd: str | Path,
     ) -> tuple[Path, ...]:
         return self.manager.guarded_roots(session_id=session_id, agent=agent, cwd=cwd)
+
+
+MemoryManager = LongTermMemory
+MemoryManagerService = LongTermMemoryService
 
 
 def _latest_user_text(messages: Sequence[RuntimeMessage]) -> str:
@@ -362,3 +560,12 @@ def _tokenize(text: str) -> set[str]:
         for token in re.findall(r"[a-z0-9]+", text.lower())
         if len(token) > 2 and token not in _STOPWORDS
     }
+
+
+def _stale_entry(value: object) -> bool:
+    if not isinstance(value, str) or not value.strip():
+        return False
+    try:
+        return datetime.fromisoformat(value.strip().replace("Z", "+00:00")) <= datetime.now().astimezone()
+    except ValueError:
+        return False

@@ -1,4 +1,5 @@
 import asyncio
+import json
 import shutil
 from pathlib import Path
 
@@ -110,6 +111,8 @@ def test_session_start_loads_memory_entrypoint_and_retrieves_relevant_documents(
         cwd=project_root,
     )
     assert resolved.entrypoint_path.exists()
+    assert resolved.long_term_manifest_path.exists()
+    assert resolved.agent_manifest_path.exists()
 
     controller.enqueue_event(
         InboundEvent(
@@ -122,6 +125,13 @@ def test_session_start_loads_memory_entrypoint_and_retrieves_relevant_documents(
     fragments = model_client.requests[0].turn_context.memory_fragments
     assert any("Use pytest via `pytest -q`." in fragment for fragment in fragments)
     assert any("The project uses pytest for unit tests" in fragment for fragment in fragments)
+    trace = model_client.requests[0].turn_context.metadata["memory_retrieval"]
+    assert trace["applied_filters"] == (
+        "manifest_header_prefilter",
+        "lexical_shortlist",
+        "hard_filter+boost+decay",
+    )
+    assert trace["budget_decisions"][1]["layer"] == "shared_long_term"
 
 
 def test_main_thread_memory_extraction_persists_and_surfaces_on_next_turn(tmp_path: Path) -> None:
@@ -169,9 +179,22 @@ def test_main_thread_memory_extraction_persists_and_surfaces_on_next_turn(tmp_pa
     )
     asyncio.run(controller.run_until_idle())
 
-    documents = sorted((project_root / ".claude" / "memory" / "documents").glob("*.md"))
+    documents = sorted((project_root / ".claude" / "memory" / "documents" / "shared").glob("*.md"))
     assert len(documents) == 1
-    assert "The project uses pytest and I prefer concise answers" in documents[0].read_text(encoding="utf-8")
+    raw_document = documents[0].read_text(encoding="utf-8")
+    assert raw_document.startswith("---\n")
+    assert "memory_kind: note" in raw_document
+    assert "scope: project" in raw_document
+    assert "namespace: shared" in raw_document
+    assert "The project uses pytest and I prefer concise answers" in raw_document
+
+    manifest_payload = json.loads(
+        (project_root / ".claude" / "memory" / "manifests" / "long-term-manifest.json").read_text(encoding="utf-8")
+    )
+    assert manifest_payload["schema_version"] == "memory.v2"
+    assert manifest_payload["manifest_kind"] == "long_term"
+    assert manifest_payload["stats"]["entry_count"] == 1
+    assert manifest_payload["entries"][0]["path"].startswith("documents/shared/")
     notifications = controller.runtime_services.host.current_notifications()
     assert notifications[-1].metadata["memory_update"] is True
 
@@ -188,6 +211,133 @@ def test_main_thread_memory_extraction_persists_and_surfaces_on_next_turn(tmp_pa
         "The project uses pytest and I prefer concise answers" in fragment
         for fragment in fragments
     )
+
+
+def test_memory_start_initializes_layered_layout_and_agent_manifest(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    manager = MemoryManager(project_root=project_root)
+    agent = AgentDefinition(name="main-router", description="router", prompt="route")
+
+    context = manager.initialize_session(
+        session_id="session-layout",
+        agent=agent,
+        cwd=project_root,
+    )
+
+    assert context.shared_documents_dir.exists()
+    assert context.preferences_documents_dir.exists()
+    assert context.agents_dir.exists()
+    assert context.sessions_dir.exists()
+    assert context.consolidations_dir.exists()
+    assert context.long_term_manifest_path.exists()
+    assert context.agent_manifest_path.exists()
+    assert context.session_manifest_path.exists()
+    assert context.consolidation_manifest_path.exists()
+
+    agent_manifest = json.loads(context.agent_manifest_path.read_text(encoding="utf-8"))
+    assert agent_manifest["schema_version"] == "memory.v2"
+    assert agent_manifest["manifest_kind"] == "agent"
+    assert agent_manifest["namespaces"] == []
+
+
+def test_invalid_frontmatter_memory_artifact_degrades_without_breaking_retrieval(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    documents_dir = project_root / ".claude" / "memory" / "documents" / "shared"
+    documents_dir.mkdir(parents=True)
+    _write_v2_memory_artifact(
+        documents_dir / "valid-pytest.md",
+        title="Pytest Workflow",
+        content="Use pytest -q for concise unit test runs.",
+        scope="project",
+    )
+    (documents_dir / "broken.md").write_text(
+        "---\nmemory_kind: preference\nscope: project\ntags: [broken\n---\n# Broken\n\ninvalid\n",
+        encoding="utf-8",
+    )
+
+    manager = MemoryManager(project_root=project_root)
+    agent = AgentDefinition(name="main-router", description="router", prompt="route")
+    manager.initialize_session(session_id="session-invalid", agent=agent, cwd=project_root)
+
+    fragments, trace = manager.collect_with_trace(
+        session_id="session-invalid",
+        turn_id="turn-invalid",
+        agent=agent,
+        cwd=project_root,
+        messages=(
+            _user_message("msg-invalid", "How do I run pytest in this repo?"),
+        ),
+    )
+
+    assert any("Use pytest -q for concise unit test runs." in fragment for fragment in fragments)
+    assert trace["budget_decisions"][1]["layer"] == "shared_long_term"
+
+    manifest_payload = json.loads(
+        (project_root / ".claude" / "memory" / "manifests" / "long-term-manifest.json").read_text(encoding="utf-8")
+    )
+    assert manifest_payload["stats"]["entry_count"] == 1
+    assert manifest_payload["stats"]["invalid_entry_count"] == 1
+
+
+def test_layered_retrieval_prioritizes_agent_namespace_shared_long_term_and_session_summary(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    memory_root = project_root / ".claude" / "memory"
+    _write_v2_memory_artifact(
+        memory_root / "documents" / "shared" / "pytest-shared.md",
+        title="Shared Pytest Workflow",
+        content="Use pytest -q from the repository root.",
+        scope="project",
+    )
+    (memory_root / "agents" / "main-router" / "documents" / "heuristics").mkdir(parents=True)
+    (memory_root / "agents" / "main-router" / "documents" / "heuristics" / "pytest-heuristic.md").write_text(
+        "# Pytest Heuristic\n\nCheck pytest -q first before broader verification.\n",
+        encoding="utf-8",
+    )
+    session_dir = memory_root / "sessions" / "session-layered"
+    session_dir.mkdir(parents=True)
+    (session_dir / "session-summary.md").write_text(
+        "# Session Summary\n\nWe are actively debugging pytest failures in this repo.\n",
+        encoding="utf-8",
+    )
+
+    service = MemoryManagerService(project_root=project_root)
+    agent = AgentDefinition(name="main-router", description="router", prompt="route")
+    runtime_context: dict[str, object] = {}
+    asyncio.run(
+        service.start_session(
+            session_id="session-layered",
+            agent=agent,
+            cwd=project_root,
+        )
+    )
+
+    fragments = asyncio.run(
+        service.collect(
+            session_id="session-layered",
+            turn_id="turn-layered",
+            agent=agent,
+            cwd=str(project_root),
+            messages=(_user_message("msg-layered", "How should I run pytest here?"),),
+            runtime_context=runtime_context,
+        )
+    )
+
+    assert "Pytest Heuristic" in fragments[0]
+    assert "Shared Pytest Workflow" in fragments[1]
+    assert "Session Summary" in fragments[2]
+
+    trace = runtime_context["memory_retrieval"]
+    assert trace["budget_decisions"][0]["layer"] == "agent_namespace"
+    assert trace["budget_decisions"][1]["layer"] == "shared_long_term"
+    assert trace["budget_decisions"][2]["layer"] == "session_summary"
+    assert trace["selected_doc_ids"][0] == "agents/main-router/documents/heuristics/pytest-heuristic.md"
+
+    agent_manifest = json.loads(
+        (project_root / ".claude" / "memory" / "manifests" / "agent-manifest.json").read_text(encoding="utf-8")
+    )
+    assert agent_manifest["namespaces"][0]["agent_name"] == "main-router"
+    assert agent_manifest["namespaces"][0]["entry_count"] == 1
 
 
 def test_builtin_file_tools_exclude_reserved_memory_paths(tmp_path: Path) -> None:
@@ -255,6 +405,21 @@ def test_builtin_file_tools_exclude_reserved_memory_paths(tmp_path: Path) -> Non
 def test_delegated_agent_uses_explicit_project_memory_scope(tmp_path: Path) -> None:
     project_root = _load_claude_memory_fixture(tmp_path)
     workspace = project_root / "workspace"
+    (project_root / ".claude" / "memory" / "agents" / "worker" / "documents" / "heuristics").mkdir(parents=True)
+    (project_root / ".claude" / "memory" / "agents" / "worker" / "documents" / "heuristics" / "project-memory.md").write_text(
+        "# Worker Project Memory\n\nProject-scoped worker guidance that should stay behind the local ceiling.\n",
+        encoding="utf-8",
+    )
+    (workspace / ".claude" / "memory" / "agents" / "main-router" / "documents" / "heuristics").mkdir(parents=True)
+    (workspace / ".claude" / "memory" / "agents" / "main-router" / "documents" / "heuristics" / "local-memory.md").write_text(
+        "# Main Router Local Memory\n\nMain router local heuristic for temporary refactors.\n",
+        encoding="utf-8",
+    )
+    (workspace / ".claude" / "memory" / "agents" / "worker" / "documents" / "heuristics").mkdir(parents=True)
+    (workspace / ".claude" / "memory" / "agents" / "worker" / "documents" / "heuristics" / "local-worker-memory.md").write_text(
+        "# Worker Local Memory\n\nWorker-specific local guidance for delegated verification.\n",
+        encoding="utf-8",
+    )
     model_client = FakeModelClient(
         [
             [
@@ -315,6 +480,11 @@ def test_delegated_agent_uses_explicit_project_memory_scope(tmp_path: Path) -> N
 
     assert any("temporary refactor notes" in fragment for fragment in main_fragments)
     assert any("temporary refactor notes" in fragment for fragment in worker_fragments)
+    assert any("Main router local heuristic" in fragment for fragment in main_fragments)
+    assert not any("Main router local heuristic" in fragment for fragment in worker_fragments)
+    assert any("Worker-specific local guidance" in fragment for fragment in worker_fragments)
+    assert not any("Worker-specific local guidance" in fragment for fragment in main_fragments)
+    assert not any("Project-scoped worker guidance" in fragment for fragment in worker_fragments)
     assert not any("Use pytest via `pytest -q`." in fragment for fragment in worker_fragments)
 
 
@@ -326,3 +496,31 @@ def _load_claude_memory_fixture(tmp_path: Path) -> Path:
 
 def _fixture_root() -> Path:
     return Path(__file__).resolve().parent / "fixtures" / "memory" / "claude_style" / "project"
+
+
+def _user_message(message_id: str, text: str):
+    from claude_agent_runtime.contracts import MessageRole, RuntimeMessage
+
+    return RuntimeMessage(message_id=message_id, role=MessageRole.USER, content=text)
+
+
+def _write_v2_memory_artifact(path: Path, *, title: str, content: str, scope: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        (
+            "---\n"
+            "memory_kind: note\n"
+            f"scope: {scope}\n"
+            "namespace: shared\n"
+            "retention: durable_until_superseded\n"
+            "source_pathway: rule\n"
+            "created_at: 2026-04-17T04:00:00Z\n"
+            "last_confirmed_at: 2026-04-17T04:00:00Z\n"
+            "tags:\n"
+            "  - testing\n"
+            "---\n"
+            f"# {title}\n\n"
+            f"{content}\n"
+        ),
+        encoding="utf-8",
+    )

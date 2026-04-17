@@ -33,23 +33,23 @@ memory v2 不建议一次性全量落地。推荐按三期交付：
 
 ### 1. Foundations and Contracts
 
-- [ ] 1.1 将现有 `MemoryManager` 重构为 `LongTermMemory` 基础层，保留 `MEMORY.md`、scope resolution 与 path guard 语义
-- [ ] 1.2 固化 canonical artifact layout，并在 runtime 中建立 `documents/`、`agents/`、`sessions/` 三类路径 contract
-- [ ] 1.3 固化 manifest envelope、memory artifact frontmatter 与 required/optional field vocabulary
-- [ ] 1.4 为 memory v2 基础路径增加 schema/validation helpers，确保坏条目降级而不是直接拖垮 retrieval
+- [x] 1.1 将现有 `MemoryManager` 重构为 `LongTermMemory` 基础层，保留 `MEMORY.md`、scope resolution 与 path guard 语义
+- [x] 1.2 固化 canonical artifact layout，并在 runtime 中建立 `documents/`、`agents/`、`sessions/` 三类路径 contract
+- [x] 1.3 固化 manifest envelope、memory artifact frontmatter 与 required/optional field vocabulary
+- [x] 1.4 为 memory v2 基础路径增加 schema/validation helpers，确保坏条目降级而不是直接拖垮 retrieval
 
 ### 2. Deterministic Long-Term Retrieval
 
-- [ ] 2.1 实现 `long-term-manifest.json` 与 `agent-manifest.json` 的生成和刷新
-- [ ] 2.2 实现 manifest/header prefilter 与 deterministic lexical shortlist
-- [ ] 2.3 实现 retrieval scoring 的 `hard_filter + boost + decay` 最小可用路径
-- [ ] 2.4 实现 per-layer budgeted materialization，优先支持 `agent namespace + shared long-term + session summary`
-- [ ] 2.5 为 retrieval trace 增加最小 debug payload，至少暴露 applied filters、selected doc ids 和 budget decisions
+- [x] 2.1 实现 `long-term-manifest.json` 与 `agent-manifest.json` 的生成和刷新
+- [x] 2.2 实现 manifest/header prefilter 与 deterministic lexical shortlist
+- [x] 2.3 实现 retrieval scoring 的 `hard_filter + boost + decay` 最小可用路径
+- [x] 2.4 实现 per-layer budgeted materialization，优先支持 `agent namespace + shared long-term + session summary`
+- [x] 2.5 为 retrieval trace 增加最小 debug payload，至少暴露 applied filters、selected doc ids 和 budget decisions
 
 ### 3. Agent Namespace Memory
 
-- [ ] 3.1 实现 `agents/<agent-name>/` namespace resolution，确保 namespace 运行在 `user/project/local` 边界之内
-- [ ] 3.2 将 delegated execution policy 与 namespace-aware retrieval precedence 接通
+- [x] 3.1 实现 `agents/<agent-name>/` namespace resolution，确保 namespace 运行在 `user/project/local` 边界之内
+- [x] 3.2 将 delegated execution policy 与 namespace-aware retrieval precedence 接通
 - [ ] 3.3 实现 agent namespace durable writes 和 namespace manifest refresh
 - [ ] 3.4 为 policy ceiling、cross-namespace fallback 和 dedupe 增加测试
 
