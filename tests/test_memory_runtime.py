@@ -14,7 +14,16 @@ from claude_agent_runtime.definitions import (
 )
 from claude_agent_runtime.execution_policy import build_root_execution_policy, resolve_agent_execution_policy
 from claude_agent_runtime.hooks import RuntimeHookPhase
-from claude_agent_runtime.memory import MemoryEntry, MemoryManager, MemoryManagerService
+from claude_agent_runtime.memory import (
+    MemoryEntry,
+    MemoryManager,
+    MemoryManagerService,
+    MemoryRetrievalCandidate,
+    MemoryRetrievalPolicy,
+    MemoryRetrievalRankedHit,
+    MemoryTurnResult,
+)
+from claude_agent_runtime.memory.schema import serialize_memory_artifact
 from claude_agent_runtime.permissions import PermissionContext
 from claude_agent_runtime.registries import AgentRegistry, ToolRegistry
 from claude_agent_runtime.runtime_kernel import BuiltinPackConfig, RuntimeConfig, assemble_runtime
@@ -26,7 +35,7 @@ from claude_agent_runtime.session_runtime import (
     SessionController,
     SessionStatus,
 )
-from claude_agent_runtime.tasking import TaskManager
+from claude_agent_runtime.tasking import TaskManager, TaskStatus
 from claude_agent_runtime.tool_runtime import ToolCall, ToolCallStatus, ToolContext, ToolScheduler
 from claude_agent_runtime.turn_engine import (
     ContextAssembler,
@@ -50,6 +59,50 @@ class FakeModelClient:
         batch = self._event_batches.pop(0)
         for event in batch:
             yield event
+
+
+class FakeEmbeddingShortlistProvider:
+    def __init__(self, ranking_by_title: dict[str, float]) -> None:
+        self.ranking_by_title = dict(ranking_by_title)
+        self.calls: list[tuple[str, tuple[str, ...]]] = []
+
+    def shortlist(
+        self,
+        *,
+        query: str,
+        candidates: tuple[MemoryRetrievalCandidate, ...],
+        limit: int,
+    ) -> tuple[MemoryRetrievalRankedHit, ...]:
+        self.calls.append((query, tuple(candidate.title for candidate in candidates)))
+        ranked = [
+            MemoryRetrievalRankedHit(candidate.doc_id, self.ranking_by_title[candidate.title])
+            for candidate in candidates
+            if candidate.title in self.ranking_by_title
+        ]
+        ranked.sort(key=lambda hit: -hit.score)
+        return tuple(ranked[:limit])
+
+
+class FakeRerankProvider:
+    def __init__(self, ordered_titles: tuple[str, ...]) -> None:
+        self.ordered_titles = ordered_titles
+        self.calls: list[tuple[str, tuple[str, ...]]] = []
+
+    def rerank(
+        self,
+        *,
+        query: str,
+        candidates: tuple[MemoryRetrievalCandidate, ...],
+        limit: int,
+    ) -> tuple[MemoryRetrievalRankedHit, ...]:
+        self.calls.append((query, tuple(candidate.title for candidate in candidates)))
+        candidates_by_title = {candidate.title: candidate for candidate in candidates}
+        ordered = [
+            MemoryRetrievalRankedHit(candidates_by_title[title].doc_id, float(limit - index))
+            for index, title in enumerate(self.ordered_titles)
+            if title in candidates_by_title
+        ]
+        return tuple(ordered[:limit])
 
 
 def test_memory_manager_resolves_user_project_and_local_scopes(tmp_path: Path) -> None:
@@ -276,6 +329,50 @@ def test_record_turn_with_receipts_routes_fact_taxonomy_to_shared_agent_session_
     assert receipts_by_fact["sensitive_value"].reason == "sensitive_value"
 
 
+def test_turn_local_preference_like_instruction_is_dropped_as_transient_task(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    manager = MemoryManager(project_root=project_root)
+    agent = AgentDefinition(name="main-router", description="router", prompt="route")
+    manager.initialize_session(session_id="session-transient-preference", agent=agent, cwd=project_root)
+
+    result = manager.record_turn_with_receipts(
+        session_id="session-transient-preference",
+        agent=agent,
+        cwd=project_root,
+        messages=(
+            _user_message("msg-transient-pref-1", "I prefer to rename the helper today."),
+            _user_message("msg-transient-pref-2", "Please keep responses short for this turn only."),
+        ),
+    )
+
+    assert result.persisted_documents == ()
+    assert len(result.receipts) == 2
+    assert all(receipt.fact_type == "transient_task" for receipt in result.receipts)
+    assert all(receipt.action == "dropped" for receipt in result.receipts)
+    assert all(receipt.reason == "transient_task" for receipt in result.receipts)
+
+
+def test_generic_control_instruction_is_not_persisted_as_workflow_command(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    manager = MemoryManager(project_root=project_root)
+    agent = AgentDefinition(name="main-router", description="router", prompt="route")
+    manager.initialize_session(session_id="session-generic-control", agent=agent, cwd=project_root)
+
+    result = manager.record_turn_with_receipts(
+        session_id="session-generic-control",
+        agent=agent,
+        cwd=project_root,
+        messages=(
+            _user_message("msg-control", "Use project scope and keep the flow deterministic."),
+        ),
+    )
+
+    assert result.persisted_documents == ()
+    assert result.receipts == ()
+
+
 def test_memory_update_owned_skips_automatic_extraction(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     project_root.mkdir()
@@ -477,6 +574,282 @@ def test_agent_namespace_retrieval_prefers_query_match_over_path_order(tmp_path:
     assert "Pytest Heuristic" in fragments[0]
     assert "Build Heuristic" not in fragments[0]
     assert trace["selected_doc_ids"][0] == "agents/main-router/documents/heuristics/zzz-pytest.md"
+
+
+def test_agent_namespace_retrieval_skips_irrelevant_documents_without_query_match(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    memory_root = project_root / ".claude" / "memory"
+    agent_docs = memory_root / "agents" / "main-router" / "documents" / "heuristics"
+    agent_docs.mkdir(parents=True)
+    (agent_docs / "build.md").write_text(
+        "# Build Heuristic\n\nRun npm build for release checks.\n",
+        encoding="utf-8",
+    )
+
+    manager = MemoryManager(project_root=project_root)
+    agent = AgentDefinition(name="main-router", description="router", prompt="route")
+    manager.initialize_session(session_id="session-agent-unmatched", agent=agent, cwd=project_root)
+
+    fragments, trace = manager.collect_with_trace(
+        session_id="session-agent-unmatched",
+        turn_id="turn-agent-unmatched",
+        agent=agent,
+        cwd=project_root,
+        messages=(_user_message("msg-agent-unmatched", "How should I run pytest here?"),),
+    )
+
+    assert not any("Build Heuristic" in fragment for fragment in fragments)
+    assert trace["budget_decisions"][0]["layer"] == "agent_namespace"
+    assert trace["budget_decisions"][0]["available"] == 1
+    assert trace["budget_decisions"][0]["selected"] == 0
+    assert "layer:agent_namespace" not in trace["applied_filters"]
+
+
+def test_embedding_shortlist_can_add_semantic_candidate_and_report_divergence(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    memory_root = project_root / ".claude" / "memory" / "documents" / "shared"
+    _write_v2_memory_artifact(
+        memory_root / "backend-checklist.md",
+        title="Backend Checklist",
+        content="Verify service health checks before broader backend rollout.",
+        scope="project",
+        tags=("backend", "verification"),
+    )
+    _write_v2_memory_artifact(
+        memory_root / "semantic-rust-checks.md",
+        title="Semantic Rust Checks",
+        content="Run cargo test -q before broader Rust review passes.",
+        scope="project",
+        tags=("rust", "compile"),
+    )
+
+    embedding_provider = FakeEmbeddingShortlistProvider({"Semantic Rust Checks": 0.95})
+    manager = MemoryManager(
+        project_root=project_root,
+        embedding_shortlist_provider=embedding_provider,
+    )
+    agent = AgentDefinition(name="main-router", description="router", prompt="route")
+    manager.initialize_session(session_id="session-embedding", agent=agent, cwd=project_root)
+
+    fragments, trace = manager.collect_with_trace(
+        session_id="session-embedding",
+        turn_id="turn-embedding",
+        agent=agent,
+        cwd=project_root,
+        messages=(_user_message("msg-embedding", "How should I verify service changes?"),),
+    )
+
+    assert any("Semantic Rust Checks" in fragment for fragment in fragments)
+    assert "embedding_shortlist" in trace["applied_filters"]
+    assert trace["lexical_doc_ids"]
+    assert len(trace["embedding_doc_ids"]) == 1
+    assert trace["divergence"]["detected"] is True
+    assert trace["divergence"]["embedding_only"] == trace["embedding_doc_ids"]
+    assert embedding_provider.calls
+
+
+def test_long_term_retrieval_rerank_skips_when_deterministic_choice_is_clear(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    memory_root = project_root / ".claude" / "memory" / "documents" / "shared"
+    _write_v2_memory_artifact(
+        memory_root / "pytest-command.md",
+        title="Pytest Command",
+        content="Use pytest -q for concise Python test runs.",
+        scope="project",
+        memory_kind="workflow_command",
+        tags=("pytest", "python"),
+    )
+    _write_v2_memory_artifact(
+        memory_root / "npm-build.md",
+        title="NPM Build",
+        content="Run npm build for release packaging checks.",
+        scope="project",
+        memory_kind="workflow_command",
+        tags=("frontend", "release"),
+    )
+
+    rerank_provider = FakeRerankProvider(("Pytest Command",))
+    manager = MemoryManager(
+        project_root=project_root,
+        rerank_provider=rerank_provider,
+    )
+    agent = AgentDefinition(name="main-router", description="router", prompt="route")
+    manager.initialize_session(session_id="session-rerank-skip", agent=agent, cwd=project_root)
+
+    fragments, trace = manager.collect_with_trace(
+        session_id="session-rerank-skip",
+        turn_id="turn-rerank-skip",
+        agent=agent,
+        cwd=project_root,
+        messages=(_user_message("msg-rerank-skip", "How should I run pytest -q here?"),),
+    )
+
+    assert any("Pytest Command" in fragment for fragment in fragments)
+    assert trace["rerank"]["status"] == "skipped"
+    assert trace["rerank"]["triggered"] is False
+    assert rerank_provider.calls == []
+
+
+def test_long_term_retrieval_uses_rerank_when_hybrid_shortlists_diverge(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    memory_root = project_root / ".claude" / "memory" / "documents" / "shared"
+    _write_v2_memory_artifact(
+        memory_root / "python-verification.md",
+        title="Python Verification",
+        content="Use pytest -q first when you need a quick Python confidence check.",
+        scope="project",
+        memory_kind="workflow_command",
+        tags=("python", "verification"),
+    )
+    _write_v2_memory_artifact(
+        memory_root / "verification-playbook.md",
+        title="Verification Playbook",
+        content="Start with the smallest targeted check before broad validation passes.",
+        scope="project",
+        memory_kind="project_convention",
+        tags=("workflow", "verification"),
+    )
+
+    embedding_provider = FakeEmbeddingShortlistProvider({"Verification Playbook": 0.9})
+    rerank_provider = FakeRerankProvider(("Verification Playbook", "Python Verification"))
+    manager = MemoryManager(
+        project_root=project_root,
+        retrieval_policy=MemoryRetrievalPolicy(embedding_score_weight=0.0),
+        embedding_shortlist_provider=embedding_provider,
+        rerank_provider=rerank_provider,
+    )
+    agent = AgentDefinition(name="main-router", description="router", prompt="route")
+    manager.initialize_session(session_id="session-rerank-success", agent=agent, cwd=project_root)
+
+    fragments, trace = manager.collect_with_trace(
+        session_id="session-rerank-success",
+        turn_id="turn-rerank-success",
+        agent=agent,
+        cwd=project_root,
+        messages=(_user_message("msg-rerank-success", "How should I verify Python changes?"),),
+    )
+
+    assert "Verification Playbook" in fragments[0]
+    assert trace["rerank"]["status"] == "success"
+    assert trace["rerank"]["triggered"] is True
+    assert "lexical_embedding_divergence" in trace["rerank"]["reasons"]
+    assert rerank_provider.calls
+
+
+def test_long_term_retrieval_reports_budget_denied_when_rerank_would_trigger(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    memory_root = project_root / ".claude" / "memory" / "documents" / "shared"
+    _write_v2_memory_artifact(
+        memory_root / "python-verification.md",
+        title="Python Verification",
+        content="Use pytest -q first when you need a quick Python confidence check.",
+        scope="project",
+        memory_kind="workflow_command",
+        tags=("python", "verification"),
+    )
+    _write_v2_memory_artifact(
+        memory_root / "verification-playbook.md",
+        title="Verification Playbook",
+        content="Start with the smallest targeted check before broad validation passes.",
+        scope="project",
+        memory_kind="project_convention",
+        tags=("workflow", "verification"),
+    )
+
+    embedding_provider = FakeEmbeddingShortlistProvider({"Verification Playbook": 0.9})
+    rerank_provider = FakeRerankProvider(("Verification Playbook", "Python Verification"))
+    manager = MemoryManager(
+        project_root=project_root,
+        retrieval_policy=MemoryRetrievalPolicy(
+            embedding_score_weight=0.0,
+            rerank_budget_available=False,
+        ),
+        embedding_shortlist_provider=embedding_provider,
+        rerank_provider=rerank_provider,
+    )
+    agent = AgentDefinition(name="main-router", description="router", prompt="route")
+    manager.initialize_session(session_id="session-rerank-budget", agent=agent, cwd=project_root)
+
+    fragments, trace = manager.collect_with_trace(
+        session_id="session-rerank-budget",
+        turn_id="turn-rerank-budget",
+        agent=agent,
+        cwd=project_root,
+        messages=(_user_message("msg-rerank-budget", "How should I verify Python changes?"),),
+    )
+
+    assert "Python Verification" in fragments[0]
+    assert trace["rerank"]["status"] == "budget_denied"
+    assert trace["rerank"]["triggered"] is False
+    assert rerank_provider.calls == []
+
+
+def test_long_term_retrieval_applies_contested_stale_and_confidence_controls(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    memory_root = project_root / ".claude" / "memory" / "documents" / "shared"
+    _write_v2_memory_artifact(
+        memory_root / "fresh-pytest.md",
+        title="Fresh Pytest Workflow",
+        content="Use pytest -q first for fast Python verification.",
+        scope="project",
+        memory_kind="workflow_command",
+        tags=("pytest", "python"),
+        extra_metadata={"confidence": 0.95},
+    )
+    _write_v2_memory_artifact(
+        memory_root / "contested-pytest.md",
+        title="Contested Pytest Workflow",
+        content="Run the full test suite before every small Python change.",
+        scope="project",
+        memory_kind="workflow_command",
+        tags=("pytest", "python"),
+        extra_metadata={"contested": True, "confidence": 0.9},
+    )
+    _write_v2_memory_artifact(
+        memory_root / "stale-pytest.md",
+        title="Stale Pytest Workflow",
+        content="Use pytest -q after opening the repo root.",
+        scope="project",
+        memory_kind="workflow_command",
+        tags=("pytest", "python"),
+        extra_metadata={"stale_after": "2026-04-01T04:00:00Z", "confidence": 0.85},
+    )
+    _write_v2_memory_artifact(
+        memory_root / "low-confidence.md",
+        title="Low Confidence Pytest Note",
+        content="Maybe use a broad test sweep for Python changes.",
+        scope="project",
+        memory_kind="workflow_command",
+        tags=("pytest", "python"),
+        extra_metadata={"confidence": 0.2},
+    )
+
+    manager = MemoryManager(
+        project_root=project_root,
+        retrieval_limit=3,
+        retrieval_policy=MemoryRetrievalPolicy(
+            contested_policy="decay",
+            contested_decay_penalty=4.0,
+            stale_decay_penalty=2.0,
+            minimum_confidence=0.5,
+        ),
+    )
+    agent = AgentDefinition(name="main-router", description="router", prompt="route")
+    manager.initialize_session(session_id="session-scoring-controls", agent=agent, cwd=project_root)
+
+    fragments, trace = manager.collect_with_trace(
+        session_id="session-scoring-controls",
+        turn_id="turn-scoring-controls",
+        agent=agent,
+        cwd=project_root,
+        messages=(_user_message("msg-scoring-controls", "How should I run pytest for Python changes?"),),
+    )
+
+    assert "Fresh Pytest Workflow" in fragments[0]
+    assert not any("Low Confidence Pytest Note" in fragment for fragment in fragments)
+    assert "confidence_below_threshold" in trace["applied_filters"]
+    assert "contested_entry" in trace["decays"]
+    assert "stale_beyond_threshold" in trace["decays"]
 
 
 def test_scope_mismatched_long_term_artifact_is_excluded_from_manifest(tmp_path: Path) -> None:
@@ -1240,6 +1613,33 @@ def test_session_memory_survives_compaction_after_refresh(tmp_path: Path) -> Non
     asyncio.run(controller.run_until_idle())
     asyncio.run(controller._apply_compaction(tuple(controller.messages), turn_id="turn-compaction"))
 
+    controller._messages = [
+        replace(
+            message,
+            content="Compacted conversation summary:\nUnrelated compaction details only.",
+            metadata={
+                **message.metadata,
+                "compaction": {
+                    **message.metadata["compaction"],
+                    "summary": {
+                        **message.metadata["compaction"]["summary"],
+                        "text": "Unrelated compaction details only.",
+                    },
+                },
+            },
+        )
+        if message.metadata.get("compaction_summary")
+        else message
+        for message in controller._messages
+    ]
+    controller.state.metadata["compaction_summary"] = {
+        "summary_id": "mutated",
+        "text": "Unrelated compaction details only.",
+        "source_message_ids": [],
+        "message_count": 0,
+        "metadata": {"mutated": True},
+    }
+
     metadata = json.loads(
         (
             project_root
@@ -1263,6 +1663,7 @@ def test_session_memory_survives_compaction_after_refresh(tmp_path: Path) -> Non
     fragments = model_client.requests[1].turn_context.memory_fragments
     assert any("Session Summary" in fragment for fragment in fragments)
     assert any("Establish session continuity before compaction happens." in fragment for fragment in fragments)
+    assert not any("Unrelated compaction details only." in fragment for fragment in fragments)
 
 
 def test_builtin_file_tools_exclude_reserved_memory_paths(tmp_path: Path) -> None:
@@ -1398,7 +1799,13 @@ def test_delegated_agent_uses_explicit_project_memory_scope(tmp_path: Path) -> N
         )
     )
 
-    asyncio.run(runtime.run_prompt("Delegate this turn", session_id="session-delegate", cwd=workspace))
+    asyncio.run(
+        runtime.run_prompt(
+            "Delegate this temporary refactor local memory turn",
+            session_id="session-delegate",
+            cwd=workspace,
+        )
+    )
 
     main_fragments = model_client.requests[0].turn_context.memory_fragments
     worker_fragments = model_client.requests[1].turn_context.memory_fragments
@@ -1411,6 +1818,236 @@ def test_delegated_agent_uses_explicit_project_memory_scope(tmp_path: Path) -> N
     assert not any("Worker-specific local guidance" in fragment for fragment in main_fragments)
     assert not any("Project-scoped worker guidance" in fragment for fragment in worker_fragments)
     assert not any("Use pytest via `pytest -q`." in fragment for fragment in worker_fragments)
+
+
+def test_background_extraction_persists_synthesized_memory_after_turn_completion(tmp_path: Path) -> None:
+    async def scenario() -> tuple[Path, MemoryTurnResult, object, SessionController]:
+        project_root = tmp_path / "project"
+        project_root.mkdir()
+        model_client = FakeModelClient(
+            [
+                [
+                    ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-bg-1"}),
+                    ModelStreamEvent(
+                        ModelStreamEventType.CONTENT_DELTA,
+                        {
+                            "text": "When verifying small Python changes, start with `pytest -q` before broader checks."
+                        },
+                    ),
+                    ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+                ],
+                [
+                    ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-bg-2"}),
+                    ModelStreamEvent(
+                        ModelStreamEventType.CONTENT_DELTA,
+                        {
+                            "text": "For the agent, start with `pytest -q` before broader validation, and keep the pytest debugging thread focused."
+                        },
+                    ),
+                    ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+                ],
+            ]
+        )
+        services = RuntimeServices(
+            memory=MemoryManagerService(project_root=project_root),
+            context_assembler=ContextAssembler(),
+        )
+        agent = AgentDefinition(name="main-router", description="router", prompt="route")
+        controller = SessionController(
+            session_id="session-background-memory",
+            agent=agent,
+            turn_engine=TurnEngine(
+                model_client=model_client,
+                tool_registry=ToolRegistry(),
+                runtime_services=services,
+            ),
+            transcript_store=InMemoryTranscriptStore(),
+            cwd=str(project_root),
+            system_prompt="System",
+            runtime_services=services,
+        )
+
+        await controller.start()
+        controller.enqueue_event(
+            InboundEvent(
+                InboundEventType.USER_PROMPT,
+                "I prefer concise answers. We are debugging pytest failures in this repo.",
+            )
+        )
+        await controller.run_until_idle()
+        controller.enqueue_event(
+            InboundEvent(
+                InboundEventType.USER_PROMPT,
+                "I prefer concise answers. Please keep pytest guidance short while we debug pytest failures.",
+            )
+        )
+        await controller.run_until_idle()
+
+        task_ids = controller.state.metadata.get("background_memory_tasks")
+        assert isinstance(task_ids, list)
+        task_id = str(task_ids[-1])
+        result = await services.memory.wait_for_background_extraction(task_id)
+        task = services.task_manager.get(task_id)
+        return project_root, result, task, controller
+
+    project_root, result, task, controller = asyncio.run(scenario())
+
+    assert task is not None
+    assert task.status == TaskStatus.COMPLETED
+    assert len(result.persisted_documents) >= 2
+
+    preferences = list((project_root / ".claude" / "memory" / "documents" / "preferences").glob("*.md"))
+    topics = list((project_root / ".claude" / "memory" / "documents" / "topics").glob("*.md"))
+    agent_notes = list(
+        (project_root / ".claude" / "memory" / "agents" / "main-router" / "documents" / "durable-notes").glob("*.md")
+    )
+    assert preferences
+    assert topics
+    assert agent_notes
+    assert any("background_extractor" in path.read_text(encoding="utf-8") for path in preferences)
+    assert any("source_roles:" in path.read_text(encoding="utf-8") for path in preferences)
+    assert "confidence:" in topics[0].read_text(encoding="utf-8")
+    assert "Agent Note main-router" in agent_notes[0].read_text(encoding="utf-8")
+    assert controller.state.metadata["background_memory_tasks"]
+
+
+def test_background_extraction_queue_coalesces_and_merges_trailing_runs(tmp_path: Path) -> None:
+    async def scenario():
+        project_root = tmp_path / "project"
+        project_root.mkdir()
+        service = MemoryManagerService(project_root=project_root)
+        agent = AgentDefinition(name="main-router", description="router", prompt="route")
+        await service.start_session(
+            session_id="session-background-queue",
+            agent=agent,
+            cwd=project_root,
+        )
+        task_manager = TaskManager()
+        first_task_id = await service.schedule_background_extraction(
+            session_id="session-background-queue",
+            agent=agent,
+            cwd=project_root,
+            messages=(
+                _user_message("msg-pref-1", "I prefer concise answers."),
+                RuntimeMessage(
+                    message_id="msg-agent-1",
+                    role=MessageRole.ASSISTANT,
+                    content="When verifying small Python changes, start with `pytest -q` before broader checks.",
+                ),
+            ),
+            task_manager=task_manager,
+        )
+        second_task_id = await service.schedule_background_extraction(
+            session_id="session-background-queue",
+            agent=agent,
+            cwd=project_root,
+            messages=(
+                _user_message("msg-pref-1", "I prefer concise answers."),
+                _user_message("msg-pref-2", "I prefer concise answers."),
+                RuntimeMessage(
+                    message_id="msg-agent-1",
+                    role=MessageRole.ASSISTANT,
+                    content="When verifying small Python changes, start with `pytest -q` before broader checks.",
+                ),
+                RuntimeMessage(
+                    message_id="msg-agent-2",
+                    role=MessageRole.ASSISTANT,
+                    content="For the agent, start with `pytest -q` before broader validation.",
+                ),
+            ),
+            task_manager=task_manager,
+        )
+        result = await service.wait_for_background_extraction(str(first_task_id))
+        task = task_manager.get(str(first_task_id))
+        return project_root, first_task_id, second_task_id, result, task
+
+    project_root, first_task_id, second_task_id, result, task = asyncio.run(scenario())
+
+    assert first_task_id == second_task_id
+    assert task is not None
+    assert task.status == TaskStatus.COMPLETED
+    assert task.metadata["queued_merge"] is True
+    assert any(document.kind == "preference" for document in result.persisted_documents)
+    assert any(document.kind == "agent_note" for document in result.persisted_documents)
+    preferences = list((project_root / ".claude" / "memory" / "documents" / "preferences").glob("*.md"))
+    agent_notes = list(
+        (project_root / ".claude" / "memory" / "agents" / "main-router" / "documents" / "durable-notes").glob("*.md")
+    )
+    assert len(preferences) == 1
+    assert len(agent_notes) == 1
+
+
+def test_background_extraction_is_merge_safe_for_conflict_keys(tmp_path: Path) -> None:
+    async def scenario():
+        project_root = tmp_path / "project"
+        project_root.mkdir()
+        service = MemoryManagerService(project_root=project_root)
+        agent = AgentDefinition(name="main-router", description="router", prompt="route")
+        await service.start_session(
+            session_id="session-background-conflict",
+            agent=agent,
+            cwd=project_root,
+        )
+        first_task_id = await service.schedule_background_extraction(
+            session_id="session-background-conflict",
+            agent=agent,
+            cwd=project_root,
+            messages=(
+                _user_message("msg-topic-1", "Pytest debugging is the main issue right now."),
+                RuntimeMessage(
+                    message_id="msg-topic-0",
+                    role=MessageRole.USER,
+                    content="Pytest debugging is the main ongoing issue.",
+                ),
+                RuntimeMessage(
+                    message_id="msg-topic-2",
+                    role=MessageRole.ASSISTANT,
+                    content="Pytest debugging still needs a focused verification plan.",
+                ),
+                RuntimeMessage(
+                    message_id="msg-topic-3",
+                    role=MessageRole.TOOL,
+                    content="Pytest debugging output shows a failing fixture.",
+                ),
+            ),
+        )
+        first_result = await service.wait_for_background_extraction(str(first_task_id))
+        second_task_id = await service.schedule_background_extraction(
+            session_id="session-background-conflict",
+            agent=agent,
+            cwd=project_root,
+            messages=(
+                _user_message("msg-topic-1", "Pytest debugging is the main issue right now."),
+                RuntimeMessage(
+                    message_id="msg-topic-0",
+                    role=MessageRole.USER,
+                    content="Pytest debugging is the main ongoing issue.",
+                ),
+                RuntimeMessage(
+                    message_id="msg-topic-2",
+                    role=MessageRole.ASSISTANT,
+                    content="Pytest debugging now points at a different verification branch.",
+                ),
+                RuntimeMessage(
+                    message_id="msg-topic-4",
+                    role=MessageRole.TOOL,
+                    content="Pytest debugging output now highlights another fixture chain.",
+                ),
+            ),
+        )
+        second_result = await service.wait_for_background_extraction(str(second_task_id))
+        return project_root, first_result, second_result
+
+    project_root, first_result, second_result = asyncio.run(scenario())
+
+    assert any(document.kind == "topic_memory" for document in first_result.persisted_documents)
+    assert any(receipt.action == "skipped_conflict" for receipt in second_result.receipts)
+    topic_documents = list((project_root / ".claude" / "memory" / "documents" / "topics").glob("*.md"))
+    assert len(topic_documents) == 1
+    topic_text = topic_documents[0].read_text(encoding="utf-8")
+    assert "source_message_ids:" in topic_text
+    assert "source_roles:" in topic_text
+    assert "conflict_key:" in topic_text
 
 
 def _load_claude_memory_fixture(tmp_path: Path) -> Path:
@@ -1435,27 +2072,27 @@ def _write_v2_memory_artifact(
     title: str,
     content: str,
     scope: str,
+    memory_kind: str = "note",
     namespace: str = "shared",
     agent_namespace: str | None = None,
+    tags: tuple[str, ...] = ("testing",),
+    extra_metadata: dict[str, object] | None = None,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    agent_namespace_line = "" if agent_namespace is None else f"agent_namespace: {agent_namespace}\n"
+    metadata: dict[str, object] = {
+        "memory_kind": memory_kind,
+        "scope": scope,
+        "namespace": namespace,
+        "agent_namespace": agent_namespace,
+        "retention": "durable_until_superseded",
+        "source_pathway": "rule",
+        "created_at": "2026-04-17T04:00:00Z",
+        "last_confirmed_at": "2026-04-17T04:00:00Z",
+        "tags": list(tags),
+    }
+    if extra_metadata is not None:
+        metadata.update(extra_metadata)
     path.write_text(
-        (
-            "---\n"
-            "memory_kind: note\n"
-            f"scope: {scope}\n"
-            f"namespace: {namespace}\n"
-            f"{agent_namespace_line}"
-            "retention: durable_until_superseded\n"
-            "source_pathway: rule\n"
-            "created_at: 2026-04-17T04:00:00Z\n"
-            "last_confirmed_at: 2026-04-17T04:00:00Z\n"
-            "tags:\n"
-            "  - testing\n"
-            "---\n"
-            f"# {title}\n\n"
-            f"{content}\n"
-        ),
+        serialize_memory_artifact(title, content, metadata),
         encoding="utf-8",
     )

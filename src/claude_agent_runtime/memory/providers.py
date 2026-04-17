@@ -340,6 +340,7 @@ class FileMemoryProvider:
             "last_confirmed_at": metadata.get("last_confirmed_at", file_timestamp_iso(document.path)),
             "retention": metadata.get("retention", "durable_until_superseded"),
             "conflict_key": metadata.get("conflict_key"),
+            "embedding_ref": metadata.get("embedding_ref"),
             "contested": bool(metadata.get("contested", False)),
         }
         if "stale_after" in metadata:

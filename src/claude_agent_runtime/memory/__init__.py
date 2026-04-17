@@ -1,5 +1,16 @@
 from .manager import LongTermMemory, LongTermMemoryService, MemoryManager, MemoryManagerService
-from .models import MemoryDocument, MemoryEntry, MemoryTurnResult, MemoryWriteReceipt, ResolvedMemoryScope
+from .models import (
+    MemoryDocument,
+    MemoryEmbeddingShortlistProvider,
+    MemoryEntry,
+    MemoryRerankProvider,
+    MemoryRetrievalCandidate,
+    MemoryRetrievalPolicy,
+    MemoryRetrievalRankedHit,
+    MemoryTurnResult,
+    MemoryWriteReceipt,
+    ResolvedMemoryScope,
+)
 from .providers import FileMemoryProvider, MemoryProvider
 
 __all__ = [
@@ -7,11 +18,16 @@ __all__ = [
     "LongTermMemory",
     "LongTermMemoryService",
     "MemoryDocument",
+    "MemoryEmbeddingShortlistProvider",
     "MemoryEntry",
     "MemoryManager",
     "MemoryManagerService",
-    "MemoryTurnResult",
     "MemoryProvider",
+    "MemoryRerankProvider",
+    "MemoryRetrievalCandidate",
+    "MemoryRetrievalPolicy",
+    "MemoryRetrievalRankedHit",
+    "MemoryTurnResult",
     "MemoryWriteReceipt",
     "ResolvedMemoryScope",
 ]

@@ -36,8 +36,10 @@ OPTIONAL_ARTIFACT_FIELDS = frozenset(
     {
         "agent_namespace",
         "source_message_ids",
+        "source_roles",
         "supersedes",
         "confidence",
+        "embedding_ref",
         "summary",
         "token_estimate",
         "stale_after",
@@ -158,7 +160,7 @@ def normalize_memory_artifact_metadata(
         normalized["agent_namespace"] = None
         errors.append("Invalid 'agent_namespace' field")
 
-    for field_name in ("source_message_ids", "supersedes"):
+    for field_name in ("source_message_ids", "source_roles", "supersedes"):
         value = raw.get(field_name)
         if value is None:
             continue
@@ -170,6 +172,13 @@ def normalize_memory_artifact_metadata(
             normalized["confidence"] = float(confidence)
         else:
             errors.append("Invalid 'confidence' field")
+
+    if "embedding_ref" in raw and raw["embedding_ref"] is not None:
+        embedding_ref = raw["embedding_ref"]
+        if isinstance(embedding_ref, str) and embedding_ref.strip():
+            normalized["embedding_ref"] = embedding_ref.strip()
+        else:
+            errors.append("Invalid 'embedding_ref' field")
 
     if "summary" in raw and raw["summary"] is not None:
         summary = raw["summary"]
@@ -251,11 +260,13 @@ def serialize_memory_artifact(title: str, content: str, metadata: Mapping[str, A
             "retention",
             "source_pathway",
             "source_message_ids",
+            "source_roles",
             "created_at",
             "last_confirmed_at",
             "supersedes",
             "tags",
             "confidence",
+            "embedding_ref",
             "summary",
             "token_estimate",
             "stale_after",

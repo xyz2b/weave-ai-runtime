@@ -101,19 +101,19 @@ memory v2 不建议一次性全量落地。推荐按三期交付：
 
 ### 6. Hybrid Retrieval Enhancements
 
-- [ ] 6.1 增加 optional embedding shortlist provider interface
-- [ ] 6.2 增加 lexical 与 embedding divergence detection
-- [ ] 6.3 实现 optional LLM rerank orchestration 和 trigger policy
-- [ ] 6.4 为 contested entries、stale decay、confidence threshold 增加更细粒度 scoring controls
-- [ ] 6.5 为 rerank skip / rerank success / rerank budget denied 三类路径增加 tests
+- [x] 6.1 增加 optional embedding shortlist provider interface
+- [x] 6.2 增加 lexical 与 embedding divergence detection
+- [x] 6.3 实现 optional LLM rerank orchestration 和 trigger policy
+- [x] 6.4 为 contested entries、stale decay、confidence threshold 增加更细粒度 scoring controls
+- [x] 6.5 为 rerank skip / rerank success / rerank budget denied 三类路径增加 tests
 
 ### 7. Background Extraction Worker
 
-- [ ] 7.1 实现后台受限 extraction worker，专门处理高价值 synthesis
-- [ ] 7.2 把 `topic_memory`、multi-turn preference inference、agent durable note synthesis 接到 worker
-- [ ] 7.3 增加 extraction job queue、coalescing、de-dup 和 trailing-run merge
-- [ ] 7.4 实现 provenance、confidence、conflict_key 和 merge-safe durable writes
-- [ ] 7.5 增加“主线程 turn 完成后异步抽取”的 integration tests
+- [x] 7.1 实现后台受限 extraction worker，专门处理高价值 synthesis
+- [x] 7.2 把 `topic_memory`、multi-turn preference inference、agent durable note synthesis 接到 worker
+- [x] 7.3 增加 extraction job queue、coalescing、de-dup 和 trailing-run merge
+- [x] 7.4 实现 provenance、confidence、conflict_key 和 merge-safe durable writes
+- [x] 7.5 增加“主线程 turn 完成后异步抽取”的 integration tests
 
 ### 8. Ownership, Conflict, and Audit
 
@@ -124,8 +124,8 @@ memory v2 不建议一次性全量落地。推荐按三期交付：
 
 ### Phase 2 Exit Criteria
 
-- [ ] 2.E1 runtime 在配置 embedding/rerank 时可增强召回，不配置时仍保持稳定降级
-- [ ] 2.E2 高价值 synthesis 不再依赖主线程同步完成
+- [x] 2.E1 runtime 在配置 embedding/rerank 时可增强召回，不配置时仍保持稳定降级
+- [x] 2.E2 高价值 synthesis 不再依赖主线程同步完成
 - [ ] 2.E3 contested / superseded / stale 条目在 retrieval 和 extraction 中都有稳定行为
 - [ ] 2.E4 host 能看到足够的 diagnostics 来解释“为什么写入/为什么召回”
 

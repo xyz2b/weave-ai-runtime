@@ -369,6 +369,11 @@ class SessionController:
             history = self.state.metadata.setdefault("memory_write_receipts", [])
             if isinstance(history, list):
                 history.extend(receipt_payloads)
+        background_task_id = await self._schedule_background_memory_extraction(messages, terminal=terminal)
+        if background_task_id is not None:
+            history = self.state.metadata.setdefault("background_memory_tasks", [])
+            if isinstance(history, list):
+                history.append(background_task_id)
         persisted = turn_result.persisted_documents
         if not persisted:
             return
@@ -400,6 +405,28 @@ class SessionController:
             },
         )
         await self._runtime_services.host.emit_notification(notification)
+
+    async def _schedule_background_memory_extraction(
+        self,
+        messages: tuple[RuntimeMessage, ...],
+        *,
+        terminal: Any,
+    ) -> str | None:
+        if terminal is None or terminal.abort_reason is not None or terminal.error is not None:
+            return None
+        memory_service = self._runtime_services.memory
+        if memory_service is None or not hasattr(memory_service, "schedule_background_extraction"):
+            return None
+        task_id = await _maybe_await(
+            memory_service.schedule_background_extraction(
+                session_id=self.state.session_id,
+                agent=self._agent,
+                cwd=self._cwd,
+                messages=tuple(self._messages),
+                task_manager=self._runtime_services.task_manager,
+            )
+        )
+        return str(task_id) if task_id is not None else None
 
     def _resolve_session_memory_context(self):
         memory_service = self._runtime_services.memory

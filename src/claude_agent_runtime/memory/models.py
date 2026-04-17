@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol, Sequence
 
 from ..definitions import MemoryScope
 
@@ -51,6 +51,66 @@ class MemoryWriteReceipt:
 class MemoryTurnResult:
     persisted_documents: tuple["MemoryDocument", ...] = ()
     receipts: tuple[MemoryWriteReceipt, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryRetrievalCandidate:
+    doc_id: str
+    path: str
+    title: str
+    summary: str
+    tags: tuple[str, ...] = ()
+    metadata: dict[str, Any] = field(default_factory=dict)
+    lexical_score: float = 0.0
+    combined_score: float = 0.0
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryRetrievalRankedHit:
+    doc_id: str
+    score: float
+    reason: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryRetrievalPolicy:
+    minimum_lexical_score: float = 1.0
+    candidate_pool_multiplier: int = 2
+    embedding_score_weight: float = 2.0
+    embedding_shortlist_limit: int | None = None
+    contested_policy: str = "block"
+    contested_decay_penalty: float = 1.5
+    stale_decay_penalty: float = 0.5
+    recent_confirmation_boost: float = 0.25
+    recent_confirmation_window_days: int = 30
+    minimum_confidence: float | None = None
+    low_confidence_decay_start: float = 0.75
+    low_confidence_decay_penalty: float = 0.75
+    rerank_candidate_threshold: int = 3
+    rerank_score_margin_threshold: float = 0.75
+    rerank_vague_query_token_threshold: int = 2
+    rerank_budget_available: bool = True
+    rerank_max_candidates: int | None = None
+
+
+class MemoryEmbeddingShortlistProvider(Protocol):
+    def shortlist(
+        self,
+        *,
+        query: str,
+        candidates: Sequence[MemoryRetrievalCandidate],
+        limit: int,
+    ) -> Sequence[MemoryRetrievalRankedHit]: ...
+
+
+class MemoryRerankProvider(Protocol):
+    def rerank(
+        self,
+        *,
+        query: str,
+        candidates: Sequence[MemoryRetrievalCandidate],
+        limit: int,
+    ) -> Sequence[MemoryRetrievalRankedHit]: ...
 
 
 @dataclass(frozen=True, slots=True)
