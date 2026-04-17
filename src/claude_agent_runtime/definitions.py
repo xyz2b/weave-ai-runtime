@@ -81,6 +81,7 @@ class InvocationHiddenReason(StrEnum):
     PATH_MISMATCH = "path_mismatch"
     PATH_INDETERMINATE = "path_indeterminate"
     INACTIVE = "inactive"
+    POLICY_NARROWED = "policy_narrowed"
 
 
 class PermissionBehavior(StrEnum):

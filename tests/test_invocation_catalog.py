@@ -1,7 +1,7 @@
 import asyncio
 from pathlib import Path
 
-from claude_agent_runtime.contracts import MessageRole, RuntimeMessage
+from claude_agent_runtime.contracts import MessageRole, RuntimeMessage, ToolResultBlock
 from claude_agent_runtime.definitions import (
     AgentDefinition,
     DefinitionOrigin,
@@ -16,12 +16,14 @@ from claude_agent_runtime.definitions import (
     SkillDefinition,
     SkillExecutionContext,
 )
+from claude_agent_runtime.execution_policy import ExecutionPolicy, ExecutionPolicyState
 from claude_agent_runtime.invocation_catalog import (
     McpPromptInvocationProvider,
     PluginCommandInvocationProvider,
     SkillInvocationProvider,
     SlashCommandInvocationProvider,
 )
+from claude_agent_runtime.permissions import PermissionContext
 from claude_agent_runtime.registries import InvocationRegistry, SkillRegistry, ToolRegistry
 from claude_agent_runtime.runtime_kernel import BuiltinPackConfig, RuntimeConfig, assemble_runtime
 from claude_agent_runtime.session_runtime import InboundEvent, InboundEventType
@@ -178,6 +180,93 @@ def test_turn_engine_resolves_path_match_states_and_model_visibility(tmp_path: P
     )
 
 
+def test_tool_replay_keeps_latest_prompt_path_context(tmp_path: Path) -> None:
+    registry = SkillRegistry()
+    registry.register(
+        SkillDefinition(
+            name="python-only",
+            description="Python only",
+            content="python",
+            paths=("src/**/*.py",),
+            origin=_origin("python-only"),
+        )
+    )
+    engine = TurnEngine(
+        model_client=FakeModelClient([]),
+        tool_registry=ToolRegistry(),
+        skill_registry=registry,
+    )
+
+    catalog = engine.resolve_invocation_catalog(
+        session_id="session",
+        turn_id="turn",
+        cwd=tmp_path,
+        messages=(
+            _message(text="Inspect src/app/main.py"),
+            RuntimeMessage(
+                message_id="assistant",
+                role=MessageRole.ASSISTANT,
+                content="calling read",
+            ),
+            RuntimeMessage(
+                message_id="tool-result",
+                role=MessageRole.USER,
+                content=(ToolResultBlock(tool_use_id="call-1", content="{}"),),
+                metadata={"tool_results": [{"tool_name": "read"}]},
+            ),
+        ),
+    )
+
+    assert {entry.capability.name for entry in catalog.visible} == {"python-only"}
+    assert catalog.diagnostics_for("python-only").path_match_state == InvocationPathMatchState.MATCHED
+
+
+def test_execution_policy_narrows_visible_invocations_and_diagnostics(tmp_path: Path) -> None:
+    registry = SkillRegistry()
+    registry.register(
+        SkillDefinition(
+            name="alpha",
+            description="Alpha",
+            content="alpha",
+            origin=_origin("alpha"),
+        )
+    )
+    registry.register(
+        SkillDefinition(
+            name="beta",
+            description="Beta",
+            content="beta",
+            origin=_origin("beta"),
+        )
+    )
+    engine = TurnEngine(
+        model_client=FakeModelClient([]),
+        tool_registry=ToolRegistry(),
+        skill_registry=registry,
+    )
+    policy = ExecutionPolicyState(
+        ExecutionPolicy(
+            tool_pool=(),
+            skill_pool=(registry.get("alpha"),),
+            permission_context=PermissionContext(session_id="session"),
+        )
+    )
+
+    catalog = engine.resolve_invocation_catalog(
+        session_id="session",
+        turn_id="turn",
+        cwd=tmp_path,
+        messages=(_message(text="Review the workspace"),),
+        runtime_context={"execution_policy_state": policy},
+    )
+    diagnostics = catalog.diagnostics_for("beta")
+
+    assert {entry.capability.name for entry in catalog.visible} == {"alpha"}
+    assert diagnostics.hidden_reason == InvocationHiddenReason.POLICY_NARROWED
+    assert diagnostics.narrowed_by_policy["skill_pool"] == ("alpha",)
+    assert diagnostics.narrowed_by_policy["blocked_by"] == "execution_policy.skill_pool"
+
+
 def test_runtime_main_thread_uses_resolved_visible_invocations(tmp_path: Path) -> None:
     model_client = FakeModelClient(
         [
@@ -237,6 +326,69 @@ def test_runtime_main_thread_uses_resolved_visible_invocations(tmp_path: Path) -
     assert set(visible) == {"always-on", "python-only", "host-only"}
     assert visible["host-only"].user_invocable is True
     assert visible["host-only"].model_invocable is False
+
+
+def test_runtime_prompt_metadata_applies_execution_policy_to_invocation_view(tmp_path: Path) -> None:
+    model_client = FakeModelClient(
+        [
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-policy"}),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "done"}),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+            ]
+        ]
+    )
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            model_client=model_client,
+            builtins=BuiltinPackConfig(
+                agents_enabled=False,
+                skills_enabled=False,
+                extra_agents=[
+                    AgentDefinition(
+                        name="main-router",
+                        description="router",
+                        prompt="route",
+                    )
+                ],
+                extra_skills=[
+                    SkillDefinition(
+                        name="alpha",
+                        description="Alpha",
+                        content="alpha",
+                        origin=_origin("alpha"),
+                    ),
+                    SkillDefinition(
+                        name="beta",
+                        description="Beta",
+                        content="beta",
+                        origin=_origin("beta"),
+                    ),
+                ],
+            ),
+        )
+    )
+    policy = ExecutionPolicyState(
+        ExecutionPolicy(
+            tool_pool=(),
+            skill_pool=(runtime.kernel.skill_registry.get("alpha"),),
+            permission_context=PermissionContext(session_id="session-policy"),
+        )
+    )
+
+    asyncio.run(
+        runtime.run_prompt(
+            "Review the workspace",
+            session_id="session-policy",
+            metadata={"execution_policy_state": policy},
+        )
+    )
+    request = model_client.requests[0]
+
+    assert {skill.name for skill in request.skills} == {"alpha"}
+    assert set(request.turn_context.available_skills) == {"alpha"}
+    assert {entry.name for entry in request.turn_context.available_invocations} == {"alpha"}
 
 
 def test_session_and_runtime_query_surfaces_return_visible_invocations(tmp_path: Path) -> None:
@@ -392,3 +544,44 @@ def test_placeholder_providers_integrate_with_invocation_registry(tmp_path: Path
         "plugin-review",
         "mcp-review",
     }
+
+
+def test_invocation_registry_resolves_same_priority_conflicts_deterministically() -> None:
+    slash = InvocationDefinition(
+        name="review",
+        source_kind=InvocationSourceKind.SLASH_COMMAND,
+        description="Slash review",
+        execution_policy=InvocationExecutionPolicy(
+            target_kind=InvocationTargetKind.SLASH_COMMAND,
+            target_name="/review",
+        ),
+        origin=DefinitionOrigin(DefinitionSource.USER, path=Path("/tmp/z-review")),
+    )
+    plugin = InvocationDefinition(
+        name="review",
+        source_kind=InvocationSourceKind.PLUGIN_COMMAND,
+        description="Plugin review",
+        execution_policy=InvocationExecutionPolicy(
+            target_kind=InvocationTargetKind.PLUGIN_COMMAND,
+            target_name="plugin.review",
+        ),
+        origin=DefinitionOrigin(DefinitionSource.USER, path=Path("/tmp/a-review")),
+    )
+
+    first = InvocationRegistry(
+        (
+            SlashCommandInvocationProvider((slash,)),
+            PluginCommandInvocationProvider((plugin,)),
+        )
+    )
+    second = InvocationRegistry(
+        (
+            PluginCommandInvocationProvider((plugin,)),
+            SlashCommandInvocationProvider((slash,)),
+        )
+    )
+
+    assert first.definitions()[0].origin.label == "/tmp/a-review"
+    assert second.definitions()[0].origin.label == "/tmp/a-review"
+    assert any(diag.code == "invocation_definition_conflict" for diag in first.diagnostics())
+    assert any(diag.code == "invocation_definition_conflict" for diag in second.diagnostics())

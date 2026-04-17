@@ -5,7 +5,7 @@ from fnmatch import fnmatch
 from pathlib import Path, PurePath
 from typing import TYPE_CHECKING, Any, Iterable, Mapping, Sequence
 
-from .contracts import MessageRole, RuntimeMessage
+from .contracts import MessageRole, RuntimeMessage, ToolResultBlock
 from .definitions import (
     DefinitionSource,
     InvocationCapabilityView,
@@ -22,6 +22,7 @@ from .definitions import (
     ResolvedInvocationCatalog,
     SkillDefinition,
 )
+from .execution_policy import policy_allows_skill, policy_state_from_metadata
 
 if TYPE_CHECKING:
     from .registries.skill_registry import SkillRegistry
@@ -120,24 +121,24 @@ def build_invocation_resolution_context(
 ) -> InvocationResolutionContext:
     resolved_cwd = Path(cwd).resolve()
     context_metadata = dict(runtime_context or {})
-    latest_user = _latest_message(messages, MessageRole.USER)
+    latest_prompt = _latest_prompt_message(messages)
     prompt_paths = set(_coerce_string_sequence(context_metadata.get("prompt_paths")))
-    prompt_paths.update(_coerce_string_sequence(_metadata_values(latest_user, "prompt_paths")))
-    if latest_user is not None:
-        prompt_paths.update(_extract_path_tokens(latest_user.text))
+    prompt_paths.update(_coerce_string_sequence(_metadata_values(latest_prompt, "prompt_paths")))
+    if latest_prompt is not None:
+        prompt_paths.update(_extract_path_tokens(latest_prompt.text))
 
     attachments = set(_coerce_string_sequence(context_metadata.get("attachments")))
-    attachments.update(_coerce_string_sequence(_metadata_values(latest_user, "attachments")))
-    if latest_user is not None:
+    attachments.update(_coerce_string_sequence(_metadata_values(latest_prompt, "attachments")))
+    if latest_prompt is not None:
         attachments.update(
             attachment.path
-            for attachment in latest_user.attachments
+            for attachment in latest_prompt.attachments
             if getattr(attachment, "path", None)
         )
 
     workspace_roots = {resolved_cwd}
     workspace_roots.update(_coerce_path_sequence(context_metadata.get("workspace_roots")))
-    workspace_roots.update(_coerce_path_sequence(_metadata_values(latest_user, "workspace_roots")))
+    workspace_roots.update(_coerce_path_sequence(_metadata_values(latest_prompt, "workspace_roots")))
 
     observed_paths = set(_coerce_string_sequence(context_metadata.get("observed_paths")))
     for message in messages:
@@ -145,8 +146,8 @@ def build_invocation_resolution_context(
 
     working_set = set(_coerce_string_sequence(context_metadata.get("working_set")))
     working_set.update(_coerce_string_sequence(context_metadata.get("working_set_paths")))
-    working_set.update(_coerce_string_sequence(_metadata_values(latest_user, "working_set")))
-    working_set.update(_coerce_string_sequence(_metadata_values(latest_user, "working_set_paths")))
+    working_set.update(_coerce_string_sequence(_metadata_values(latest_prompt, "working_set")))
+    working_set.update(_coerce_string_sequence(_metadata_values(latest_prompt, "working_set_paths")))
 
     return InvocationResolutionContext(
         session_id=session_id,
@@ -174,9 +175,13 @@ def resolve_invocation_catalog(
         path_state, matched_paths = _evaluate_path_state(definition, context)
         activation_enabled = bool(definition.metadata.get("activation_enabled", True))
         visible_now = activation_enabled and path_state == InvocationPathMatchState.MATCHED
+        policy_visible, policy_narrowing = _policy_visibility(definition, context)
+        if visible_now and not policy_visible:
+            visible_now = False
         hidden_reason = _hidden_reason(
             activation_enabled=activation_enabled,
             path_state=path_state,
+            policy_visible=policy_visible,
         )
         user_invocable = visible_now and definition.visibility_policy.user_invocable
         model_invocable = visible_now and definition.visibility_policy.model_invocable
@@ -189,7 +194,7 @@ def resolve_invocation_catalog(
             hidden_reason=hidden_reason,
             matched_paths=tuple(sorted(set(matched_paths))),
             path_match_state=path_state,
-            narrowed_by_policy=_policy_narrowing(definition),
+            narrowed_by_policy=_policy_narrowing(definition, policy_narrowing),
             metadata=_diagnostics_metadata(definition),
         )
         resolved = ResolvedInvocation(
@@ -252,6 +257,7 @@ def _hidden_reason(
     *,
     activation_enabled: bool,
     path_state: InvocationPathMatchState,
+    policy_visible: bool,
 ) -> InvocationHiddenReason | None:
     if not activation_enabled:
         return InvocationHiddenReason.INACTIVE
@@ -259,13 +265,20 @@ def _hidden_reason(
         return InvocationHiddenReason.PATH_MISMATCH
     if path_state == InvocationPathMatchState.INDETERMINATE:
         return InvocationHiddenReason.PATH_INDETERMINATE
+    if not policy_visible:
+        return InvocationHiddenReason.POLICY_NARROWED
     return None
 
 
-def _policy_narrowing(definition: InvocationDefinition) -> dict[str, Any]:
+def _policy_narrowing(
+    definition: InvocationDefinition,
+    dynamic_narrowing: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     narrowed: dict[str, Any] = {}
     policy = definition.execution_policy
     if policy is None:
+        if dynamic_narrowing:
+            narrowed.update(dynamic_narrowing)
         return narrowed
     if policy.allowed_tools:
         narrowed["allowed_tools"] = tuple(policy.allowed_tools)
@@ -279,7 +292,27 @@ def _policy_narrowing(definition: InvocationDefinition) -> dict[str, Any]:
         narrowed["effort"] = policy.effort
     if policy.hooks:
         narrowed["hooks"] = tuple(sorted(policy.hooks))
+    if dynamic_narrowing:
+        narrowed.update(dynamic_narrowing)
     return narrowed
+
+
+def _policy_visibility(
+    definition: InvocationDefinition,
+    context: InvocationResolutionContext,
+) -> tuple[bool, dict[str, Any]]:
+    state = policy_state_from_metadata(context.metadata)
+    if state is None:
+        return True, {}
+    skill = definition.metadata.get("skill_definition")
+    if not isinstance(skill, SkillDefinition):
+        return True, {}
+    allowed_skill_names = tuple(skill_definition.name for skill_definition in state.effective.skill_pool)
+    narrowed: dict[str, Any] = {"skill_pool": allowed_skill_names}
+    if not policy_allows_skill(skill.name, state.effective.skill_pool):
+        narrowed["blocked_by"] = "execution_policy.skill_pool"
+        return False, narrowed
+    return True, narrowed
 
 
 def _capability_metadata(definition: InvocationDefinition) -> dict[str, Any]:
@@ -305,6 +338,22 @@ def _latest_message(
         if message.role == role:
             return message
     return None
+
+
+def _latest_prompt_message(messages: Sequence[RuntimeMessage]) -> RuntimeMessage | None:
+    for message in reversed(messages):
+        if message.role != MessageRole.USER:
+            continue
+        if _is_tool_result_replay(message):
+            continue
+        return message
+    return None
+
+
+def _is_tool_result_replay(message: RuntimeMessage) -> bool:
+    if message.metadata.get("tool_results"):
+        return True
+    return bool(message.content) and all(isinstance(block, ToolResultBlock) for block in message.content)
 
 
 def _metadata_values(message: RuntimeMessage | None, key: str) -> object:

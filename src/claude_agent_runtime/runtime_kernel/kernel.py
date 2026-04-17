@@ -316,6 +316,7 @@ def build_runtime_kernel(config: RuntimeConfig) -> RuntimeKernel:
     invocation_registry.register_provider(SkillInvocationProvider(skill_registry))
     for provider in config.extra_invocation_providers:
         invocation_registry.register_provider(provider)
+    diagnostics.extend(invocation_registry.diagnostics())
 
     kernel = RuntimeKernel(
         config=config,

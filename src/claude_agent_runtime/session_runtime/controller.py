@@ -198,10 +198,15 @@ class SessionController:
                 turn_id=self.state.active_turn_id,
             )
             turn_message_ids.append(message.message_id)
-            runtime_context = {
-                "command_type": command.command_type.value,
-                "permission_context": self.state.metadata.get("permission_context"),
-            }
+            runtime_context = {}
+            if isinstance(command.payload.get("metadata"), dict):
+                runtime_context.update(command.payload["metadata"])
+            runtime_context.update(
+                {
+                    "command_type": command.command_type.value,
+                    "permission_context": self.state.metadata.get("permission_context"),
+                }
+            )
             continuation = self.state.metadata.get("compaction_continuation")
             if isinstance(continuation, dict):
                 runtime_context["compaction_continuation"] = dict(continuation)
