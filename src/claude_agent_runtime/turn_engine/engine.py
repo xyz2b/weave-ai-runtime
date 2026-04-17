@@ -4,7 +4,7 @@ import asyncio
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, AsyncIterator, Mapping
+from typing import Any, AsyncIterator, Mapping, Sequence
 from uuid import uuid4
 
 from ..agent_execution import AgentRunRecord
@@ -37,7 +37,7 @@ from ..execution_policy import (
     resolve_skill_pool,
     serialize_runtime_metadata,
 )
-from ..hooks import StopPayload, UserPromptSubmitPayload
+from ..hooks import PostCompactPayload, PreCompactPayload, StopPayload, UserPromptSubmitPayload
 from ..invocation_catalog import SkillInvocationProvider, build_invocation_resolution_context
 from ..permissions import PermissionContext
 from ..registries import AgentRegistry, InvocationRegistry, SkillRegistry, ToolRegistry
@@ -68,6 +68,7 @@ from .models import (
 
 
 class TurnStreamEventType(StrEnum):
+    ATTEMPT_FINISHED = "attempt_finished"
     CHILD_RUN = "child_run"
     COMPACTION = "compaction"
     REQUEST_START = "request_start"
@@ -78,17 +79,136 @@ class TurnStreamEventType(StrEnum):
     TERMINAL = "terminal"
 
 
+class TurnPhase(StrEnum):
+    PREPARE = "prepare"
+    PREFETCH_SIDECARS = "prefetch_sidecars"
+    COMPACT_OR_REBUILD = "compact_or_rebuild"
+    BUILD_REQUEST = "build_request"
+    STREAM_ATTEMPT = "stream_attempt"
+    REPLAY_TOOLS = "replay_tools"
+    STOP_PHASE = "stop_phase"
+    RECOVERY_DECISION = "recovery_decision"
+    ADVANCE_OR_FINISH = "advance_or_finish"
+    TERMINAL = "terminal"
+
+
+class TurnRecoveryAction(StrEnum):
+    CONTINUE_SAME_TURN = "continue_same_turn"
+    REBUILD_REQUEST = "rebuild_request"
+    COMPACT_AND_RETRY = "compact_and_retry"
+    RETRY_WITH_OVERRIDE = "retry_with_override"
+    HALT = "halt"
+
+
+class TurnTransitionReason(StrEnum):
+    NEXT_TURN = "next_turn"
+    STOP_HOOK_BLOCKING = "stop_hook_blocking"
+    MAX_TURNS_EXHAUSTED = "max_turns_exhausted"
+    ATTEMPT_COMPLETED = "attempt_completed"
+    ATTEMPT_INTERRUPTED = "attempt_interrupted"
+    ATTEMPT_ERROR = "attempt_error"
+    TOOL_EXECUTOR_UNAVAILABLE = "tool_executor_unavailable"
+
+
+class TurnTerminalReason(StrEnum):
+    END_TURN = "end_turn"
+    MESSAGE_STOP = "message_stop"
+    BLOCKED = "blocked"
+    INTERRUPTED = "interrupted"
+    ERROR = "error"
+    MAX_TURNS = "max_turns"
+    PROMPT_TOO_LONG = "prompt_too_long"
+    IMAGE_ERROR = "image_error"
+    INCOMPLETE = "incomplete"
+
+
+@dataclass(frozen=True, slots=True)
+class TurnTransition:
+    reason: TurnTransitionReason
+    recovery_action: TurnRecoveryAction
+    next_phase: TurnPhase
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class TurnPostEffects:
+    persist_memory: bool = False
+    schedule_background_extraction: bool = False
+    refresh_session_state: bool = False
+    session_status_hint: str | None = None
+    matched_stop_hooks: tuple[str, ...] = ()
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class AttemptFinished:
+    iteration: int
+    request_id: str | None = None
+    attempt_stop_reason: str | None = None
+    usage: dict[str, Any] = field(default_factory=dict)
+    ttft_ms: float | None = None
+    error: str | None = None
+    abort_reason: str | None = None
+    produced_tool_calls: bool = False
+    tool_call_count: int = 0
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def stop_reason(self) -> str | None:
+        return self.attempt_stop_reason
+
+
+@dataclass(frozen=True, slots=True)
+class TurnTerminal:
+    reason: TurnTerminalReason
+    usage: dict[str, Any] = field(default_factory=dict)
+    request_id: str | None = None
+    ttft_ms: float | None = None
+    error: str | None = None
+    abort_reason: str | None = None
+    provider_stop_reason: str | None = None
+    transition: TurnTransition | None = None
+    post_effects: TurnPostEffects = field(default_factory=TurnPostEffects)
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def stop_reason(self) -> str:
+        return self.reason.value
+
+    @property
+    def completed(self) -> bool:
+        return _terminal_reason_is_completed(self.reason)
+
+
+@dataclass(slots=True)
+class TurnLoopState:
+    phase: TurnPhase = TurnPhase.PREPARE
+    iteration: int = 0
+    working_messages: tuple[RuntimeMessage, ...] = ()
+    policy_state: ExecutionPolicyState | None = None
+    sidecar_generation: int = 0
+    transition: TurnTransition | None = None
+    terminal: TurnTerminal | None = None
+    post_effects: TurnPostEffects = field(default_factory=TurnPostEffects)
+    attempts: tuple[AttemptFinished, ...] = ()
+    phase_history: tuple[TurnPhase, ...] = field(default_factory=lambda: (TurnPhase.PREPARE,))
+
+
 @dataclass(frozen=True, slots=True)
 class TurnStreamEvent:
     event_type: TurnStreamEventType
     iteration: int
+    phase: TurnPhase | None = None
     request: ModelRequest | None = None
     model_event: ModelStreamEvent | None = None
     tool_event: ToolLifecycleEvent | None = None
     child_run: AgentRunRecord | None = None
+    attempt: AttemptFinished | None = None
+    transition: TurnTransition | None = None
+    post_effects: TurnPostEffects | None = None
     message: RuntimeMessage | None = None
     compacted_messages: tuple[RuntimeMessage, ...] = ()
-    terminal: ModelTerminalMetadata | None = None
+    terminal: TurnTerminal | None = None
     discarded_content: tuple[ContentBlock, ...] = ()
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -97,7 +217,7 @@ class TurnStreamEvent:
 class TurnResult:
     messages: list[RuntimeMessage] = field(default_factory=list)
     tool_calls: list[ToolCall] = field(default_factory=list)
-    attempts: list[ModelTerminalMetadata] = field(default_factory=list)
+    attempts: list[AttemptFinished] = field(default_factory=list)
     iterations: int = 0
     completed: bool = False
     stop_reason: str | None = None
@@ -106,12 +226,7 @@ class TurnResult:
     ttft_ms: float | None = None
     abort_reason: str | None = None
     error: str | None = None
-
-
-@dataclass(slots=True)
-class _TurnRunState:
-    iterations: int = 0
-    completed: bool = False
+    terminal: TurnTerminal | None = None
 
 
 @dataclass(slots=True)
@@ -353,6 +468,96 @@ class _StreamAttemptState:
         return discarded
 
 
+@dataclass(frozen=True, slots=True)
+class _SidecarJoinResult:
+    fragments: tuple[str, ...] = ()
+    runtime_context_updates: dict[str, Any] = field(default_factory=dict)
+
+
+class _PreTurnSidecarSupervisor:
+    def __init__(
+        self,
+        engine: "TurnEngine",
+        *,
+        session_id: str,
+        turn_id: str,
+        agent: AgentDefinition,
+        cwd: str,
+    ) -> None:
+        self._engine = engine
+        self._session_id = session_id
+        self._turn_id = turn_id
+        self._agent = agent
+        self._cwd = cwd
+        self.generation = 0
+        self._memory_task: asyncio.Task[_SidecarJoinResult] | None = None
+        self._hook_task: asyncio.Task[_SidecarJoinResult] | None = None
+
+    def start(
+        self,
+        *,
+        messages: Sequence[RuntimeMessage],
+        runtime_context: Mapping[str, object] | None,
+    ) -> None:
+        self.cancel()
+        self.generation += 1
+        task_kwargs = {
+            "session_id": self._session_id,
+            "turn_id": self._turn_id,
+            "agent": self._agent,
+            "cwd": self._cwd,
+            "messages": tuple(messages),
+            "runtime_context": dict(runtime_context or {}),
+        }
+        self._memory_task = asyncio.create_task(
+            self._engine._collect_control_plane_fragments_with_context(
+                self._engine._runtime_services.memory,
+                **task_kwargs,
+            )
+        )
+        self._hook_task = asyncio.create_task(
+            self._engine._collect_control_plane_fragments_with_context(
+                self._engine._runtime_services.hooks,
+                **task_kwargs,
+            )
+        )
+
+    async def restart(
+        self,
+        *,
+        messages: Sequence[RuntimeMessage],
+        runtime_context: Mapping[str, object] | None,
+    ) -> None:
+        self.start(messages=messages, runtime_context=runtime_context)
+
+    async def join(self) -> tuple[tuple[str, ...], tuple[str, ...], dict[str, Any]]:
+        memory_result = await self._resolve(self._memory_task)
+        hook_result = await self._resolve(self._hook_task)
+        merged_updates = dict(memory_result.runtime_context_updates)
+        merged_updates.update(hook_result.runtime_context_updates)
+        return memory_result.fragments, hook_result.fragments, merged_updates
+
+    async def close(self) -> None:
+        tasks = tuple(task for task in (self._memory_task, self._hook_task) if task is not None)
+        self.cancel()
+        if not tasks:
+            return
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+    def cancel(self) -> None:
+        for task in (self._memory_task, self._hook_task):
+            if task is not None and not task.done():
+                task.cancel()
+
+    async def _resolve(self, task: asyncio.Task[_SidecarJoinResult] | None) -> _SidecarJoinResult:
+        if task is None:
+            return _SidecarJoinResult()
+        try:
+            return await task
+        except asyncio.CancelledError:
+            return _SidecarJoinResult()
+
+
 class TurnEngine:
     def __init__(
         self,
@@ -549,9 +754,7 @@ class TurnEngine:
         runtime_context: dict[str, object] | None = None,
         model_client_override: ModelClient | None = None,
     ) -> AsyncIterator[TurnStreamEvent]:
-        state = _TurnRunState()
         async for event in self._run_turn_stream_impl(
-            state=state,
             session_id=session_id,
             turn_id=turn_id,
             agent=agent,
@@ -584,9 +787,7 @@ class TurnEngine:
         model_client_override: ModelClient | None = None,
     ) -> TurnResult:
         result = TurnResult()
-        state = _TurnRunState()
-        async for event in self._run_turn_stream_impl(
-            state=state,
+        async for event in self.run_turn_stream(
             session_id=session_id,
             turn_id=turn_id,
             agent=agent,
@@ -604,24 +805,24 @@ class TurnEngine:
                 result.messages.append(event.message)
                 if event.message.role == MessageRole.ASSISTANT:
                     result.tool_calls.extend(_tool_calls_from_message(event.message))
-            elif event.event_type == TurnStreamEventType.TERMINAL and event.terminal is not None:
-                result.attempts.append(event.terminal)
+            elif event.event_type == TurnStreamEventType.ATTEMPT_FINISHED and event.attempt is not None:
+                result.attempts.append(event.attempt)
                 result.iterations = max(result.iterations, event.iteration)
+            elif event.event_type == TurnStreamEventType.TERMINAL and event.terminal is not None:
+                result.iterations = max(result.iterations, event.iteration)
+                result.terminal = event.terminal
                 result.stop_reason = event.terminal.stop_reason
                 result.usage = dict(event.terminal.usage)
                 result.request_id = event.terminal.request_id
                 result.ttft_ms = event.terminal.ttft_ms
                 result.abort_reason = event.terminal.abort_reason
                 result.error = event.terminal.error
-
-        result.iterations = max(result.iterations, state.iterations)
-        result.completed = state.completed
+                result.completed = event.terminal.completed
         return result
 
     async def _run_turn_stream_impl(
         self,
         *,
-        state: _TurnRunState,
         session_id: str,
         turn_id: str,
         agent: AgentDefinition,
@@ -636,11 +837,17 @@ class TurnEngine:
         model_client_override: ModelClient | None = None,
     ) -> AsyncIterator[TurnStreamEvent]:
         max_iterations = agent.max_turns or 4
-        working_messages = list(messages)
-        iteration = 0
+        state = TurnLoopState(working_messages=tuple(messages))
         runtime_context = dict(runtime_context or {})
         child_run_key = (session_id, turn_id)
         self._child_run_events[child_run_key] = []
+        sidecars = _PreTurnSidecarSupervisor(
+            self,
+            session_id=session_id,
+            turn_id=turn_id,
+            agent=agent,
+            cwd=cwd,
+        )
         runtime_context.setdefault(
             "permission_context",
             PermissionContext(
@@ -669,17 +876,35 @@ class TurnEngine:
             )
             policy_state = ExecutionPolicyState(root_policy)
             runtime_context[EXECUTION_POLICY_STATE_KEY] = policy_state
+        state.policy_state = policy_state
+        last_request: ModelRequest | None = None
+        last_attempt: AttemptFinished | None = None
 
         try:
-            while iteration < max_iterations:
+            while True:
+                working_messages = list(state.working_messages)
                 model_client = model_client_override or self._model_client
-                iteration_index = iteration + 1
-                state.iterations = iteration_index
+                iteration_index = state.iteration + 1
+                state.iteration = iteration_index
                 runtime_metadata = self._merge_runtime_context(runtime_context)
                 runtime_metadata[EXECUTION_POLICY_STATE_KEY] = policy_state
                 runtime_metadata["permission_context"] = policy_state.effective.permission_context
                 tool_pool = policy_state.effective.tool_pool
                 sanitized_runtime_context = serialize_runtime_metadata(runtime_metadata)
+                state.sidecar_generation += 1
+                _set_turn_phase(state, TurnPhase.PREFETCH_SIDECARS)
+                sidecars.start(
+                    messages=tuple(working_messages),
+                    runtime_context=sanitized_runtime_context,
+                )
+                _set_turn_phase(state, TurnPhase.COMPACT_OR_REBUILD)
+                await self._dispatch_hook(
+                    session_id,
+                    PreCompactPayload(
+                        session_id=session_id,
+                        token_count=sum(len(message.text) for message in working_messages),
+                    ),
+                )
                 compaction_result = await self._prepare_compaction(
                     session_id=session_id,
                     turn_id=turn_id,
@@ -695,12 +920,31 @@ class TurnEngine:
                 )
                 if compaction_result.applied:
                     working_messages = list(compaction_result.messages)
+                    state.working_messages = tuple(working_messages)
+                    await sidecars.restart(
+                        messages=state.working_messages,
+                        runtime_context=sanitized_runtime_context,
+                    )
+                    if compaction_result.summary is not None:
+                        await self._dispatch_hook(
+                            session_id,
+                            PostCompactPayload(
+                                session_id=session_id,
+                                summary_id=compaction_result.summary.summary_id,
+                            ),
+                        )
                     yield TurnStreamEvent(
                         event_type=TurnStreamEventType.COMPACTION,
                         iteration=iteration_index,
+                        phase=state.phase,
                         compacted_messages=tuple(working_messages),
                         metadata={"compaction": compaction_payload} if compaction_payload is not None else {},
                     )
+                shared_memory_fragments, shared_hook_context, sidecar_updates = await sidecars.join()
+                if sidecar_updates:
+                    runtime_context.update(sidecar_updates)
+                    runtime_metadata.update(sidecar_updates)
+                    sanitized_runtime_context.update(sidecar_updates)
 
                 resolved_invocations = self.resolve_invocation_catalog(
                     session_id=session_id,
@@ -729,28 +973,10 @@ class TurnEngine:
                                 "model_invocable_skills": [skill.name for skill in active_skills],
                             },
                         )
-                    )
+                )
                 tool_pool = policy_state.effective.tool_pool
 
                 api_messages = normalize_messages_for_api(working_messages)
-                shared_memory_fragments = await self._collect_control_plane_fragments(
-                    self._runtime_services.memory,
-                    session_id=session_id,
-                    turn_id=turn_id,
-                    agent=agent,
-                    cwd=cwd,
-                    messages=tuple(working_messages),
-                    runtime_context=sanitized_runtime_context,
-                )
-                shared_hook_context = await self._collect_control_plane_fragments(
-                    self._runtime_services.hooks,
-                    session_id=session_id,
-                    turn_id=turn_id,
-                    agent=agent,
-                    cwd=cwd,
-                    messages=tuple(working_messages),
-                    runtime_context=sanitized_runtime_context,
-                )
                 shared_compaction_fragments = tuple(compaction_result.fragments)
 
                 user_prompt_hook = await self._dispatch_hook(
@@ -763,6 +989,7 @@ class TurnEngine:
                     ),
                 )
 
+                _set_turn_phase(state, TurnPhase.BUILD_REQUEST)
                 composition = self._compose_context(
                     session_id=session_id,
                     turn_id=turn_id,
@@ -831,6 +1058,7 @@ class TurnEngine:
                     invocation_mode=invocation_mode,
                     metadata=request_metadata,
                 )
+                last_request = request
                 tool_executor = select_tool_executor(
                     model_client,
                     context=tool_context,
@@ -867,12 +1095,14 @@ class TurnEngine:
                 yield TurnStreamEvent(
                     event_type=TurnStreamEventType.REQUEST_START,
                     iteration=iteration_index,
+                    phase=state.phase,
                     request=request,
                 )
 
                 attempt_state = _StreamAttemptState()
                 pending_tool_use_closed_at_message_stop = False
                 self._active_abort_signal = abort_signal
+                _set_turn_phase(state, TurnPhase.STREAM_ATTEMPT)
                 try:
                     if request.invocation_mode == ModelInvocationMode.BUFFERED_COMPLETION:
                         assistant_blocks, tool_calls, terminal, response_events, assistant_message_id = (
@@ -887,6 +1117,7 @@ class TurnEngine:
                             yield TurnStreamEvent(
                                 event_type=TurnStreamEventType.STREAM_PROGRESS,
                                 iteration=iteration_index,
+                                phase=state.phase,
                                 request=request,
                                 model_event=event,
                             )
@@ -896,6 +1127,7 @@ class TurnEngine:
                             yield TurnStreamEvent(
                                 event_type=TurnStreamEventType.STREAM_PROGRESS,
                                 iteration=iteration_index,
+                                phase=state.phase,
                                 request=request,
                                 model_event=event,
                             )
@@ -937,6 +1169,7 @@ class TurnEngine:
                         yield TurnStreamEvent(
                             event_type=TurnStreamEventType.STREAM_PROGRESS,
                             iteration=iteration_index,
+                            phase=state.phase,
                             request=request,
                             model_event=error_event,
                         )
@@ -954,6 +1187,7 @@ class TurnEngine:
                         yield TurnStreamEvent(
                             event_type=TurnStreamEventType.STREAM_PROGRESS,
                             iteration=iteration_index,
+                            phase=state.phase,
                             request=request,
                             model_event=error_event,
                         )
@@ -969,6 +1203,13 @@ class TurnEngine:
                             abort_signal.reason
                         ),
                     )
+                attempt = _attempt_finished_from_terminal(
+                    iteration=iteration_index,
+                    terminal=terminal,
+                    tool_calls=tool_calls,
+                )
+                state.attempts = state.attempts + (attempt,)
+                last_attempt = attempt
                 if assistant_blocks:
                     assistant_message = RuntimeMessage(
                         message_id=assistant_message_id,
@@ -977,12 +1218,13 @@ class TurnEngine:
                         metadata=_assistant_message_metadata(terminal),
                     )
                     working_messages.append(assistant_message)
+                    state.working_messages = tuple(working_messages)
                     yield TurnStreamEvent(
                         event_type=TurnStreamEventType.MESSAGE,
                         iteration=iteration_index,
+                        phase=state.phase,
                         request=request,
                         message=assistant_message,
-                        terminal=terminal,
                     )
                     tool_context.messages = tuple(working_messages)
                     if tool_context.query_context is not None:
@@ -1002,70 +1244,168 @@ class TurnEngine:
                     yield TurnStreamEvent(
                         event_type=TurnStreamEventType.MESSAGE_DISCARDED,
                         iteration=iteration_index,
+                        phase=state.phase,
                         request=request,
-                        terminal=terminal,
                         discarded_content=discarded_blocks,
                         metadata={"reason": terminal.abort_reason or terminal.stop_reason},
                     )
+                yield TurnStreamEvent(
+                    event_type=TurnStreamEventType.ATTEMPT_FINISHED,
+                    iteration=iteration_index,
+                    phase=state.phase,
+                    request=request,
+                    attempt=attempt,
+                )
 
                 if not tool_calls:
+                    _set_turn_phase(state, TurnPhase.STOP_PHASE)
                     stop_hook = await self._dispatch_hook(
                         session_id,
                         StopPayload(
                             session_id=session_id,
-                            reason=terminal.stop_reason or "completed",
+                            reason=attempt.attempt_stop_reason or "completed",
                             turn_id=turn_id,
                         ),
                     )
-                    if not stop_hook.continue_execution:
-                        terminal = replace(
-                            terminal,
-                            stop_reason="blocked",
-                            metadata={
-                                **terminal.metadata,
-                                "continuation_blocked": True,
-                                "matched_hooks": list(stop_hook.matched_owners),
-                            },
+                    _set_turn_phase(state, TurnPhase.RECOVERY_DECISION)
+                    terminal_reason = _terminal_reason_from_attempt(attempt)
+                    if (
+                        not stop_hook.continue_execution
+                        and not _terminal_reason_is_failure(terminal_reason)
+                    ):
+                        terminal_reason = TurnTerminalReason.BLOCKED
+                        transition = TurnTransition(
+                            reason=TurnTransitionReason.STOP_HOOK_BLOCKING,
+                            recovery_action=TurnRecoveryAction.HALT,
+                            next_phase=TurnPhase.TERMINAL,
+                            metadata={"matched_hooks": list(stop_hook.matched_owners)},
                         )
-                    state.completed = (
-                        terminal.error is None
-                        and terminal.stop_reason not in {"interrupted", "error", "blocked"}
+                    elif terminal_reason == TurnTerminalReason.INTERRUPTED:
+                        transition = TurnTransition(
+                            reason=TurnTransitionReason.ATTEMPT_INTERRUPTED,
+                            recovery_action=TurnRecoveryAction.HALT,
+                            next_phase=TurnPhase.TERMINAL,
+                        )
+                    elif _terminal_reason_is_failure(terminal_reason):
+                        transition = TurnTransition(
+                            reason=TurnTransitionReason.ATTEMPT_ERROR,
+                            recovery_action=TurnRecoveryAction.HALT,
+                            next_phase=TurnPhase.TERMINAL,
+                        )
+                    else:
+                        transition = TurnTransition(
+                            reason=TurnTransitionReason.ATTEMPT_COMPLETED,
+                            recovery_action=TurnRecoveryAction.HALT,
+                            next_phase=TurnPhase.TERMINAL,
+                        )
+                    post_effects = _turn_post_effects_for_terminal(
+                        terminal_reason,
+                        matched_stop_hooks=stop_hook.matched_owners,
                     )
+                    terminal_event = _turn_terminal_from_attempt(
+                        attempt,
+                        reason=terminal_reason,
+                        transition=transition,
+                        post_effects=post_effects,
+                        metadata={
+                            **(
+                                {
+                                    "continuation_blocked": True,
+                                    "matched_hooks": list(stop_hook.matched_owners),
+                                }
+                                if terminal_reason == TurnTerminalReason.BLOCKED
+                                else {}
+                            ),
+                        },
+                    )
+                    state.transition = transition
+                    state.post_effects = post_effects
+                    _set_turn_phase(state, TurnPhase.ADVANCE_OR_FINISH)
+                    state.terminal = terminal_event
                     self._active_tool_context = None
                     self._active_tool_executor = None
+                    _set_turn_phase(state, TurnPhase.TERMINAL)
                     yield TurnStreamEvent(
                         event_type=TurnStreamEventType.TERMINAL,
                         iteration=iteration_index,
+                        phase=state.phase,
                         request=request,
-                        terminal=terminal,
+                        terminal=terminal_event,
+                        transition=transition,
+                        post_effects=post_effects,
                     )
                     return
 
-                yield TurnStreamEvent(
-                    event_type=TurnStreamEventType.TERMINAL,
-                    iteration=iteration_index,
-                    request=request,
-                    terminal=replace(
-                        terminal,
-                        metadata={
-                            **terminal.metadata,
-                            "tool_executor": _tool_executor_metadata(tool_executor),
-                        },
-                    ),
-                )
-
+                _set_turn_phase(state, TurnPhase.REPLAY_TOOLS)
                 if abort_signal.aborted and not (
                     _abort_reason_allows_tool_finalize(abort_signal.reason) and tool_calls
                 ):
-                    state.completed = False
+                    _set_turn_phase(state, TurnPhase.RECOVERY_DECISION)
+                    transition = TurnTransition(
+                        reason=TurnTransitionReason.ATTEMPT_INTERRUPTED,
+                        recovery_action=TurnRecoveryAction.HALT,
+                        next_phase=TurnPhase.TERMINAL,
+                    )
+                    post_effects = _turn_post_effects_for_terminal(TurnTerminalReason.INTERRUPTED)
+                    terminal_event = _turn_terminal_from_attempt(
+                        attempt,
+                        reason=TurnTerminalReason.INTERRUPTED,
+                        transition=transition,
+                        post_effects=post_effects,
+                    )
+                    state.transition = transition
+                    state.post_effects = post_effects
                     self._active_tool_context = None
                     self._active_tool_executor = None
+                    _set_turn_phase(state, TurnPhase.ADVANCE_OR_FINISH)
+                    state.terminal = terminal_event
+                    _set_turn_phase(state, TurnPhase.TERMINAL)
+                    yield TurnStreamEvent(
+                        event_type=TurnStreamEventType.TERMINAL,
+                        iteration=iteration_index,
+                        phase=state.phase,
+                        request=request,
+                        terminal=terminal_event,
+                        transition=transition,
+                        post_effects=post_effects,
+                    )
                     return
 
                 if tool_executor is None:
-                    state.completed = False
+                    _set_turn_phase(state, TurnPhase.RECOVERY_DECISION)
+                    transition = TurnTransition(
+                        reason=TurnTransitionReason.TOOL_EXECUTOR_UNAVAILABLE,
+                        recovery_action=TurnRecoveryAction.HALT,
+                        next_phase=TurnPhase.TERMINAL,
+                        metadata={"tool_call_count": len(tool_calls)},
+                    )
+                    post_effects = _turn_post_effects_for_terminal(TurnTerminalReason.BLOCKED)
+                    terminal_event = _turn_terminal_from_attempt(
+                        attempt,
+                        reason=TurnTerminalReason.BLOCKED,
+                        transition=transition,
+                        post_effects=post_effects,
+                        metadata={
+                            "continuation_blocked": True,
+                            "tool_executor_unavailable": True,
+                        },
+                    )
+                    state.transition = transition
+                    state.post_effects = post_effects
                     self._active_tool_context = None
                     self._active_tool_executor = None
+                    _set_turn_phase(state, TurnPhase.ADVANCE_OR_FINISH)
+                    state.terminal = terminal_event
+                    _set_turn_phase(state, TurnPhase.TERMINAL)
+                    yield TurnStreamEvent(
+                        event_type=TurnStreamEventType.TERMINAL,
+                        iteration=iteration_index,
+                        phase=state.phase,
+                        request=request,
+                        terminal=terminal_event,
+                        transition=transition,
+                        post_effects=post_effects,
+                    )
                     return
                 try:
                     outcomes = await tool_executor.finalize(
@@ -1088,15 +1428,43 @@ class TurnEngine:
                 ):
                     yield child_event
 
+                _set_turn_phase(state, TurnPhase.RECOVERY_DECISION)
+                if iteration_index >= max_iterations:
+                    transition = TurnTransition(
+                        reason=TurnTransitionReason.MAX_TURNS_EXHAUSTED,
+                        recovery_action=TurnRecoveryAction.HALT,
+                        next_phase=TurnPhase.TERMINAL,
+                        metadata={"tool_call_count": len(tool_calls)},
+                    )
+                    terminal_event = _turn_terminal_from_attempt(
+                        attempt,
+                        reason=TurnTerminalReason.MAX_TURNS,
+                        transition=transition,
+                        post_effects=_turn_post_effects_for_terminal(TurnTerminalReason.MAX_TURNS),
+                    )
+                else:
+                    transition = TurnTransition(
+                        reason=TurnTransitionReason.NEXT_TURN,
+                        recovery_action=TurnRecoveryAction.CONTINUE_SAME_TURN,
+                        next_phase=TurnPhase.PREPARE,
+                        metadata={
+                            "tool_call_count": len(tool_calls),
+                            "tool_executor": _tool_executor_metadata(tool_executor),
+                        },
+                    )
+                    terminal_event = None
+
                 tool_message = tool_executor.orchestrator.tool_result_message(outcomes)
                 if tool_message is not None:
                     working_messages.append(tool_message)
+                    state.working_messages = tuple(working_messages)
                     yield TurnStreamEvent(
                         event_type=TurnStreamEventType.MESSAGE,
                         iteration=iteration_index,
+                        phase=state.phase,
                         request=request,
                         message=tool_message,
-                        terminal=terminal,
+                        transition=transition,
                     )
                 for child_event in self._drain_child_run_events(
                     session_id=session_id,
@@ -1106,10 +1474,65 @@ class TurnEngine:
                 ):
                     yield child_event
 
-                iteration += 1
+                state.transition = transition
+                if terminal_event is not None:
+                    state.post_effects = terminal_event.post_effects
+                    _set_turn_phase(state, TurnPhase.ADVANCE_OR_FINISH)
+                    state.terminal = terminal_event
+                    _set_turn_phase(state, TurnPhase.TERMINAL)
+                    yield TurnStreamEvent(
+                        event_type=TurnStreamEventType.TERMINAL,
+                        iteration=iteration_index,
+                        phase=state.phase,
+                        request=request,
+                        terminal=terminal_event,
+                        transition=transition,
+                        post_effects=terminal_event.post_effects,
+                    )
+                    return
 
-            state.completed = False
+                _set_turn_phase(state, TurnPhase.ADVANCE_OR_FINISH)
+                state.working_messages = tuple(working_messages)
+                _set_turn_phase(state, TurnPhase.PREPARE)
+        except Exception as exc:
+            transition = TurnTransition(
+                reason=TurnTransitionReason.ATTEMPT_ERROR,
+                recovery_action=TurnRecoveryAction.HALT,
+                next_phase=TurnPhase.TERMINAL,
+                metadata={"unhandled_exception": True},
+            )
+            post_effects = _turn_post_effects_for_terminal(TurnTerminalReason.ERROR)
+            terminal_event = TurnTerminal(
+                reason=TurnTerminalReason.ERROR,
+                usage=dict(last_attempt.usage) if last_attempt is not None else {},
+                request_id=last_attempt.request_id if last_attempt is not None else None,
+                ttft_ms=last_attempt.ttft_ms if last_attempt is not None else None,
+                error=str(exc),
+                abort_reason=last_attempt.abort_reason if last_attempt is not None else None,
+                provider_stop_reason=last_attempt.attempt_stop_reason if last_attempt is not None else None,
+                transition=transition,
+                post_effects=post_effects,
+                metadata={"unhandled_exception": True},
+            )
+            state.transition = transition
+            state.terminal = terminal_event
+            state.post_effects = post_effects
+            self._active_abort_signal = None
+            self._active_tool_context = None
+            self._active_tool_executor = None
+            state.phase = TurnPhase.TERMINAL
+            yield TurnStreamEvent(
+                event_type=TurnStreamEventType.TERMINAL,
+                iteration=state.iteration or 1,
+                phase=state.phase,
+                request=last_request,
+                terminal=terminal_event,
+                transition=transition,
+                post_effects=post_effects,
+            )
+            return
         finally:
+            await sidecars.close()
             self._child_run_events.pop(child_run_key, None)
             if self._runtime_services.hook_bus is not None:
                 self._runtime_services.hook_bus.release_turn(session_id, turn_id)
@@ -1134,6 +1557,27 @@ class TurnEngine:
         if not fragments:
             return ()
         return tuple(str(fragment) for fragment in fragments)
+
+    async def _collect_control_plane_fragments_with_context(
+        self,
+        service: Any,
+        **kwargs: Any,
+    ) -> _SidecarJoinResult:
+        original_runtime_context = dict(kwargs.get("runtime_context") or {})
+        local_runtime_context = dict(original_runtime_context)
+        fragments = await self._collect_control_plane_fragments(
+            service,
+            **{**kwargs, "runtime_context": local_runtime_context},
+        )
+        runtime_context_updates = {
+            key: value
+            for key, value in local_runtime_context.items()
+            if original_runtime_context.get(key) != value
+        }
+        return _SidecarJoinResult(
+            fragments=fragments,
+            runtime_context_updates=runtime_context_updates,
+        )
 
     async def _prepare_compaction(
         self,
@@ -1292,6 +1736,134 @@ class TurnEngine:
             )
             for record in drained
         )
+
+
+_ALLOWED_PHASE_TRANSITIONS: dict[TurnPhase, tuple[TurnPhase, ...]] = {
+    TurnPhase.PREPARE: (TurnPhase.PREFETCH_SIDECARS,),
+    TurnPhase.PREFETCH_SIDECARS: (TurnPhase.COMPACT_OR_REBUILD,),
+    TurnPhase.COMPACT_OR_REBUILD: (TurnPhase.BUILD_REQUEST, TurnPhase.RECOVERY_DECISION),
+    TurnPhase.BUILD_REQUEST: (TurnPhase.STREAM_ATTEMPT,),
+    TurnPhase.STREAM_ATTEMPT: (TurnPhase.REPLAY_TOOLS, TurnPhase.STOP_PHASE, TurnPhase.RECOVERY_DECISION),
+    TurnPhase.REPLAY_TOOLS: (TurnPhase.RECOVERY_DECISION,),
+    TurnPhase.STOP_PHASE: (TurnPhase.RECOVERY_DECISION,),
+    TurnPhase.RECOVERY_DECISION: (TurnPhase.ADVANCE_OR_FINISH,),
+    TurnPhase.ADVANCE_OR_FINISH: (TurnPhase.PREPARE, TurnPhase.TERMINAL),
+    TurnPhase.TERMINAL: (),
+}
+
+
+def _set_turn_phase(state: TurnLoopState, phase: TurnPhase) -> None:
+    if state.phase == phase:
+        return
+    allowed = _ALLOWED_PHASE_TRANSITIONS.get(state.phase, ())
+    if phase not in allowed:
+        raise ValueError(f"Illegal turn phase transition: {state.phase.value} -> {phase.value}")
+    state.phase = phase
+    state.phase_history = state.phase_history + (phase,)
+
+
+def _attempt_finished_from_terminal(
+    *,
+    iteration: int,
+    terminal: ModelTerminalMetadata,
+    tool_calls: Sequence[ToolCall],
+) -> AttemptFinished:
+    return AttemptFinished(
+        iteration=iteration,
+        request_id=terminal.request_id,
+        attempt_stop_reason=terminal.stop_reason,
+        usage=dict(terminal.usage),
+        ttft_ms=terminal.ttft_ms,
+        error=terminal.error,
+        abort_reason=terminal.abort_reason,
+        produced_tool_calls=bool(tool_calls),
+        tool_call_count=len(tool_calls),
+        metadata=dict(terminal.metadata),
+    )
+
+
+def _terminal_reason_from_attempt(attempt: AttemptFinished) -> TurnTerminalReason:
+    raw_reason = attempt.attempt_stop_reason
+    if raw_reason is None:
+        if attempt.error is not None:
+            return TurnTerminalReason.ERROR
+        return TurnTerminalReason.INCOMPLETE
+    try:
+        return TurnTerminalReason(raw_reason)
+    except ValueError:
+        if attempt.error is not None:
+            return TurnTerminalReason.ERROR
+        return TurnTerminalReason.INCOMPLETE
+
+
+def _turn_terminal_from_attempt(
+    attempt: AttemptFinished,
+    *,
+    reason: TurnTerminalReason,
+    transition: TurnTransition,
+    post_effects: TurnPostEffects,
+    metadata: Mapping[str, Any] | None = None,
+) -> TurnTerminal:
+    combined_metadata = dict(attempt.metadata)
+    if metadata:
+        combined_metadata.update({str(key): value for key, value in metadata.items()})
+    if attempt.attempt_stop_reason is not None and attempt.attempt_stop_reason != reason.value:
+        combined_metadata.setdefault("attempt_stop_reason", attempt.attempt_stop_reason)
+    return TurnTerminal(
+        reason=reason,
+        usage=dict(attempt.usage),
+        request_id=attempt.request_id,
+        ttft_ms=attempt.ttft_ms,
+        error=attempt.error,
+        abort_reason=attempt.abort_reason,
+        provider_stop_reason=attempt.attempt_stop_reason,
+        transition=transition,
+        post_effects=post_effects,
+        metadata=combined_metadata,
+    )
+
+
+def _turn_post_effects_for_terminal(
+    reason: TurnTerminalReason,
+    *,
+    matched_stop_hooks: Sequence[str] = (),
+) -> TurnPostEffects:
+    if reason in {TurnTerminalReason.END_TURN, TurnTerminalReason.MESSAGE_STOP}:
+        return TurnPostEffects(
+            persist_memory=True,
+            schedule_background_extraction=True,
+            refresh_session_state=True,
+            session_status_hint="ready",
+            matched_stop_hooks=tuple(matched_stop_hooks),
+        )
+    if reason == TurnTerminalReason.BLOCKED:
+        return TurnPostEffects(
+            refresh_session_state=True,
+            session_status_hint="waiting",
+            matched_stop_hooks=tuple(matched_stop_hooks),
+        )
+    if reason == TurnTerminalReason.INTERRUPTED:
+        return TurnPostEffects(
+            session_status_hint="interrupted",
+            matched_stop_hooks=tuple(matched_stop_hooks),
+        )
+    return TurnPostEffects(
+        session_status_hint="ready",
+        matched_stop_hooks=tuple(matched_stop_hooks),
+    )
+
+
+def _terminal_reason_is_failure(reason: TurnTerminalReason) -> bool:
+    return reason in {
+        TurnTerminalReason.ERROR,
+        TurnTerminalReason.PROMPT_TOO_LONG,
+        TurnTerminalReason.IMAGE_ERROR,
+        TurnTerminalReason.INTERRUPTED,
+    }
+
+
+def _terminal_reason_is_completed(reason: TurnTerminalReason) -> bool:
+    return reason in {TurnTerminalReason.END_TURN, TurnTerminalReason.MESSAGE_STOP}
 
 
 def _assistant_message_metadata(terminal: ModelTerminalMetadata) -> dict[str, Any]:

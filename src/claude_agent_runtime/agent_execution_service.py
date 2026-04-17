@@ -199,7 +199,7 @@ class AgentExecutionService:
                 runtime_context=runtime_context,
                 model_client_override=route_binding.client if route_binding is not None else None,
             )
-            run_status = AgentRunStatus.COMPLETED if turn_result.completed else AgentRunStatus.MAX_TURNS
+            run_status = _agent_run_status_from_turn_result(turn_result)
             run_record = self._build_run_record(
                 execution_spec,
                 agent_name=agent.name,
@@ -576,7 +576,21 @@ def _terminal_metadata_from_turn_result(turn_result: Any) -> dict[str, Any]:
         metadata["error"] = turn_result.error
     if turn_result.usage:
         metadata["usage"] = dict(turn_result.usage)
+    terminal = getattr(turn_result, "terminal", None)
+    if terminal is not None:
+        provider_stop_reason = getattr(terminal, "provider_stop_reason", None)
+        if provider_stop_reason is not None and provider_stop_reason != turn_result.stop_reason:
+            metadata["provider_stop_reason"] = provider_stop_reason
     return metadata
+
+
+def _agent_run_status_from_turn_result(turn_result: Any) -> AgentRunStatus:
+    stop_reason = getattr(turn_result, "stop_reason", None)
+    if stop_reason in {"end_turn", "message_stop"}:
+        return AgentRunStatus.COMPLETED
+    if stop_reason == "max_turns":
+        return AgentRunStatus.MAX_TURNS
+    return AgentRunStatus.FAILED
 
 
 def _resolve_max_turns(agent_limit: int | None, requested_limit: int | None) -> int | None:

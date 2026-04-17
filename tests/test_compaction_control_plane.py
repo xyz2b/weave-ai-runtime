@@ -143,6 +143,93 @@ def test_turn_engine_emits_structured_compaction_request_context() -> None:
     assert request.messages[0].text.startswith("Compacted conversation summary:")
 
 
+def test_sidecars_restart_after_compaction_rewrites_request_inputs() -> None:
+    class RestartAwareService:
+        def __init__(self, prefix: str) -> None:
+            self.prefix = prefix
+            self.calls: list[tuple[str, ...]] = []
+            self.cancelled = 0
+
+        async def collect(self, **kwargs):
+            messages = tuple(kwargs["messages"])
+            message_ids = tuple(message.message_id for message in messages)
+            self.calls.append(message_ids)
+            if len(self.calls) == 1:
+                try:
+                    await asyncio.sleep(0.05)
+                except asyncio.CancelledError:
+                    self.cancelled += 1
+                    raise
+            return (f"{self.prefix}:{','.join(message_ids)}",)
+
+    class YieldingCompactionManager:
+        def __init__(self) -> None:
+            self._manager = CompactionManager()
+
+        async def prepare_turn(self, **kwargs):
+            await asyncio.sleep(0)
+            return await self._manager.prepare_turn(**kwargs)
+
+        async def collect(self, **kwargs):
+            _ = kwargs
+            return ()
+
+    model_client = CaptureModelClient(
+        [
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-sidecars"}),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "done"}),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+            ]
+        ]
+    )
+    memory_service = RestartAwareService("memory")
+    hook_service = RestartAwareService("hook")
+    services = RuntimeServices(
+        memory=memory_service,
+        hooks=hook_service,
+        compaction=YieldingCompactionManager(),
+        metadata={"compaction_policy": {"max_message_count": 3, "keep_recent_messages": 2}},
+    )
+    engine = TurnEngine(
+        model_client=model_client,
+        tool_registry=ToolRegistry(),
+        runtime_services=services,
+    )
+    agent = AgentDefinition(name="main-router", description="router", prompt="Route")
+
+    asyncio.run(
+        engine.run_turn(
+            session_id="session",
+            turn_id="turn",
+            agent=agent,
+            cwd=".",
+            messages=[
+                RuntimeMessage(message_id="u1", role=MessageRole.USER, content="older prompt one"),
+                RuntimeMessage(message_id="a1", role=MessageRole.ASSISTANT, content="older answer one"),
+                RuntimeMessage(message_id="u2", role=MessageRole.USER, content="older prompt two"),
+                RuntimeMessage(message_id="a2", role=MessageRole.ASSISTANT, content="older answer two"),
+                RuntimeMessage(message_id="u3", role=MessageRole.USER, content="latest prompt"),
+            ],
+            base_system_prompt="System",
+        )
+    )
+
+    request = model_client.requests[0]
+    assert memory_service.cancelled == 1
+    assert hook_service.cancelled == 1
+    assert len(memory_service.calls) == 2
+    assert len(hook_service.calls) == 2
+    assert memory_service.calls[0] != memory_service.calls[1]
+    assert hook_service.calls[0] != hook_service.calls[1]
+    assert request.turn_context.memory_fragments == (
+        f"memory:{','.join(memory_service.calls[-1])}",
+    )
+    assert request.turn_context.hook_context == (
+        f"hook:{','.join(hook_service.calls[-1])}",
+    )
+
+
 def test_session_resume_uses_rewritten_compacted_transcript() -> None:
     transcript_store = InMemoryTranscriptStore()
     agent = AgentDefinition(name="main-router", description="router", prompt="Route")

@@ -127,10 +127,35 @@ def turn_event_fixture(event: TurnStreamEvent) -> dict[str, Any]:
         fixture["message"] = message_fixture(event.message)
     if event.discarded_content:
         fixture["discarded"] = _normalize_fixture_value(serialize_content_blocks(event.discarded_content))
+    if event.attempt is not None:
+        attempt: dict[str, Any] = {}
+        if event.attempt.stop_reason is not None:
+            attempt["stop_reason"] = event.attempt.stop_reason
+        if event.attempt.request_id is not None:
+            attempt["request_id"] = event.attempt.request_id
+        if event.attempt.ttft_ms is not None:
+            attempt["ttft_ms"] = event.attempt.ttft_ms
+        if event.attempt.abort_reason is not None:
+            attempt["abort_reason"] = event.attempt.abort_reason
+        if event.attempt.error is not None:
+            attempt["error"] = event.attempt.error
+        if event.attempt.usage:
+            attempt["usage"] = _normalize_fixture_value(event.attempt.usage)
+        if event.attempt.produced_tool_calls:
+            attempt["produced_tool_calls"] = True
+        if event.attempt.tool_call_count:
+            attempt["tool_call_count"] = event.attempt.tool_call_count
+        if event.attempt.metadata:
+            attempt["metadata"] = _normalize_fixture_value(event.attempt.metadata)
+        if attempt:
+            fixture["attempt"] = attempt
     if event.terminal is not None:
         terminal: dict[str, Any] = {}
         if event.terminal.stop_reason is not None:
             terminal["stop_reason"] = event.terminal.stop_reason
+        provider_stop_reason = getattr(event.terminal, "provider_stop_reason", None)
+        if provider_stop_reason is not None and provider_stop_reason != event.terminal.stop_reason:
+            terminal["provider_stop_reason"] = provider_stop_reason
         if event.terminal.request_id is not None:
             terminal["request_id"] = event.terminal.request_id
         if event.terminal.ttft_ms is not None:

@@ -1,7 +1,9 @@
 import asyncio
 from pathlib import Path
+from types import SimpleNamespace
 
 from claude_agent_runtime.agent_execution import AgentRunStatus, SpawnMode
+from claude_agent_runtime.agent_execution_service import _agent_run_status_from_turn_result
 from claude_agent_runtime.agent_runtime import AgentInvocation, AgentRuntime
 from claude_agent_runtime.contracts import MessageRole
 from claude_agent_runtime.definitions import (
@@ -11,6 +13,7 @@ from claude_agent_runtime.definitions import (
     ToolDefinition,
     ToolTraits,
 )
+from claude_agent_runtime.hooks import RuntimeHookPhase
 from claude_agent_runtime.registries import AgentRegistry, SkillRegistry, ToolRegistry
 from claude_agent_runtime.runtime_kernel import ModelRouteBinding
 from claude_agent_runtime.runtime_services import RuntimeServices
@@ -558,6 +561,75 @@ def test_background_max_turns_marks_task_stopped(tmp_path: Path) -> None:
     assert task.metadata["agent_status"] == "max_turns"
     assert record is not None
     assert record.status == AgentRunStatus.MAX_TURNS
+
+
+def test_child_run_status_projection_uses_terminal_reason() -> None:
+    assert _agent_run_status_from_turn_result(SimpleNamespace(stop_reason="end_turn")) == AgentRunStatus.COMPLETED
+    assert _agent_run_status_from_turn_result(SimpleNamespace(stop_reason="message_stop")) == AgentRunStatus.COMPLETED
+    assert _agent_run_status_from_turn_result(SimpleNamespace(stop_reason="max_turns")) == AgentRunStatus.MAX_TURNS
+    assert _agent_run_status_from_turn_result(SimpleNamespace(stop_reason="blocked")) == AgentRunStatus.FAILED
+    assert _agent_run_status_from_turn_result(SimpleNamespace(stop_reason="error")) == AgentRunStatus.FAILED
+    assert _agent_run_status_from_turn_result(SimpleNamespace(stop_reason="interrupted")) == AgentRunStatus.FAILED
+
+
+def test_blocked_child_run_is_not_mislabeled_as_max_turns(tmp_path: Path) -> None:
+    async def scenario():
+        model_client = FakeModelClient(
+            [
+                [
+                    ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-blocked-child"}),
+                    ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "needs approval"}),
+                    ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+                ]
+            ]
+        )
+        services = RuntimeServices()
+        services.hook_bus.register(
+            session_id="session-blocked-child",
+            owner="host:blocker",
+            phase=RuntimeHookPhase.STOP,
+            handler=lambda _payload: {"continue_execution": False},
+        )
+        agent_registry = AgentRegistry()
+        agent_registry.register(
+            AgentDefinition(
+                name="verification",
+                description="verify",
+                prompt="verify",
+            )
+        )
+        runtime = AgentRuntime(
+            turn_engine=TurnEngine(
+                model_client=model_client,
+                tool_registry=ToolRegistry(),
+                agent_registry=agent_registry,
+                skill_registry=SkillRegistry(),
+                task_manager=TaskManager(),
+                runtime_services=services,
+            ),
+            agent_registry=agent_registry,
+            tool_registry=ToolRegistry(),
+            skill_registry=SkillRegistry(),
+            task_manager=TaskManager(),
+            runtime_services=services,
+        )
+        result = await runtime.invoke(
+            AgentInvocation(
+                agent_name="verification",
+                prompt="run checks",
+                session_id="session-blocked-child",
+                cwd=tmp_path,
+            )
+        )
+        record = await runtime.run_store.get(result.run_id)
+        return result, record
+
+    result, record = asyncio.run(scenario())
+
+    assert result.status == AgentRunStatus.FAILED.value
+    assert record is not None
+    assert record.status == AgentRunStatus.FAILED
+    assert record.terminal_metadata["stop_reason"] == "blocked"
 
 
 def test_route_resolution_uses_request_scoped_clients_and_persists_metadata(tmp_path: Path) -> None:

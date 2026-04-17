@@ -254,14 +254,13 @@ class SessionController:
                         turn_retrieval_trace = retrieval_trace
                         self.state.metadata["last_memory_retrieval"] = retrieval_trace
                 await self._runtime_services.host.emit_turn_event(self.state.session_id, event)
-                if (
-                    event.event_type == TurnStreamEventType.TERMINAL
-                    and event.terminal is not None
-                    and event.terminal.stop_reason == "blocked"
-                ):
-                    self.state.status = SessionStatus.WAITING
                 if event.event_type == TurnStreamEventType.TERMINAL and event.terminal is not None:
                     last_terminal = event.terminal
+                    status_hint = _terminal_session_status_hint(event.terminal)
+                    if status_hint == "waiting":
+                        self.state.status = SessionStatus.WAITING
+                    elif status_hint == "interrupted":
+                        self.state.status = SessionStatus.INTERRUPTED
                 yield event
             current_turn_ids = set(turn_message_ids)
             turn_messages = tuple(message for message in self._messages if message.message_id in current_turn_ids)
@@ -356,7 +355,7 @@ class SessionController:
         terminal: Any,
         retrieval_trace: dict[str, Any] | None = None,
     ) -> None:
-        if terminal is None or terminal.abort_reason is not None or terminal.error is not None:
+        if not _turn_effect_enabled(terminal, "persist_memory"):
             return
         memory_service = self._runtime_services.memory
         if memory_service is None or not hasattr(memory_service, "record_turn"):
@@ -444,7 +443,7 @@ class SessionController:
         *,
         terminal: Any,
     ) -> str | None:
-        if terminal is None or terminal.abort_reason is not None or terminal.error is not None:
+        if not _turn_effect_enabled(terminal, "schedule_background_extraction"):
             return None
         memory_service = self._runtime_services.memory
         if memory_service is None or not hasattr(memory_service, "schedule_background_extraction"):
@@ -543,13 +542,15 @@ class SessionController:
         terminal: Any,
         prior_status: SessionStatus,
     ) -> None:
-        if terminal is None or terminal.abort_reason is not None or terminal.error is not None:
+        if not _turn_effect_enabled(terminal, "refresh_session_state"):
             return
         context = self._resolve_session_memory_context()
         if context is None:
             return
 
-        self._ensure_session_memory_artifacts(status="waiting" if self.state.status == SessionStatus.WAITING else "active")
+        self._ensure_session_memory_artifacts(
+            status="waiting" if self.state.status == SessionStatus.WAITING else "active"
+        )
         metadata = _read_json_file(context.session_metadata_path())
         if not isinstance(metadata, dict):
             metadata = _default_session_metadata(session_id=self.state.session_id, status="active")
@@ -702,6 +703,25 @@ class SessionController:
             self.state.metadata["compaction_continuation"] = dict(continuation)
         else:
             self.state.metadata.pop("compaction_continuation", None)
+
+
+def _turn_effect_enabled(terminal: Any, effect_name: str) -> bool:
+    if terminal is None:
+        return False
+    post_effects = getattr(terminal, "post_effects", None)
+    if post_effects is None:
+        return False
+    return bool(getattr(post_effects, effect_name, False))
+
+
+def _terminal_session_status_hint(terminal: Any) -> str | None:
+    if terminal is None:
+        return None
+    post_effects = getattr(terminal, "post_effects", None)
+    if post_effects is None:
+        return None
+    hint = getattr(post_effects, "session_status_hint", None)
+    return str(hint) if hint is not None else None
 
 
 def _role_for_command(command_type: SessionCommandType) -> MessageRole:

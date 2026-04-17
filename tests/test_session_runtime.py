@@ -230,7 +230,55 @@ def test_session_controller_streams_turn_events_until_idle(tmp_path: Path) -> No
         "stream_progress",
         "stream_progress",
         "message",
+        "attempt_finished",
         "terminal",
     ]
     assert controller.state.status == SessionStatus.READY
     assert controller.messages[-1].text == "streamed reply"
+
+
+def test_session_controller_projects_interrupted_terminal_to_interrupted(tmp_path: Path) -> None:
+    class InterruptibleModelClient:
+        def __init__(self) -> None:
+            self.requests: list[ModelRequest] = []
+
+        async def complete(self, request: ModelRequest):  # pragma: no cover - protocol completeness
+            raise NotImplementedError
+
+        async def stream(self, request: ModelRequest):
+            self.requests.append(request)
+            yield ModelStreamEvent(
+                ModelStreamEventType.MESSAGE_START,
+                {"request_id": "req-interrupt"},
+            )
+            yield ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "partial"})
+            while request.abort_signal is not None and not request.abort_signal.aborted:
+                await asyncio.sleep(0)
+
+    model_client = InterruptibleModelClient()
+    controller = SessionController(
+        session_id="session-interrupt",
+        agent=AgentDefinition(name="main-router", description="router", prompt="Route the turn"),
+        turn_engine=TurnEngine(model_client=model_client, tool_registry=ToolRegistry()),
+        transcript_store=FileTranscriptStore(tmp_path / "transcripts"),
+        cwd=str(tmp_path),
+        system_prompt="System prompt",
+    )
+    controller.enqueue_event(InboundEvent(InboundEventType.USER_PROMPT, "hello"))
+
+    async def scenario():
+        events_task = asyncio.create_task(collect())
+        while not model_client.requests:
+            await asyncio.sleep(0)
+        controller.interrupt("user_cancel")
+        return await events_task
+
+    async def collect():
+        return [event async for event in controller.stream_until_idle()]
+
+    events = asyncio.run(scenario())
+
+    terminal = next(event for event in events if event.event_type.value == "terminal")
+    assert terminal.terminal is not None
+    assert terminal.terminal.stop_reason == "interrupted"
+    assert controller.state.status == SessionStatus.INTERRUPTED

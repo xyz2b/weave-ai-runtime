@@ -141,6 +141,48 @@ def test_stop_hook_blocks_continuation_and_session_enters_waiting(tmp_path: Path
     assert controller.state.status.value == "waiting"
 
 
+def test_stop_hook_does_not_rewrite_model_error_to_waiting(tmp_path: Path) -> None:
+    services = RuntimeServices()
+    services.hook_bus.register(
+        session_id="session-error",
+        owner="host:blocker",
+        phase=RuntimeHookPhase.STOP,
+        handler=lambda _payload: {"continue_execution": False},
+    )
+    controller = SessionController(
+        session_id="session-error",
+        agent=AgentDefinition(name="main-router", description="router", prompt="route"),
+        turn_engine=TurnEngine(
+            model_client=BatchedModelClient(
+                [
+                    [
+                        ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-error"}),
+                        ModelStreamEvent(ModelStreamEventType.ERROR, {"error": "model exploded"}),
+                    ]
+                ]
+            ),
+            tool_registry=ToolRegistry(),
+            runtime_services=services,
+        ),
+        transcript_store=FileTranscriptStore(tmp_path / "transcripts"),
+        cwd=str(tmp_path),
+        system_prompt="System",
+        runtime_services=services,
+    )
+    controller.enqueue_event(InboundEvent(InboundEventType.USER_PROMPT, "hello"))
+
+    async def collect():
+        return [event async for event in controller.stream_until_idle()]
+
+    events = asyncio.run(collect())
+    terminal = next(event for event in events if event.event_type.value == "terminal")
+
+    assert terminal.terminal is not None
+    assert terminal.terminal.stop_reason == "error"
+    assert terminal.terminal.metadata.get("continuation_blocked") is None
+    assert controller.state.status.value == "ready"
+
+
 def test_permission_modes_and_elicitation_flow_use_shared_control_plane(tmp_path: Path) -> None:
     registry = ToolRegistry()
     registry.register(

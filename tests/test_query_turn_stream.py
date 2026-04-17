@@ -9,6 +9,7 @@ from claude_agent_runtime.turn_engine import (
     ModelRequest,
     ModelStreamEvent,
     ModelStreamEventType,
+    TurnPhase,
     TurnEngine,
     TurnStreamEventType,
 )
@@ -101,19 +102,26 @@ def test_run_turn_stream_emits_request_message_and_terminal_metadata() -> None:
         TurnStreamEventType.STREAM_PROGRESS,
         TurnStreamEventType.STREAM_PROGRESS,
         TurnStreamEventType.MESSAGE,
+        TurnStreamEventType.ATTEMPT_FINISHED,
         TurnStreamEventType.TERMINAL,
     ]
     assert events[0].request is not None
     assert events[0].request.abort_signal is not None
     assert events[0].request.query_source == "unit_test"
-    assert events[-2].message is not None
-    assert events[-2].message.role == MessageRole.ASSISTANT
-    assert events[-2].message.text == "hello stream"
+    assert events[-3].message is not None
+    assert events[-3].message.role == MessageRole.ASSISTANT
+    assert events[-3].message.text == "hello stream"
+    assert events[-2].attempt is not None
+    assert events[-2].attempt.stop_reason == "end_turn"
+    assert events[-2].attempt.request_id == "req-1"
+    assert events[-2].attempt.produced_tool_calls is False
+    assert events[-2].phase == TurnPhase.STREAM_ATTEMPT
     assert events[-1].terminal is not None
     assert events[-1].terminal.request_id == "req-1"
     assert events[-1].terminal.stop_reason == "end_turn"
     assert events[-1].terminal.ttft_ms == 12.5
     assert events[-1].terminal.usage == {"output_tokens": 5}
+    assert events[-1].phase == TurnPhase.TERMINAL
 
     result = asyncio.run(
         TurnEngine(
@@ -152,6 +160,97 @@ def test_run_turn_stream_emits_request_message_and_terminal_metadata() -> None:
     assert result.ttft_ms == 9.0
     assert result.usage == {"output_tokens": 2}
     assert result.attempts[0].request_id == "req-2"
+
+
+def test_tool_continuation_emits_attempt_finished_before_unique_final_terminal() -> None:
+    tool_registry = ToolRegistry()
+    tool_registry.register(
+        ToolDefinition(
+            name="echo",
+            description="echo values",
+            input_schema={
+                "type": "object",
+                "properties": {"value": {"type": "string"}},
+                "required": ["value"],
+                "additionalProperties": False,
+            },
+            traits=ToolTraits(read_only=True, concurrency_safe=True),
+            execute=lambda tool_input, _: {"echo": tool_input["value"]},
+        )
+    )
+    model_client = BatchedModelClient(
+        [
+            [
+                ModelStreamEvent(
+                    ModelStreamEventType.MESSAGE_START,
+                    {"request_id": "req-tool-1"},
+                ),
+                ModelStreamEvent(
+                    ModelStreamEventType.TOOL_CALL,
+                    {"tool_name": "echo", "tool_input": {"value": "ping"}, "call_id": "call-1"},
+                ),
+                ModelStreamEvent(
+                    ModelStreamEventType.MESSAGE_STOP,
+                    {"stop_reason": "tool_use"},
+                ),
+            ],
+            [
+                ModelStreamEvent(
+                    ModelStreamEventType.MESSAGE_START,
+                    {"request_id": "req-tool-2"},
+                ),
+                ModelStreamEvent(
+                    ModelStreamEventType.CONTENT_DELTA,
+                    {"text": "done"},
+                ),
+                ModelStreamEvent(
+                    ModelStreamEventType.MESSAGE_STOP,
+                    {"stop_reason": "end_turn"},
+                ),
+            ],
+        ]
+    )
+    engine = TurnEngine(model_client=model_client, tool_registry=tool_registry)
+    agent = AgentDefinition(name="main-router", description="router", prompt="Answer", tools=("*",))
+
+    async def collect_events():
+        return [
+            event
+            async for event in engine.run_turn_stream(
+                session_id="session",
+                turn_id="turn",
+                agent=agent,
+                cwd=".",
+                messages=[],
+                base_system_prompt="System",
+            )
+        ]
+
+    events = asyncio.run(collect_events())
+
+    attempt_events = [event for event in events if event.event_type == TurnStreamEventType.ATTEMPT_FINISHED]
+    terminal_events = [event for event in events if event.event_type == TurnStreamEventType.TERMINAL]
+
+    assert len(attempt_events) == 2
+    assert [event.attempt.stop_reason for event in attempt_events if event.attempt is not None] == [
+        "tool_use",
+        "end_turn",
+    ]
+    assert attempt_events[0].attempt is not None
+    assert attempt_events[0].attempt.produced_tool_calls is True
+    assert terminal_events[-1].terminal is not None
+    assert terminal_events[-1].terminal.stop_reason == "end_turn"
+    assert len(terminal_events) == 1
+    assert events.index(attempt_events[0]) < events.index(terminal_events[0])
+    tool_result_event = next(
+        event
+        for event in events
+        if event.event_type == TurnStreamEventType.MESSAGE
+        and event.message is not None
+        and event.message.role == MessageRole.USER
+    )
+    assert tool_result_event.transition is not None
+    assert tool_result_event.transition.reason.value == "next_turn"
 
 
 def test_tool_context_exposes_turn_scoped_runtime_state() -> None:

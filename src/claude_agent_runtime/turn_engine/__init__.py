@@ -16,6 +16,7 @@ from .models import (
 )
 
 __all__ = [
+    "AttemptFinished",
     "ContextAssembler",
     "ContextAssembly",
     "ModelCapabilityProvider",
@@ -36,6 +37,14 @@ __all__ = [
     "ToolExecutorTier",
     "TurnStreamEvent",
     "TurnStreamEventType",
+    "TurnLoopState",
+    "TurnPhase",
+    "TurnPostEffects",
+    "TurnRecoveryAction",
+    "TurnTerminal",
+    "TurnTerminalReason",
+    "TurnTransition",
+    "TurnTransitionReason",
     "TurnEngine",
     "TurnResult",
 ]
@@ -51,13 +60,50 @@ def __getattr__(name: str):
             "PromptComposer": PromptComposer,
             "PromptComposition": PromptComposition,
         }[name]
-    if name in {"TurnEngine", "TurnResult", "TurnStreamEvent", "TurnStreamEventType"}:
-        from .engine import TurnEngine, TurnResult, TurnStreamEvent, TurnStreamEventType
+    if name in {
+        "AttemptFinished",
+        "TurnEngine",
+        "TurnLoopState",
+        "TurnPhase",
+        "TurnPostEffects",
+        "TurnRecoveryAction",
+        "TurnResult",
+        "TurnStreamEvent",
+        "TurnStreamEventType",
+        "TurnTerminal",
+        "TurnTerminalReason",
+        "TurnTransition",
+        "TurnTransitionReason",
+    }:
+        from .engine import (
+            AttemptFinished,
+            TurnEngine,
+            TurnLoopState,
+            TurnPhase,
+            TurnPostEffects,
+            TurnRecoveryAction,
+            TurnResult,
+            TurnStreamEvent,
+            TurnStreamEventType,
+            TurnTerminal,
+            TurnTerminalReason,
+            TurnTransition,
+            TurnTransitionReason,
+        )
 
         return {
+            "AttemptFinished": AttemptFinished,
             "TurnEngine": TurnEngine,
+            "TurnLoopState": TurnLoopState,
+            "TurnPhase": TurnPhase,
+            "TurnPostEffects": TurnPostEffects,
+            "TurnRecoveryAction": TurnRecoveryAction,
             "TurnResult": TurnResult,
             "TurnStreamEvent": TurnStreamEvent,
             "TurnStreamEventType": TurnStreamEventType,
+            "TurnTerminal": TurnTerminal,
+            "TurnTerminalReason": TurnTerminalReason,
+            "TurnTransition": TurnTransition,
+            "TurnTransitionReason": TurnTransitionReason,
         }[name]
     raise AttributeError(name)

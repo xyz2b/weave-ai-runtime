@@ -443,6 +443,14 @@ def test_headless_host_can_consume_runtime_turn_event_stream_without_reimplement
     for event in events:
         if event.event_type == TurnStreamEventType.MESSAGE and event.message is not None:
             host_view.append(message_fixture(event.message))
+        elif event.event_type == TurnStreamEventType.ATTEMPT_FINISHED and event.attempt is not None:
+            host_view.append(
+                {
+                    "attempt_stop_reason": event.attempt.stop_reason,
+                    "request_id": event.attempt.request_id,
+                    "produced_tool_calls": event.attempt.produced_tool_calls,
+                }
+            )
         elif event.event_type == TurnStreamEventType.TERMINAL and event.terminal is not None:
             host_view.append(
                 {
@@ -467,8 +475,9 @@ def test_headless_host_can_consume_runtime_turn_event_stream_without_reimplement
         },
     }
     assert host_view[1] == {
-        "stop_reason": "tool_use",
+        "attempt_stop_reason": "tool_use",
         "request_id": "req-host-main-1",
+        "produced_tool_calls": True,
     }
     assert host_view[2]["role"] == "user"
     assert host_view[2]["metadata"] == {
@@ -513,6 +522,11 @@ def test_headless_host_can_consume_runtime_turn_event_stream_without_reimplement
         },
     }
     assert host_view[4] == {
+        "attempt_stop_reason": "end_turn",
+        "request_id": "req-host-main-2",
+        "produced_tool_calls": False,
+    }
+    assert host_view[5] == {
         "stop_reason": "end_turn",
         "request_id": "req-host-main-2",
     }
