@@ -117,17 +117,17 @@ memory v2 不建议一次性全量落地。推荐按三期交付：
 
 ### 8. Ownership, Conflict, and Audit
 
-- [ ] 8.1 实现 contested fact staging 和 guarded overwrite 规则
-- [ ] 8.2 实现 retention / merge policy vocabulary 在 runtime 中的最小执行器
-- [ ] 8.3 暴露 extraction provenance、retrieval decision trace 和 write receipts 到 host diagnostics
-- [ ] 8.4 为 contested overwrite、superseded artifact、audit trace consistency 增加 tests
+- [x] 8.1 实现 contested fact staging 和 guarded overwrite 规则
+- [x] 8.2 实现 retention / merge policy vocabulary 在 runtime 中的最小执行器
+- [x] 8.3 暴露 extraction provenance、retrieval decision trace 和 write receipts 到 host diagnostics
+- [x] 8.4 为 contested overwrite、superseded artifact、audit trace consistency 增加 tests
 
 ### Phase 2 Exit Criteria
 
 - [x] 2.E1 runtime 在配置 embedding/rerank 时可增强召回，不配置时仍保持稳定降级
 - [x] 2.E2 高价值 synthesis 不再依赖主线程同步完成
-- [ ] 2.E3 contested / superseded / stale 条目在 retrieval 和 extraction 中都有稳定行为
-- [ ] 2.E4 host 能看到足够的 diagnostics 来解释“为什么写入/为什么召回”
+- [x] 2.E3 contested / superseded / stale 条目在 retrieval 和 extraction 中都有稳定行为
+- [x] 2.E4 host 能看到足够的 diagnostics 来解释“为什么写入/为什么召回”
 
 ## Phase 3 / Slow Consolidation
 

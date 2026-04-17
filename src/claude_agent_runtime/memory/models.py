@@ -43,8 +43,12 @@ class MemoryWriteReceipt:
     title: str | None = None
     path: Path | None = None
     reason: str | None = None
+    source_pathway: str | None = None
+    conflict_key: str | None = None
+    contested: bool = False
     source_message_ids: tuple[str, ...] = ()
     source_roles: tuple[str, ...] = ()
+    supersedes: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,6 +85,7 @@ class MemoryRetrievalPolicy:
     contested_policy: str = "block"
     contested_decay_penalty: float = 1.5
     stale_decay_penalty: float = 0.5
+    superseded_decay_penalty: float = 4.0
     recent_confirmation_boost: float = 0.25
     recent_confirmation_window_days: int = 30
     minimum_confidence: float | None = None

@@ -2073,6 +2073,100 @@ def test_background_extraction_queue_coalesces_and_merges_trailing_runs(tmp_path
     assert len(agent_notes) == 1
 
 
+def test_record_turn_with_receipts_merges_provenance_for_existing_project_convention(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    manager = MemoryManager(project_root=project_root)
+    agent = AgentDefinition(name="main-router", description="router", prompt="route")
+    manager.initialize_session(session_id="session-convention-merge", agent=agent, cwd=project_root)
+
+    first = manager.record_turn_with_receipts(
+        session_id="session-convention-merge",
+        agent=agent,
+        cwd=project_root,
+        messages=(
+            _user_message("msg-convention-1", "The project uses pytest."),
+        ),
+    )
+    second = manager.record_turn_with_receipts(
+        session_id="session-convention-merge",
+        agent=agent,
+        cwd=project_root,
+        messages=(
+            _user_message("msg-convention-2", "The project uses pytest."),
+        ),
+    )
+
+    assert any(receipt.action == "persisted" for receipt in first.receipts)
+    assert any(receipt.action == "merged" for receipt in second.receipts)
+    conventions = sorted((project_root / ".claude" / "memory" / "documents" / "conventions").glob("*.md"))
+    assert len(conventions) == 1
+    convention_text = conventions[0].read_text(encoding="utf-8")
+    assert "merge_policy: merge_with_provenance" in convention_text
+    assert "msg-convention-1" in convention_text
+    assert "msg-convention-2" in convention_text
+
+
+def test_agent_namespace_overwrite_supersedes_existing_artifact_and_decay_prefers_latest(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    manager = MemoryManager(project_root=project_root)
+    agent = AgentDefinition(name="main-router", description="router", prompt="route")
+    manager.initialize_session(session_id="session-agent-overwrite", agent=agent, cwd=project_root)
+
+    manager.record_turn_with_receipts(
+        session_id="session-agent-overwrite",
+        agent=agent,
+        cwd=project_root,
+        messages=(
+            RuntimeMessage(
+                message_id="msg-agent-1",
+                role=MessageRole.ASSISTANT,
+                content="When verifying small Python changes, start with `pytest -q` before broader checks.",
+            ),
+        ),
+    )
+    second = manager.record_turn_with_receipts(
+        session_id="session-agent-overwrite",
+        agent=agent,
+        cwd=project_root,
+        messages=(
+            RuntimeMessage(
+                message_id="msg-agent-2",
+                role=MessageRole.ASSISTANT,
+                content="When verifying small Python changes, start with `pytest -q` and inspect failing modules before broader checks.",
+            ),
+        ),
+    )
+
+    namespace_manifest = json.loads(
+        (
+            project_root
+            / ".claude"
+            / "memory"
+            / "agents"
+            / "main-router"
+            / "namespace-manifest.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert sum(1 for entry in namespace_manifest["entries"] if entry.get("superseded") is True) == 1
+    superseding_receipt = next(receipt for receipt in second.receipts if receipt.action == "persisted")
+    assert superseding_receipt.reason == "superseded_existing"
+    assert superseding_receipt.supersedes
+
+    fragments, trace = manager.collect_with_trace(
+        session_id="session-agent-overwrite",
+        turn_id="turn-agent-overwrite",
+        agent=agent,
+        cwd=project_root,
+        messages=(_user_message("msg-agent-query", "How should I run pytest for Python changes?"),),
+    )
+
+    assert any("inspect failing modules" in fragment for fragment in fragments)
+    assert "superseded_artifact" in trace["decays"]
+    assert trace["selected_doc_ids"][0] == str(superseding_receipt.path.relative_to(project_root / ".claude" / "memory"))
+
+
 def test_background_extraction_is_merge_safe_for_conflict_keys(tmp_path: Path) -> None:
     async def scenario():
         project_root = tmp_path / "project"
@@ -2137,13 +2231,86 @@ def test_background_extraction_is_merge_safe_for_conflict_keys(tmp_path: Path) -
     project_root, first_result, second_result = asyncio.run(scenario())
 
     assert any(document.kind == "topic_memory" for document in first_result.persisted_documents)
-    assert any(receipt.action == "skipped_conflict" for receipt in second_result.receipts)
+    assert any(receipt.action == "staged_contested" for receipt in second_result.receipts)
     topic_documents = list((project_root / ".claude" / "memory" / "documents" / "topics").glob("*.md"))
-    assert len(topic_documents) == 1
-    topic_text = topic_documents[0].read_text(encoding="utf-8")
-    assert "source_message_ids:" in topic_text
-    assert "source_roles:" in topic_text
-    assert "conflict_key:" in topic_text
+    assert len(topic_documents) == 2
+    assert any("contested: true" in path.read_text(encoding="utf-8") for path in topic_documents)
+    assert any("retention: review_required" in path.read_text(encoding="utf-8") for path in topic_documents)
+
+    manager = MemoryManager(project_root=project_root)
+    agent = AgentDefinition(name="main-router", description="router", prompt="route")
+    manager.initialize_session(session_id="session-background-conflict", agent=agent, cwd=project_root)
+    fragments, trace = manager.collect_with_trace(
+        session_id="session-background-conflict",
+        turn_id="turn-background-conflict",
+        agent=agent,
+        cwd=project_root,
+        messages=(_user_message("msg-topic-query", "What should I remember about pytest debugging?"),),
+    )
+    assert not any("different verification branch" in fragment for fragment in fragments)
+    assert "contested_policy:block" in trace["applied_filters"]
+
+
+def test_session_controller_records_memory_diagnostics_for_retrieval_and_write_receipts(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    memory_root = project_root / ".claude" / "memory" / "documents" / "shared"
+    _write_v2_memory_artifact(
+        memory_root / "pytest-workflow.md",
+        title="Pytest Workflow",
+        content="Use pytest -q for concise unit test runs.",
+        scope="project",
+        memory_kind="workflow_command",
+        extra_metadata={"conflict_key": "workflow_command.pytest-q"},
+    )
+
+    model_client = FakeModelClient(
+        [
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-memory-diagnostics"}),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "Acknowledged"}),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+            ]
+        ]
+    )
+    services = RuntimeServices(
+        memory=MemoryManagerService(project_root=project_root),
+        context_assembler=ContextAssembler(),
+    )
+    controller = SessionController(
+        session_id="session-memory-diagnostics",
+        agent=AgentDefinition(name="main-router", description="router", prompt="route"),
+        turn_engine=TurnEngine(
+            model_client=model_client,
+            tool_registry=ToolRegistry(),
+            runtime_services=services,
+        ),
+        transcript_store=InMemoryTranscriptStore(),
+        cwd=str(project_root),
+        system_prompt="System",
+        runtime_services=services,
+    )
+
+    asyncio.run(controller.start())
+    controller.enqueue_event(
+        InboundEvent(
+            InboundEventType.USER_PROMPT,
+            "How should I run pytest here? I prefer concise answers.",
+        )
+    )
+    asyncio.run(controller.run_until_idle())
+
+    diagnostics_history = controller.state.metadata.get("memory_diagnostics")
+    assert isinstance(diagnostics_history, list) and diagnostics_history
+    diagnostics = diagnostics_history[-1]
+    assert diagnostics["retrieval"]["selected_doc_ids"]
+    assert any(receipt["fact_type"] == "preference" for receipt in diagnostics["write_receipts"])
+    assert any(receipt["source_pathway"] == "rule" for receipt in diagnostics["write_receipts"])
+
+    notification = controller.runtime_services.host.current_notifications()[-1]
+    assert notification.metadata["memory_diagnostics"]["retrieval"] == diagnostics["retrieval"]
+    assert notification.metadata["memory_diagnostics"]["write_receipts"] == diagnostics["write_receipts"]
+    request_diagnostics = model_client.requests[0].turn_context.metadata["memory_diagnostics"]
+    assert request_diagnostics["retrieval"]["selected_doc_ids"] == diagnostics["retrieval"]["selected_doc_ids"]
 
 
 def _load_claude_memory_fixture(tmp_path: Path) -> Path:

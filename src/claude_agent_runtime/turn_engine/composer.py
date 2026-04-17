@@ -7,7 +7,7 @@ from ..contracts import MessageAttachment, RuntimeMessage, TurnContext
 from ..definitions import InvocationCapabilityView
 from ..definitions import AgentDefinition
 
-_PROMPT_HIDDEN_RUNTIME_CONTEXT_KEYS = frozenset({"memory_retrieval"})
+_PROMPT_HIDDEN_RUNTIME_CONTEXT_KEYS = frozenset({"memory_retrieval", "memory_diagnostics"})
 
 
 @dataclass(frozen=True, slots=True)

@@ -195,6 +195,7 @@ class SessionController:
             self.state.status = SessionStatus.RUNNING
             self.state.active_turn_id = uuid4().hex
             last_terminal = None
+            turn_retrieval_trace: dict[str, Any] | None = None
             turn_message_ids: list[str] = []
             attachments = _coerce_attachments(command.payload.get("metadata"))
             message = RuntimeMessage(
@@ -242,6 +243,11 @@ class SessionController:
                         turn_id=self.state.active_turn_id,
                     )
                     turn_message_ids.append(event.message.message_id)
+                if event.event_type == TurnStreamEventType.REQUEST_START and event.request is not None:
+                    retrieval_trace = _memory_retrieval_trace_from_request(event.request)
+                    if retrieval_trace is not None:
+                        turn_retrieval_trace = retrieval_trace
+                        self.state.metadata["last_memory_retrieval"] = retrieval_trace
                 await self._runtime_services.host.emit_turn_event(self.state.session_id, event)
                 if (
                     event.event_type == TurnStreamEventType.TERMINAL
@@ -261,7 +267,11 @@ class SessionController:
                     command.payload.get("metadata"),
                     turn_messages,
                 ):
-                    await self._persist_turn_memory(turn_messages, terminal=last_terminal)
+                    await self._persist_turn_memory(
+                        turn_messages,
+                        terminal=last_terminal,
+                        retrieval_trace=turn_retrieval_trace,
+                    )
                 self._refresh_session_memory(
                     turn_messages,
                     terminal=last_terminal,
@@ -339,6 +349,7 @@ class SessionController:
         messages: tuple[RuntimeMessage, ...],
         *,
         terminal: Any,
+        retrieval_trace: dict[str, Any] | None = None,
     ) -> None:
         if terminal is None or terminal.abort_reason is not None or terminal.error is not None:
             return
@@ -374,6 +385,17 @@ class SessionController:
             history = self.state.metadata.setdefault("background_memory_tasks", [])
             if isinstance(history, list):
                 history.append(background_task_id)
+        diagnostics_payload: dict[str, object] = {"turn_id": str(self.state.active_turn_id or "")}
+        if retrieval_trace is not None:
+            diagnostics_payload["retrieval"] = dict(retrieval_trace)
+        if receipt_payloads:
+            diagnostics_payload["write_receipts"] = list(receipt_payloads)
+        if background_task_id is not None:
+            diagnostics_payload["background_task_id"] = background_task_id
+        if len(diagnostics_payload) > 1:
+            history = self.state.metadata.setdefault("memory_diagnostics", [])
+            if isinstance(history, list):
+                history.append(diagnostics_payload)
         persisted = turn_result.persisted_documents
         if not persisted:
             return
@@ -402,6 +424,7 @@ class SessionController:
                 "memory_scope": persisted[0].scope.value,
                 "memory_paths": [str(document.path) for document in persisted],
                 "memory_write_receipts": receipt_payloads,
+                "memory_diagnostics": diagnostics_payload,
             },
         )
         await self._runtime_services.host.emit_notification(notification)
@@ -624,7 +647,31 @@ def _memory_write_receipt_payload(receipt: MemoryWriteReceipt) -> dict[str, obje
         payload["path"] = str(receipt.path)
     if receipt.reason is not None:
         payload["reason"] = receipt.reason
+    if receipt.source_pathway is not None:
+        payload["source_pathway"] = receipt.source_pathway
+    if receipt.conflict_key is not None:
+        payload["conflict_key"] = receipt.conflict_key
+    if receipt.contested:
+        payload["contested"] = True
+    if receipt.supersedes:
+        payload["supersedes"] = list(receipt.supersedes)
     return payload
+
+
+def _memory_retrieval_trace_from_request(request: object) -> dict[str, Any] | None:
+    turn_context = getattr(request, "turn_context", None)
+    metadata = getattr(turn_context, "metadata", None)
+    if not isinstance(metadata, dict):
+        return None
+    diagnostics = metadata.get("memory_diagnostics")
+    if isinstance(diagnostics, dict):
+        retrieval = diagnostics.get("retrieval")
+        if isinstance(retrieval, dict):
+            return dict(retrieval)
+    retrieval = metadata.get("memory_retrieval")
+    if isinstance(retrieval, dict):
+        return dict(retrieval)
+    return None
 
 
 def _coerce_attachments(metadata: object) -> tuple[MessageAttachment, ...]:

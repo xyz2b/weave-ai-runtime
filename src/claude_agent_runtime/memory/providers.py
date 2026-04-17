@@ -20,6 +20,7 @@ from .schema import (
     content_fingerprint,
     estimate_token_count,
     file_timestamp_iso,
+    normalize_memory_artifact_metadata,
     parse_memory_artifact,
     serialize_memory_artifact,
     summarize_content,
@@ -47,6 +48,16 @@ class MemoryProvider(Protocol):
         context: ResolvedMemoryScope,
         entries: Sequence[MemoryEntry],
     ) -> tuple[MemoryDocument, ...]: ...
+
+    def update_document(
+        self,
+        context: ResolvedMemoryScope,
+        document: MemoryDocument,
+        *,
+        title: str | None = None,
+        content: str | None = None,
+        metadata_updates: Mapping[str, Any] | None = None,
+    ) -> MemoryDocument | None: ...
 
 
 class FileMemoryProvider:
@@ -155,6 +166,50 @@ class FileMemoryProvider:
         self._refresh_manifests(context)
         return tuple(persisted)
 
+    def update_document(
+        self,
+        context: ResolvedMemoryScope,
+        document: MemoryDocument,
+        *,
+        title: str | None = None,
+        content: str | None = None,
+        metadata_updates: Mapping[str, Any] | None = None,
+    ) -> MemoryDocument | None:
+        if not document.path.exists() or not document.path.is_file():
+            return None
+
+        resolved_content = _normalize_content(content if content is not None else document.content)
+        if not resolved_content:
+            return None
+
+        updated_metadata = dict(document.metadata)
+        if metadata_updates is not None:
+            updated_metadata.update(dict(metadata_updates))
+        updated_metadata.setdefault("created_at", document.metadata.get("created_at", file_timestamp_iso(document.path)))
+        updated_metadata.setdefault("last_confirmed_at", utc_now_iso())
+        normalized_metadata, errors = normalize_memory_artifact_metadata(
+            updated_metadata,
+            context=context,
+            fallback_created_at=str(updated_metadata["created_at"]),
+        )
+        if errors:
+            return None
+
+        resolved_title = (title or document.title).strip() or document.title
+        document.path.write_text(
+            serialize_memory_artifact(resolved_title, resolved_content, normalized_metadata),
+            encoding="utf-8",
+        )
+
+        try:
+            relative = document.path.relative_to(context.agents_dir)
+        except ValueError:
+            relative = None
+        if relative is not None and relative.parts:
+            self._refresh_agent_namespace_manifest(context, relative.parts[0])
+        self._refresh_manifests(context)
+        return self._read_memory_document(context, document.path)
+
     def _ensure_layout(self, context: ResolvedMemoryScope) -> None:
         directories = (
             context.memory_root,
@@ -219,14 +274,19 @@ class FileMemoryProvider:
     def _refresh_manifests(self, context: ResolvedMemoryScope) -> tuple[tuple[MemoryDocument, ...], int]:
         self._ensure_layout(context)
         documents, invalid_count = self._scan_long_term_documents(context)
+        superseded_paths = _superseded_document_paths(context, documents)
         long_term_manifest = build_manifest_envelope(
             manifest_kind=LONG_TERM_MANIFEST_KIND,
             boundary_scope=context.scope,
             payload_key="entries",
-            payload=[self._long_term_manifest_entry(context, document) for document in documents],
+            payload=[
+                self._long_term_manifest_entry(context, document, superseded_paths=superseded_paths)
+                for document in documents
+            ],
             stats={
                 "invalid_entry_count": invalid_count,
                 "stale_entry_count": sum(_is_stale(document.metadata.get("stale_after")) for document in documents),
+                "superseded_entry_count": len(superseded_paths),
             },
         )
         context.long_term_manifest_path.write_text(
@@ -250,14 +310,24 @@ class FileMemoryProvider:
     ) -> None:
         normalized_agent = normalize_memory_segment(agent_name, default="agent")
         documents, invalid_count = self._scan_agent_namespace_documents(context, normalized_agent)
+        superseded_paths = _superseded_document_paths(context, documents)
         manifest = build_manifest_envelope(
             manifest_kind=AGENT_NAMESPACE_MANIFEST_KIND,
             boundary_scope=context.scope,
             payload_key="entries",
-            payload=[self._agent_namespace_manifest_entry(context, normalized_agent, document) for document in documents],
+            payload=[
+                self._agent_namespace_manifest_entry(
+                    context,
+                    normalized_agent,
+                    document,
+                    superseded_paths=superseded_paths,
+                )
+                for document in documents
+            ],
             stats={
                 "invalid_entry_count": invalid_count,
                 "stale_entry_count": sum(_is_stale(document.metadata.get("stale_after")) for document in documents),
+                "superseded_entry_count": len(superseded_paths),
             },
         )
         manifest["agent_name"] = normalized_agent
@@ -317,6 +387,8 @@ class FileMemoryProvider:
         self,
         context: ResolvedMemoryScope,
         document: MemoryDocument,
+        *,
+        superseded_paths: set[str],
     ) -> dict[str, Any]:
         metadata = dict(document.metadata)
         relative_path = document.path.relative_to(context.memory_root).as_posix()
@@ -342,11 +414,15 @@ class FileMemoryProvider:
             "conflict_key": metadata.get("conflict_key"),
             "embedding_ref": metadata.get("embedding_ref"),
             "contested": bool(metadata.get("contested", False)),
+            "merge_policy": metadata.get("merge_policy"),
+            "superseded": relative_path in superseded_paths,
         }
         if "stale_after" in metadata:
             entry["stale_after"] = metadata["stale_after"]
         if "confidence" in metadata:
             entry["confidence"] = metadata["confidence"]
+        if "supersedes" in metadata:
+            entry["supersedes"] = list(metadata.get("supersedes", ()))
         return entry
 
     def _agent_namespace_manifest_entry(
@@ -354,8 +430,10 @@ class FileMemoryProvider:
         context: ResolvedMemoryScope,
         agent_name: str,
         document: MemoryDocument,
+        *,
+        superseded_paths: set[str],
     ) -> dict[str, Any]:
-        entry = self._long_term_manifest_entry(context, document)
+        entry = self._long_term_manifest_entry(context, document, superseded_paths=superseded_paths)
         entry["namespace"] = f"agent:{agent_name}"
         entry["agent_namespace"] = agent_name
         return entry
@@ -514,6 +592,19 @@ def _latest_path_timestamp(paths: Sequence[Path]) -> str | None:
         return None
     latest = max(existing, key=lambda candidate: candidate.stat().st_mtime)
     return file_timestamp_iso(latest)
+
+
+def _superseded_document_paths(
+    context: ResolvedMemoryScope,
+    documents: Sequence[MemoryDocument],
+) -> set[str]:
+    known_paths = {document.path.relative_to(context.memory_root).as_posix() for document in documents}
+    superseded: set[str] = set()
+    for document in documents:
+        for reference in document.metadata.get("supersedes", ()):
+            if isinstance(reference, str) and reference in known_paths:
+                superseded.add(reference)
+    return superseded
 
 
 def _is_stale(value: Any) -> bool:

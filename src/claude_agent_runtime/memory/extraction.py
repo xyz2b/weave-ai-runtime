@@ -522,6 +522,7 @@ def _classify_sentence(
             namespace="shared",
             retention="durable_until_superseded",
             merge_policy="overwrite_on_newer_confirmation",
+            extra_metadata={"conflict_key": _conflict_key("preference", normalized)},
         )
     if _looks_noise(normalized):
         return _drop_decision(
@@ -550,6 +551,7 @@ def _durable_decision(
         "memory_kind": fact_type,
         "namespace": namespace,
         "retention": retention,
+        "merge_policy": merge_policy,
         "source_pathway": "rule",
         "source_message_ids": [message_id],
         "tags": list(_infer_tags(content)),
@@ -589,6 +591,7 @@ def _background_durable_decision(
         "memory_kind": fact_type,
         "namespace": namespace,
         "retention": retention,
+        "merge_policy": merge_policy,
         "source_pathway": "background_extractor",
         "source_message_ids": list(dict.fromkeys(source_message_ids)),
         "source_roles": list(dict.fromkeys(source_roles)),

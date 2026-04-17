@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import re
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 from uuid import uuid4
@@ -414,7 +414,8 @@ class LongTermMemory:
         seen_paths: set[Path] = set()
 
         agent_documents = self._load_agent_namespace_documents(context, agent.name)
-        selected_agent_documents = self._shortlist_agent_namespace_documents(
+        selected_agent_documents, agent_trace = self._shortlist_agent_namespace_documents(
+            context=context,
             documents=agent_documents,
             query=query,
         )
@@ -430,7 +431,10 @@ class LongTermMemory:
         )
         if selected_agent_documents:
             applied_filters.append("layer:agent_namespace")
-            selected_doc_ids.extend(str(document.path.relative_to(context.memory_root)) for document in selected_agent_documents)
+            boosts.append("active_agent_namespace")
+        applied_filters.extend(agent_trace["applied_filters"])
+        decays.extend(agent_trace["decays"])
+        selected_doc_ids.extend(agent_trace["selected_doc_ids"])
 
         shortlist, shortlist_trace = self._shortlist_long_term_documents(context=context, query=query)
         selected_long_term: list[MemoryDocument] = []
@@ -710,6 +714,10 @@ class LongTermMemory:
             combined_score -= policy.stale_decay_penalty
             decays.append("stale_beyond_threshold")
 
+        if entry.get("superseded") is True:
+            combined_score -= policy.superseded_decay_penalty
+            decays.append("superseded_artifact")
+
         if confidence is not None and confidence < policy.low_confidence_decay_start:
             decay = (policy.low_confidence_decay_start - confidence) * policy.low_confidence_decay_penalty
             combined_score -= decay
@@ -815,26 +823,70 @@ class LongTermMemory:
     def _shortlist_agent_namespace_documents(
         self,
         *,
+        context: ResolvedMemoryScope,
         documents: Sequence[MemoryDocument],
         query: str,
-    ) -> tuple[MemoryDocument, ...]:
+    ) -> tuple[tuple[MemoryDocument, ...], dict[str, Any]]:
         if not documents:
-            return ()
+            return (), {"applied_filters": (), "decays": (), "selected_doc_ids": ()}
         query_tokens = _tokenize(query)
         if not query_tokens:
-            return ()
+            return (), {"applied_filters": ("query_tokens:none",), "decays": (), "selected_doc_ids": ()}
 
+        policy = self.retrieval_policy
+        superseded_paths = _superseded_document_paths(context, documents)
         scored: list[tuple[float, MemoryDocument]] = []
+        applied_filters: list[str] = []
+        decays: list[str] = []
         for document in documents:
             score = _document_query_score(query_tokens, document)
             if score <= 0:
                 continue
+            retention = str(document.metadata.get("retention") or "").strip()
+            if retention == "drop":
+                applied_filters.append("retention_drop")
+                continue
+            confidence = _coerce_confidence(document.metadata.get("confidence"))
+            if confidence is not None and policy.minimum_confidence is not None and confidence < policy.minimum_confidence:
+                applied_filters.append("confidence_below_threshold")
+                continue
+            if document.metadata.get("contested") is True:
+                if policy.contested_policy == "block":
+                    applied_filters.append("contested_policy:block")
+                    continue
+                if policy.contested_policy == "decay":
+                    score -= policy.contested_decay_penalty
+                    decays.append("contested_entry")
+            if _stale_entry(document.metadata.get("stale_after")):
+                score -= policy.stale_decay_penalty
+                decays.append("stale_beyond_threshold")
+            if confidence is not None and confidence < policy.low_confidence_decay_start:
+                score -= (policy.low_confidence_decay_start - confidence) * policy.low_confidence_decay_penalty
+                decays.append("low_confidence_memory")
+            relative_path = document.path.relative_to(context.memory_root).as_posix()
+            if relative_path in superseded_paths:
+                score -= policy.superseded_decay_penalty
+                decays.append("superseded_artifact")
+            if score <= 0:
+                continue
             scored.append((score, document))
         if not scored:
-            return ()
+            return (), {
+                "applied_filters": tuple(dict.fromkeys(applied_filters)),
+                "decays": tuple(dict.fromkeys(decays)),
+                "selected_doc_ids": (),
+            }
 
         scored.sort(key=lambda item: (-item[0], item[1].path.as_posix()))
-        return tuple(document for _, document in scored[:1])
+        selected = tuple(document for _, document in scored[:1])
+        return selected, {
+            "applied_filters": tuple(dict.fromkeys(applied_filters)),
+            "decays": tuple(dict.fromkeys(decays)),
+            "selected_doc_ids": tuple(
+                document.path.relative_to(context.memory_root).as_posix()
+                for document in selected
+            ),
+        }
 
     def _load_agent_namespace_documents(
         self,
@@ -987,31 +1039,6 @@ class LongTermMemory:
         cwd: str | Path,
         decision: MemoryExtractionDecision,
     ) -> tuple[MemoryWriteReceipt, tuple[MemoryDocument, ...]]:
-        conflict_key = decision.metadata.get("conflict_key")
-        if isinstance(conflict_key, str) and conflict_key.strip():
-            existing = self._find_conflict_key_document(
-                context=context,
-                namespace=decision.namespace,
-                conflict_key=conflict_key.strip(),
-            )
-            if existing is not None and _normalize_document_content(existing.content) != _normalize_document_content(decision.content):
-                return (
-                    MemoryWriteReceipt(
-                        fact_type=decision.fact_type,
-                        action="skipped_conflict",
-                        scope=context.scope.value,
-                        target_layer=decision.target_layer,
-                        namespace=decision.namespace,
-                        retention=decision.retention,
-                        merge_policy=decision.merge_policy,
-                        title=decision.title,
-                        path=existing.path,
-                        reason="merge_safe_conflict_key",
-                        source_message_ids=decision.source_message_ids,
-                        source_roles=decision.source_roles,
-                    ),
-                    (),
-                )
         return self._apply_extraction_decision(
             context=context,
             session_id=session_id,
@@ -1020,23 +1047,38 @@ class LongTermMemory:
             decision=decision,
         )
 
-    def _find_conflict_key_document(
+    def _find_conflict_key_documents(
         self,
         *,
         context: ResolvedMemoryScope,
         namespace: str,
         conflict_key: str,
-    ) -> MemoryDocument | None:
-        if namespace.startswith("agent:"):
-            agent_name = namespace.partition(":")[2].strip()
-            documents = self._load_agent_namespace_documents(context, agent_name)
-        else:
-            documents = self.provider.list_documents(context)
+        active_only: bool = False,
+    ) -> tuple[MemoryDocument, ...]:
+        documents = self._list_namespace_documents(context, namespace)
+        matches: list[MemoryDocument] = []
         for document in documents:
             candidate_conflict_key = document.metadata.get("conflict_key")
             if isinstance(candidate_conflict_key, str) and candidate_conflict_key.strip() == conflict_key:
-                return document
-        return None
+                matches.append(document)
+        if not active_only:
+            return tuple(matches)
+        superseded_paths = _superseded_document_paths(context, matches)
+        return tuple(
+            document
+            for document in matches
+            if document.path.relative_to(context.memory_root).as_posix() not in superseded_paths
+        )
+
+    def _list_namespace_documents(
+        self,
+        context: ResolvedMemoryScope,
+        namespace: str,
+    ) -> tuple[MemoryDocument, ...]:
+        if namespace.startswith("agent:"):
+            agent_name = namespace.partition(":")[2].strip()
+            return self._load_agent_namespace_documents(context, agent_name)
+        return self.provider.list_documents(context)
 
     def _apply_extraction_decision(
         self,
@@ -1048,45 +1090,12 @@ class LongTermMemory:
         decision: MemoryExtractionDecision,
     ) -> tuple[MemoryWriteReceipt, tuple[MemoryDocument, ...]]:
         if decision.target_layer in {"shared_long_term", "agent_namespace"}:
-            written = self.persist_entries(
+            return self._apply_durable_extraction_decision(
+                context=context,
                 session_id=session_id,
                 agent=agent,
                 cwd=cwd,
-                entries=(decision.to_entry(),),
-            )
-            if written:
-                document = written[0]
-                return (
-                    MemoryWriteReceipt(
-                        fact_type=decision.fact_type,
-                        action="persisted",
-                        scope=context.scope.value,
-                        target_layer=decision.target_layer,
-                        namespace=decision.namespace,
-                        retention=decision.retention,
-                        merge_policy=decision.merge_policy,
-                        title=document.title,
-                        path=document.path,
-                        source_message_ids=decision.source_message_ids,
-                        source_roles=decision.source_roles,
-                    ),
-                    written,
-                )
-            return (
-                MemoryWriteReceipt(
-                    fact_type=decision.fact_type,
-                    action="skipped_duplicate",
-                    scope=context.scope.value,
-                    target_layer=decision.target_layer,
-                    namespace=decision.namespace,
-                    retention=decision.retention,
-                    merge_policy=decision.merge_policy,
-                    title=decision.title,
-                    reason="duplicate_content",
-                    source_message_ids=decision.source_message_ids,
-                    source_roles=decision.source_roles,
-                ),
-                (),
+                decision=decision,
             )
 
         if decision.target_layer == "session_summary":
@@ -1128,20 +1137,360 @@ class LongTermMemory:
             )
 
         return (
-            MemoryWriteReceipt(
-                fact_type=decision.fact_type,
+            self._build_write_receipt(
+                context=context,
+                decision=decision,
                 action="dropped",
-                scope=context.scope.value,
-                target_layer=decision.target_layer,
-                namespace=decision.namespace,
-                retention=decision.retention,
-                merge_policy=decision.merge_policy,
                 title=decision.title,
                 reason=decision.reason or "do_not_persist",
-                source_message_ids=decision.source_message_ids,
-                source_roles=decision.source_roles,
             ),
             (),
+        )
+
+    def _apply_durable_extraction_decision(
+        self,
+        *,
+        context: ResolvedMemoryScope,
+        session_id: str,
+        agent: AgentDefinition,
+        cwd: str | Path,
+        decision: MemoryExtractionDecision,
+    ) -> tuple[MemoryWriteReceipt, tuple[MemoryDocument, ...]]:
+        if decision.retention == "drop" or decision.merge_policy == "no_write":
+            return (
+                self._build_write_receipt(
+                    context=context,
+                    decision=decision,
+                    action="dropped",
+                    title=decision.title,
+                    reason=decision.reason or "do_not_persist",
+                ),
+                (),
+            )
+
+        conflict_key = decision.metadata.get("conflict_key")
+        if not isinstance(conflict_key, str) or not conflict_key.strip():
+            return self._persist_durable_entry(
+                context=context,
+                session_id=session_id,
+                agent=agent,
+                cwd=cwd,
+                decision=decision,
+            )
+
+        active_documents = self._find_conflict_key_documents(
+            context=context,
+            namespace=decision.namespace,
+            conflict_key=conflict_key.strip(),
+            active_only=True,
+        )
+        matching_document = next(
+            (
+                document
+                for document in active_documents
+                if _normalize_document_content(document.content) == _normalize_document_content(decision.content)
+            ),
+            None,
+        )
+        merge_policy = decision.merge_policy
+
+        if merge_policy in {
+            "merge_with_provenance",
+            "merge_with_last_confirmed_at",
+            "require_multi_source_confirmation",
+            "synthesize_then_merge",
+        }:
+            if matching_document is not None:
+                return self._merge_existing_durable_document(
+                    context=context,
+                    decision=decision,
+                    document=matching_document,
+                )
+            if active_documents:
+                return self._stage_contested_durable_entry(
+                    context=context,
+                    session_id=session_id,
+                    agent=agent,
+                    cwd=cwd,
+                    decision=decision,
+                    reason="guarded_conflict",
+                )
+            return self._persist_durable_entry(
+                context=context,
+                session_id=session_id,
+                agent=agent,
+                cwd=cwd,
+                decision=decision,
+            )
+
+        if merge_policy == "append_with_dedupe":
+            if matching_document is not None:
+                return self._merge_existing_durable_document(
+                    context=context,
+                    decision=decision,
+                    document=matching_document,
+                )
+            if active_documents:
+                merged_document = active_documents[0]
+                return self._merge_existing_durable_document(
+                    context=context,
+                    decision=decision,
+                    document=merged_document,
+                    content=_append_distinct_content(merged_document.content, decision.content),
+                    reason="append_with_dedupe",
+                )
+            return self._persist_durable_entry(
+                context=context,
+                session_id=session_id,
+                agent=agent,
+                cwd=cwd,
+                decision=decision,
+            )
+
+        if merge_policy in {"overwrite_on_newer_confirmation", "overwrite_inside_namespace"}:
+            if matching_document is not None:
+                return self._merge_existing_durable_document(
+                    context=context,
+                    decision=decision,
+                    document=matching_document,
+                )
+            supersedes = tuple(
+                document.path.relative_to(context.memory_root).as_posix()
+                for document in active_documents
+                if not document.metadata.get("contested")
+            )
+            return self._persist_durable_entry(
+                context=context,
+                session_id=session_id,
+                agent=agent,
+                cwd=cwd,
+                decision=decision,
+                metadata_overrides={"supersedes": list(supersedes)} if supersedes else None,
+                reason="superseded_existing" if supersedes else None,
+                supersedes=supersedes,
+            )
+
+        if matching_document is not None:
+            return self._merge_existing_durable_document(
+                context=context,
+                decision=decision,
+                document=matching_document,
+            )
+        if active_documents:
+            return self._stage_contested_durable_entry(
+                context=context,
+                session_id=session_id,
+                agent=agent,
+                cwd=cwd,
+                decision=decision,
+                reason="unsupported_merge_policy_conflict",
+            )
+        return self._persist_durable_entry(
+            context=context,
+            session_id=session_id,
+            agent=agent,
+            cwd=cwd,
+            decision=decision,
+        )
+
+    def _persist_durable_entry(
+        self,
+        *,
+        context: ResolvedMemoryScope,
+        session_id: str,
+        agent: AgentDefinition,
+        cwd: str | Path,
+        decision: MemoryExtractionDecision,
+        metadata_overrides: Mapping[str, Any] | None = None,
+        reason: str | None = None,
+        supersedes: Sequence[str] = (),
+    ) -> tuple[MemoryWriteReceipt, tuple[MemoryDocument, ...]]:
+        written = self.persist_entries(
+            session_id=session_id,
+            agent=agent,
+            cwd=cwd,
+            entries=(self._decision_entry(decision, metadata_overrides=metadata_overrides),),
+        )
+        if written:
+            document = written[0]
+            return (
+                self._build_write_receipt(
+                    context=context,
+                    decision=decision,
+                    action="persisted",
+                    title=document.title,
+                    path=document.path,
+                    reason=reason,
+                    supersedes=supersedes,
+                ),
+                written,
+            )
+        return (
+            self._build_write_receipt(
+                context=context,
+                decision=decision,
+                action="skipped_duplicate",
+                title=decision.title,
+                reason="duplicate_content",
+                supersedes=supersedes,
+            ),
+            (),
+        )
+
+    def _merge_existing_durable_document(
+        self,
+        *,
+        context: ResolvedMemoryScope,
+        decision: MemoryExtractionDecision,
+        document: MemoryDocument,
+        content: str | None = None,
+        reason: str | None = None,
+        metadata_overrides: Mapping[str, Any] | None = None,
+    ) -> tuple[MemoryWriteReceipt, tuple[MemoryDocument, ...]]:
+        merged_content = content or document.content
+        merged_metadata = _merged_memory_metadata(
+            document=document,
+            decision=decision,
+            content=merged_content,
+            metadata_overrides=metadata_overrides,
+        )
+        updated = self.provider.update_document(
+            context,
+            document,
+            title=document.title,
+            content=merged_content,
+            metadata_updates=merged_metadata,
+        )
+        if updated is None:
+            return (
+                self._build_write_receipt(
+                    context=context,
+                    decision=decision,
+                    action="dropped",
+                    title=document.title,
+                    path=document.path,
+                    reason="merge_update_failed",
+                ),
+                (),
+            )
+        return (
+            self._build_write_receipt(
+                context=context,
+                decision=decision,
+                action="merged",
+                title=updated.title,
+                path=updated.path,
+                reason=reason or decision.merge_policy,
+            ),
+            (updated,),
+        )
+
+    def _stage_contested_durable_entry(
+        self,
+        *,
+        context: ResolvedMemoryScope,
+        session_id: str,
+        agent: AgentDefinition,
+        cwd: str | Path,
+        decision: MemoryExtractionDecision,
+        reason: str,
+    ) -> tuple[MemoryWriteReceipt, tuple[MemoryDocument, ...]]:
+        metadata_overrides = {
+            "contested": True,
+            "retention": "review_required",
+            "tags": list(_merge_string_values(decision.metadata.get("tags", ()), ("contested",))),
+        }
+        written = self.persist_entries(
+            session_id=session_id,
+            agent=agent,
+            cwd=cwd,
+            entries=(
+                self._decision_entry(
+                    decision,
+                    title=f"Contested {decision.title}".strip(),
+                    metadata_overrides=metadata_overrides,
+                ),
+            ),
+        )
+        if written:
+            document = written[0]
+            return (
+                self._build_write_receipt(
+                    context=context,
+                    decision=decision,
+                    action="staged_contested",
+                    title=document.title,
+                    path=document.path,
+                    reason=reason,
+                    contested=True,
+                ),
+                written,
+            )
+        return (
+            self._build_write_receipt(
+                context=context,
+                decision=decision,
+                action="skipped_duplicate",
+                title=f"Contested {decision.title}".strip(),
+                reason="duplicate_contested_content",
+                contested=True,
+            ),
+            (),
+        )
+
+    def _decision_entry(
+        self,
+        decision: MemoryExtractionDecision,
+        *,
+        title: str | None = None,
+        content: str | None = None,
+        metadata_overrides: Mapping[str, Any] | None = None,
+    ) -> MemoryEntry:
+        metadata = dict(decision.metadata)
+        metadata.setdefault("namespace", decision.namespace)
+        metadata.setdefault("retention", decision.retention)
+        metadata.setdefault("merge_policy", decision.merge_policy)
+        metadata.setdefault("source_message_ids", list(decision.source_message_ids))
+        metadata.setdefault("source_roles", list(decision.source_roles))
+        if metadata_overrides is not None:
+            metadata.update(dict(metadata_overrides))
+        return MemoryEntry(
+            title=title or decision.title,
+            content=content or decision.content,
+            metadata=metadata,
+        )
+
+    def _build_write_receipt(
+        self,
+        *,
+        context: ResolvedMemoryScope,
+        decision: MemoryExtractionDecision,
+        action: str,
+        title: str | None = None,
+        path: Path | None = None,
+        reason: str | None = None,
+        contested: bool | None = None,
+        supersedes: Sequence[str] = (),
+    ) -> MemoryWriteReceipt:
+        conflict_key = decision.metadata.get("conflict_key")
+        source_pathway = decision.metadata.get("source_pathway")
+        return MemoryWriteReceipt(
+            fact_type=decision.fact_type,
+            action=action,
+            scope=context.scope.value,
+            target_layer=decision.target_layer,
+            namespace=decision.namespace,
+            retention=decision.retention,
+            merge_policy=decision.merge_policy,
+            title=title,
+            path=path,
+            reason=reason,
+            source_pathway=source_pathway if isinstance(source_pathway, str) and source_pathway.strip() else None,
+            conflict_key=conflict_key if isinstance(conflict_key, str) and conflict_key.strip() else None,
+            contested=decision.metadata.get("contested") is True if contested is None else contested,
+            source_message_ids=decision.source_message_ids,
+            source_roles=decision.source_roles,
+            supersedes=tuple(str(item) for item in supersedes),
         )
 
 
@@ -1195,6 +1544,7 @@ class LongTermMemoryService:
         )
         if isinstance(runtime_context, dict):
             runtime_context["memory_retrieval"] = trace
+            runtime_context["memory_diagnostics"] = {"retrieval": trace}
         return fragments
 
     async def start_session(
@@ -1397,6 +1747,84 @@ def _merge_turn_results(existing: MemoryTurnResult, new_result: MemoryTurnResult
 
 def _normalize_document_content(content: str) -> str:
     return " ".join(content.strip().split()).lower()
+
+
+def _append_distinct_content(existing: str, incoming: str) -> str:
+    normalized_existing = " ".join(existing.strip().split())
+    normalized_incoming = " ".join(incoming.strip().split())
+    if not normalized_existing:
+        return normalized_incoming
+    if not normalized_incoming or _normalize_document_content(normalized_incoming) in _normalize_document_content(normalized_existing):
+        return normalized_existing
+    if normalized_existing[-1] in ".!?":
+        return f"{normalized_existing} {normalized_incoming}"
+    return f"{normalized_existing}. {normalized_incoming}"
+
+
+def _merge_string_values(*values: object) -> tuple[str, ...]:
+    merged: list[str] = []
+    for value in values:
+        if isinstance(value, str):
+            candidate_values = (value,)
+        elif isinstance(value, (list, tuple)):
+            candidate_values = tuple(value)
+        else:
+            continue
+        for candidate in candidate_values:
+            if not isinstance(candidate, str):
+                continue
+            normalized = candidate.strip()
+            if normalized and normalized not in merged:
+                merged.append(normalized)
+    return tuple(merged)
+
+
+def _merged_memory_metadata(
+    *,
+    document: MemoryDocument,
+    decision: MemoryExtractionDecision,
+    content: str,
+    metadata_overrides: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    metadata = dict(document.metadata)
+    metadata.update(dict(decision.metadata))
+    metadata["retention"] = decision.retention
+    metadata["merge_policy"] = decision.merge_policy
+    metadata["namespace"] = decision.namespace
+    metadata["last_confirmed_at"] = _utc_now_iso()
+    metadata["source_message_ids"] = list(
+        _merge_string_values(document.metadata.get("source_message_ids", ()), decision.source_message_ids)
+    )
+    metadata["source_roles"] = list(_merge_string_values(document.metadata.get("source_roles", ()), decision.source_roles))
+    metadata["tags"] = list(_merge_string_values(document.metadata.get("tags", ()), decision.metadata.get("tags", ())))
+    metadata["summary"] = _summarize_memory_text(content)
+    if metadata_overrides is not None:
+        metadata.update(dict(metadata_overrides))
+    return metadata
+
+
+def _superseded_document_paths(
+    context: ResolvedMemoryScope,
+    documents: Sequence[MemoryDocument],
+) -> set[str]:
+    known_paths = {document.path.relative_to(context.memory_root).as_posix() for document in documents}
+    superseded: set[str] = set()
+    for document in documents:
+        for reference in document.metadata.get("supersedes", ()):
+            if isinstance(reference, str) and reference in known_paths:
+                superseded.add(reference)
+    return superseded
+
+
+def _summarize_memory_text(text: str, *, limit: int = 160) -> str:
+    normalized = " ".join(text.strip().split())
+    if len(normalized) <= limit:
+        return normalized
+    return normalized[: limit - 3].rstrip() + "..."
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def _candidate_pool_limit(retrieval_limit: int, policy: MemoryRetrievalPolicy) -> int:

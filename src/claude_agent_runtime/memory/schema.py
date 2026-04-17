@@ -45,6 +45,7 @@ OPTIONAL_ARTIFACT_FIELDS = frozenset(
         "stale_after",
         "conflict_key",
         "contested",
+        "merge_policy",
     }
 )
 ARTIFACT_FIELD_VOCABULARY = REQUIRED_ARTIFACT_FIELDS | OPTIONAL_ARTIFACT_FIELDS
@@ -206,6 +207,13 @@ def normalize_memory_artifact_metadata(
         else:
             errors.append(f"Invalid '{field_name}' field")
 
+    if "merge_policy" in raw and raw["merge_policy"] is not None:
+        merge_policy = raw["merge_policy"]
+        if isinstance(merge_policy, str) and merge_policy.strip():
+            normalized["merge_policy"] = merge_policy.strip()
+        else:
+            errors.append("Invalid 'merge_policy' field")
+
     if "contested" in raw and raw["contested"] is not None:
         contested = raw["contested"]
         if isinstance(contested, bool):
@@ -272,6 +280,7 @@ def serialize_memory_artifact(title: str, content: str, metadata: Mapping[str, A
             "stale_after",
             "conflict_key",
             "contested",
+            "merge_policy",
         )
         if key in metadata and metadata[key] is not None
     }
