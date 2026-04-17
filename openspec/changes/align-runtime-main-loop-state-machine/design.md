@@ -41,6 +41,12 @@ RuntimeKernel -> SessionController -> TurnEngine -> Tool/Agent/Skill runtimes
 - 不改变现有 host/kernel 分层，也不把 session-scoped 文件持久化职责全部下沉到 `TurnEngine`。
 - 不要求第一版实现每一种 Claude Code 内部恢复策略，只要求建立统一 contract 和最关键的恢复入口。
 
+## Immediate Guardrails
+
+- 这是一个兼容性迁移，不只是内部重构。host-facing `TERMINAL` 收紧为 turn-final only 后，旧的 `TERMINAL(stop_reason=tool_use)` 消费方必须与 engine、controller、golden tests、host adapter 在同一批一起迁移，不能让新旧判断路径长期并存。
+- 兼容期可以临时镜像旧字段，但这些字段只能作为 debug/transition aid，不能重新成为 session projection、child-run projection 或 helper 聚合的 authoritative 输入。
+- 第一阶段的 budget/recovery 范围刻意收窄，只要求统一 `max_tokens` / 输出预算、tool-result budget 和 reactive compaction 三类恢复入口；provider retry/fallback 明确后置，不纳入本 change 的最小验收面。
+
 ## Decisions
 
 ### 1. 保留两层状态机，但把 turn loop 显式建模
@@ -462,18 +468,24 @@ runtime 将新增 `BudgetAndRecoveryPolicy` 或等价控制面接口，在两个
 - assistant attempt 结束后
 - tool replay 完成后
 
-它至少需要覆盖：
+第一阶段它至少需要覆盖：
 
-- provider stop reason 驱动的恢复，例如 `max_tokens`、incomplete、error
+- `max_tokens` / 输出预算驱动的恢复
 - tool-result budget / continuation budget
 - reactive compaction
 - max-turn exhaustion
 - halt / retry / compact-and-retry / continue 的标准动作
 
+第一阶段明确不要求：
+
+- provider retry / fallback 策略统一收敛
+- 为所有 provider-specific error reason 建立完整的恢复矩阵
+- 把 controller、provider adapter、tool executor 里的所有局部恢复分支一次性并入单一策略表
+
 Why:
 
 - Claude 风格主循环的价值之一就是把“恢复为什么发生”变成 runtime 决策，而不是 provider 细节。
-- 当前 runtime 已有 compaction manager 和 tool executor metadata，但缺少连接它们的恢复控制面。
+- 当前 runtime 已有 compaction manager 和 tool executor metadata，但缺少连接它们的恢复控制面；第一阶段先把最关键的 budget/recovery join point 固定住，再逐步扩展 provider fallback。
 
 Alternatives considered:
 
