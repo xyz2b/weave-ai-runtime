@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import json
+import os
 import re
+import threading
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -71,6 +74,15 @@ _STOPWORDS = {
     "we",
     "what",
 }
+_DEFAULT_CAPTURE_ROUTING_TARGETS = {
+    "agent_workflow": "agent_namespace",
+    "preference": "long_term.preferences",
+    "project_convention": "long_term.conventions",
+    "session_continuity": "session",
+    "session_thread": "session",
+    "topic_memory": "long_term.topics",
+    "workflow_command": "long_term.conventions",
+}
 _MISSING = object()
 
 
@@ -134,9 +146,21 @@ class LongTermMemory:
     _background_tasks_by_id: dict[str, asyncio.Task[MemoryTurnResult]] = field(default_factory=dict, init=False)
     _background_task_ids: dict[str, str] = field(default_factory=dict, init=False)
     _consolidation_pending: dict[str, _BackgroundConsolidationPayload] = field(default_factory=dict, init=False)
-    _consolidation_tasks_by_key: dict[str, asyncio.Task[MemoryTurnResult]] = field(default_factory=dict, init=False)
-    _consolidation_tasks_by_id: dict[str, asyncio.Task[MemoryTurnResult]] = field(default_factory=dict, init=False)
+    _consolidation_tasks_by_key: dict[str, concurrent.futures.Future[MemoryTurnResult]] = field(
+        default_factory=dict,
+        init=False,
+    )
+    _consolidation_tasks_by_id: dict[str, concurrent.futures.Future[MemoryTurnResult]] = field(
+        default_factory=dict,
+        init=False,
+    )
     _consolidation_task_ids: dict[str, str] = field(default_factory=dict, init=False)
+    _consolidation_state_lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
+    _consolidation_executor: concurrent.futures.ThreadPoolExecutor = field(
+        default_factory=lambda: concurrent.futures.ThreadPoolExecutor(max_workers=2, thread_name_prefix="memory-cons"),
+        init=False,
+        repr=False,
+    )
 
     def initialize_session(
         self,
@@ -220,6 +244,7 @@ class LongTermMemory:
             consolidation_checkpoints_dir=consolidations_dir / "checkpoints",
             consolidation_logs_dir=consolidations_dir / "logs",
             consolidation_staging_dir=consolidations_dir / "staging",
+            consolidation_lock_path=consolidations_dir / "active.lock.json",
         )
 
     def guarded_roots(
@@ -431,44 +456,60 @@ class LongTermMemory:
             cwd=Path(cwd).resolve(),
             task_manager=task_manager,
         )
-        self._consolidation_pending[key] = payload
+        with self._consolidation_state_lock:
+            existing = self._consolidation_tasks_by_key.get(key)
+            if existing is not None and existing.done():
+                self._consolidation_tasks_by_key.pop(key, None)
+                finished_task_id = self._consolidation_task_ids.pop(key, None)
+                if finished_task_id is not None:
+                    self._consolidation_tasks_by_id.pop(finished_task_id, None)
+                existing = None
 
-        task_id = self._consolidation_task_ids.get(key)
-        if task_id is None:
-            task_id = uuid4().hex
-            self._consolidation_task_ids[key] = task_id
-            if task_manager is not None:
-                task_manager.create(
-                    task_id,
-                    title=f"memory-consolidation:{context.scope.value}",
-                    metadata={
-                        "session_id": session_id,
-                        "agent": agent.name,
-                        "kind": "background_memory_consolidation",
-                    },
-                )
-        elif task_manager is not None:
-            task = task_manager.get(task_id)
-            if task is not None:
-                task_manager.update(
-                    task_id,
-                    metadata={"queued_merge": True, "trigger_session_id": session_id},
-                )
+            self._consolidation_pending[key] = payload
+            task_id = self._consolidation_task_ids.get(key)
+            if task_id is None:
+                task_id = uuid4().hex
+                self._consolidation_task_ids[key] = task_id
+                if task_manager is not None:
+                    task_manager.create(
+                        task_id,
+                        title=f"memory-consolidation:{context.scope.value}",
+                        metadata={
+                            "session_id": session_id,
+                            "agent": agent.name,
+                            "kind": "background_memory_consolidation",
+                        },
+                    )
+            elif task_manager is not None:
+                task = task_manager.get(task_id)
+                if task is not None:
+                    task_manager.update(
+                        task_id,
+                        metadata={"queued_merge": True, "trigger_session_id": session_id},
+                    )
 
-        if key not in self._consolidation_tasks_by_key:
-            background_task = asyncio.create_task(self._run_background_consolidation_queue(key))
-            self._consolidation_tasks_by_key[key] = background_task
-            self._consolidation_tasks_by_id[task_id] = background_task
+            if existing is None:
+                background_task = self._consolidation_executor.submit(
+                    self._run_background_consolidation_queue,
+                    key,
+                    task_id,
+                )
+                self._consolidation_tasks_by_key[key] = background_task
+                self._consolidation_tasks_by_id[task_id] = background_task
         return task_id
 
     async def wait_for_background_consolidation(self, task_id: str) -> MemoryTurnResult:
-        task = self._consolidation_tasks_by_id.get(task_id)
+        with self._consolidation_state_lock:
+            task = self._consolidation_tasks_by_id.get(task_id)
         if task is None:
             return MemoryTurnResult()
         try:
-            return await task
+            return await asyncio.wrap_future(task)
         finally:
-            self._consolidation_tasks_by_id.pop(task_id, None)
+            with self._consolidation_state_lock:
+                current = self._consolidation_tasks_by_id.get(task_id)
+                if current is task and task.done():
+                    self._consolidation_tasks_by_id.pop(task_id, None)
 
     def persist_entries(
         self,
@@ -856,9 +897,15 @@ class LongTermMemory:
                 combined_score -= policy.contested_decay_penalty
                 decays.append("contested_entry")
 
-        if _stale_entry(entry.get("stale_after")):
+        stale_reason = _stale_decay_reason(
+            stale_after=entry.get("stale_after"),
+            last_confirmed_at=entry.get("last_confirmed_at"),
+            created_at=entry.get("created_at"),
+            window_days=config_tags.stale_decay_days,
+        )
+        if stale_reason is not None:
             combined_score -= policy.stale_decay_penalty
-            decays.append("stale_beyond_threshold")
+            decays.append(stale_reason)
 
         if entry.get("superseded") is True:
             combined_score -= policy.superseded_decay_penalty
@@ -1020,9 +1067,15 @@ class LongTermMemory:
                 if policy.contested_policy == "decay":
                     score -= policy.contested_decay_penalty
                     decays.append("contested_entry")
-            if _stale_entry(document.metadata.get("stale_after")):
+            stale_reason = _stale_decay_reason(
+                stale_after=document.metadata.get("stale_after"),
+                last_confirmed_at=document.metadata.get("last_confirmed_at"),
+                created_at=document.metadata.get("created_at"),
+                window_days=resolved_config.config.retrieval.stale_decay_days,
+            )
+            if stale_reason is not None:
                 score -= policy.stale_decay_penalty
-                decays.append("stale_beyond_threshold")
+                decays.append(stale_reason)
             if confidence is not None and confidence < policy.low_confidence_decay_start:
                 score -= (policy.low_confidence_decay_start - confidence) * policy.low_confidence_decay_penalty
                 decays.append("low_confidence_memory")
@@ -1085,7 +1138,13 @@ class LongTermMemory:
         resolved_config: ResolvedMemoryConfig,
     ) -> MemoryExtractionDecision | None:
         extraction = resolved_config.config.extraction
-        if decision.fact_type in extraction.never_capture:
+        always_capture = decision.fact_type in extraction.always_capture
+        if always_capture:
+            metadata = dict(decision.metadata)
+            metadata["config_always_capture"] = True
+            decision = replace(decision, metadata=metadata)
+
+        if not always_capture and decision.fact_type in extraction.never_capture:
             metadata = dict(decision.metadata)
             metadata["config_never_capture"] = True
             metadata["namespace"] = "none"
@@ -1100,6 +1159,8 @@ class LongTermMemory:
             )
 
         routing_target = extraction.routing.get(decision.fact_type)
+        if routing_target is None and always_capture and decision.target_layer == "do_not_persist":
+            routing_target = _DEFAULT_CAPTURE_ROUTING_TARGETS.get(decision.fact_type)
         if routing_target is None:
             return decision
 
@@ -1306,10 +1367,11 @@ class LongTermMemory:
     def _consolidation_key(self, context: ResolvedMemoryScope) -> str:
         return str(context.memory_root)
 
-    async def _run_background_consolidation_queue(self, key: str) -> MemoryTurnResult:
-        task_id = self._consolidation_task_ids[key]
+    def _run_background_consolidation_queue(self, key: str, task_id: str) -> MemoryTurnResult:
         aggregate = MemoryTurnResult()
-        task_manager = self._consolidation_pending[key].task_manager
+        with self._consolidation_state_lock:
+            pending = self._consolidation_pending.get(key)
+        task_manager = pending.task_manager if pending is not None else None
         if task_manager is not None:
             task_manager.update(
                 task_id,
@@ -1317,10 +1379,12 @@ class LongTermMemory:
                 metadata={"status": "running"},
             )
 
-        while key in self._consolidation_pending:
-            payload = self._consolidation_pending.pop(key)
+        while True:
+            with self._consolidation_state_lock:
+                payload = self._consolidation_pending.pop(key, None)
+            if payload is None:
+                break
             task_manager = payload.task_manager or task_manager
-            await asyncio.sleep(0)
             try:
                 result = self._execute_background_consolidation(payload)
             except Exception as exc:  # pragma: no cover - defensive boundary
@@ -1333,7 +1397,9 @@ class LongTermMemory:
                     )
                 break
             aggregate = _merge_turn_results(aggregate, result)
-            if task_manager is not None and key in self._consolidation_pending:
+            with self._consolidation_state_lock:
+                has_pending = key in self._consolidation_pending
+            if task_manager is not None and has_pending:
                 task_manager.update(
                     task_id,
                     status=TaskStatus.RUNNING,
@@ -1352,9 +1418,71 @@ class LongTermMemory:
                     },
                     metadata={"status": "completed"},
                 )
-        self._consolidation_tasks_by_key.pop(key, None)
-        self._consolidation_task_ids.pop(key, None)
+        with self._consolidation_state_lock:
+            self._consolidation_tasks_by_key.pop(key, None)
+            if self._consolidation_task_ids.get(key) == task_id:
+                self._consolidation_task_ids.pop(key, None)
         return aggregate
+
+    def _read_consolidation_lock(self, context: ResolvedMemoryScope) -> dict[str, str] | None:
+        payload = _read_json_path(context.consolidation_lock_path)
+        if not isinstance(payload, dict):
+            return None
+        run_id = str(payload.get("run_id") or "").strip()
+        acquired_at = str(payload.get("acquired_at") or "").strip()
+        session_id = str(payload.get("session_id") or "").strip()
+        if not run_id or not acquired_at:
+            return None
+        lock_payload = {"run_id": run_id, "acquired_at": acquired_at}
+        if session_id:
+            lock_payload["session_id"] = session_id
+        return lock_payload
+
+    def _acquire_consolidation_lock(
+        self,
+        context: ResolvedMemoryScope,
+        *,
+        run_id: str,
+        session_id: str,
+    ) -> dict[str, str] | None:
+        payload = {
+            "run_id": run_id,
+            "acquired_at": _utc_now_iso(),
+            "session_id": session_id,
+        }
+        raw_payload = (json.dumps(payload, indent=2) + "\n").encode("utf-8")
+        context.consolidations_dir.mkdir(parents=True, exist_ok=True)
+        for attempt in range(2):
+            try:
+                fd = os.open(
+                    context.consolidation_lock_path,
+                    os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+                    0o644,
+                )
+            except FileExistsError:
+                existing = self._read_consolidation_lock(context)
+                if existing is not None or attempt == 1:
+                    return None
+                try:
+                    context.consolidation_lock_path.unlink()
+                except FileNotFoundError:
+                    continue
+                except OSError:
+                    return None
+                continue
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(raw_payload)
+            return payload
+        return None
+
+    def _release_consolidation_lock(self, context: ResolvedMemoryScope, *, run_id: str) -> None:
+        active_lock = self._read_consolidation_lock(context)
+        if active_lock is not None and active_lock.get("run_id") != run_id:
+            return
+        try:
+            context.consolidation_lock_path.unlink()
+        except FileNotFoundError:
+            return
 
     def _execute_background_consolidation(
         self,
@@ -1371,14 +1499,15 @@ class LongTermMemory:
             return MemoryTurnResult()
 
         run_id = datetime.now(timezone.utc).strftime("cons-%Y%m%d-%H%M%S-") + uuid4().hex[:6]
-        active_lock = {
-            "run_id": run_id,
-            "acquired_at": _utc_now_iso(),
-            "session_id": payload.session_id,
-        }
-        manifest = self._refresh_consolidation_manifest(context, active_lock=active_lock)
-        if manifest.get("active_lock", {}).get("run_id") != run_id:
+        active_lock = self._acquire_consolidation_lock(
+            context,
+            run_id=run_id,
+            session_id=payload.session_id,
+        )
+        if active_lock is None:
+            self._refresh_consolidation_manifest(context)
             return MemoryTurnResult()
+        manifest = self._refresh_consolidation_manifest(context, active_lock=active_lock)
 
         pending_sessions = self._pending_consolidation_sessions(context)
         checkpoint_path = context.consolidation_checkpoints_dir / f"{run_id}.json"
@@ -1435,6 +1564,7 @@ class LongTermMemory:
                 ),
                 encoding="utf-8",
             )
+            self._release_consolidation_lock(context, run_id=run_id)
             self._refresh_consolidation_manifest(
                 context,
                 active_lock=None,
@@ -1470,6 +1600,7 @@ class LongTermMemory:
             ),
             encoding="utf-8",
         )
+        self._release_consolidation_lock(context, run_id=run_id)
         self._refresh_consolidation_manifest(
             context,
             active_lock=None,
@@ -1586,7 +1717,7 @@ class LongTermMemory:
                 if last_successful_run_at is _MISSING
                 else last_successful_run_at
             ),
-            "active_lock": existing.get("active_lock") if active_lock is _MISSING else active_lock,
+            "active_lock": self._read_consolidation_lock(context) if active_lock is _MISSING else active_lock,
         }
         _write_json_path(context.consolidation_manifest_path, manifest)
         return manifest
@@ -2764,10 +2895,40 @@ def _document_query_score(query_tokens: set[str], document: MemoryDocument) -> f
     return float(overlap) + float(title_overlap) + (0.5 * float(tag_overlap)) - stale_penalty
 
 
-def _stale_entry(value: object) -> bool:
-    if not isinstance(value, str) or not value.strip():
+def _stale_decay_reason(
+    *,
+    stale_after: object,
+    last_confirmed_at: object,
+    created_at: object,
+    window_days: int | None,
+) -> str | None:
+    if _stale_entry(stale_after):
+        return "stale_beyond_threshold"
+    if window_days is None:
+        return None
+    if _stale_entry(
+        None,
+        last_confirmed_at=last_confirmed_at,
+        created_at=created_at,
+        window_days=window_days,
+    ):
+        return "config_stale_window"
+    return None
+
+
+def _stale_entry(
+    value: object,
+    *,
+    last_confirmed_at: object = None,
+    created_at: object = None,
+    window_days: int | None = None,
+) -> bool:
+    stale_at = _parse_iso_timestamp(value)
+    if stale_at is not None:
+        return stale_at <= datetime.now(timezone.utc)
+    if window_days is None:
         return False
-    try:
-        return datetime.fromisoformat(value.strip().replace("Z", "+00:00")) <= datetime.now().astimezone()
-    except ValueError:
+    anchor = _parse_iso_timestamp(last_confirmed_at) or _parse_iso_timestamp(created_at)
+    if anchor is None:
         return False
+    return anchor <= datetime.now(timezone.utc) - timedelta(days=max(1, window_days))

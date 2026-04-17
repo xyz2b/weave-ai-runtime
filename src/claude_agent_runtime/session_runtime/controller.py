@@ -179,9 +179,6 @@ class SessionController:
             history = self.state.metadata.setdefault("background_memory_consolidation_tasks", [])
             if isinstance(history, list):
                 history.append(background_consolidation_task_id)
-            memory_service = self._runtime_services.memory
-            if memory_service is not None and hasattr(memory_service, "wait_for_background_consolidation"):
-                await _maybe_await(memory_service.wait_for_background_consolidation(background_consolidation_task_id))
         await self._runtime_services.hook_bus.dispatch(
             self.state.session_id,
             SessionEndPayload(

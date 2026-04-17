@@ -1,7 +1,10 @@
 import asyncio
 import json
 import shutil
+import threading
+import time
 from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from claude_agent_runtime.builtins.tools import builtin_tools
@@ -2340,6 +2343,46 @@ def test_runtime_config_memory_config_is_wired_into_memory_service(tmp_path: Pat
     assert thresholds["turn_threshold"] == 2
 
 
+def test_runtime_memory_config_override_takes_precedence_over_file_config(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    config_path = project_root / ".claude" / "memory" / "config.yaml"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text(
+        "\n".join(
+            [
+                "memory:",
+                "  retrieval:",
+                "    max_results: 9",
+                "  session_memory:",
+                "    refresh:",
+                "      turn_threshold: 11",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=project_root,
+            memory_config={
+                "retrieval": {"max_results": 1},
+                "session_memory": {"refresh": {"turn_threshold": 2}},
+            },
+        )
+    )
+    agent = AgentDefinition(name="main-router", description="router", prompt="route")
+
+    resolved = runtime.services.memory.resolve_config(
+        session_id="session-runtime-config-override",
+        agent=agent,
+        cwd=project_root,
+    )
+
+    assert resolved.source_path == config_path.resolve()
+    assert resolved.config.retrieval.max_results == 1
+    assert resolved.config.session_memory.refresh.turn_threshold == 2
+
+
 def test_memory_config_preferred_tags_and_never_capture_apply(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     project_root.mkdir()
@@ -2398,6 +2441,88 @@ def test_memory_config_preferred_tags_and_never_capture_apply(tmp_path: Path) ->
     assert result.receipts[0].reason == "config_never_capture"
 
 
+def test_memory_config_always_capture_overrides_never_capture(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    manager = MemoryManager(
+        project_root=project_root,
+        memory_config={
+            "extraction": {
+                "always_capture": ["preference"],
+                "never_capture": ["preference"],
+            },
+        },
+    )
+    agent = AgentDefinition(name="main-router", description="router", prompt="route")
+    manager.initialize_session(session_id="session-always-capture", agent=agent, cwd=project_root)
+
+    result = manager.record_turn_with_receipts(
+        session_id="session-always-capture",
+        agent=agent,
+        cwd=project_root,
+        messages=(_user_message("msg-pref", "I prefer concise answers."),),
+    )
+
+    assert len(result.persisted_documents) == 1
+    assert result.persisted_documents[0].kind == "preference"
+    assert result.receipts[0].action == "persisted"
+    assert result.receipts[0].reason != "config_never_capture"
+
+
+def test_memory_config_stale_decay_days_penalizes_old_entries_without_explicit_stale_after(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    memory_root = project_root / ".claude" / "memory" / "documents" / "shared"
+    old_confirmed_at = (datetime.now(timezone.utc) - timedelta(days=45)).replace(microsecond=0).isoformat().replace(
+        "+00:00",
+        "Z",
+    )
+    fresh_confirmed_at = (datetime.now(timezone.utc) - timedelta(days=2)).replace(microsecond=0).isoformat().replace(
+        "+00:00",
+        "Z",
+    )
+    _write_v2_memory_artifact(
+        memory_root / "old-verification.md",
+        title="Verification Workflow",
+        content="Verification runbook for repository checks after collecting logs.",
+        scope="project",
+        memory_kind="workflow_command",
+        tags=("workflow",),
+        extra_metadata={"last_confirmed_at": old_confirmed_at},
+    )
+    _write_v2_memory_artifact(
+        memory_root / "fresh-verification.md",
+        title="Verification Workflow",
+        content="Verification runbook for repository checks using pytest first.",
+        scope="project",
+        memory_kind="workflow_command",
+        tags=("workflow",),
+        extra_metadata={"last_confirmed_at": fresh_confirmed_at},
+    )
+    manager = MemoryManager(
+        project_root=project_root,
+        memory_config={
+            "retrieval": {
+                "max_results": 1,
+                "stale_decay_days": 30,
+            },
+        },
+    )
+    agent = AgentDefinition(name="main-router", description="router", prompt="route")
+    manager.initialize_session(session_id="session-stale-config", agent=agent, cwd=project_root)
+
+    fragments, trace = manager.collect_with_trace(
+        session_id="session-stale-config",
+        turn_id="turn-stale-config",
+        agent=agent,
+        cwd=project_root,
+        messages=(_user_message("msg-query", "How should I verify repository checks?"),),
+    )
+
+    assert len([fragment for fragment in fragments if "Verification runbook" in fragment]) == 1
+    assert any("using pytest first" in fragment for fragment in fragments)
+    assert "config_stale_window" in trace["decays"]
+
+
 def test_invalid_memory_config_and_partial_fallback_warn_with_safe_defaults(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     config_path = project_root / ".claude" / "memory" / "config.yaml"
@@ -2430,7 +2555,7 @@ def test_invalid_memory_config_and_partial_fallback_warn_with_safe_defaults(tmp_
         cwd=project_root,
     )
 
-    assert resolved.source_path == config_path
+    assert resolved.source_path == config_path.resolve()
     assert resolved.config.retrieval.max_results is None
     assert resolved.config.extraction.routing == {}
     assert resolved.config.session_memory.refresh.turn_threshold == 2
@@ -2491,7 +2616,9 @@ def test_multi_session_consolidation_generates_artifacts_and_topic_memory(tmp_pa
         asyncio.run(controller.close())
         task_ids = controller.state.metadata.get("background_memory_consolidation_tasks")
         if isinstance(task_ids, list) and task_ids:
-            return str(task_ids[-1])
+            task_id = str(task_ids[-1])
+            asyncio.run(services.memory.wait_for_background_consolidation(task_id))
+            return task_id
         return None
 
     first_task_id = run_session(
@@ -2593,6 +2720,7 @@ def test_consolidation_failure_rolls_back_existing_durable_memory(tmp_path: Path
     first_task_ids = first_controller.state.metadata.get("background_memory_consolidation_tasks")
     first_task_id = str(first_task_ids[-1]) if isinstance(first_task_ids, list) and first_task_ids else None
     assert first_task_id is not None
+    asyncio.run(services.memory.wait_for_background_consolidation(first_task_id))
 
     second_controller = build_controller("session-rollback-2")
     run_turn(second_controller)
@@ -2615,6 +2743,7 @@ def test_consolidation_failure_rolls_back_existing_durable_memory(tmp_path: Path
         task_ids = second_controller.state.metadata.get("background_memory_consolidation_tasks")
         second_task_id = str(task_ids[-1]) if isinstance(task_ids, list) and task_ids else None
         assert second_task_id is not None
+        asyncio.run(services.memory.wait_for_background_consolidation(second_task_id))
     finally:
         MemoryManager._merge_consolidation_proposals = original_merge
 
@@ -2637,6 +2766,156 @@ def test_consolidation_failure_rolls_back_existing_durable_memory(tmp_path: Path
         (project_root / ".claude" / "memory" / "sessions" / "session-rollback-2" / "metadata.json").read_text(encoding="utf-8")
     )
     assert rollback_metadata.get("last_consolidated_at") in (None, "")
+
+
+def test_session_close_does_not_block_on_background_consolidation(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    manager = MemoryManager(
+        project_root=project_root,
+        memory_config={
+            "consolidation": {
+                "min_closed_sessions": 1,
+                "backlog_threshold": 1,
+                "min_hours_since_last_run": 1,
+            }
+        },
+    )
+    services = RuntimeServices(
+        memory=MemoryManagerService(manager=manager),
+        context_assembler=ContextAssembler(),
+    )
+    agent = AgentDefinition(name="main-router", description="router", prompt="route")
+    model_client = FakeModelClient(
+        [
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-close-bg"}),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "ok"}),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+            ]
+        ]
+    )
+    controller = SessionController(
+        session_id="session-close-background",
+        agent=agent,
+        turn_engine=TurnEngine(
+            model_client=model_client,
+            tool_registry=ToolRegistry(),
+            runtime_services=services,
+        ),
+        transcript_store=InMemoryTranscriptStore(),
+        cwd=str(project_root),
+        system_prompt="System",
+        runtime_services=services,
+    )
+    original_execute = MemoryManager._execute_background_consolidation
+
+    def slow_execute(self, payload):
+        time.sleep(0.5)
+        return MemoryTurnResult()
+
+    MemoryManager._execute_background_consolidation = slow_execute
+    try:
+        asyncio.run(controller.start())
+        controller.enqueue_event(InboundEvent(InboundEventType.USER_PROMPT, "hello"))
+        asyncio.run(controller.run_until_idle())
+
+        started = time.perf_counter()
+        asyncio.run(controller.close())
+        elapsed = time.perf_counter() - started
+
+        task_ids = controller.state.metadata.get("background_memory_consolidation_tasks")
+        assert isinstance(task_ids, list) and task_ids
+        asyncio.run(services.memory.wait_for_background_consolidation(str(task_ids[-1])))
+    finally:
+        MemoryManager._execute_background_consolidation = original_execute
+
+    assert elapsed < 0.25
+
+
+def test_consolidation_lock_prevents_cross_manager_duplicate_runs(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    config = {
+        "consolidation": {
+            "min_closed_sessions": 1,
+            "backlog_threshold": 1,
+            "min_hours_since_last_run": 1,
+        }
+    }
+    seed_services = RuntimeServices(
+        memory=MemoryManagerService(project_root=project_root, memory_config=config),
+        context_assembler=ContextAssembler(),
+    )
+    agent = AgentDefinition(name="main-router", description="router", prompt="route")
+    model_client = FakeModelClient(
+        [
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-lock-seed"}),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "ok"}),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+            ]
+        ]
+    )
+    controller = SessionController(
+        session_id="session-lock-race",
+        agent=agent,
+        turn_engine=TurnEngine(
+            model_client=model_client,
+            tool_registry=ToolRegistry(),
+            runtime_services=seed_services,
+        ),
+        transcript_store=InMemoryTranscriptStore(),
+        cwd=str(project_root),
+        system_prompt="System",
+        runtime_services=seed_services,
+    )
+    asyncio.run(controller.start())
+    controller.enqueue_event(InboundEvent(InboundEventType.USER_PROMPT, "hello"))
+    asyncio.run(controller.run_until_idle())
+    controller._update_session_memory_status("completed")
+
+    manager_one = MemoryManager(project_root=project_root, memory_config=config)
+    manager_two = MemoryManager(project_root=project_root, memory_config=config)
+    barrier = threading.Barrier(2)
+    original_acquire = MemoryManager._acquire_consolidation_lock
+
+    def synchronized_acquire(self, context, *, run_id, session_id):
+        barrier.wait()
+        return original_acquire(self, context, run_id=run_id, session_id=session_id)
+
+    MemoryManager._acquire_consolidation_lock = synchronized_acquire
+    try:
+        async def run_both() -> None:
+            task_one = manager_one.schedule_background_consolidation(
+                session_id="session-lock-race",
+                agent=agent,
+                cwd=project_root,
+            )
+            task_two = manager_two.schedule_background_consolidation(
+                session_id="session-lock-race",
+                agent=agent,
+                cwd=project_root,
+            )
+            assert task_one is not None
+            assert task_two is not None
+            await asyncio.gather(
+                manager_one.wait_for_background_consolidation(str(task_one)),
+                manager_two.wait_for_background_consolidation(str(task_two)),
+            )
+
+        asyncio.run(run_both())
+    finally:
+        MemoryManager._acquire_consolidation_lock = original_acquire
+
+    checkpoints = list((project_root / ".claude" / "memory" / "consolidations" / "checkpoints").glob("*.json"))
+    consolidation_manifest = json.loads(
+        (project_root / ".claude" / "memory" / "manifests" / "consolidation-manifest.json").read_text(encoding="utf-8")
+    )
+    assert len(checkpoints) == 1
+    assert len(consolidation_manifest["recent_runs"]) == 1
+    assert consolidation_manifest["recent_runs"][-1]["status"] == "success"
+    assert consolidation_manifest["active_lock"] is None
 
 
 def test_phase_one_and_two_contracts_hold_with_consolidation_enabled(tmp_path: Path) -> None:

@@ -141,6 +141,7 @@ class ResolvedMemoryScope:
     consolidation_checkpoints_dir: Path
     consolidation_logs_dir: Path
     consolidation_staging_dir: Path
+    consolidation_lock_path: Path
 
     def agent_namespace_root(self, agent_name: str) -> Path:
         return self.agents_dir / normalize_memory_segment(agent_name, default="agent")

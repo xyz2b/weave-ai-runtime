@@ -98,9 +98,7 @@ def resolve_memory_config(
     source_path: Path | None = None
 
     merged_payload: dict[str, Any] = {}
-    if isinstance(override, Mapping):
-        merged_payload = _deep_merge(merged_payload, dict(override))
-    elif isinstance(override, MemoryRuntimeConfig):
+    if isinstance(override, MemoryRuntimeConfig):
         return ResolvedMemoryConfig(config=override, warnings=(), source_path=None)
 
     for candidate in _config_paths(memory_root):
@@ -123,6 +121,9 @@ def resolve_memory_config(
             break
         merged_payload = _deep_merge(merged_payload, payload)
         break
+
+    if isinstance(override, Mapping):
+        merged_payload = _deep_merge(merged_payload, dict(override))
 
     config = parse_memory_config_payload(merged_payload, warnings=warnings)
     return ResolvedMemoryConfig(
