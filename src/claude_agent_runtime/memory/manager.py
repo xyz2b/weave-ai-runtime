@@ -302,6 +302,23 @@ class LongTermMemory:
             }
         )
 
+        session_open_threads = self._load_session_open_threads_document(context)
+        selected_open_threads: tuple[MemoryDocument, ...] = ()
+        if session_open_threads is not None and session_open_threads.path not in seen_paths:
+            selected_open_threads = (session_open_threads,)
+            materialized.append(session_open_threads)
+            seen_paths.add(session_open_threads.path)
+            applied_filters.append("layer:session_open_threads")
+            selected_doc_ids.append(str(session_open_threads.path.relative_to(context.memory_root)))
+        budget_decisions.append(
+            {
+                "layer": "session_open_threads",
+                "budget": 1,
+                "available": 1 if session_open_threads is not None else 0,
+                "selected": len(selected_open_threads),
+            }
+        )
+
         trace = {
             "applied_filters": tuple(dict.fromkeys(applied_filters)),
             "selected_doc_ids": tuple(selected_doc_ids),
@@ -406,6 +423,14 @@ class LongTermMemory:
         if not summary_path.exists() or not summary_path.is_file():
             return None
         relative_path = summary_path.relative_to(context.memory_root).as_posix()
+        documents = self.provider.materialize_documents(context, (relative_path,))
+        return documents[0] if documents else None
+
+    def _load_session_open_threads_document(self, context: ResolvedMemoryScope) -> MemoryDocument | None:
+        open_threads_path = context.session_open_threads_path()
+        if not open_threads_path.exists() or not open_threads_path.is_file():
+            return None
+        relative_path = open_threads_path.relative_to(context.memory_root).as_posix()
         documents = self.provider.materialize_documents(context, (relative_path,))
         return documents[0] if documents else None
 

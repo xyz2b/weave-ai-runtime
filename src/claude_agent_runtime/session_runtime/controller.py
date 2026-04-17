@@ -191,6 +191,7 @@ class SessionController:
 
         while self.state.queued_commands:
             command = self.state.queued_commands.pop(0)
+            prior_status = self.state.status
             self.state.status = SessionStatus.RUNNING
             self.state.active_turn_id = uuid4().hex
             last_terminal = None
@@ -261,7 +262,11 @@ class SessionController:
                     turn_messages,
                 ):
                     await self._persist_turn_memory(turn_messages, terminal=last_terminal)
-                self._refresh_session_memory(turn_messages, terminal=last_terminal)
+                self._refresh_session_memory(
+                    turn_messages,
+                    terminal=last_terminal,
+                    prior_status=prior_status,
+                )
             self.state.active_turn_id = None
             if self.state.status == SessionStatus.INTERRUPTED:
                 break
@@ -444,6 +449,7 @@ class SessionController:
         messages: tuple[RuntimeMessage, ...],
         *,
         terminal: Any,
+        prior_status: SessionStatus,
     ) -> None:
         if terminal is None or terminal.abort_reason is not None or terminal.error is not None:
             return
@@ -457,7 +463,8 @@ class SessionController:
             metadata = _default_session_metadata(session_id=self.state.session_id, status="active")
 
         metadata["status"] = "waiting" if self.state.status == SessionStatus.WAITING else "active"
-        metadata["updated_at"] = _utc_now_iso()
+        updated_at = _utc_now_iso()
+        metadata["updated_at"] = updated_at
         metadata["turns_since_summary"] = int(metadata.get("turns_since_summary", 0)) + 1
         metadata["chars_since_summary"] = int(metadata.get("chars_since_summary", 0)) + sum(
             len(message.text.strip()) for message in messages if message.text.strip()
@@ -466,34 +473,47 @@ class SessionController:
             messages
         )
 
-        if _should_refresh_session_summary(context, metadata):
-            refreshed_at = _utc_now_iso()
+        open_threads_path = context.session_open_threads_path()
+        existing_threads = _read_open_threads(open_threads_path)
+        open_threads = _reconcile_open_threads(
+            path=open_threads_path,
+            existing_threads=existing_threads,
+            candidate=_session_thread_candidate(
+                messages=messages,
+                agent_name=self._agent.name,
+                terminal=terminal,
+            ),
+            agent_name=self._agent.name,
+            prior_status=prior_status,
+            prompt_text=_primary_user_prompt_text(messages),
+        )
+        open_threads_changed = open_threads != existing_threads
+        metadata["open_thread_count"] = len(open_threads)
+
+        if _should_refresh_session_summary(
+            context,
+            metadata,
+            open_threads_changed=open_threads_changed,
+            prior_status=prior_status,
+        ):
             context.session_summary_path().write_text(
                 _render_session_summary(
                     session_id=self.state.session_id,
                     agent_name=self._agent.name,
                     turn_id=self.state.active_turn_id,
                     messages=self._messages,
+                    open_threads=open_threads,
                     status=metadata["status"],
-                    updated_at=refreshed_at,
+                    updated_at=updated_at,
                 ),
                 encoding="utf-8",
             )
             metadata["summary_version"] = int(metadata.get("summary_version", 0)) + 1
-            metadata["last_summary_refresh_at"] = refreshed_at
+            metadata["last_summary_refresh_at"] = updated_at
             metadata["turns_since_summary"] = 0
             metadata["chars_since_summary"] = 0
             metadata["tool_calls_since_summary"] = 0
 
-        _upsert_open_thread(
-            context.session_open_threads_path(),
-            _session_thread_candidate(
-                messages=messages,
-                agent_name=self._agent.name,
-                terminal=terminal,
-            ),
-        )
-        metadata["open_thread_count"] = _count_open_threads(context.session_open_threads_path())
         _write_json_file(context.session_metadata_path(), metadata)
         _upsert_session_manifest(context, metadata)
 
@@ -625,12 +645,14 @@ def _upsert_session_manifest(context: Any, metadata: dict[str, Any]) -> None:
     sessions = [entry for entry in raw_sessions if isinstance(entry, dict)] if isinstance(raw_sessions, list) else []
     session_root = context.session_root()
     checkpoint_count = len(list((session_root / "checkpoints").glob("*.json")))
+    open_thread_count = _count_open_threads(context.session_open_threads_path())
     record = {
         "session_id": metadata.get("session_id", context.session_id),
         "status": metadata.get("status", "active"),
         "path": session_root.relative_to(context.memory_root).as_posix() + "/",
         "has_summary": context.session_summary_path().exists(),
-        "has_open_threads": context.session_open_threads_path().exists(),
+        "has_open_threads": open_thread_count > 0,
+        "open_thread_count": open_thread_count,
         "checkpoint_count": checkpoint_count,
         "last_updated_at": metadata.get("updated_at") or _utc_now_iso(),
         "ready_for_consolidation": metadata.get("status") not in {"active", "waiting"},
@@ -660,8 +682,18 @@ def _count_tool_events(messages: tuple[RuntimeMessage, ...]) -> int:
     return total
 
 
-def _should_refresh_session_summary(context: Any, metadata: dict[str, Any]) -> bool:
+def _should_refresh_session_summary(
+    context: Any,
+    metadata: dict[str, Any],
+    *,
+    open_threads_changed: bool = False,
+    prior_status: SessionStatus | None = None,
+) -> bool:
     if not context.session_summary_path().exists():
+        return True
+    if open_threads_changed:
+        return True
+    if prior_status == SessionStatus.WAITING and metadata.get("status") != "waiting":
         return True
     return (
         int(metadata.get("turns_since_summary", 0)) >= _SESSION_SUMMARY_TURN_THRESHOLD
@@ -676,22 +708,27 @@ def _render_session_summary(
     agent_name: str,
     turn_id: str | None,
     messages: list[RuntimeMessage],
+    open_threads: list[dict[str, str]],
     status: str,
     updated_at: str,
 ) -> str:
     objective = _latest_message_text(messages, role=MessageRole.USER) or "Continue the active session."
     assistant_update = _latest_message_text(messages, role=MessageRole.ASSISTANT) or "No assistant response recorded yet."
-    notification_update = _latest_message_text(messages, role=MessageRole.NOTIFICATION)
+    decisions = _session_decisions(messages)
     current_state = [
         f"Session status: {status}.",
         f"Messages recorded: {len(messages)}.",
+        f"Open threads: {len(open_threads)} active.",
         f"Latest assistant update: {_truncate_text(assistant_update)}",
     ]
-    important_outcomes = notification_update or assistant_update
-    next_step = (
-        "Wait for the blocker to clear or for new user input before continuing."
-        if status == "waiting"
-        else "Continue the active objective from the latest confirmed state."
+    if open_threads:
+        current_state.append(f"Most urgent thread: {_truncate_text(open_threads[0]['summary'])}")
+    constraints = _session_constraints(messages, agent_name=agent_name, open_threads=open_threads)
+    important_outcomes = _session_recent_outcomes(messages, open_threads=open_threads)
+    next_steps = _session_next_steps(
+        messages,
+        status=status,
+        open_threads=open_threads,
     )
     source_turn_id = turn_id or "unknown"
     return (
@@ -701,20 +738,132 @@ def _render_session_summary(
         "## Current State\n"
         + "".join(f"- {line}\n" for line in current_state)
         + "\n## Key Decisions\n"
-        "- No durable session decisions recorded yet.\n\n"
-        "## Active Constraints\n"
-        f"- Current agent: {agent_name}.\n"
-        "- Session continuity is tracked separately from transcript compaction.\n\n"
-        "## Important Recent Outcomes\n"
-        f"- {_truncate_text(important_outcomes)}\n\n"
-        "## Likely Next Steps\n"
-        f"- {next_step}\n\n"
-        "## Provenance\n"
+        + "".join(f"- {line}\n" for line in decisions)
+        + "\n## Active Constraints\n"
+        + "".join(f"- {line}\n" for line in constraints)
+        + "\n## Important Recent Outcomes\n"
+        + "".join(f"- {line}\n" for line in important_outcomes)
+        + "\n## Likely Next Steps\n"
+        + "".join(f"- {line}\n" for line in next_steps)
+        + "\n## Provenance\n"
         f"- session_id: {session_id}\n"
         f"- updated_at: {updated_at}\n"
         "- source_turn_ids:\n"
         f"  - {source_turn_id}\n"
     )
+
+
+def _session_decisions(messages: list[RuntimeMessage]) -> list[str]:
+    decisions = _collect_recent_message_texts(
+        messages,
+        roles=(MessageRole.NOTIFICATION, MessageRole.ASSISTANT),
+        limit=3,
+        include_questions=False,
+    )
+    return decisions or ["Continue from the latest confirmed turn output."]
+
+
+def _session_constraints(
+    messages: list[RuntimeMessage],
+    *,
+    agent_name: str,
+    open_threads: list[dict[str, str]],
+) -> list[str]:
+    constraints = [f"Current agent: {agent_name}.", "Session continuity is tracked separately from transcript compaction."]
+    constraints.extend(_recent_user_constraints(messages))
+    if open_threads:
+        constraints.append(f"Keep {len(open_threads)} open thread(s) in sync with follow-up turns.")
+    return _dedupe_ordered(constraints)
+
+
+def _session_recent_outcomes(
+    messages: list[RuntimeMessage],
+    *,
+    open_threads: list[dict[str, str]],
+) -> list[str]:
+    outcomes = _collect_recent_message_texts(
+        messages,
+        roles=(MessageRole.NOTIFICATION, MessageRole.ASSISTANT),
+        limit=3,
+    )
+    if open_threads:
+        outcomes.append(f"Outstanding thread: {_truncate_text(open_threads[0]['summary'])}")
+    return _dedupe_ordered(outcomes) or ["No assistant response recorded yet."]
+
+
+def _session_next_steps(
+    messages: list[RuntimeMessage],
+    *,
+    status: str,
+    open_threads: list[dict[str, str]],
+) -> list[str]:
+    if open_threads:
+        return _dedupe_ordered(
+            [_truncate_text(thread["next_action"]) for thread in open_threads if thread.get("next_action")]
+        ) or ["Resolve the active open thread before expanding scope."]
+    if status == "waiting":
+        return ["Wait for the blocker to clear or for new user input before continuing."]
+    assistant_update = _latest_message_text(messages, role=MessageRole.ASSISTANT)
+    if assistant_update.endswith("?"):
+        return ["Wait for the user to answer the outstanding question."]
+    return ["Continue the active objective from the latest confirmed state."]
+
+
+def _collect_recent_message_texts(
+    messages: list[RuntimeMessage],
+    *,
+    roles: tuple[MessageRole, ...],
+    limit: int,
+    include_questions: bool = True,
+) -> list[str]:
+    collected: list[str] = []
+    seen: set[str] = set()
+    for message in reversed(messages):
+        if message.role not in roles or not message.text.strip():
+            continue
+        text = _truncate_text(message.text.strip())
+        if not include_questions and text.endswith("?"):
+            continue
+        dedupe_key = text.lower()
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        collected.append(text)
+        if len(collected) >= limit:
+            break
+    collected.reverse()
+    return collected
+
+
+def _recent_user_constraints(messages: list[RuntimeMessage]) -> list[str]:
+    markers = ("prefer", "keep", "avoid", "use ", "must", "always", "never", "don't", "do not", "remember")
+    constraints: list[str] = []
+    for message in reversed(messages):
+        if message.role != MessageRole.USER or not message.text.strip():
+            continue
+        text = " ".join(message.text.strip().split())
+        lowered = text.lower()
+        if any(marker in lowered for marker in markers):
+            constraints.append(_truncate_text(text))
+        if len(constraints) >= 2:
+            break
+    constraints.reverse()
+    return constraints
+
+
+def _dedupe_ordered(values: list[str]) -> list[str]:
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        normalized = value.strip()
+        if not normalized:
+            continue
+        dedupe_key = normalized.lower()
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        deduped.append(normalized)
+    return deduped
 
 
 def _latest_message_text(messages: list[RuntimeMessage], *, role: MessageRole) -> str:
@@ -731,17 +880,58 @@ def _truncate_text(value: str, *, limit: int = 180) -> str:
     return normalized[: limit - 3].rstrip() + "..."
 
 
-def _upsert_open_thread(path: Path, thread: dict[str, str] | None) -> None:
-    if thread is None:
-        if not path.exists():
-            path.write_text("# Open Threads\n\n", encoding="utf-8")
-        return
-    threads = _read_open_threads(path)
-    deduped = [existing for existing in threads if existing.get("thread_key") != thread["thread_key"]]
-    deduped.append(thread)
-    deduped.sort(key=lambda entry: entry["thread_key"])
+def _write_open_threads(path: Path, threads: list[dict[str, str]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(_render_open_threads(deduped), encoding="utf-8")
+    path.write_text(_render_open_threads(threads), encoding="utf-8")
+
+
+def _reconcile_open_threads(
+    *,
+    path: Path,
+    existing_threads: list[dict[str, str]],
+    candidate: dict[str, str] | None,
+    agent_name: str,
+    prior_status: SessionStatus,
+    prompt_text: str,
+) -> list[dict[str, str]]:
+    owner = normalize_memory_segment(agent_name, default="agent")
+    prompt_subject = _thread_subject(prompt_text) if prompt_text else None
+    candidate_subject = _thread_subject_from_key(candidate["thread_key"]) if candidate is not None else None
+    resolved_keys: set[str] = set()
+    for thread in existing_threads:
+        if thread.get("owner") != owner:
+            continue
+        thread_key = thread.get("thread_key", "")
+        if candidate is not None:
+            if (
+                candidate_subject is not None
+                and _thread_subject_from_key(thread_key) == candidate_subject
+                and thread_key != candidate["thread_key"]
+            ):
+                resolved_keys.add(thread_key)
+            continue
+        if thread.get("status") == "waiting_user":
+            resolved_keys.add(thread_key)
+            continue
+        if prior_status == SessionStatus.WAITING and thread.get("status") == "blocked":
+            resolved_keys.add(thread_key)
+            continue
+        if prompt_subject is not None and _thread_subject_from_key(thread_key) == prompt_subject:
+            resolved_keys.add(thread_key)
+    threads = [thread for thread in existing_threads if thread.get("thread_key") not in resolved_keys]
+    if candidate is not None:
+        threads = [thread for thread in threads if thread.get("thread_key") != candidate["thread_key"]]
+        threads.append(candidate)
+    threads.sort(key=lambda entry: entry["thread_key"])
+    _write_open_threads(path, threads)
+    return threads
+
+
+def _thread_subject_from_key(thread_key: str) -> str | None:
+    parts = thread_key.split(":", 2)
+    if len(parts) != 3:
+        return None
+    return parts[1] or None
 
 
 def _read_open_threads(path: Path) -> list[dict[str, str]]:

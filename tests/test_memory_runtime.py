@@ -691,6 +691,7 @@ def test_session_memory_artifacts_refresh_and_inject_on_follow_up_turn(tmp_path:
     summary_text = summary_path.read_text(encoding="utf-8")
     assert "## Current Objective" in summary_text
     assert "session memory lifecycle" in summary_text
+    assert "No durable session decisions recorded yet." not in summary_text
 
     refreshed_metadata = json.loads((session_root / "metadata.json").read_text(encoding="utf-8"))
     assert refreshed_metadata["summary_version"] == 1
@@ -703,7 +704,8 @@ def test_session_memory_artifacts_refresh_and_inject_on_follow_up_turn(tmp_path:
     session_record = session_manifest["sessions"][0]
     assert session_record["session_id"] == "session-summary-lifecycle"
     assert session_record["has_summary"] is True
-    assert session_record["has_open_threads"] is True
+    assert session_record["has_open_threads"] is False
+    assert session_record["open_thread_count"] == 0
 
     controller.enqueue_event(
         InboundEvent(
@@ -843,6 +845,198 @@ def test_open_threads_blocked_turn_uses_stable_thread_key_and_upserts(tmp_path: 
     )
     assert metadata["open_thread_count"] == 1
     assert controller.state.status == SessionStatus.WAITING
+
+
+def test_blocked_open_thread_surfaces_pre_turn_and_clears_after_resolution(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    model_client = FakeModelClient(
+        [
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-blocked-clear-1"}),
+                ModelStreamEvent(
+                    ModelStreamEventType.CONTENT_DELTA,
+                    {"text": "The fixture mismatch is still blocking progress."},
+                ),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+            ],
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-blocked-clear-2"}),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "The fixture mismatch is fixed."}),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+            ],
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-blocked-clear-3"}),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "Continue."}),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+            ],
+        ]
+    )
+    services = RuntimeServices(
+        memory=MemoryManagerService(project_root=project_root),
+        context_assembler=ContextAssembler(),
+    )
+    services.hook_bus.register(
+        session_id="session-open-threads-clear",
+        owner="host:blocker-once",
+        phase=RuntimeHookPhase.STOP,
+        once=True,
+        handler=lambda _payload: {"continue_execution": False},
+    )
+    controller = SessionController(
+        session_id="session-open-threads-clear",
+        agent=AgentDefinition(name="main-router", description="router", prompt="route"),
+        turn_engine=TurnEngine(
+            model_client=model_client,
+            tool_registry=ToolRegistry(),
+            runtime_services=services,
+        ),
+        transcript_store=InMemoryTranscriptStore(),
+        cwd=str(project_root),
+        system_prompt="System",
+        runtime_services=services,
+    )
+
+    asyncio.run(controller.start())
+    controller.enqueue_event(
+        InboundEvent(
+            InboundEventType.USER_PROMPT,
+            "Investigate pytest fixture mismatch.",
+        )
+    )
+    asyncio.run(controller.run_until_idle())
+
+    controller.enqueue_event(
+        InboundEvent(
+            InboundEventType.USER_PROMPT,
+            "Investigate pytest fixture mismatch.",
+        )
+    )
+    asyncio.run(controller.run_until_idle())
+
+    second_fragments = model_client.requests[1].turn_context.memory_fragments
+    assert any("Open Threads" in fragment for fragment in second_fragments)
+    assert any("fixture mismatch is still blocking progress" in fragment for fragment in second_fragments)
+
+    open_threads_path = project_root / ".claude" / "memory" / "sessions" / "session-open-threads-clear" / "open-threads.md"
+    assert open_threads_path.read_text(encoding="utf-8") == "# Open Threads\n"
+    metadata = json.loads(
+        (
+            project_root
+            / ".claude"
+            / "memory"
+            / "sessions"
+            / "session-open-threads-clear"
+            / "metadata.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert metadata["open_thread_count"] == 0
+
+    controller.enqueue_event(
+        InboundEvent(
+            InboundEventType.USER_PROMPT,
+            "What should we continue with now?",
+        )
+    )
+    asyncio.run(controller.run_until_idle())
+
+    third_fragments = model_client.requests[2].turn_context.memory_fragments
+    assert not any("Open Threads" in fragment for fragment in third_fragments)
+
+
+def test_waiting_user_open_thread_surfaces_pre_turn_and_clears_after_answer(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    model_client = FakeModelClient(
+        [
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-waiting-user-1"}),
+                ModelStreamEvent(
+                    ModelStreamEventType.CONTENT_DELTA,
+                    {"text": "Which memory scope should we use for this workflow?"},
+                ),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+            ],
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-waiting-user-2"}),
+                ModelStreamEvent(
+                    ModelStreamEventType.CONTENT_DELTA,
+                    {"text": "Use project scope and keep the flow deterministic."},
+                ),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+            ],
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-waiting-user-3"}),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "Next steps are clear."}),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+            ],
+        ]
+    )
+    services = RuntimeServices(
+        memory=MemoryManagerService(project_root=project_root),
+        context_assembler=ContextAssembler(),
+    )
+    controller = SessionController(
+        session_id="session-waiting-user-threads",
+        agent=AgentDefinition(name="main-router", description="router", prompt="route"),
+        turn_engine=TurnEngine(
+            model_client=model_client,
+            tool_registry=ToolRegistry(),
+            runtime_services=services,
+        ),
+        transcript_store=InMemoryTranscriptStore(),
+        cwd=str(project_root),
+        system_prompt="System",
+        runtime_services=services,
+    )
+
+    asyncio.run(controller.start())
+    controller.enqueue_event(
+        InboundEvent(
+            InboundEventType.USER_PROMPT,
+            "Help me decide the memory scope for this workflow.",
+        )
+    )
+    asyncio.run(controller.run_until_idle())
+
+    controller.enqueue_event(
+        InboundEvent(
+            InboundEventType.USER_PROMPT,
+            "Use project scope and keep the flow deterministic.",
+        )
+    )
+    asyncio.run(controller.run_until_idle())
+
+    second_fragments = model_client.requests[1].turn_context.memory_fragments
+    assert any("Open Threads" in fragment for fragment in second_fragments)
+    assert any("Which memory scope should we use" in fragment for fragment in second_fragments)
+
+    open_threads_path = (
+        project_root / ".claude" / "memory" / "sessions" / "session-waiting-user-threads" / "open-threads.md"
+    )
+    assert open_threads_path.read_text(encoding="utf-8") == "# Open Threads\n"
+    metadata = json.loads(
+        (
+            project_root
+            / ".claude"
+            / "memory"
+            / "sessions"
+            / "session-waiting-user-threads"
+            / "metadata.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert metadata["open_thread_count"] == 0
+
+    controller.enqueue_event(
+        InboundEvent(
+            InboundEventType.USER_PROMPT,
+            "What should we do next?",
+        )
+    )
+    asyncio.run(controller.run_until_idle())
+
+    third_fragments = model_client.requests[2].turn_context.memory_fragments
+    assert not any("Open Threads" in fragment for fragment in third_fragments)
 
 
 def test_session_memory_resume_preserves_summary_continuity(tmp_path: Path) -> None:
