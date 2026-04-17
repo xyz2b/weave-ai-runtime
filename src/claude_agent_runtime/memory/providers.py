@@ -7,9 +7,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Protocol, Sequence
 
-from .models import MemoryDocument, MemoryEntry, ResolvedMemoryScope
+from .models import MemoryDocument, MemoryEntry, ResolvedMemoryScope, normalize_memory_segment
 from .schema import (
     AGENT_MANIFEST_KIND,
+    AGENT_NAMESPACE_MANIFEST_KIND,
     CONSOLIDATION_MANIFEST_KIND,
     DEFAULT_NAMESPACE,
     LONG_TERM_MANIFEST_KIND,
@@ -96,22 +97,38 @@ class FileMemoryProvider:
             return ()
 
         self._ensure_layout(context)
-        existing_documents, _ = self._scan_long_term_documents(context)
-        known = _existing_fingerprints(existing_documents)
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        shared_documents: tuple[MemoryDocument, ...] | None = None
+        namespace_documents: dict[str, tuple[MemoryDocument, ...]] = {}
+        known_by_target: dict[tuple[str, str | None], dict[str, Path]] = {}
+        touched_agent_namespaces: set[str] = set()
 
         persisted: list[MemoryDocument] = []
         for index, entry in enumerate(entries, start=1):
             normalized = _normalize_content(entry.content)
             if not normalized:
                 continue
+
+            metadata = build_memory_artifact_metadata(entry, context=context)
+            metadata, target_key, target_dir = _persistence_target_for_metadata(context, metadata)
+            known = known_by_target.get(target_key)
+            if known is None:
+                if target_key[0] == "shared":
+                    if shared_documents is None:
+                        shared_documents, _ = self._scan_long_term_documents(context)
+                    known = _existing_fingerprints(shared_documents)
+                else:
+                    agent_name = str(target_key[1])
+                    if agent_name not in namespace_documents:
+                        namespace_documents[agent_name], _ = self._scan_agent_namespace_documents(context, agent_name)
+                    known = _existing_fingerprints(namespace_documents[agent_name])
+                known_by_target[target_key] = known
+
             fingerprint = content_fingerprint(normalized)
             if fingerprint in known:
                 continue
 
-            metadata = build_memory_artifact_metadata(entry, context=context)
             slug = _slugify(entry.title) or f"memory-{index}"
-            target_dir = _directory_for_metadata(context, metadata)
             target_dir.mkdir(parents=True, exist_ok=True)
             path = target_dir / f"{timestamp}-{slug}-{fingerprint}.md"
             title = entry.title.strip() or "Memory note"
@@ -130,6 +147,11 @@ class FileMemoryProvider:
                     metadata=metadata,
                 )
             )
+            if target_key[0] == "agent":
+                touched_agent_namespaces.add(str(target_key[1]))
+
+        for agent_name in sorted(touched_agent_namespaces):
+            self._refresh_agent_namespace_manifest(context, agent_name)
         self._refresh_manifests(context)
         return tuple(persisted)
 
@@ -221,6 +243,29 @@ class FileMemoryProvider:
         context.agent_manifest_path.write_text(json.dumps(agent_manifest, indent=2) + "\n", encoding="utf-8")
         return documents, invalid_count
 
+    def _refresh_agent_namespace_manifest(
+        self,
+        context: ResolvedMemoryScope,
+        agent_name: str,
+    ) -> None:
+        normalized_agent = normalize_memory_segment(agent_name, default="agent")
+        documents, invalid_count = self._scan_agent_namespace_documents(context, normalized_agent)
+        manifest = build_manifest_envelope(
+            manifest_kind=AGENT_NAMESPACE_MANIFEST_KIND,
+            boundary_scope=context.scope,
+            payload_key="entries",
+            payload=[self._agent_namespace_manifest_entry(context, normalized_agent, document) for document in documents],
+            stats={
+                "invalid_entry_count": invalid_count,
+                "stale_entry_count": sum(_is_stale(document.metadata.get("stale_after")) for document in documents),
+            },
+        )
+        manifest["agent_name"] = normalized_agent
+        manifest["namespace"] = f"agent:{normalized_agent}"
+        manifest_path = context.agent_namespace_manifest_path(normalized_agent)
+        manifest_path.parent.mkdir(parents=True, exist_ok=True)
+        manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+
     def _scan_long_term_documents(self, context: ResolvedMemoryScope) -> tuple[tuple[MemoryDocument, ...], int]:
         if not context.documents_dir.exists():
             return (), 0
@@ -301,6 +346,17 @@ class FileMemoryProvider:
             entry["stale_after"] = metadata["stale_after"]
         if "confidence" in metadata:
             entry["confidence"] = metadata["confidence"]
+        return entry
+
+    def _agent_namespace_manifest_entry(
+        self,
+        context: ResolvedMemoryScope,
+        agent_name: str,
+        document: MemoryDocument,
+    ) -> dict[str, Any]:
+        entry = self._long_term_manifest_entry(context, document)
+        entry["namespace"] = f"agent:{agent_name}"
+        entry["agent_namespace"] = agent_name
         return entry
 
     def _agent_namespaces(self, context: ResolvedMemoryScope) -> list[dict[str, Any]]:
@@ -386,14 +442,59 @@ def _slugify(value: str) -> str:
 
 
 def _directory_for_metadata(context: ResolvedMemoryScope, metadata: Mapping[str, Any]) -> Path:
+    namespace = str(metadata.get("namespace") or DEFAULT_NAMESPACE).strip()
+    if namespace.startswith("agent:"):
+        normalized_agent = normalize_memory_segment(
+            str(metadata.get("agent_namespace") or namespace.partition(":")[2]),
+            default="agent",
+        )
+        documents_dir = context.agent_namespace_documents_dir(normalized_agent)
+        memory_kind = str(metadata.get("memory_kind") or "").strip()
+        if memory_kind in {"agent_workflow", "heuristic"}:
+            return documents_dir / "heuristics"
+        if memory_kind in {"workflow", "agent_workflow_step"}:
+            return documents_dir / "workflows"
+        return documents_dir / "durable-notes"
+
     memory_kind = str(metadata.get("memory_kind") or "").strip()
     if memory_kind == "preference":
         return context.preferences_documents_dir
-    if memory_kind in {"project_convention", "convention"}:
+    if memory_kind in {"project_convention", "convention", "workflow_command"}:
         return context.conventions_documents_dir
-    if memory_kind == "topic":
+    if memory_kind in {"topic", "topic_memory"}:
         return context.topics_documents_dir
     return context.shared_documents_dir
+
+
+def _persistence_target_for_metadata(
+    context: ResolvedMemoryScope,
+    metadata: Mapping[str, Any],
+) -> tuple[dict[str, Any], tuple[str, str | None], Path]:
+    normalized = dict(metadata)
+    namespace = str(normalized.get("namespace") or DEFAULT_NAMESPACE).strip() or DEFAULT_NAMESPACE
+    if namespace == DEFAULT_NAMESPACE:
+        if normalized.get("agent_namespace") not in {None, ""}:
+            raise ValueError("Shared durable memory entries cannot declare an agent namespace")
+        normalized["namespace"] = DEFAULT_NAMESPACE
+        normalized["agent_namespace"] = None
+        return normalized, ("shared", None), _directory_for_metadata(context, normalized)
+
+    if namespace.startswith("agent:"):
+        requested_agent = namespace.partition(":")[2].strip()
+        declared_agent = normalized.get("agent_namespace")
+        if (
+            isinstance(declared_agent, str)
+            and declared_agent.strip()
+            and requested_agent
+            and declared_agent.strip() != requested_agent
+        ):
+            raise ValueError("Agent durable memory namespace metadata does not match the target namespace")
+        agent_name = normalize_memory_segment(str(declared_agent or requested_agent), default="agent")
+        normalized["namespace"] = f"agent:{agent_name}"
+        normalized["agent_namespace"] = agent_name
+        return normalized, ("agent", agent_name), _directory_for_metadata(context, normalized)
+
+    raise ValueError(f"Unsupported durable memory namespace: {namespace}")
 
 
 def _read_json_document(path: Path) -> Mapping[str, Any] | None:

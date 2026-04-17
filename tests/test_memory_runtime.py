@@ -1,6 +1,7 @@
 import asyncio
 import json
 import shutil
+from dataclasses import replace
 from pathlib import Path
 
 from claude_agent_runtime.builtins.tools import builtin_tools
@@ -10,11 +11,20 @@ from claude_agent_runtime.definitions import (
     PermissionBehavior,
     PermissionDecision,
 )
-from claude_agent_runtime.memory import MemoryManager, MemoryManagerService
+from claude_agent_runtime.execution_policy import build_root_execution_policy, resolve_agent_execution_policy
+from claude_agent_runtime.hooks import RuntimeHookPhase
+from claude_agent_runtime.memory import MemoryEntry, MemoryManager, MemoryManagerService
+from claude_agent_runtime.permissions import PermissionContext
 from claude_agent_runtime.registries import AgentRegistry, ToolRegistry
 from claude_agent_runtime.runtime_kernel import BuiltinPackConfig, RuntimeConfig, assemble_runtime
 from claude_agent_runtime.runtime_services import RuntimeServices
-from claude_agent_runtime.session_runtime import InMemoryTranscriptStore, InboundEvent, InboundEventType, SessionController
+from claude_agent_runtime.session_runtime import (
+    InMemoryTranscriptStore,
+    InboundEvent,
+    InboundEventType,
+    SessionController,
+    SessionStatus,
+)
 from claude_agent_runtime.tasking import TaskManager
 from claude_agent_runtime.tool_runtime import ToolCall, ToolCallStatus, ToolContext, ToolScheduler
 from claude_agent_runtime.turn_engine import (
@@ -449,6 +459,519 @@ def test_agent_namespace_document_must_match_its_namespace_path(tmp_path: Path) 
         messages=(_user_message("msg-wrong-agent", "How should I run pytest?"),),
     )
     assert not any("Wrong Namespace" in fragment for fragment in fragments)
+
+
+def test_agent_namespace_durable_writes_refresh_namespace_manifest(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    manager = MemoryManager(project_root=project_root)
+    agent = AgentDefinition(name="main-router", description="router", prompt="route")
+    manager.initialize_session(session_id="session-agent-write", agent=agent, cwd=project_root)
+
+    persisted = manager.persist_agent_namespace_entries(
+        session_id="session-agent-write",
+        agent=agent,
+        cwd=project_root,
+        entries=(
+            MemoryEntry(
+                title="Pytest Heuristic",
+                content="Run pytest -q first for targeted verification.",
+                metadata={
+                    "memory_kind": "agent_workflow",
+                    "tags": ["testing", "heuristic"],
+                    "conflict_key": "agent_workflow.main-router.python-tests",
+                },
+            ),
+        ),
+    )
+
+    assert len(persisted) == 1
+    path = persisted[0].path
+    assert path.parent == project_root / ".claude" / "memory" / "agents" / "main-router" / "documents" / "heuristics"
+    raw_document = path.read_text(encoding="utf-8")
+    assert "namespace: agent:main-router" in raw_document
+    assert "agent_namespace: main-router" in raw_document
+
+    namespace_manifest = json.loads(
+        (project_root / ".claude" / "memory" / "agents" / "main-router" / "namespace-manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert namespace_manifest["manifest_kind"] == "agent_namespace"
+    assert namespace_manifest["agent_name"] == "main-router"
+    assert namespace_manifest["stats"]["entry_count"] == 1
+    assert namespace_manifest["entries"][0]["path"].startswith("agents/main-router/documents/heuristics/")
+    assert namespace_manifest["entries"][0]["agent_namespace"] == "main-router"
+
+    agent_manifest = json.loads(
+        (project_root / ".claude" / "memory" / "manifests" / "agent-manifest.json").read_text(encoding="utf-8")
+    )
+    assert agent_manifest["namespaces"][0]["agent_name"] == "main-router"
+    assert agent_manifest["namespaces"][0]["entry_count"] == 1
+    assert agent_manifest["namespaces"][0]["conflict_keys"] == ["agent_workflow.main-router.python-tests"]
+
+
+def test_agent_namespace_durable_writes_honor_effective_scope_ceiling_and_active_namespace(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    workspace = project_root / "workspace"
+    workspace.mkdir(parents=True)
+    manager = MemoryManager(project_root=project_root)
+    parent_agent = AgentDefinition(
+        name="main-router",
+        description="router",
+        prompt="route",
+        memory=MemoryScope.LOCAL,
+    )
+    worker_agent = AgentDefinition(
+        name="worker",
+        description="worker",
+        prompt="work",
+        memory=MemoryScope.PROJECT,
+    )
+    parent_policy = build_root_execution_policy(
+        parent_agent,
+        tool_pool=(),
+        skill_pool=(),
+        permission_context=PermissionContext(session_id="session-agent-ceiling"),
+        memory_scope=parent_agent.memory,
+    )
+    worker_policy = resolve_agent_execution_policy(
+        worker_agent,
+        parent_policy=parent_policy,
+        base_tool_pool=(),
+        base_skill_pool=(),
+        permission_context=PermissionContext(session_id="session-agent-ceiling"),
+    )
+    effective_worker = replace(worker_agent, memory=worker_policy.memory_scope)
+
+    manager.initialize_session(session_id="session-agent-ceiling", agent=parent_agent, cwd=workspace)
+    persisted = manager.persist_agent_namespace_entries(
+        session_id="session-agent-ceiling",
+        agent=effective_worker,
+        cwd=workspace,
+        entries=(
+            MemoryEntry(
+                title="Worker Note",
+                content="Keep durable worker notes inside the local boundary.",
+                metadata={
+                    "namespace": "agent:other-agent",
+                    "agent_namespace": "other-agent",
+                },
+            ),
+        ),
+    )
+
+    assert worker_policy.memory_scope == MemoryScope.LOCAL
+    assert len(persisted) == 1
+    path = persisted[0].path
+    assert path.is_relative_to(workspace / ".claude" / "memory" / "agents" / "worker")
+    assert not path.is_relative_to(project_root / ".claude" / "memory" / "agents" / "worker")
+    raw_document = path.read_text(encoding="utf-8")
+    assert "namespace: agent:worker" in raw_document
+    assert "agent_namespace: worker" in raw_document
+
+
+def test_agent_namespace_retrieval_does_not_fallback_to_other_agent_namespaces(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    worker_docs = project_root / ".claude" / "memory" / "agents" / "worker" / "documents" / "heuristics"
+    worker_docs.mkdir(parents=True)
+    (worker_docs / "worker-only.md").write_text(
+        "# Worker Only\n\nRun cargo test -q for Rust verification inside the worker namespace.\n",
+        encoding="utf-8",
+    )
+
+    manager = MemoryManager(project_root=project_root)
+    agent = AgentDefinition(name="main-router", description="router", prompt="route")
+    manager.initialize_session(session_id="session-no-cross-namespace", agent=agent, cwd=project_root)
+
+    fragments, trace = manager.collect_with_trace(
+        session_id="session-no-cross-namespace",
+        turn_id="turn-no-cross-namespace",
+        agent=agent,
+        cwd=project_root,
+        messages=(_user_message("msg-no-cross-namespace", "How should I run cargo test here?"),),
+    )
+
+    assert not any("Worker Only" in fragment for fragment in fragments)
+    assert trace["budget_decisions"][0]["available"] == 0
+
+
+def test_agent_namespace_durable_writes_dedupe_duplicate_content(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    manager = MemoryManager(project_root=project_root)
+    agent = AgentDefinition(name="main-router", description="router", prompt="route")
+    manager.initialize_session(session_id="session-agent-dedupe", agent=agent, cwd=project_root)
+    entry = MemoryEntry(
+        title="Pytest Heuristic",
+        content="Run pytest -q first for small Python changes.",
+        metadata={"memory_kind": "agent_workflow"},
+    )
+
+    first_write = manager.persist_agent_namespace_entries(
+        session_id="session-agent-dedupe",
+        agent=agent,
+        cwd=project_root,
+        entries=(entry,),
+    )
+    second_write = manager.persist_agent_namespace_entries(
+        session_id="session-agent-dedupe",
+        agent=agent,
+        cwd=project_root,
+        entries=(entry,),
+    )
+
+    assert len(first_write) == 1
+    assert second_write == ()
+    documents = sorted(
+        (project_root / ".claude" / "memory" / "agents" / "main-router" / "documents" / "heuristics").glob("*.md")
+    )
+    assert len(documents) == 1
+    namespace_manifest = json.loads(
+        (project_root / ".claude" / "memory" / "agents" / "main-router" / "namespace-manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert namespace_manifest["stats"]["entry_count"] == 1
+
+
+def test_session_memory_artifacts_refresh_and_inject_on_follow_up_turn(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    model_client = FakeModelClient(
+        [
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-session-1"}),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "First answer"}),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+            ],
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-session-2"}),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "Second answer"}),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+            ],
+        ]
+    )
+    services = RuntimeServices(
+        memory=MemoryManagerService(project_root=project_root),
+        context_assembler=ContextAssembler(),
+    )
+    agent = AgentDefinition(name="main-router", description="router", prompt="route")
+    controller = SessionController(
+        session_id="session-summary-lifecycle",
+        agent=agent,
+        turn_engine=TurnEngine(
+            model_client=model_client,
+            tool_registry=ToolRegistry(),
+            runtime_services=services,
+        ),
+        transcript_store=InMemoryTranscriptStore(),
+        cwd=str(project_root),
+        system_prompt="System",
+        runtime_services=services,
+    )
+
+    asyncio.run(controller.start())
+    session_root = project_root / ".claude" / "memory" / "sessions" / "session-summary-lifecycle"
+    assert not (session_root / "session-summary.md").exists()
+    assert (session_root / "open-threads.md").exists()
+    initial_metadata = json.loads((session_root / "metadata.json").read_text(encoding="utf-8"))
+    assert initial_metadata["summary_version"] == 0
+
+    controller.enqueue_event(
+        InboundEvent(
+            InboundEventType.USER_PROMPT,
+            "Implement the session memory lifecycle and keep continuity between turns.",
+        )
+    )
+    asyncio.run(controller.run_until_idle())
+
+    summary_path = session_root / "session-summary.md"
+    assert summary_path.exists()
+    summary_text = summary_path.read_text(encoding="utf-8")
+    assert "## Current Objective" in summary_text
+    assert "session memory lifecycle" in summary_text
+
+    refreshed_metadata = json.loads((session_root / "metadata.json").read_text(encoding="utf-8"))
+    assert refreshed_metadata["summary_version"] == 1
+    assert refreshed_metadata["last_summary_refresh_at"] is not None
+    assert refreshed_metadata["open_thread_count"] == 0
+
+    session_manifest = json.loads(
+        (project_root / ".claude" / "memory" / "manifests" / "session-manifest.json").read_text(encoding="utf-8")
+    )
+    session_record = session_manifest["sessions"][0]
+    assert session_record["session_id"] == "session-summary-lifecycle"
+    assert session_record["has_summary"] is True
+    assert session_record["has_open_threads"] is True
+
+    controller.enqueue_event(
+        InboundEvent(
+            InboundEventType.USER_PROMPT,
+            "What should we keep in mind before the next step?",
+        )
+    )
+    asyncio.run(controller.run_until_idle())
+
+    fragments = model_client.requests[1].turn_context.memory_fragments
+    assert any("Session Summary" in fragment for fragment in fragments)
+    assert any("session memory lifecycle" in fragment for fragment in fragments)
+
+
+def test_session_summary_refreshes_after_turn_threshold(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    model_client = FakeModelClient(
+        [
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": f"req-threshold-{index}"}),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": f"Reply {index}"}),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+            ]
+            for index in range(1, 8)
+        ]
+    )
+    services = RuntimeServices(
+        memory=MemoryManagerService(project_root=project_root),
+        context_assembler=ContextAssembler(),
+    )
+    agent = AgentDefinition(name="main-router", description="router", prompt="route")
+    controller = SessionController(
+        session_id="session-summary-threshold",
+        agent=agent,
+        turn_engine=TurnEngine(
+            model_client=model_client,
+            tool_registry=ToolRegistry(),
+            runtime_services=services,
+        ),
+        transcript_store=InMemoryTranscriptStore(),
+        cwd=str(project_root),
+        system_prompt="System",
+        runtime_services=services,
+    )
+
+    asyncio.run(controller.start())
+    for index in range(1, 8):
+        controller.enqueue_event(
+            InboundEvent(
+                InboundEventType.USER_PROMPT,
+                f"Turn {index}: continue tracking the session state.",
+            )
+        )
+        asyncio.run(controller.run_until_idle())
+
+    metadata = json.loads(
+        (
+            project_root
+            / ".claude"
+            / "memory"
+            / "sessions"
+            / "session-summary-threshold"
+            / "metadata.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert metadata["summary_version"] == 2
+    assert metadata["turns_since_summary"] == 0
+
+
+def test_open_threads_blocked_turn_uses_stable_thread_key_and_upserts(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    model_client = FakeModelClient(
+        [
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-blocked-1"}),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "The fixture mismatch is still blocking progress."}),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+            ],
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-blocked-2"}),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "The fixture mismatch is still blocking progress."}),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+            ],
+        ]
+    )
+    services = RuntimeServices(
+        memory=MemoryManagerService(project_root=project_root),
+        context_assembler=ContextAssembler(),
+    )
+    services.hook_bus.register(
+        session_id="session-open-threads",
+        owner="host:blocker",
+        phase=RuntimeHookPhase.STOP,
+        handler=lambda _payload: {"continue_execution": False},
+    )
+    controller = SessionController(
+        session_id="session-open-threads",
+        agent=AgentDefinition(name="main-router", description="router", prompt="route"),
+        turn_engine=TurnEngine(
+            model_client=model_client,
+            tool_registry=ToolRegistry(),
+            runtime_services=services,
+        ),
+        transcript_store=InMemoryTranscriptStore(),
+        cwd=str(project_root),
+        system_prompt="System",
+        runtime_services=services,
+    )
+
+    asyncio.run(controller.start())
+    for _ in range(2):
+        controller.enqueue_event(
+            InboundEvent(
+                InboundEventType.USER_PROMPT,
+                "Investigate pytest fixture mismatch.",
+            )
+        )
+        asyncio.run(controller.run_until_idle())
+
+    open_threads = (
+        project_root / ".claude" / "memory" / "sessions" / "session-open-threads" / "open-threads.md"
+    ).read_text(encoding="utf-8")
+    thread_key = "blocker:investigate-pytest-fixture-mismatch:main-router"
+    assert open_threads.count(f"## Thread: {thread_key}") == 1
+    assert "- Status: blocked" in open_threads
+    metadata = json.loads(
+        (
+            project_root
+            / ".claude"
+            / "memory"
+            / "sessions"
+            / "session-open-threads"
+            / "metadata.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert metadata["open_thread_count"] == 1
+    assert controller.state.status == SessionStatus.WAITING
+
+
+def test_session_memory_resume_preserves_summary_continuity(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    model_client = FakeModelClient(
+        [
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-resume-1"}),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "First answer"}),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+            ],
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-resume-2"}),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "Resumed answer"}),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+            ],
+        ]
+    )
+    services = RuntimeServices(
+        memory=MemoryManagerService(project_root=project_root),
+        context_assembler=ContextAssembler(),
+    )
+    controller = SessionController(
+        session_id="session-resume-memory",
+        agent=AgentDefinition(name="main-router", description="router", prompt="route"),
+        turn_engine=TurnEngine(
+            model_client=model_client,
+            tool_registry=ToolRegistry(),
+            runtime_services=services,
+        ),
+        transcript_store=InMemoryTranscriptStore(),
+        cwd=str(project_root),
+        system_prompt="System",
+        runtime_services=services,
+    )
+
+    asyncio.run(controller.start())
+    controller.enqueue_event(
+        InboundEvent(
+            InboundEventType.USER_PROMPT,
+            "Keep track of this session so we can resume later.",
+        )
+    )
+    asyncio.run(controller.run_until_idle())
+
+    controller.interrupt()
+    asyncio.run(controller.resume())
+    controller.enqueue_event(
+        InboundEvent(
+            InboundEventType.USER_PROMPT,
+            "What context should we keep after resuming?",
+        )
+    )
+    asyncio.run(controller.run_until_idle())
+
+    fragments = model_client.requests[1].turn_context.memory_fragments
+    assert any("Session Summary" in fragment for fragment in fragments)
+    assert any("Keep track of this session" in fragment for fragment in fragments)
+
+
+def test_session_memory_survives_compaction_after_refresh(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    model_client = FakeModelClient(
+        [
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-compaction-1"}),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "Initial answer"}),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+            ],
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-compaction-2"}),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "Post-compaction answer"}),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+            ],
+        ]
+    )
+    services = RuntimeServices(
+        memory=MemoryManagerService(project_root=project_root),
+        context_assembler=ContextAssembler(),
+    )
+    controller = SessionController(
+        session_id="session-compaction-memory",
+        agent=AgentDefinition(name="main-router", description="router", prompt="route"),
+        turn_engine=TurnEngine(
+            model_client=model_client,
+            tool_registry=ToolRegistry(),
+            runtime_services=services,
+        ),
+        transcript_store=InMemoryTranscriptStore(),
+        cwd=str(project_root),
+        system_prompt="System",
+        runtime_services=services,
+    )
+
+    asyncio.run(controller.start())
+    controller.enqueue_event(
+        InboundEvent(
+            InboundEventType.USER_PROMPT,
+            "Establish session continuity before compaction happens.",
+        )
+    )
+    asyncio.run(controller.run_until_idle())
+    asyncio.run(controller._apply_compaction(tuple(controller.messages), turn_id="turn-compaction"))
+
+    metadata = json.loads(
+        (
+            project_root
+            / ".claude"
+            / "memory"
+            / "sessions"
+            / "session-compaction-memory"
+            / "metadata.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert metadata["last_compaction_at"] is not None
+
+    controller.enqueue_event(
+        InboundEvent(
+            InboundEventType.USER_PROMPT,
+            "What should we continue with after compaction?",
+        )
+    )
+    asyncio.run(controller.run_until_idle())
+
+    fragments = model_client.requests[1].turn_context.memory_fragments
+    assert any("Session Summary" in fragment for fragment in fragments)
+    assert any("Establish session continuity before compaction happens." in fragment for fragment in fragments)
 
 
 def test_builtin_file_tools_exclude_reserved_memory_paths(tmp_path: Path) -> None:

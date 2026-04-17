@@ -8,7 +8,7 @@ from typing import Any, Iterable, Mapping, Sequence
 
 from ..contracts import MessageRole, RuntimeMessage
 from ..definitions import AgentDefinition, MemoryScope
-from .models import MemoryDocument, MemoryEntry, ResolvedMemoryScope
+from .models import MemoryDocument, MemoryEntry, ResolvedMemoryScope, normalize_memory_segment
 from .providers import FileMemoryProvider, MemoryProvider
 
 _STOPWORDS = {
@@ -181,9 +181,41 @@ class LongTermMemory:
         cwd: str | Path,
         messages: Sequence[RuntimeMessage],
     ) -> tuple[MemoryDocument, ...]:
-        context = self.resolve_context(session_id=session_id, agent=agent, cwd=cwd)
         entries = self._extract_entries(messages)
+        return self.persist_entries(
+            session_id=session_id,
+            agent=agent,
+            cwd=cwd,
+            entries=entries,
+        )
+
+    def persist_entries(
+        self,
+        *,
+        session_id: str,
+        agent: AgentDefinition,
+        cwd: str | Path,
+        entries: Sequence[MemoryEntry],
+    ) -> tuple[MemoryDocument, ...]:
+        context = self.resolve_context(session_id=session_id, agent=agent, cwd=cwd)
         return self.provider.persist_entries(context, entries)
+
+    def persist_agent_namespace_entries(
+        self,
+        *,
+        session_id: str,
+        agent: AgentDefinition,
+        cwd: str | Path,
+        entries: Sequence[MemoryEntry],
+    ) -> tuple[MemoryDocument, ...]:
+        normalized_agent = normalize_memory_segment(agent.name, default="agent")
+        bound_entries = tuple(_bind_entry_to_agent_namespace(entry, normalized_agent) for entry in entries)
+        return self.persist_entries(
+            session_id=session_id,
+            agent=agent,
+            cwd=cwd,
+            entries=bound_entries,
+        )
 
     def collect_with_trace(
         self,
@@ -496,6 +528,36 @@ class LongTermMemoryService:
             messages=messages,
         )
 
+    async def persist_entries(
+        self,
+        *,
+        session_id: str,
+        agent: AgentDefinition,
+        cwd: str | Path,
+        entries: Sequence[MemoryEntry],
+    ) -> tuple[MemoryDocument, ...]:
+        return self.manager.persist_entries(
+            session_id=session_id,
+            agent=agent,
+            cwd=cwd,
+            entries=entries,
+        )
+
+    async def persist_agent_namespace_entries(
+        self,
+        *,
+        session_id: str,
+        agent: AgentDefinition,
+        cwd: str | Path,
+        entries: Sequence[MemoryEntry],
+    ) -> tuple[MemoryDocument, ...]:
+        return self.manager.persist_agent_namespace_entries(
+            session_id=session_id,
+            agent=agent,
+            cwd=cwd,
+            entries=entries,
+        )
+
     def resolve_context(
         self,
         *,
@@ -579,6 +641,19 @@ def _title_for_fact(fact: str) -> str:
     if not words:
         return "Memory note"
     return " ".join(words)
+
+
+def _bind_entry_to_agent_namespace(entry: MemoryEntry, agent_name: str) -> MemoryEntry:
+    metadata = dict(entry.metadata)
+    metadata["namespace"] = f"agent:{agent_name}"
+    metadata["agent_namespace"] = agent_name
+    metadata.setdefault("memory_kind", "agent_note")
+    metadata.setdefault("retention", "durable_reviewable")
+    return MemoryEntry(
+        title=entry.title,
+        content=entry.content,
+        metadata=metadata,
+    )
 
 
 def _tokenize(text: str) -> set[str]:

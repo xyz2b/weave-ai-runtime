@@ -50,19 +50,19 @@ memory v2 不建议一次性全量落地。推荐按三期交付：
 
 - [x] 3.1 实现 `agents/<agent-name>/` namespace resolution，确保 namespace 运行在 `user/project/local` 边界之内
 - [x] 3.2 将 delegated execution policy 与 namespace-aware retrieval precedence 接通
-- [ ] 3.3 实现 agent namespace durable writes 和 namespace manifest refresh
-- [ ] 3.4 为 policy ceiling、cross-namespace fallback 和 dedupe 增加测试
+- [x] 3.3 实现 agent namespace durable writes 和 namespace manifest refresh
+- [x] 3.4 为 policy ceiling、cross-namespace fallback 和 dedupe 增加测试
 
 ### 4. Session Memory
 
-- [ ] 4.1 实现 `session-summary.md`、`open-threads.md`、`metadata.json` 的 artifact lifecycle
-- [ ] 4.2 实现 session summary refresh triggers 的 MVP 版本
+- [x] 4.1 实现 `session-summary.md`、`open-threads.md`、`metadata.json` 的 artifact lifecycle
+- [x] 4.2 实现 session summary refresh triggers 的 MVP 版本
   - token/character growth threshold
   - turn threshold
   - tool call threshold
-- [ ] 4.3 将 `SessionMemory` 注入 turn preparation，并与 compaction summary 明确区分
-- [ ] 4.4 实现 open threads 的 `thread-key` 生成和 `upsert_by_thread_key` 行为
-- [ ] 4.5 为 resume / blocked / compaction-after-refresh 等场景增加 integration tests
+- [x] 4.3 将 `SessionMemory` 注入 turn preparation，并与 compaction summary 明确区分
+- [x] 4.4 实现 open threads 的 `thread-key` 生成和 `upsert_by_thread_key` 行为
+- [x] 4.5 为 resume / blocked / compaction-after-refresh 等场景增加 integration tests
 
 ### 5. Deterministic Extraction MVP
 

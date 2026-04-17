@@ -16,6 +16,7 @@ from .models import MemoryEntry, ResolvedMemoryScope
 MEMORY_SCHEMA_VERSION = "memory.v2"
 LONG_TERM_MANIFEST_KIND = "long_term"
 AGENT_MANIFEST_KIND = "agent"
+AGENT_NAMESPACE_MANIFEST_KIND = "agent_namespace"
 SESSION_MANIFEST_KIND = "session"
 CONSOLIDATION_MANIFEST_KIND = "consolidation"
 
@@ -83,6 +84,11 @@ def build_memory_artifact_metadata(
     raw_metadata.setdefault("memory_kind", DEFAULT_MEMORY_KIND)
     raw_metadata.setdefault("scope", context.scope.value)
     raw_metadata.setdefault("namespace", namespace)
+    raw_namespace = raw_metadata.get("namespace")
+    if isinstance(raw_namespace, str) and raw_namespace.strip().startswith("agent:"):
+        agent_namespace = raw_namespace.strip().partition(":")[2].strip()
+        if agent_namespace and not raw_metadata.get("agent_namespace"):
+            raw_metadata["agent_namespace"] = agent_namespace
     raw_metadata.setdefault("retention", DEFAULT_RETENTION)
     raw_metadata.setdefault("source_pathway", source)
     raw_metadata.setdefault("created_at", timestamp)
@@ -141,6 +147,9 @@ def normalize_memory_artifact_metadata(
     }
 
     agent_namespace = raw.get("agent_namespace")
+    if agent_namespace in {None, ""} and namespace.startswith("agent:"):
+        derived_agent_namespace = namespace.partition(":")[2].strip()
+        agent_namespace = derived_agent_namespace or None
     if agent_namespace is None or agent_namespace == "":
         normalized["agent_namespace"] = None
     elif isinstance(agent_namespace, str):
