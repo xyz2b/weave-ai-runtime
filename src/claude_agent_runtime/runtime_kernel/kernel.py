@@ -413,7 +413,10 @@ def _build_runtime_services(kernel: RuntimeKernel) -> RuntimeServices:
     transcript_store = kernel.transcript_store or InMemoryTranscriptStore()
     services = RuntimeServices(
         transcript=DefaultTranscriptService(transcript_store),
-        memory=MemoryManagerService(project_root=kernel.config.working_directory),
+        memory=MemoryManagerService(
+            project_root=kernel.config.working_directory,
+            memory_config=kernel.config.memory_config,
+        ),
         context_assembler=ContextAssembler(),
         metadata=dict(kernel.config.metadata),
     )

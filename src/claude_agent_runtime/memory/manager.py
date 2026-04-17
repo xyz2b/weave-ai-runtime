@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
@@ -11,6 +12,12 @@ from uuid import uuid4
 from ..contracts import MessageRole, RuntimeMessage
 from ..definitions import AgentDefinition, MemoryScope
 from ..tasking import TaskManager, TaskStatus
+from .config import (
+    MemoryRuntimeConfig,
+    ResolvedMemoryConfig,
+    describe_memory_config,
+    resolve_memory_config,
+)
 from .extraction import (
     MemoryExtractionDecision,
     extract_memory_decisions,
@@ -64,6 +71,7 @@ _STOPWORDS = {
     "we",
     "what",
 }
+_MISSING = object()
 
 
 @dataclass(slots=True)
@@ -102,6 +110,14 @@ class _BackgroundExtractionPayload:
 
 
 @dataclass(slots=True)
+class _BackgroundConsolidationPayload:
+    session_id: str
+    agent: AgentDefinition
+    cwd: Path
+    task_manager: TaskManager | None = None
+
+
+@dataclass(slots=True)
 class LongTermMemory:
     provider: MemoryProvider = field(default_factory=FileMemoryProvider)
     project_root: Path | None = None
@@ -111,11 +127,16 @@ class LongTermMemory:
     retrieval_policy: MemoryRetrievalPolicy = field(default_factory=MemoryRetrievalPolicy)
     embedding_shortlist_provider: MemoryEmbeddingShortlistProvider | None = None
     rerank_provider: MemoryRerankProvider | None = None
+    memory_config: Mapping[str, Any] | MemoryRuntimeConfig | None = None
     _session_defaults: dict[str, ResolvedMemoryScope] = field(default_factory=dict, init=False)
     _background_pending: dict[str, _BackgroundExtractionPayload] = field(default_factory=dict, init=False)
     _background_tasks_by_key: dict[str, asyncio.Task[MemoryTurnResult]] = field(default_factory=dict, init=False)
     _background_tasks_by_id: dict[str, asyncio.Task[MemoryTurnResult]] = field(default_factory=dict, init=False)
     _background_task_ids: dict[str, str] = field(default_factory=dict, init=False)
+    _consolidation_pending: dict[str, _BackgroundConsolidationPayload] = field(default_factory=dict, init=False)
+    _consolidation_tasks_by_key: dict[str, asyncio.Task[MemoryTurnResult]] = field(default_factory=dict, init=False)
+    _consolidation_tasks_by_id: dict[str, asyncio.Task[MemoryTurnResult]] = field(default_factory=dict, init=False)
+    _consolidation_task_ids: dict[str, str] = field(default_factory=dict, init=False)
 
     def initialize_session(
         self,
@@ -218,6 +239,34 @@ class LongTermMemory:
             roots.append(active)
         return tuple(roots)
 
+    def resolve_config(
+        self,
+        *,
+        session_id: str,
+        agent: AgentDefinition,
+        cwd: str | Path,
+    ) -> ResolvedMemoryConfig:
+        context = self.resolve_context(session_id=session_id, agent=agent, cwd=cwd)
+        return self._resolve_memory_config(context)
+
+    def session_summary_thresholds(
+        self,
+        *,
+        session_id: str,
+        agent: AgentDefinition,
+        cwd: str | Path,
+    ) -> dict[str, int]:
+        resolved = self.resolve_config(session_id=session_id, agent=agent, cwd=cwd)
+        refresh = resolved.config.session_memory.refresh
+        return {
+            "token_growth_threshold": refresh.token_growth_threshold,
+            "tool_call_threshold": refresh.tool_call_threshold,
+            "turn_threshold": refresh.turn_threshold,
+        }
+
+    def _resolve_memory_config(self, context: ResolvedMemoryScope) -> ResolvedMemoryConfig:
+        return resolve_memory_config(memory_root=context.memory_root, override=self.memory_config)
+
     def collect(
         self,
         *,
@@ -227,12 +276,14 @@ class LongTermMemory:
         messages: Sequence[RuntimeMessage],
     ) -> tuple[str, ...]:
         context = self.resolve_context(session_id=session_id, agent=agent, cwd=cwd)
+        resolved_config = self._resolve_memory_config(context)
         entrypoint = self.provider.load_entrypoint(context)
         query = _latest_user_text(messages)
         relevant, _ = self._collect_layered_retrieval(
             context=context,
             agent=agent,
             query=query,
+            resolved_config=resolved_config,
         )
         fragments: list[str] = []
         if entrypoint is not None and entrypoint.content.strip():
@@ -264,7 +315,17 @@ class LongTermMemory:
         messages: Sequence[RuntimeMessage],
     ) -> MemoryTurnResult:
         context = self.resolve_context(session_id=session_id, agent=agent, cwd=cwd)
-        decisions = extract_memory_decisions(messages, agent_name=agent.name)
+        resolved_config = self._resolve_memory_config(context)
+        decisions = tuple(
+            adjusted
+            for decision in extract_memory_decisions(messages, agent_name=agent.name)
+            if (adjusted := self._apply_configured_extraction_policy(
+                context=context,
+                agent=agent,
+                decision=decision,
+                resolved_config=resolved_config,
+            )) is not None
+        )
         persisted_documents: list[MemoryDocument] = []
         receipts: list[MemoryWriteReceipt] = []
 
@@ -293,6 +354,10 @@ class LongTermMemory:
         messages: Sequence[RuntimeMessage],
         task_manager: TaskManager | None = None,
     ) -> str | None:
+        context = self.resolve_context(session_id=session_id, agent=agent, cwd=cwd)
+        resolved_config = self._resolve_memory_config(context)
+        if resolved_config.config.extraction.background_synthesis is False:
+            return None
         key = self._background_key(session_id=session_id, agent=agent, cwd=cwd)
         payload = _BackgroundExtractionPayload(
             session_id=session_id,
@@ -346,6 +411,65 @@ class LongTermMemory:
         finally:
             self._background_tasks_by_id.pop(task_id, None)
 
+    def schedule_background_consolidation(
+        self,
+        *,
+        session_id: str,
+        agent: AgentDefinition,
+        cwd: str | Path,
+        task_manager: TaskManager | None = None,
+    ) -> str | None:
+        context = self.resolve_context(session_id=session_id, agent=agent, cwd=cwd)
+        resolved_config = self._resolve_memory_config(context)
+        self._refresh_consolidation_manifest(context)
+        if resolved_config.config.consolidation.enable_background is False:
+            return None
+        key = self._consolidation_key(context)
+        payload = _BackgroundConsolidationPayload(
+            session_id=session_id,
+            agent=agent,
+            cwd=Path(cwd).resolve(),
+            task_manager=task_manager,
+        )
+        self._consolidation_pending[key] = payload
+
+        task_id = self._consolidation_task_ids.get(key)
+        if task_id is None:
+            task_id = uuid4().hex
+            self._consolidation_task_ids[key] = task_id
+            if task_manager is not None:
+                task_manager.create(
+                    task_id,
+                    title=f"memory-consolidation:{context.scope.value}",
+                    metadata={
+                        "session_id": session_id,
+                        "agent": agent.name,
+                        "kind": "background_memory_consolidation",
+                    },
+                )
+        elif task_manager is not None:
+            task = task_manager.get(task_id)
+            if task is not None:
+                task_manager.update(
+                    task_id,
+                    metadata={"queued_merge": True, "trigger_session_id": session_id},
+                )
+
+        if key not in self._consolidation_tasks_by_key:
+            background_task = asyncio.create_task(self._run_background_consolidation_queue(key))
+            self._consolidation_tasks_by_key[key] = background_task
+            self._consolidation_tasks_by_id[task_id] = background_task
+        return task_id
+
+    async def wait_for_background_consolidation(self, task_id: str) -> MemoryTurnResult:
+        task = self._consolidation_tasks_by_id.get(task_id)
+        if task is None:
+            return MemoryTurnResult()
+        try:
+            return await task
+        finally:
+            self._consolidation_tasks_by_id.pop(task_id, None)
+
     def persist_entries(
         self,
         *,
@@ -384,11 +508,13 @@ class LongTermMemory:
         messages: Sequence[RuntimeMessage],
     ) -> tuple[tuple[str, ...], dict[str, Any]]:
         context = self.resolve_context(session_id=session_id, agent=agent, cwd=cwd)
+        resolved_config = self._resolve_memory_config(context)
         entrypoint = self.provider.load_entrypoint(context)
         relevant, trace = self._collect_layered_retrieval(
             context=context,
             agent=agent,
             query=_latest_user_text(messages),
+            resolved_config=resolved_config,
         )
         fragments: list[str] = []
         if entrypoint is not None and entrypoint.content.strip():
@@ -396,6 +522,7 @@ class LongTermMemory:
         fragments.extend(document.render() for document in relevant)
         deduped = tuple(dict.fromkeys(fragment for fragment in fragments if fragment.strip()))
         trace["turn_id"] = turn_id
+        trace["config"] = describe_memory_config(resolved_config)
         return deduped, trace
 
     def _collect_layered_retrieval(
@@ -404,7 +531,9 @@ class LongTermMemory:
         context: ResolvedMemoryScope,
         agent: AgentDefinition,
         query: str,
+        resolved_config: ResolvedMemoryConfig,
     ) -> tuple[tuple[MemoryDocument, ...], dict[str, Any]]:
+        retrieval_limit = self._retrieval_limit_for_config(resolved_config)
         applied_filters: list[str] = []
         boosts: list[str] = []
         decays: list[str] = []
@@ -418,6 +547,7 @@ class LongTermMemory:
             context=context,
             documents=agent_documents,
             query=query,
+            resolved_config=resolved_config,
         )
         materialized.extend(selected_agent_documents)
         seen_paths.update(document.path for document in selected_agent_documents)
@@ -436,7 +566,11 @@ class LongTermMemory:
         decays.extend(agent_trace["decays"])
         selected_doc_ids.extend(agent_trace["selected_doc_ids"])
 
-        shortlist, shortlist_trace = self._shortlist_long_term_documents(context=context, query=query)
+        shortlist, shortlist_trace = self._shortlist_long_term_documents(
+            context=context,
+            query=query,
+            resolved_config=resolved_config,
+        )
         selected_long_term: list[MemoryDocument] = []
         for document in shortlist:
             if document.path in seen_paths:
@@ -508,12 +642,14 @@ class LongTermMemory:
         *,
         context: ResolvedMemoryScope,
         query: str,
+        resolved_config: ResolvedMemoryConfig,
     ) -> tuple[tuple[MemoryDocument, ...], dict[str, Any]]:
         manifest = self.provider.load_long_term_manifest(context) or {}
         raw_entries = manifest.get("entries", ())
         if not isinstance(raw_entries, list):
             raw_entries = []
         query_tokens = _tokenize(query)
+        retrieval_limit = self._retrieval_limit_for_config(resolved_config)
         if not query_tokens:
             return (), {
                 "applied_filters": ("query_tokens:none",),
@@ -535,11 +671,11 @@ class LongTermMemory:
                     "reasons": (),
                     "candidate_count": 0,
                 },
-                "budget": {"layer": "shared_long_term", "budget": self.retrieval_limit, "available": 0, "selected": 0},
+                "budget": {"layer": "shared_long_term", "budget": retrieval_limit, "available": 0, "selected": 0},
             }
 
-        policy = self.retrieval_policy
-        pool_limit = _candidate_pool_limit(self.retrieval_limit, policy)
+        policy = self._retrieval_policy_for_config(resolved_config)
+        pool_limit = _candidate_pool_limit(retrieval_limit, policy)
         filter_reasons: list[str] = []
         boost_names: list[str] = []
         decay_names: list[str] = []
@@ -554,6 +690,7 @@ class LongTermMemory:
                 context=context,
                 entry=entry,
                 query_tokens=query_tokens,
+                resolved_config=resolved_config,
             )
             if excluded_reason is not None:
                 filter_reasons.append(excluded_reason)
@@ -571,9 +708,10 @@ class LongTermMemory:
         lexical_doc_ids = tuple(candidate.doc_id for candidate in lexical_pool)
 
         embedding_doc_ids: tuple[str, ...] = ()
-        if self.embedding_shortlist_provider is not None and candidate_index:
+        embedding_provider = self._embedding_provider_for_config(resolved_config)
+        if embedding_provider is not None and candidate_index:
             embedding_hits = tuple(
-                self.embedding_shortlist_provider.shortlist(
+                embedding_provider.shortlist(
                     query=query,
                     candidates=tuple(
                         candidate.as_retrieval_candidate()
@@ -621,8 +759,9 @@ class LongTermMemory:
             candidates=combined_candidates,
             lexical_doc_ids=lexical_doc_ids,
             divergence=divergence,
+            resolved_config=resolved_config,
         )
-        selected_candidates = tuple(rerank_trace.get("selected_candidates", combined_candidates[: self.retrieval_limit]))
+        selected_candidates = tuple(rerank_trace.get("selected_candidates", combined_candidates[:retrieval_limit]))
         documents = self.provider.materialize_documents(context, [candidate.path for candidate in selected_candidates])
 
         applied_filters = ["manifest_header_prefilter", "lexical_shortlist", "hard_filter+boost+decay"]
@@ -648,7 +787,7 @@ class LongTermMemory:
             },
             "budget": {
                 "layer": "shared_long_term",
-                "budget": self.retrieval_limit,
+                "budget": retrieval_limit,
                 "available": len(combined_candidates),
                 "selected": len(selected_candidates),
             },
@@ -660,6 +799,7 @@ class LongTermMemory:
         context: ResolvedMemoryScope,
         entry: Mapping[str, Any],
         query_tokens: set[str],
+        resolved_config: ResolvedMemoryConfig,
     ) -> tuple[_ScoredManifestCandidate | None, str | None]:
         path = entry.get("path")
         title = entry.get("title")
@@ -675,17 +815,19 @@ class LongTermMemory:
         if retention == "drop":
             return None, "retention_drop"
 
-        policy = self.retrieval_policy
+        policy = self._retrieval_policy_for_config(resolved_config)
         confidence = _coerce_confidence(entry.get("confidence"))
         if confidence is not None and policy.minimum_confidence is not None and confidence < policy.minimum_confidence:
             return None, "confidence_below_threshold"
 
         boosts: list[str] = []
         decays: list[str] = []
+        config_tags = resolved_config.config.retrieval
         lexical_tokens = _tokenize(f"{title} {summary or ''} {' '.join(str(tag) for tag in entry.get('tags', ())) }")
         overlap = len(query_tokens & lexical_tokens)
         title_overlap = len(query_tokens & _tokenize(title))
-        tag_overlap = len(query_tokens & set(str(tag).lower() for tag in entry.get("tags", ())))
+        normalized_tags = {str(tag).lower() for tag in entry.get("tags", ())}
+        tag_overlap = len(query_tokens & normalized_tags)
 
         lexical_score = float(overlap)
         if title_overlap > 0:
@@ -694,6 +836,10 @@ class LongTermMemory:
         if tag_overlap > 0:
             lexical_score += 0.5 * float(tag_overlap)
             boosts.append("explicit_tag")
+        preferred_tags = {tag.lower() for tag in config_tags.prefer_tags}
+        if preferred_tags and normalized_tags & preferred_tags:
+            lexical_score += 0.5 * float(len(normalized_tags & preferred_tags))
+            boosts.append("config_preferred_tag")
         if _recent_confirmation(
             entry.get("last_confirmed_at"),
             window_days=policy.recent_confirmation_window_days,
@@ -722,6 +868,10 @@ class LongTermMemory:
             decay = (policy.low_confidence_decay_start - confidence) * policy.low_confidence_decay_penalty
             combined_score -= decay
             decays.append("low_confidence_memory")
+        suppressed_tags = {tag.lower() for tag in config_tags.suppress_tags}
+        if suppressed_tags and normalized_tags & suppressed_tags:
+            combined_score -= 0.75 * float(len(normalized_tags & suppressed_tags))
+            decays.append("config_suppressed_tag")
 
         return _ScoredManifestCandidate(
             doc_id=str(entry.get("doc_id") or path),
@@ -756,16 +906,19 @@ class LongTermMemory:
         candidates: Sequence[_ScoredManifestCandidate],
         lexical_doc_ids: Sequence[str],
         divergence: Mapping[str, Any],
+        resolved_config: ResolvedMemoryConfig,
     ) -> dict[str, Any]:
+        policy = self._retrieval_policy_for_config(resolved_config)
+        retrieval_limit = self._retrieval_limit_for_config(resolved_config)
         reasons = _rerank_trigger_reasons(
             query=query,
             query_tokens=query_tokens,
             candidates=candidates,
             lexical_doc_ids=lexical_doc_ids,
             divergence=divergence,
-            policy=self.retrieval_policy,
+            policy=policy,
         )
-        fallback = tuple(candidates[: self.retrieval_limit])
+        fallback = tuple(candidates[:retrieval_limit])
         if not reasons:
             return {
                 "triggered": False,
@@ -774,7 +927,8 @@ class LongTermMemory:
                 "candidate_count": len(candidates),
                 "selected_candidates": fallback,
             }
-        if self.rerank_provider is None:
+        rerank_provider = self._rerank_provider_for_config(resolved_config)
+        if rerank_provider is None:
             return {
                 "triggered": False,
                 "status": "provider_unavailable",
@@ -782,7 +936,7 @@ class LongTermMemory:
                 "candidate_count": len(candidates),
                 "selected_candidates": fallback,
             }
-        if not self.retrieval_policy.rerank_budget_available:
+        if not policy.rerank_budget_available:
             return {
                 "triggered": False,
                 "status": "budget_denied",
@@ -791,14 +945,14 @@ class LongTermMemory:
                 "selected_candidates": fallback,
             }
 
-        rerank_limit = self.retrieval_policy.rerank_max_candidates or len(candidates)
+        rerank_limit = policy.rerank_max_candidates or len(candidates)
         rerank_candidates = tuple(candidates[:rerank_limit])
         reranked_hits = tuple(
             hit
-            for hit in self.rerank_provider.rerank(
+            for hit in rerank_provider.rerank(
                 query=query,
                 candidates=tuple(candidate.as_retrieval_candidate() for candidate in rerank_candidates),
-                limit=self.retrieval_limit,
+                limit=retrieval_limit,
             )
             if isinstance(hit, MemoryRetrievalRankedHit)
         )
@@ -817,7 +971,7 @@ class LongTermMemory:
             "status": "success" if reranked_hits else "skipped",
             "reasons": reasons,
             "candidate_count": len(candidates),
-            "selected_candidates": tuple(ordered[: self.retrieval_limit]) if ordered else fallback,
+            "selected_candidates": tuple(ordered[:retrieval_limit]) if ordered else fallback,
         }
 
     def _shortlist_agent_namespace_documents(
@@ -826,6 +980,7 @@ class LongTermMemory:
         context: ResolvedMemoryScope,
         documents: Sequence[MemoryDocument],
         query: str,
+        resolved_config: ResolvedMemoryConfig,
     ) -> tuple[tuple[MemoryDocument, ...], dict[str, Any]]:
         if not documents:
             return (), {"applied_filters": (), "decays": (), "selected_doc_ids": ()}
@@ -833,7 +988,9 @@ class LongTermMemory:
         if not query_tokens:
             return (), {"applied_filters": ("query_tokens:none",), "decays": (), "selected_doc_ids": ()}
 
-        policy = self.retrieval_policy
+        policy = self._retrieval_policy_for_config(resolved_config)
+        preferred_tags = {tag.lower() for tag in resolved_config.config.retrieval.prefer_tags}
+        suppressed_tags = {tag.lower() for tag in resolved_config.config.retrieval.suppress_tags}
         superseded_paths = _superseded_document_paths(context, documents)
         scored: list[tuple[float, MemoryDocument]] = []
         applied_filters: list[str] = []
@@ -842,6 +999,12 @@ class LongTermMemory:
             score = _document_query_score(query_tokens, document)
             if score <= 0:
                 continue
+            normalized_tags = {str(tag).lower() for tag in document.metadata.get("tags", ())}
+            if preferred_tags and normalized_tags & preferred_tags:
+                score += 0.5 * float(len(normalized_tags & preferred_tags))
+            if suppressed_tags and normalized_tags & suppressed_tags:
+                score -= 0.75 * float(len(normalized_tags & suppressed_tags))
+                decays.append("config_suppressed_tag")
             retention = str(document.metadata.get("retention") or "").strip()
             if retention == "drop":
                 applied_filters.append("retention_drop")
@@ -887,6 +1050,89 @@ class LongTermMemory:
                 for document in selected
             ),
         }
+
+    def _retrieval_limit_for_config(self, resolved_config: ResolvedMemoryConfig) -> int:
+        configured = resolved_config.config.retrieval.max_results
+        return configured if configured is not None else self.retrieval_limit
+
+    def _retrieval_policy_for_config(self, resolved_config: ResolvedMemoryConfig) -> MemoryRetrievalPolicy:
+        return self.retrieval_policy
+
+    def _embedding_provider_for_config(
+        self,
+        resolved_config: ResolvedMemoryConfig,
+    ) -> MemoryEmbeddingShortlistProvider | None:
+        enabled = resolved_config.config.retrieval.embedding_enabled
+        if enabled is False:
+            return None
+        return self.embedding_shortlist_provider
+
+    def _rerank_provider_for_config(
+        self,
+        resolved_config: ResolvedMemoryConfig,
+    ) -> MemoryRerankProvider | None:
+        mode = resolved_config.config.retrieval.llm_rerank
+        if mode == "disabled":
+            return None
+        return self.rerank_provider
+
+    def _apply_configured_extraction_policy(
+        self,
+        *,
+        context: ResolvedMemoryScope,
+        agent: AgentDefinition,
+        decision: MemoryExtractionDecision,
+        resolved_config: ResolvedMemoryConfig,
+    ) -> MemoryExtractionDecision | None:
+        extraction = resolved_config.config.extraction
+        if decision.fact_type in extraction.never_capture:
+            metadata = dict(decision.metadata)
+            metadata["config_never_capture"] = True
+            metadata["namespace"] = "none"
+            return replace(
+                decision,
+                target_layer="do_not_persist",
+                namespace="none",
+                retention="drop",
+                merge_policy="no_write",
+                metadata=metadata,
+                reason="config_never_capture",
+            )
+
+        routing_target = extraction.routing.get(decision.fact_type)
+        if routing_target is None:
+            return decision
+
+        metadata = dict(decision.metadata)
+        if routing_target == "agent_namespace":
+            agent_name = normalize_memory_segment(agent.name, default="agent")
+            metadata["agent_namespace"] = agent_name
+            metadata["namespace"] = f"agent:{agent_name}"
+            return replace(
+                decision,
+                target_layer="agent_namespace",
+                namespace=f"agent:{agent_name}",
+                metadata=metadata,
+            )
+
+        if routing_target == "session":
+            metadata["namespace"] = "session"
+            target_layer = "session_open_threads" if decision.fact_type == "session_thread" else "session_summary"
+            return replace(decision, target_layer=target_layer, namespace="session", metadata=metadata)
+
+        metadata["namespace"] = "shared"
+        if routing_target == "long_term.preferences":
+            metadata["memory_kind"] = "preference"
+        elif routing_target == "long_term.conventions":
+            metadata.setdefault("memory_kind", decision.fact_type)
+        elif routing_target == "long_term.topics":
+            metadata["memory_kind"] = "topic_memory"
+        return replace(
+            decision,
+            target_layer="shared_long_term",
+            namespace="shared",
+            metadata=metadata,
+        )
 
     def _load_agent_namespace_documents(
         self,
@@ -1004,15 +1250,25 @@ class LongTermMemory:
             self._background_task_ids.pop(key, None)
 
     def _execute_background_extraction(self, payload: _BackgroundExtractionPayload) -> MemoryTurnResult:
-        decisions = synthesize_background_memory_decisions(payload.messages, agent_name=payload.agent.name)
-        if not decisions:
-            return MemoryTurnResult()
-
         context = self.resolve_context(
             session_id=payload.session_id,
             agent=payload.agent,
             cwd=payload.cwd,
         )
+        resolved_config = self._resolve_memory_config(context)
+        decisions = tuple(
+            adjusted
+            for decision in synthesize_background_memory_decisions(payload.messages, agent_name=payload.agent.name)
+            if (adjusted := self._apply_configured_extraction_policy(
+                context=context,
+                agent=payload.agent,
+                decision=decision,
+                resolved_config=resolved_config,
+            )) is not None
+        )
+        if not decisions:
+            return MemoryTurnResult()
+
         persisted_documents: list[MemoryDocument] = []
         receipts: list[MemoryWriteReceipt] = []
         for decision in decisions:
@@ -1046,6 +1302,518 @@ class LongTermMemory:
             cwd=cwd,
             decision=decision,
         )
+
+    def _consolidation_key(self, context: ResolvedMemoryScope) -> str:
+        return str(context.memory_root)
+
+    async def _run_background_consolidation_queue(self, key: str) -> MemoryTurnResult:
+        task_id = self._consolidation_task_ids[key]
+        aggregate = MemoryTurnResult()
+        task_manager = self._consolidation_pending[key].task_manager
+        if task_manager is not None:
+            task_manager.update(
+                task_id,
+                status=TaskStatus.RUNNING,
+                metadata={"status": "running"},
+            )
+
+        while key in self._consolidation_pending:
+            payload = self._consolidation_pending.pop(key)
+            task_manager = payload.task_manager or task_manager
+            await asyncio.sleep(0)
+            try:
+                result = self._execute_background_consolidation(payload)
+            except Exception as exc:  # pragma: no cover - defensive boundary
+                if task_manager is not None:
+                    task_manager.update(
+                        task_id,
+                        status=TaskStatus.FAILED,
+                        error=str(exc),
+                        metadata={"status": "failed"},
+                    )
+                break
+            aggregate = _merge_turn_results(aggregate, result)
+            if task_manager is not None and key in self._consolidation_pending:
+                task_manager.update(
+                    task_id,
+                    status=TaskStatus.RUNNING,
+                    metadata={"queued_merge": True, "trigger_session_id": payload.session_id},
+                )
+
+        if task_manager is not None and task_manager.get(task_id) is not None:
+            task = task_manager.get(task_id)
+            if task is not None and task.status != TaskStatus.FAILED:
+                task_manager.update(
+                    task_id,
+                    status=TaskStatus.COMPLETED,
+                    result={
+                        "persisted_count": len(aggregate.persisted_documents),
+                        "receipt_count": len(aggregate.receipts),
+                    },
+                    metadata={"status": "completed"},
+                )
+        self._consolidation_tasks_by_key.pop(key, None)
+        self._consolidation_task_ids.pop(key, None)
+        return aggregate
+
+    def _execute_background_consolidation(
+        self,
+        payload: _BackgroundConsolidationPayload,
+    ) -> MemoryTurnResult:
+        context = self.resolve_context(
+            session_id=payload.session_id,
+            agent=payload.agent,
+            cwd=payload.cwd,
+        )
+        resolved_config = self._resolve_memory_config(context)
+        manifest = self._refresh_consolidation_manifest(context)
+        if not self._should_run_consolidation(context, resolved_config, manifest):
+            return MemoryTurnResult()
+
+        run_id = datetime.now(timezone.utc).strftime("cons-%Y%m%d-%H%M%S-") + uuid4().hex[:6]
+        active_lock = {
+            "run_id": run_id,
+            "acquired_at": _utc_now_iso(),
+            "session_id": payload.session_id,
+        }
+        manifest = self._refresh_consolidation_manifest(context, active_lock=active_lock)
+        if manifest.get("active_lock", {}).get("run_id") != run_id:
+            return MemoryTurnResult()
+
+        pending_sessions = self._pending_consolidation_sessions(context)
+        checkpoint_path = context.consolidation_checkpoints_dir / f"{run_id}.json"
+        staging_path = context.consolidation_staging_dir / f"{run_id}.json"
+        log_path = context.consolidation_logs_dir / f"{run_id}.md"
+        proposals = self._build_consolidation_proposals(context, pending_sessions)
+        checkpoint_payload = {
+            "run_id": run_id,
+            "status": "staged",
+            "session_ids": [session["session_id"] for session in pending_sessions],
+            "proposal_count": len(proposals),
+            "staging_path": staging_path.relative_to(context.memory_root).as_posix(),
+            "log_path": log_path.relative_to(context.memory_root).as_posix(),
+            "created_at": _utc_now_iso(),
+        }
+        _write_json_path(staging_path, {
+            "run_id": run_id,
+            "session_ids": [session["session_id"] for session in pending_sessions],
+            "proposals": [self._serialize_consolidation_decision(decision) for decision in proposals],
+        })
+        _write_json_path(checkpoint_path, checkpoint_payload)
+
+        log_lines = [
+            f"# Consolidation Run {run_id}",
+            "",
+            f"- Status: staged",
+            f"- Pending sessions: {len(pending_sessions)}",
+            f"- Proposals: {len(proposals)}",
+            "",
+        ]
+        log_path.write_text("\n".join(log_lines), encoding="utf-8")
+
+        snapshot = self._snapshot_long_term_documents(context)
+        try:
+            result = self._merge_consolidation_proposals(
+                context=context,
+                agent=payload.agent,
+                cwd=payload.cwd,
+                decisions=proposals,
+            )
+        except Exception as exc:
+            self._restore_long_term_snapshot(context, snapshot)
+            checkpoint_payload["status"] = "failed"
+            checkpoint_payload["error"] = str(exc)
+            checkpoint_payload["failed_at"] = _utc_now_iso()
+            _write_json_path(checkpoint_path, checkpoint_payload)
+            log_path.write_text(
+                "\n".join(
+                    [
+                        *log_lines,
+                        f"- Final status: failed",
+                        f"- Error: {exc}",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            self._refresh_consolidation_manifest(
+                context,
+                active_lock=None,
+                append_run={
+                    "run_id": run_id,
+                    "status": "failed",
+                    "checkpoint_path": checkpoint_path.relative_to(context.memory_root).as_posix(),
+                    "log_path": log_path.relative_to(context.memory_root).as_posix(),
+                    "session_ids": [session["session_id"] for session in pending_sessions],
+                },
+            )
+            raise
+
+        completed_at = _utc_now_iso()
+        self._mark_sessions_consolidated(
+            context=context,
+            session_ids=[session["session_id"] for session in pending_sessions],
+            completed_at=completed_at,
+        )
+        checkpoint_payload["status"] = "success"
+        checkpoint_payload["completed_at"] = completed_at
+        checkpoint_payload["persisted_count"] = len(result.persisted_documents)
+        checkpoint_payload["receipt_count"] = len(result.receipts)
+        _write_json_path(checkpoint_path, checkpoint_payload)
+        log_path.write_text(
+            "\n".join(
+                [
+                    *log_lines,
+                    f"- Final status: success",
+                    f"- Persisted documents: {len(result.persisted_documents)}",
+                    f"- Receipts: {len(result.receipts)}",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        self._refresh_consolidation_manifest(
+            context,
+            active_lock=None,
+            append_run={
+                "run_id": run_id,
+                "status": "success",
+                "checkpoint_path": checkpoint_path.relative_to(context.memory_root).as_posix(),
+                "log_path": log_path.relative_to(context.memory_root).as_posix(),
+                "session_ids": [session["session_id"] for session in pending_sessions],
+            },
+            last_successful_run_at=completed_at,
+        )
+        return result
+
+    def _should_run_consolidation(
+        self,
+        context: ResolvedMemoryScope,
+        resolved_config: ResolvedMemoryConfig,
+        manifest: Mapping[str, Any],
+    ) -> bool:
+        if manifest.get("active_lock"):
+            return False
+        config = resolved_config.config.consolidation
+        backlog = manifest.get("backlog", {}) if isinstance(manifest.get("backlog"), dict) else {}
+        pending_count = int(backlog.get("closed_session_count", 0))
+        if pending_count < config.min_closed_sessions:
+            return False
+        if pending_count < config.backlog_threshold:
+            return False
+        last_successful = _parse_iso_timestamp(manifest.get("last_successful_run_at"))
+        if last_successful is None:
+            return True
+        hours_since = (datetime.now(timezone.utc) - last_successful).total_seconds() / 3600.0
+        return hours_since >= float(config.min_hours_since_last_run)
+
+    def _pending_consolidation_sessions(
+        self,
+        context: ResolvedMemoryScope,
+    ) -> list[dict[str, Any]]:
+        manifest = _read_json_path(context.session_manifest_path) or {}
+        raw_sessions = manifest.get("sessions", ())
+        session_records = raw_sessions if isinstance(raw_sessions, list) else ()
+        pending: list[dict[str, Any]] = []
+        for record in session_records:
+            if not isinstance(record, dict):
+                continue
+            if record.get("ready_for_consolidation") is not True:
+                continue
+            session_id = str(record.get("session_id") or "").strip()
+            if not session_id:
+                continue
+            metadata = _read_json_path(context.session_metadata_path(session_id)) or {}
+            if metadata.get("status") in {"active", "waiting"}:
+                continue
+            last_consolidated_at = _parse_iso_timestamp(metadata.get("last_consolidated_at"))
+            updated_at = _parse_iso_timestamp(metadata.get("updated_at") or metadata.get("created_at"))
+            if last_consolidated_at is not None and updated_at is not None and last_consolidated_at >= updated_at:
+                continue
+            summary_path = context.session_summary_path(session_id)
+            summary_text = summary_path.read_text(encoding="utf-8") if summary_path.exists() else ""
+            pending.append(
+                {
+                    "session_id": session_id,
+                    "summary_text": summary_text,
+                    "metadata": metadata,
+                    "updated_at": metadata.get("updated_at"),
+                }
+            )
+        pending.sort(key=lambda item: str(item.get("updated_at") or ""))
+        return pending
+
+    def _refresh_consolidation_manifest(
+        self,
+        context: ResolvedMemoryScope,
+        *,
+        active_lock: object = _MISSING,
+        append_run: Mapping[str, Any] | None = None,
+        last_successful_run_at: object = _MISSING,
+    ) -> dict[str, Any]:
+        existing = _read_json_path(context.consolidation_manifest_path) or {}
+        recent_runs = existing.get("recent_runs", [])
+        if not isinstance(recent_runs, list):
+            recent_runs = []
+        normalized_runs = [run for run in recent_runs if isinstance(run, dict)]
+        if append_run is not None:
+            normalized_runs.append(dict(append_run))
+            normalized_runs = normalized_runs[-10:]
+
+        pending_sessions = self._pending_consolidation_sessions(context)
+        runs_payload = [
+            {
+                "run_id": str(run.get("run_id") or ""),
+                "status": str(run.get("status") or "unknown"),
+                "checkpoint_path": str(run.get("checkpoint_path") or ""),
+                "log_path": str(run.get("log_path") or ""),
+            }
+            for run in normalized_runs
+            if str(run.get("run_id") or "").strip()
+        ]
+        manifest = {
+            "schema_version": "memory.v2",
+            "manifest_kind": "consolidation",
+            "boundary_scope": context.scope.value,
+            "generated_at": _utc_now_iso(),
+            "stats": {"entry_count": len(runs_payload), "stale_entry_count": 0},
+            "runs": runs_payload,
+            "backlog": {
+                "closed_session_count": len(pending_sessions),
+                "pending_session_ids": [session["session_id"] for session in pending_sessions],
+            },
+            "recent_runs": normalized_runs,
+            "last_successful_run_at": (
+                existing.get("last_successful_run_at")
+                if last_successful_run_at is _MISSING
+                else last_successful_run_at
+            ),
+            "active_lock": existing.get("active_lock") if active_lock is _MISSING else active_lock,
+        }
+        _write_json_path(context.consolidation_manifest_path, manifest)
+        return manifest
+
+    def _build_consolidation_proposals(
+        self,
+        context: ResolvedMemoryScope,
+        pending_sessions: Sequence[Mapping[str, Any]],
+    ) -> tuple[MemoryExtractionDecision, ...]:
+        preference_groups: dict[str, dict[str, Any]] = {}
+        convention_groups: dict[str, dict[str, Any]] = {}
+        topic_sessions: dict[str, set[str]] = {}
+        topic_examples: dict[str, list[str]] = {}
+
+        for session in pending_sessions:
+            session_id = str(session.get("session_id") or "")
+            summary_text = _normalize_summary_text(str(session.get("summary_text") or ""))
+            if summary_text:
+                for token in _topic_tokens(summary_text):
+                    topic_sessions.setdefault(token, set()).add(session_id)
+                    examples = topic_examples.setdefault(token, [])
+                    if len(examples) < 2:
+                        examples.append(summary_text)
+
+            metadata = session.get("metadata", {})
+            deltas = metadata.get("durable_memory_deltas", ()) if isinstance(metadata, dict) else ()
+            for delta in deltas if isinstance(deltas, list) else ():
+                if not isinstance(delta, dict):
+                    continue
+                relative_path = delta.get("path")
+                if not isinstance(relative_path, str) or not relative_path.strip():
+                    continue
+                documents = self.provider.materialize_documents(context, (relative_path,))
+                if not documents:
+                    continue
+                document = documents[0]
+                conflict_key = str(
+                    delta.get("conflict_key")
+                    or document.metadata.get("conflict_key")
+                    or document.title
+                ).strip()
+                key = conflict_key or _normalize_document_content(document.content)
+                bucket: dict[str, dict[str, Any]]
+                if document.kind == "preference":
+                    bucket = preference_groups
+                elif document.kind in {"project_convention", "workflow_command"}:
+                    bucket = convention_groups
+                else:
+                    for token in _topic_tokens(document.content):
+                        topic_sessions.setdefault(token, set()).add(session_id)
+                        examples = topic_examples.setdefault(token, [])
+                        if len(examples) < 2:
+                            examples.append(_summarize_memory_text(document.content))
+                    continue
+                group = bucket.setdefault(
+                    key,
+                    {
+                        "document": document,
+                        "session_ids": set(),
+                    },
+                )
+                group["session_ids"].add(session_id)
+
+        proposals: list[MemoryExtractionDecision] = []
+        for group in preference_groups.values():
+            session_ids = sorted(group["session_ids"])
+            if len(session_ids) < 2:
+                continue
+            document = group["document"]
+            metadata = dict(document.metadata)
+            metadata["source_pathway"] = "consolidation"
+            metadata["summary"] = _summarize_memory_text(document.content)
+            proposals.append(
+                MemoryExtractionDecision(
+                    fact_type="preference",
+                    title=document.title,
+                    content=document.content,
+                    target_layer="shared_long_term",
+                    namespace="shared",
+                    retention="durable_until_superseded",
+                    merge_policy="require_multi_source_confirmation",
+                    metadata=metadata,
+                    source_message_ids=tuple(session_ids),
+                    source_roles=("consolidation",),
+                    reason="cross_session_preference",
+                )
+            )
+
+        for group in convention_groups.values():
+            session_ids = sorted(group["session_ids"])
+            if len(session_ids) < 2:
+                continue
+            document = group["document"]
+            metadata = dict(document.metadata)
+            metadata["source_pathway"] = "consolidation"
+            metadata["summary"] = _summarize_memory_text(document.content)
+            merge_policy = "merge_with_last_confirmed_at" if document.kind == "workflow_command" else "merge_with_provenance"
+            proposals.append(
+                MemoryExtractionDecision(
+                    fact_type=document.kind,
+                    title=document.title,
+                    content=document.content,
+                    target_layer="shared_long_term",
+                    namespace="shared",
+                    retention="durable_until_revoked",
+                    merge_policy=merge_policy,
+                    metadata=metadata,
+                    source_message_ids=tuple(session_ids),
+                    source_roles=("consolidation",),
+                    reason="cross_session_convention",
+                )
+            )
+
+        ranked_topics = sorted(
+            ((token, sessions) for token, sessions in topic_sessions.items() if len(sessions) >= 2),
+            key=lambda item: (-len(item[1]), item[0]),
+        )
+        if ranked_topics:
+            token, sessions = ranked_topics[0]
+            examples = topic_examples.get(token, [])[:2]
+            content = f"Cross-session discussion repeatedly centered on {token}. {' '.join(examples)}".strip()
+            proposals.append(
+                MemoryExtractionDecision(
+                    fact_type="topic_memory",
+                    title=f"Topic Memory {token.title()}",
+                    content=content,
+                    target_layer="shared_long_term",
+                    namespace="shared",
+                    retention="durable_until_superseded",
+                    merge_policy="synthesize_then_merge",
+                    metadata={
+                        "memory_kind": "topic_memory",
+                        "namespace": "shared",
+                        "retention": "durable_until_superseded",
+                        "merge_policy": "synthesize_then_merge",
+                        "source_pathway": "consolidation",
+                        "source_message_ids": sorted(sessions),
+                        "source_roles": ["consolidation"],
+                        "tags": [token],
+                        "summary": _summarize_memory_text(content),
+                        "conflict_key": f"topic_memory.{normalize_memory_segment(token, default='topic')}",
+                        "confidence": min(0.95, 0.55 + (0.1 * len(sessions))),
+                    },
+                    source_message_ids=tuple(sorted(sessions)),
+                    source_roles=("consolidation",),
+                    reason="cross_session_topic",
+                )
+            )
+
+        return tuple(proposals)
+
+    def _merge_consolidation_proposals(
+        self,
+        *,
+        context: ResolvedMemoryScope,
+        agent: AgentDefinition,
+        cwd: str | Path,
+        decisions: Sequence[MemoryExtractionDecision],
+    ) -> MemoryTurnResult:
+        persisted_documents: list[MemoryDocument] = []
+        receipts: list[MemoryWriteReceipt] = []
+        for decision in decisions:
+            receipt, written = self._apply_durable_extraction_decision(
+                context=context,
+                session_id=context.session_id,
+                agent=agent,
+                cwd=cwd,
+                decision=decision,
+            )
+            receipts.append(receipt)
+            persisted_documents.extend(written)
+        return MemoryTurnResult(
+            persisted_documents=tuple(persisted_documents),
+            receipts=tuple(receipts),
+        )
+
+    def _serialize_consolidation_decision(self, decision: MemoryExtractionDecision) -> dict[str, Any]:
+        return {
+            "fact_type": decision.fact_type,
+            "title": decision.title,
+            "content": decision.content,
+            "target_layer": decision.target_layer,
+            "namespace": decision.namespace,
+            "retention": decision.retention,
+            "merge_policy": decision.merge_policy,
+            "metadata": dict(decision.metadata),
+            "source_message_ids": list(decision.source_message_ids),
+            "source_roles": list(decision.source_roles),
+            "reason": decision.reason,
+        }
+
+    def _snapshot_long_term_documents(self, context: ResolvedMemoryScope) -> dict[str, str]:
+        snapshot: dict[str, str] = {}
+        for path in sorted(context.documents_dir.rglob("*.md")):
+            if not path.is_file():
+                continue
+            snapshot[path.relative_to(context.memory_root).as_posix()] = path.read_text(encoding="utf-8")
+        return snapshot
+
+    def _restore_long_term_snapshot(self, context: ResolvedMemoryScope, snapshot: Mapping[str, str]) -> None:
+        current_paths = {
+            path.relative_to(context.memory_root).as_posix(): path
+            for path in context.documents_dir.rglob("*.md")
+            if path.is_file()
+        }
+        for relative_path, content in snapshot.items():
+            path = context.memory_root / relative_path
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content, encoding="utf-8")
+        for relative_path, path in current_paths.items():
+            if relative_path not in snapshot:
+                path.unlink()
+        self.provider.prepare_context(context)
+
+    def _mark_sessions_consolidated(
+        self,
+        *,
+        context: ResolvedMemoryScope,
+        session_ids: Sequence[str],
+        completed_at: str,
+    ) -> None:
+        for session_id in session_ids:
+            metadata_path = context.session_metadata_path(session_id)
+            metadata = _read_json_path(metadata_path) or {}
+            metadata["last_consolidated_at"] = completed_at
+            _write_json_path(metadata_path, metadata)
+        self._refresh_consolidation_manifest(context)
 
     def _find_conflict_key_documents(
         self,
@@ -1509,6 +2277,7 @@ class LongTermMemoryService:
         retrieval_policy: MemoryRetrievalPolicy | None = None,
         embedding_shortlist_provider: MemoryEmbeddingShortlistProvider | None = None,
         rerank_provider: MemoryRerankProvider | None = None,
+        memory_config: Mapping[str, Any] | MemoryRuntimeConfig | None = None,
         manager: MemoryManager | None = None,
     ) -> None:
         if manager is not None:
@@ -1523,6 +2292,7 @@ class LongTermMemoryService:
             retrieval_policy=retrieval_policy or MemoryRetrievalPolicy(),
             embedding_shortlist_provider=embedding_shortlist_provider,
             rerank_provider=rerank_provider,
+            memory_config=memory_config,
         )
 
     async def collect(
@@ -1612,6 +2382,24 @@ class LongTermMemoryService:
     async def wait_for_background_extraction(self, task_id: str) -> MemoryTurnResult:
         return await self.manager.wait_for_background_extraction(task_id)
 
+    async def schedule_background_consolidation(
+        self,
+        *,
+        session_id: str,
+        agent: AgentDefinition,
+        cwd: str | Path,
+        task_manager: TaskManager | None = None,
+    ) -> str | None:
+        return self.manager.schedule_background_consolidation(
+            session_id=session_id,
+            agent=agent,
+            cwd=cwd,
+            task_manager=task_manager,
+        )
+
+    async def wait_for_background_consolidation(self, task_id: str) -> MemoryTurnResult:
+        return await self.manager.wait_for_background_consolidation(task_id)
+
     async def persist_entries(
         self,
         *,
@@ -1650,6 +2438,24 @@ class LongTermMemoryService:
         cwd: str | Path,
     ) -> ResolvedMemoryScope:
         return self.manager.resolve_context(session_id=session_id, agent=agent, cwd=cwd)
+
+    def resolve_config(
+        self,
+        *,
+        session_id: str,
+        agent: AgentDefinition,
+        cwd: str | Path,
+    ) -> ResolvedMemoryConfig:
+        return self.manager.resolve_config(session_id=session_id, agent=agent, cwd=cwd)
+
+    def session_summary_thresholds(
+        self,
+        *,
+        session_id: str,
+        agent: AgentDefinition,
+        cwd: str | Path,
+    ) -> dict[str, int]:
+        return self.manager.session_summary_thresholds(session_id=session_id, agent=agent, cwd=cwd)
 
     def context_for_scope(
         self,
@@ -1825,6 +2631,44 @@ def _summarize_memory_text(text: str, *, limit: int = 160) -> str:
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _read_json_path(path: Path) -> dict[str, Any] | None:
+    if not path.exists() or not path.is_file():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _write_json_path(path: Path, payload: Mapping[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(dict(payload), indent=2) + "\n", encoding="utf-8")
+
+
+def _parse_iso_timestamp(value: object) -> datetime | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        return datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _normalize_summary_text(text: str) -> str:
+    lines = [line.strip() for line in text.splitlines() if line.strip() and not line.lstrip().startswith("#")]
+    return " ".join(lines)
+
+
+def _topic_tokens(text: str) -> tuple[str, ...]:
+    tokens = [
+        token
+        for token in _tokenize(text)
+        if token not in _STOPWORDS and token not in {"session", "memory", "issue", "problem", "summary"}
+    ]
+    return tuple(dict.fromkeys(tokens))
 
 
 def _candidate_pool_limit(retrieval_limit: int, policy: MemoryRetrievalPolicy) -> int:

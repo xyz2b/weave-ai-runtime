@@ -99,6 +99,7 @@ class RuntimeConfig:
     ask_user_handler: AskUserHandler | None = None
     tool_refresh_callback: ToolRefreshCallback | None = None
     extra_invocation_providers: list[InvocationProvider] = field(default_factory=list)
+    memory_config: Mapping[str, Any] | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
     @classmethod

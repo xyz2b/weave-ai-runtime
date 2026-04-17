@@ -1,3 +1,12 @@
+from .config import (
+    MemoryConsolidationConfig,
+    MemoryExtractionConfig,
+    MemoryRetrievalConfig,
+    MemoryRuntimeConfig,
+    MemorySessionConfig,
+    MemorySessionRefreshConfig,
+    ResolvedMemoryConfig,
+)
 from .manager import LongTermMemory, LongTermMemoryService, MemoryManager, MemoryManagerService
 from .models import (
     MemoryDocument,
@@ -17,17 +26,24 @@ __all__ = [
     "FileMemoryProvider",
     "LongTermMemory",
     "LongTermMemoryService",
+    "MemoryConsolidationConfig",
     "MemoryDocument",
     "MemoryEmbeddingShortlistProvider",
     "MemoryEntry",
+    "MemoryExtractionConfig",
     "MemoryManager",
     "MemoryManagerService",
     "MemoryProvider",
     "MemoryRerankProvider",
+    "MemoryRetrievalConfig",
     "MemoryRetrievalCandidate",
     "MemoryRetrievalPolicy",
     "MemoryRetrievalRankedHit",
+    "MemoryRuntimeConfig",
+    "MemorySessionConfig",
+    "MemorySessionRefreshConfig",
     "MemoryTurnResult",
     "MemoryWriteReceipt",
     "ResolvedMemoryScope",
+    "ResolvedMemoryConfig",
 ]

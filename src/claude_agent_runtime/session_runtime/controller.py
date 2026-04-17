@@ -174,6 +174,14 @@ class SessionController:
 
     async def close(self, final_status: str = "completed") -> None:
         self._update_session_memory_status(final_status)
+        background_consolidation_task_id = await self._schedule_background_memory_consolidation()
+        if background_consolidation_task_id is not None:
+            history = self.state.metadata.setdefault("background_memory_consolidation_tasks", [])
+            if isinstance(history, list):
+                history.append(background_consolidation_task_id)
+            memory_service = self._runtime_services.memory
+            if memory_service is not None and hasattr(memory_service, "wait_for_background_consolidation"):
+                await _maybe_await(memory_service.wait_for_background_consolidation(background_consolidation_task_id))
         await self._runtime_services.hook_bus.dispatch(
             self.state.session_id,
             SessionEndPayload(
@@ -380,6 +388,10 @@ class SessionController:
             history = self.state.metadata.setdefault("memory_write_receipts", [])
             if isinstance(history, list):
                 history.extend(receipt_payloads)
+        self._record_session_memory_deltas(
+            persisted=turn_result.persisted_documents,
+            receipts=turn_result.receipts,
+        )
         background_task_id = await self._schedule_background_memory_extraction(messages, terminal=terminal)
         if background_task_id is not None:
             history = self.state.metadata.setdefault("background_memory_tasks", [])
@@ -446,6 +458,20 @@ class SessionController:
                 agent=self._agent,
                 cwd=self._cwd,
                 messages=tuple(self._messages),
+                task_manager=self._runtime_services.task_manager,
+            )
+        )
+        return str(task_id) if task_id is not None else None
+
+    async def _schedule_background_memory_consolidation(self) -> str | None:
+        memory_service = self._runtime_services.memory
+        if memory_service is None or not hasattr(memory_service, "schedule_background_consolidation"):
+            return None
+        task_id = await _maybe_await(
+            memory_service.schedule_background_consolidation(
+                session_id=self.state.session_id,
+                agent=self._agent,
+                cwd=self._cwd,
                 task_manager=self._runtime_services.task_manager,
             )
         )
@@ -558,10 +584,12 @@ class SessionController:
         )
         open_threads_changed = open_threads != existing_threads
         metadata["open_thread_count"] = len(open_threads)
+        refresh_thresholds = self._session_summary_thresholds()
 
         if _should_refresh_session_summary(
             context,
             metadata,
+            refresh_thresholds=refresh_thresholds,
             open_threads_changed=open_threads_changed,
             prior_status=prior_status,
         ):
@@ -583,6 +611,73 @@ class SessionController:
             metadata["chars_since_summary"] = 0
             metadata["tool_calls_since_summary"] = 0
 
+        _write_json_file(context.session_metadata_path(), metadata)
+        _upsert_session_manifest(context, metadata)
+
+    def _session_summary_thresholds(self) -> dict[str, int]:
+        memory_service = self._runtime_services.memory
+        if memory_service is None or not hasattr(memory_service, "session_summary_thresholds"):
+            return {
+                "token_growth_threshold": _SESSION_SUMMARY_CHAR_THRESHOLD,
+                "tool_call_threshold": _SESSION_SUMMARY_TOOL_CALL_THRESHOLD,
+                "turn_threshold": _SESSION_SUMMARY_TURN_THRESHOLD,
+            }
+        thresholds = memory_service.session_summary_thresholds(
+            session_id=self.state.session_id,
+            agent=self._agent,
+            cwd=self._cwd,
+        )
+        return thresholds if isinstance(thresholds, dict) else {
+            "token_growth_threshold": _SESSION_SUMMARY_CHAR_THRESHOLD,
+            "tool_call_threshold": _SESSION_SUMMARY_TOOL_CALL_THRESHOLD,
+            "turn_threshold": _SESSION_SUMMARY_TURN_THRESHOLD,
+        }
+
+    def _record_session_memory_deltas(
+        self,
+        *,
+        persisted: tuple[MemoryDocument, ...],
+        receipts: tuple[MemoryWriteReceipt, ...],
+    ) -> None:
+        if not persisted:
+            return
+        context = self._resolve_session_memory_context()
+        if context is None:
+            return
+        metadata = _read_json_file(context.session_metadata_path())
+        if not isinstance(metadata, dict):
+            metadata = _default_session_metadata(session_id=self.state.session_id, status="active")
+        existing = metadata.get("durable_memory_deltas", [])
+        durable_deltas = [entry for entry in existing if isinstance(entry, dict)] if isinstance(existing, list) else []
+        known_paths = {
+            str(entry.get("path"))
+            for entry in durable_deltas
+            if isinstance(entry.get("path"), str)
+        }
+        receipts_by_path = {
+            str(receipt.path): receipt
+            for receipt in receipts
+            if receipt.path is not None
+        }
+        for document in persisted:
+            if not document.path.is_relative_to(context.documents_dir):
+                continue
+            path = str(document.path)
+            if path in known_paths:
+                continue
+            receipt = receipts_by_path.get(path)
+            durable_deltas.append(
+                {
+                    "path": document.path.relative_to(context.memory_root).as_posix(),
+                    "memory_kind": document.kind,
+                    "title": document.title,
+                    "conflict_key": document.metadata.get("conflict_key"),
+                    "source_pathway": receipt.source_pathway if receipt is not None else document.metadata.get("source_pathway"),
+                }
+            )
+            known_paths.add(path)
+        metadata["durable_memory_deltas"] = durable_deltas
+        metadata["durable_memory_delta_count"] = len(durable_deltas)
         _write_json_file(context.session_metadata_path(), metadata)
         _upsert_session_manifest(context, metadata)
 
@@ -732,9 +827,12 @@ def _default_session_metadata(*, session_id: str, status: str) -> dict[str, Any]
         "open_thread_count": 0,
         "last_compaction_at": None,
         "last_summary_refresh_at": None,
+        "last_consolidated_at": None,
         "turns_since_summary": 0,
         "chars_since_summary": 0,
         "tool_calls_since_summary": 0,
+        "durable_memory_delta_count": 0,
+        "durable_memory_deltas": [],
     }
 
 
@@ -770,9 +868,12 @@ def _upsert_session_manifest(context: Any, metadata: dict[str, Any]) -> None:
         "checkpoint_count": checkpoint_count,
         "last_updated_at": metadata.get("updated_at") or _utc_now_iso(),
         "ready_for_consolidation": metadata.get("status") not in {"active", "waiting"},
+        "durable_memory_delta_count": int(metadata.get("durable_memory_delta_count", 0)),
     }
     if metadata.get("last_compaction_at"):
         record["last_compaction_at"] = metadata["last_compaction_at"]
+    if metadata.get("last_consolidated_at"):
+        record["last_consolidated_at"] = metadata["last_consolidated_at"]
     deduped = [entry for entry in sessions if entry.get("session_id") != record["session_id"]]
     deduped.append(record)
     deduped.sort(key=lambda entry: str(entry.get("session_id", "")))
@@ -800,6 +901,7 @@ def _should_refresh_session_summary(
     context: Any,
     metadata: dict[str, Any],
     *,
+    refresh_thresholds: dict[str, int],
     open_threads_changed: bool = False,
     prior_status: SessionStatus | None = None,
 ) -> bool:
@@ -810,9 +912,9 @@ def _should_refresh_session_summary(
     if prior_status == SessionStatus.WAITING and metadata.get("status") != "waiting":
         return True
     return (
-        int(metadata.get("turns_since_summary", 0)) >= _SESSION_SUMMARY_TURN_THRESHOLD
-        or int(metadata.get("chars_since_summary", 0)) >= _SESSION_SUMMARY_CHAR_THRESHOLD
-        or int(metadata.get("tool_calls_since_summary", 0)) >= _SESSION_SUMMARY_TOOL_CALL_THRESHOLD
+        int(metadata.get("turns_since_summary", 0)) >= int(refresh_thresholds.get("turn_threshold", _SESSION_SUMMARY_TURN_THRESHOLD))
+        or int(metadata.get("chars_since_summary", 0)) >= int(refresh_thresholds.get("token_growth_threshold", _SESSION_SUMMARY_CHAR_THRESHOLD))
+        or int(metadata.get("tool_calls_since_summary", 0)) >= int(refresh_thresholds.get("tool_call_threshold", _SESSION_SUMMARY_TOOL_CALL_THRESHOLD))
     )
 
 

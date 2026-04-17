@@ -142,34 +142,34 @@ memory v2 不建议一次性全量落地。推荐按三期交付：
 
 ### 9. Consolidation Runtime
 
-- [ ] 9.1 实现 `consolidation-manifest.json`、run checkpoints、logs 和 staging artifacts
-- [ ] 9.2 实现 consolidation cadence policy
+- [x] 9.1 实现 `consolidation-manifest.json`、run checkpoints、logs 和 staging artifacts
+- [x] 9.2 实现 consolidation cadence policy
   - min closed sessions
   - min hours since last run
   - backlog threshold
-- [ ] 9.3 实现 consolidation lock，避免并发 background runs
-- [ ] 9.4 从 closed-session summaries 与 durable memory deltas 生成 topic/preference/convention proposals
-- [ ] 9.5 将 consolidation outputs merge 回 `LongTermMemory`
+- [x] 9.3 实现 consolidation lock，避免并发 background runs
+- [x] 9.4 从 closed-session summaries 与 durable memory deltas 生成 topic/preference/convention proposals
+- [x] 9.5 将 consolidation outputs merge 回 `LongTermMemory`
 
 ### 10. Full Config Surface
 
-- [ ] 10.1 固化声明式 memory config schema，覆盖 retrieval/extraction/session/consolidation knobs
-- [ ] 10.2 把 taxonomy selector、routing override、preferred tags、never-capture categories 接到 config surface
-- [ ] 10.3 为 invalid config、unsafe override 和 partial config fallback 增加 tests
+- [x] 10.1 固化声明式 memory config schema，覆盖 retrieval/extraction/session/consolidation knobs
+- [x] 10.2 把 taxonomy selector、routing override、preferred tags、never-capture categories 接到 config surface
+- [x] 10.3 为 invalid config、unsafe override 和 partial config fallback 增加 tests
 
 ### 11. Operational Hardening
 
-- [ ] 11.1 增加 multi-session end-to-end tests，覆盖 session close -> consolidation backlog -> durable topic write
-- [ ] 11.2 增加 rollback-safe behavior，确保 consolidation 中断不会破坏已有 durable memory
-- [ ] 11.3 补充中文文档，解释 layered model、hybrid policy、config surface 与 host diagnostics
-- [ ] 11.4 对 Phase 1/2 功能做回归验证，确保 consolidation 引入后不回退单 session correctness
+- [x] 11.1 增加 multi-session end-to-end tests，覆盖 session close -> consolidation backlog -> durable topic write
+- [x] 11.2 增加 rollback-safe behavior，确保 consolidation 中断不会破坏已有 durable memory
+- [x] 11.3 补充中文文档，解释 layered model、hybrid policy、config surface 与 host diagnostics
+- [x] 11.4 对 Phase 1/2 功能做回归验证，确保 consolidation 引入后不回退单 session correctness
 
 ### Phase 3 Exit Criteria
 
-- [ ] 3.E1 多 session 结束后能稳定产出 topic/preference/convention consolidations
-- [ ] 3.E2 consolidation 失败、重试、锁冲突都不会破坏已有 durable memory
-- [ ] 3.E3 user-config surface 足以控制常见策略，而不需要任意可执行 hooks
-- [ ] 3.E4 整套 memory v2 在单 session、delegated agent、long session、multi-session 四类场景下均有稳定 contract
+- [x] 3.E1 多 session 结束后能稳定产出 topic/preference/convention consolidations
+- [x] 3.E2 consolidation 失败、重试、锁冲突都不会破坏已有 durable memory
+- [x] 3.E3 user-config surface 足以控制常见策略，而不需要任意可执行 hooks
+- [x] 3.E4 整套 memory v2 在单 session、delegated agent、long session、multi-session 四类场景下均有稳定 contract
 
 ## Dependency Notes
 
