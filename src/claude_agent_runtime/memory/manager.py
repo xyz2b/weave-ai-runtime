@@ -8,7 +8,15 @@ from typing import Any, Iterable, Mapping, Sequence
 
 from ..contracts import MessageRole, RuntimeMessage
 from ..definitions import AgentDefinition, MemoryScope
-from .models import MemoryDocument, MemoryEntry, ResolvedMemoryScope, normalize_memory_segment
+from .extraction import MemoryExtractionDecision, extract_memory_decisions
+from .models import (
+    MemoryDocument,
+    MemoryEntry,
+    MemoryTurnResult,
+    MemoryWriteReceipt,
+    ResolvedMemoryScope,
+    normalize_memory_segment,
+)
 from .providers import FileMemoryProvider, MemoryProvider
 
 _STOPWORDS = {
@@ -181,12 +189,40 @@ class LongTermMemory:
         cwd: str | Path,
         messages: Sequence[RuntimeMessage],
     ) -> tuple[MemoryDocument, ...]:
-        entries = self._extract_entries(messages)
-        return self.persist_entries(
+        return self.record_turn_with_receipts(
             session_id=session_id,
             agent=agent,
             cwd=cwd,
-            entries=entries,
+            messages=messages,
+        ).persisted_documents
+
+    def record_turn_with_receipts(
+        self,
+        *,
+        session_id: str,
+        agent: AgentDefinition,
+        cwd: str | Path,
+        messages: Sequence[RuntimeMessage],
+    ) -> MemoryTurnResult:
+        context = self.resolve_context(session_id=session_id, agent=agent, cwd=cwd)
+        decisions = extract_memory_decisions(messages, agent_name=agent.name)
+        persisted_documents: list[MemoryDocument] = []
+        receipts: list[MemoryWriteReceipt] = []
+
+        for decision in decisions:
+            receipt, written = self._apply_extraction_decision(
+                context=context,
+                session_id=session_id,
+                agent=agent,
+                cwd=cwd,
+                decision=decision,
+            )
+            receipts.append(receipt)
+            persisted_documents.extend(written)
+
+        return MemoryTurnResult(
+            persisted_documents=tuple(persisted_documents),
+            receipts=tuple(receipts),
         )
 
     def persist_entries(
@@ -456,25 +492,111 @@ class LongTermMemory:
         scored.sort(key=lambda item: (-item[0], item[1].path.name))
         return tuple(document for _, document in scored[: self.retrieval_limit])
 
-    def _extract_entries(self, messages: Sequence[RuntimeMessage]) -> tuple[MemoryEntry, ...]:
-        extracted: list[MemoryEntry] = []
-        seen: set[str] = set()
-        for message in messages:
-            if message.role != MessageRole.USER:
-                continue
-            for sentence in _split_sentences(message.text):
-                fact = _extract_fact(sentence)
-                if fact is None or fact.lower() in seen:
-                    continue
-                seen.add(fact.lower())
-                extracted.append(
-                    MemoryEntry(
-                        title=_title_for_fact(fact),
-                        content=fact,
-                        metadata={"source": "post_turn_extraction"},
-                    )
+    def _apply_extraction_decision(
+        self,
+        *,
+        context: ResolvedMemoryScope,
+        session_id: str,
+        agent: AgentDefinition,
+        cwd: str | Path,
+        decision: MemoryExtractionDecision,
+    ) -> tuple[MemoryWriteReceipt, tuple[MemoryDocument, ...]]:
+        if decision.target_layer in {"shared_long_term", "agent_namespace"}:
+            written = self.persist_entries(
+                session_id=session_id,
+                agent=agent,
+                cwd=cwd,
+                entries=(decision.to_entry(),),
+            )
+            if written:
+                document = written[0]
+                return (
+                    MemoryWriteReceipt(
+                        fact_type=decision.fact_type,
+                        action="persisted",
+                        scope=context.scope.value,
+                        target_layer=decision.target_layer,
+                        namespace=decision.namespace,
+                        retention=decision.retention,
+                        merge_policy=decision.merge_policy,
+                        title=document.title,
+                        path=document.path,
+                        source_message_ids=decision.source_message_ids,
+                        source_roles=decision.source_roles,
+                    ),
+                    written,
                 )
-        return tuple(extracted[:3])
+            return (
+                MemoryWriteReceipt(
+                    fact_type=decision.fact_type,
+                    action="skipped_duplicate",
+                    scope=context.scope.value,
+                    target_layer=decision.target_layer,
+                    namespace=decision.namespace,
+                    retention=decision.retention,
+                    merge_policy=decision.merge_policy,
+                    title=decision.title,
+                    reason="duplicate_content",
+                    source_message_ids=decision.source_message_ids,
+                    source_roles=decision.source_roles,
+                ),
+                (),
+            )
+
+        if decision.target_layer == "session_summary":
+            return (
+                MemoryWriteReceipt(
+                    fact_type=decision.fact_type,
+                    action="session_routed",
+                    scope=context.scope.value,
+                    target_layer=decision.target_layer,
+                    namespace=decision.namespace,
+                    retention=decision.retention,
+                    merge_policy=decision.merge_policy,
+                    title=decision.title,
+                    path=context.session_summary_path(),
+                    reason=decision.reason or "session_memory_managed",
+                    source_message_ids=decision.source_message_ids,
+                    source_roles=decision.source_roles,
+                ),
+                (),
+            )
+
+        if decision.target_layer == "session_open_threads":
+            return (
+                MemoryWriteReceipt(
+                    fact_type=decision.fact_type,
+                    action="session_routed",
+                    scope=context.scope.value,
+                    target_layer=decision.target_layer,
+                    namespace=decision.namespace,
+                    retention=decision.retention,
+                    merge_policy=decision.merge_policy,
+                    title=decision.title,
+                    path=context.session_open_threads_path(),
+                    reason=decision.reason or "session_memory_managed",
+                    source_message_ids=decision.source_message_ids,
+                    source_roles=decision.source_roles,
+                ),
+                (),
+            )
+
+        return (
+            MemoryWriteReceipt(
+                fact_type=decision.fact_type,
+                action="dropped",
+                scope=context.scope.value,
+                target_layer=decision.target_layer,
+                namespace=decision.namespace,
+                retention=decision.retention,
+                merge_policy=decision.merge_policy,
+                title=decision.title,
+                reason=decision.reason or "do_not_persist",
+                source_message_ids=decision.source_message_ids,
+                source_roles=decision.source_roles,
+            ),
+            (),
+        )
 
 
 @dataclass(slots=True)
@@ -547,6 +669,21 @@ class LongTermMemoryService:
         messages: Sequence[RuntimeMessage],
     ) -> tuple[MemoryDocument, ...]:
         return self.manager.record_turn(
+            session_id=session_id,
+            agent=agent,
+            cwd=cwd,
+            messages=messages,
+        )
+
+    async def record_turn_with_receipts(
+        self,
+        *,
+        session_id: str,
+        agent: AgentDefinition,
+        cwd: str | Path,
+        messages: Sequence[RuntimeMessage],
+    ) -> MemoryTurnResult:
+        return self.manager.record_turn_with_receipts(
             session_id=session_id,
             agent=agent,
             cwd=cwd,
@@ -627,45 +764,6 @@ def _split_sentences(text: str) -> Iterable[str]:
         normalized = " ".join(chunk.strip().split())
         if normalized:
             yield normalized
-
-
-def _extract_fact(sentence: str) -> str | None:
-    lowered = sentence.lower()
-    if len(sentence) < 12:
-        return None
-    for prefix in ("remember that ", "remember ", "note that "):
-        if lowered.startswith(prefix):
-            return _normalize_fact(sentence[len(prefix) :])
-    if lowered.startswith(
-        (
-            "i prefer ",
-            "my project uses ",
-            "the project uses ",
-            "our project uses ",
-            "we use ",
-            "our repo uses ",
-            "my name is ",
-            "call me ",
-            "always ",
-            "never ",
-        )
-    ):
-        return _normalize_fact(sentence)
-    return None
-
-
-def _normalize_fact(value: str) -> str:
-    normalized = " ".join(value.strip(" -:").split())
-    if not normalized:
-        return normalized
-    return normalized[0].upper() + normalized[1:]
-
-
-def _title_for_fact(fact: str) -> str:
-    words = re.findall(r"[A-Za-z0-9]+", fact)[:6]
-    if not words:
-        return "Memory note"
-    return " ".join(words)
 
 
 def _bind_entry_to_agent_namespace(entry: MemoryEntry, agent_name: str) -> MemoryEntry:

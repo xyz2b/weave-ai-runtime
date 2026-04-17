@@ -66,7 +66,7 @@ memory v2 不建议一次性全量落地。推荐按三期交付：
 
 ### 5. Deterministic Extraction MVP
 
-- [ ] 5.1 落地一版最小 fact taxonomy classifier，至少覆盖：
+- [x] 5.1 落地一版最小 fact taxonomy classifier，至少覆盖：
   - `preference`
   - `project_convention`
   - `workflow_command`
@@ -75,18 +75,18 @@ memory v2 不建议一次性全量落地。推荐按三期交付：
   - `session_thread`
   - `transient_task`
   - `sensitive_value`
-- [ ] 5.2 实现 obvious-fact rules，并按 taxonomy 路由到 shared / agent / session targets
-- [ ] 5.3 对 `transient_task`、`sensitive_value`、明显噪音类实现 `do_not_persist`
-- [ ] 5.4 将 `memory_update_owned`、manifest refresh 与 durable write receipts 打通
-- [ ] 5.5 为 routing matrix 的核心路径增加 tests，确保分类决定能稳定落到目标层
+- [x] 5.2 实现 obvious-fact rules，并按 taxonomy 路由到 shared / agent / session targets
+- [x] 5.3 对 `transient_task`、`sensitive_value`、明显噪音类实现 `do_not_persist`
+- [x] 5.4 将 `memory_update_owned`、manifest refresh 与 durable write receipts 打通
+- [x] 5.5 为 routing matrix 的核心路径增加 tests，确保分类决定能稳定落到目标层
 
 ### Phase 1 Exit Criteria
 
-- [ ] 1.E1 `main-router` 在同一 session 内能稳定消费 `SessionMemory`
-- [ ] 1.E2 delegated agent 能稳定消费并写入自身 namespace memory，且不越过 parent ceiling
-- [ ] 1.E3 durable long-term memory 的 deterministic retrieval 在无 embedding / 无 rerank 下可工作
-- [ ] 1.E4 obvious-fact extraction 能正确区分 shared / agent / session / do-not-persist 四类目标
-- [ ] 1.E5 compaction 发生后，session continuity 仍由 `SessionMemory` 保持，而不是错误依赖 compaction summary
+- [x] 1.E1 `main-router` 在同一 session 内能稳定消费 `SessionMemory`
+- [x] 1.E2 delegated agent 能稳定消费并写入自身 namespace memory，且不越过 parent ceiling
+- [x] 1.E3 durable long-term memory 的 deterministic retrieval 在无 embedding / 无 rerank 下可工作
+- [x] 1.E4 obvious-fact extraction 能正确区分 shared / agent / session / do-not-persist 四类目标
+- [x] 1.E5 compaction 发生后，session continuity 仍由 `SessionMemory` 保持，而不是错误依赖 compaction summary
 
 ## Phase 2 / Hybrid Upgrade
 

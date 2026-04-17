@@ -5,6 +5,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from claude_agent_runtime.builtins.tools import builtin_tools
+from claude_agent_runtime.contracts import MessageRole, RuntimeMessage
 from claude_agent_runtime.definitions import (
     AgentDefinition,
     MemoryScope,
@@ -185,29 +186,30 @@ def test_main_thread_memory_extraction_persists_and_surfaces_on_next_turn(tmp_pa
     controller.enqueue_event(
         InboundEvent(
             InboundEventType.USER_PROMPT,
-            "Remember that the project uses pytest and I prefer concise answers.",
+            "Remember that the project uses pytest. I prefer concise answers.",
         )
     )
     asyncio.run(controller.run_until_idle())
 
-    documents = sorted((project_root / ".claude" / "memory" / "documents" / "shared").glob("*.md"))
-    assert len(documents) == 1
-    raw_document = documents[0].read_text(encoding="utf-8")
-    assert raw_document.startswith("---\n")
-    assert "memory_kind: note" in raw_document
-    assert "scope: project" in raw_document
-    assert "namespace: shared" in raw_document
-    assert "The project uses pytest and I prefer concise answers" in raw_document
+    preference_documents = sorted((project_root / ".claude" / "memory" / "documents" / "preferences").glob("*.md"))
+    convention_documents = sorted((project_root / ".claude" / "memory" / "documents" / "conventions").glob("*.md"))
+    assert len(preference_documents) == 1
+    assert len(convention_documents) == 1
+    assert "memory_kind: preference" in preference_documents[0].read_text(encoding="utf-8")
+    assert "I prefer concise answers" in preference_documents[0].read_text(encoding="utf-8")
+    assert "memory_kind: project_convention" in convention_documents[0].read_text(encoding="utf-8")
+    assert "The project uses pytest" in convention_documents[0].read_text(encoding="utf-8")
 
     manifest_payload = json.loads(
         (project_root / ".claude" / "memory" / "manifests" / "long-term-manifest.json").read_text(encoding="utf-8")
     )
     assert manifest_payload["schema_version"] == "memory.v2"
     assert manifest_payload["manifest_kind"] == "long_term"
-    assert manifest_payload["stats"]["entry_count"] == 1
-    assert manifest_payload["entries"][0]["path"].startswith("documents/shared/")
+    assert manifest_payload["stats"]["entry_count"] == 2
+    assert {entry["memory_kind"] for entry in manifest_payload["entries"]} == {"preference", "project_convention"}
     notifications = controller.runtime_services.host.current_notifications()
     assert notifications[-1].metadata["memory_update"] is True
+    assert len(notifications[-1].metadata["memory_write_receipts"]) == 2
 
     controller.enqueue_event(
         InboundEvent(
@@ -218,10 +220,105 @@ def test_main_thread_memory_extraction_persists_and_surfaces_on_next_turn(tmp_pa
     asyncio.run(controller.run_until_idle())
 
     fragments = model_client.requests[1].turn_context.memory_fragments
-    assert any(
-        "The project uses pytest and I prefer concise answers" in fragment
-        for fragment in fragments
+    assert any("The project uses pytest" in fragment for fragment in fragments)
+
+
+def test_record_turn_with_receipts_routes_fact_taxonomy_to_shared_agent_session_and_drop(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    manager = MemoryManager(project_root=project_root)
+    agent = AgentDefinition(name="main-router", description="router", prompt="route")
+    manager.initialize_session(session_id="session-routing", agent=agent, cwd=project_root)
+
+    result = manager.record_turn_with_receipts(
+        session_id="session-routing",
+        agent=agent,
+        cwd=project_root,
+        messages=(
+            _user_message("msg-pref", "I prefer concise answers."),
+            _user_message("msg-convention", "The project uses pytest."),
+            _user_message("msg-command", "Use `pytest -q` for concise unit test runs."),
+            RuntimeMessage(
+                message_id="msg-agent",
+                role=MessageRole.ASSISTANT,
+                content="When verifying small Python changes, start with `pytest -q` before broader checks.",
+            ),
+            _user_message("msg-session", "We are currently debugging the memory routing issue."),
+            RuntimeMessage(
+                message_id="msg-thread",
+                role=MessageRole.ASSISTANT,
+                content="Which fixture should I use?",
+            ),
+            _user_message("msg-transient", "Today I need to rename the helper and move on."),
+            _user_message("msg-secret", "The API token is sk-test-1234567890abcdef."),
+        ),
     )
+
+    assert len(result.persisted_documents) == 4
+    persisted_kinds = {document.kind for document in result.persisted_documents}
+    assert persisted_kinds == {"preference", "project_convention", "workflow_command", "agent_workflow"}
+    assert any(document.path.is_relative_to(project_root / ".claude" / "memory" / "documents" / "preferences") for document in result.persisted_documents)
+    assert any(document.path.is_relative_to(project_root / ".claude" / "memory" / "documents" / "conventions") for document in result.persisted_documents)
+    assert any(document.path.is_relative_to(project_root / ".claude" / "memory" / "agents" / "main-router") for document in result.persisted_documents)
+
+    receipts_by_fact = {receipt.fact_type: receipt for receipt in result.receipts}
+    assert receipts_by_fact["preference"].action == "persisted"
+    assert receipts_by_fact["project_convention"].action == "persisted"
+    assert receipts_by_fact["workflow_command"].action == "persisted"
+    assert receipts_by_fact["agent_workflow"].action == "persisted"
+    assert receipts_by_fact["session_continuity"].action == "session_routed"
+    assert receipts_by_fact["session_continuity"].target_layer == "session_summary"
+    assert receipts_by_fact["session_thread"].action == "session_routed"
+    assert receipts_by_fact["session_thread"].target_layer == "session_open_threads"
+    assert receipts_by_fact["transient_task"].action == "dropped"
+    assert receipts_by_fact["transient_task"].reason == "transient_task"
+    assert receipts_by_fact["sensitive_value"].action == "dropped"
+    assert receipts_by_fact["sensitive_value"].reason == "sensitive_value"
+
+
+def test_memory_update_owned_skips_automatic_extraction(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    model_client = FakeModelClient(
+        [
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-memory-owned"}),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "Acknowledged"}),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+            ]
+        ]
+    )
+    services = RuntimeServices(
+        memory=MemoryManagerService(project_root=project_root),
+        context_assembler=ContextAssembler(),
+    )
+    controller = SessionController(
+        session_id="session-memory-owned",
+        agent=AgentDefinition(name="main-router", description="router", prompt="route"),
+        turn_engine=TurnEngine(
+            model_client=model_client,
+            tool_registry=ToolRegistry(),
+            runtime_services=services,
+        ),
+        transcript_store=InMemoryTranscriptStore(),
+        cwd=str(project_root),
+        system_prompt="System",
+        runtime_services=services,
+    )
+
+    asyncio.run(controller.start())
+    controller.enqueue_event(
+        InboundEvent(
+            InboundEventType.USER_PROMPT,
+            "I prefer concise answers.",
+            metadata={"memory_update_owned": True},
+        )
+    )
+    asyncio.run(controller.run_until_idle())
+
+    documents_root = project_root / ".claude" / "memory" / "documents"
+    assert list(documents_root.rglob("*.md")) == []
+    assert controller.state.metadata.get("memory_write_receipts") in (None, [])
 
 
 def test_memory_start_initializes_layered_layout_and_agent_manifest(tmp_path: Path) -> None:

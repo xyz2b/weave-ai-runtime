@@ -23,7 +23,7 @@ from ..contracts import (
     ToolUseBlock,
 )
 from ..definitions import AgentDefinition, PermissionMode
-from ..memory.models import normalize_memory_segment
+from ..memory.models import MemoryTurnResult, MemoryWriteReceipt, normalize_memory_segment
 from ..hooks import SessionEndPayload, SessionStartPayload
 from ..memory.schema import SESSION_MANIFEST_KIND, build_manifest_envelope
 from ..permissions import PermissionContext
@@ -345,14 +345,31 @@ class SessionController:
         memory_service = self._runtime_services.memory
         if memory_service is None or not hasattr(memory_service, "record_turn"):
             return
-        persisted = await _maybe_await(
-            memory_service.record_turn(
-                session_id=self.state.session_id,
-                agent=self._agent,
-                cwd=self._cwd,
-                messages=messages,
+        if hasattr(memory_service, "record_turn_with_receipts"):
+            turn_result = await _maybe_await(
+                memory_service.record_turn_with_receipts(
+                    session_id=self.state.session_id,
+                    agent=self._agent,
+                    cwd=self._cwd,
+                    messages=messages,
+                )
             )
-        )
+        else:
+            persisted = await _maybe_await(
+                memory_service.record_turn(
+                    session_id=self.state.session_id,
+                    agent=self._agent,
+                    cwd=self._cwd,
+                    messages=messages,
+                )
+            )
+            turn_result = MemoryTurnResult(persisted_documents=tuple(persisted), receipts=())
+        receipt_payloads = [_memory_write_receipt_payload(receipt) for receipt in turn_result.receipts]
+        if receipt_payloads:
+            history = self.state.metadata.setdefault("memory_write_receipts", [])
+            if isinstance(history, list):
+                history.extend(receipt_payloads)
+        persisted = turn_result.persisted_documents
         if not persisted:
             return
 
@@ -376,8 +393,10 @@ class SessionController:
             ),
             metadata={
                 "memory_update": True,
+                "memory_update_owned": True,
                 "memory_scope": persisted[0].scope.value,
                 "memory_paths": [str(document.path) for document in persisted],
+                "memory_write_receipts": receipt_payloads,
             },
         )
         await self._runtime_services.host.emit_notification(notification)
@@ -558,6 +577,27 @@ def _memory_updates_owned(
     if isinstance(metadata, dict) and metadata.get("memory_update_owned"):
         return True
     return any(message.metadata.get("memory_update_owned") for message in messages)
+
+
+def _memory_write_receipt_payload(receipt: MemoryWriteReceipt) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "fact_type": receipt.fact_type,
+        "action": receipt.action,
+        "scope": receipt.scope,
+        "target_layer": receipt.target_layer,
+        "namespace": receipt.namespace,
+        "retention": receipt.retention,
+        "merge_policy": receipt.merge_policy,
+        "source_message_ids": list(receipt.source_message_ids),
+        "source_roles": list(receipt.source_roles),
+    }
+    if receipt.title is not None:
+        payload["title"] = receipt.title
+    if receipt.path is not None:
+        payload["path"] = str(receipt.path)
+    if receipt.reason is not None:
+        payload["reason"] = receipt.reason
+    return payload
 
 
 def _coerce_attachments(metadata: object) -> tuple[MessageAttachment, ...]:

@@ -32,6 +32,28 @@ class MemoryDocument:
 
 
 @dataclass(frozen=True, slots=True)
+class MemoryWriteReceipt:
+    fact_type: str
+    action: str
+    scope: str
+    target_layer: str
+    namespace: str
+    retention: str
+    merge_policy: str
+    title: str | None = None
+    path: Path | None = None
+    reason: str | None = None
+    source_message_ids: tuple[str, ...] = ()
+    source_roles: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryTurnResult:
+    persisted_documents: tuple["MemoryDocument", ...] = ()
+    receipts: tuple[MemoryWriteReceipt, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class ResolvedMemoryScope:
     session_id: str
     scope: MemoryScope
