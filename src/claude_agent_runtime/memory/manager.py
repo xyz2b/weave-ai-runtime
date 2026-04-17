@@ -223,7 +223,10 @@ class LongTermMemory:
         seen_paths: set[Path] = set()
 
         agent_documents = self._load_agent_namespace_documents(context, agent.name)
-        selected_agent_documents = tuple(agent_documents[:1])
+        selected_agent_documents = self._shortlist_agent_namespace_documents(
+            documents=agent_documents,
+            query=query,
+        )
         materialized.extend(selected_agent_documents)
         seen_paths.update(document.path for document in selected_agent_documents)
         budget_decisions.append(
@@ -326,6 +329,30 @@ class LongTermMemory:
                 "selected": len(selected),
             },
         }
+
+    def _shortlist_agent_namespace_documents(
+        self,
+        *,
+        documents: Sequence[MemoryDocument],
+        query: str,
+    ) -> tuple[MemoryDocument, ...]:
+        if not documents:
+            return ()
+        query_tokens = _tokenize(query)
+        if not query_tokens:
+            return tuple(documents[:1])
+
+        scored: list[tuple[float, MemoryDocument]] = []
+        for document in documents:
+            score = _document_query_score(query_tokens, document)
+            if score <= 0:
+                continue
+            scored.append((score, document))
+        if not scored:
+            return tuple(documents[:1])
+
+        scored.sort(key=lambda item: (-item[0], item[1].path.as_posix()))
+        return tuple(document for _, document in scored[:1])
 
     def _load_agent_namespace_documents(
         self,
@@ -560,6 +587,25 @@ def _tokenize(text: str) -> set[str]:
         for token in re.findall(r"[a-z0-9]+", text.lower())
         if len(token) > 2 and token not in _STOPWORDS
     }
+
+
+def _document_query_score(query_tokens: set[str], document: MemoryDocument) -> float:
+    title_tokens = _tokenize(document.title)
+    tag_tokens = {
+        token
+        for tag in document.metadata.get("tags", ())
+        for token in _tokenize(str(tag))
+    }
+    lexical_tokens = _tokenize(
+        f"{document.title} {document.metadata.get('summary', '')} {' '.join(str(tag) for tag in document.metadata.get('tags', ())) } {document.content}"
+    )
+    overlap = len(query_tokens & lexical_tokens)
+    if overlap <= 0:
+        return 0.0
+    title_overlap = len(query_tokens & title_tokens)
+    tag_overlap = len(query_tokens & tag_tokens)
+    stale_penalty = 0.5 if _stale_entry(document.metadata.get("stale_after")) else 0.0
+    return float(overlap) + float(title_overlap) + (0.5 * float(tag_overlap)) - stale_penalty
 
 
 def _stale_entry(value: object) -> bool:

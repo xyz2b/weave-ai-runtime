@@ -126,6 +126,7 @@ def test_session_start_loads_memory_entrypoint_and_retrieves_relevant_documents(
     assert any("Use pytest via `pytest -q`." in fragment for fragment in fragments)
     assert any("The project uses pytest for unit tests" in fragment for fragment in fragments)
     trace = model_client.requests[0].turn_context.metadata["memory_retrieval"]
+    assert "memory_retrieval" not in model_client.requests[0].system_prompt
     assert trace["applied_filters"] == (
         "manifest_header_prefilter",
         "lexical_shortlist",
@@ -340,6 +341,116 @@ def test_layered_retrieval_prioritizes_agent_namespace_shared_long_term_and_sess
     assert agent_manifest["namespaces"][0]["entry_count"] == 1
 
 
+def test_agent_namespace_retrieval_prefers_query_match_over_path_order(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    memory_root = project_root / ".claude" / "memory"
+    agent_docs = memory_root / "agents" / "main-router" / "documents" / "heuristics"
+    agent_docs.mkdir(parents=True)
+    (agent_docs / "aaa-build.md").write_text(
+        "# Build Heuristic\n\nRun npm build for release checks.\n",
+        encoding="utf-8",
+    )
+    (agent_docs / "zzz-pytest.md").write_text(
+        "# Pytest Heuristic\n\nRun pytest -q first for small Python changes.\n",
+        encoding="utf-8",
+    )
+
+    manager = MemoryManager(project_root=project_root)
+    agent = AgentDefinition(name="main-router", description="router", prompt="route")
+    manager.initialize_session(session_id="session-agent-query", agent=agent, cwd=project_root)
+
+    fragments, trace = manager.collect_with_trace(
+        session_id="session-agent-query",
+        turn_id="turn-agent-query",
+        agent=agent,
+        cwd=project_root,
+        messages=(_user_message("msg-agent-query", "How should I run pytest here?"),),
+    )
+
+    assert "Pytest Heuristic" in fragments[0]
+    assert "Build Heuristic" not in fragments[0]
+    assert trace["selected_doc_ids"][0] == "agents/main-router/documents/heuristics/zzz-pytest.md"
+
+
+def test_scope_mismatched_long_term_artifact_is_excluded_from_manifest(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    misplaced = project_root / ".claude" / "memory" / "documents" / "shared" / "misplaced.md"
+    _write_v2_memory_artifact(
+        misplaced,
+        title="Misplaced Scope",
+        content="This file lives in project memory but claims user scope.",
+        scope="user",
+    )
+
+    manager = MemoryManager(project_root=project_root)
+    agent = AgentDefinition(name="main-router", description="router", prompt="route")
+    context = manager.initialize_session(session_id="session-misplaced", agent=agent, cwd=project_root)
+
+    manifest_payload = json.loads(context.long_term_manifest_path.read_text(encoding="utf-8"))
+    assert manifest_payload["stats"]["entry_count"] == 0
+    assert manifest_payload["stats"]["invalid_entry_count"] == 1
+
+
+def test_agent_namespace_manifest_ignores_invalid_docs_and_non_string_conflict_keys(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    namespace_root = project_root / ".claude" / "memory" / "agents" / "main-router"
+    _write_v2_memory_artifact(
+        namespace_root / "documents" / "heuristics" / "valid.md",
+        title="Valid Namespace Note",
+        content="Use pytest -q first.",
+        scope="project",
+        namespace="agent:main-router",
+        agent_namespace="main-router",
+    )
+    (namespace_root / "documents" / "heuristics" / "broken.md").write_text(
+        "---\nmemory_kind: note\nscope: project\ntags: [broken\n---\n# Broken\n\ninvalid\n",
+        encoding="utf-8",
+    )
+    namespace_root.mkdir(parents=True, exist_ok=True)
+    (namespace_root / "namespace-manifest.json").write_text(
+        json.dumps({"entries": [{"conflict_key": "a"}, {"conflict_key": ""}, {"conflict_key": 123}]}, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+    manager = MemoryManager(project_root=project_root)
+    agent = AgentDefinition(name="main-router", description="router", prompt="route")
+    context = manager.initialize_session(session_id="session-agent-manifest", agent=agent, cwd=project_root)
+
+    manifest_payload = json.loads(context.agent_manifest_path.read_text(encoding="utf-8"))
+    namespace = manifest_payload["namespaces"][0]
+    assert namespace["entry_count"] == 1
+    assert namespace["conflict_keys"] == ["a"]
+
+
+def test_agent_namespace_document_must_match_its_namespace_path(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    namespace_root = project_root / ".claude" / "memory" / "agents" / "main-router" / "documents" / "heuristics"
+    _write_v2_memory_artifact(
+        namespace_root / "wrong-agent.md",
+        title="Wrong Namespace",
+        content="This file lives under main-router but claims another agent namespace.",
+        scope="project",
+        namespace="agent:other-agent",
+        agent_namespace="other-agent",
+    )
+
+    manager = MemoryManager(project_root=project_root)
+    agent = AgentDefinition(name="main-router", description="router", prompt="route")
+    context = manager.initialize_session(session_id="session-wrong-agent", agent=agent, cwd=project_root)
+
+    agent_manifest = json.loads(context.agent_manifest_path.read_text(encoding="utf-8"))
+    assert agent_manifest["namespaces"][0]["entry_count"] == 0
+
+    fragments, _ = manager.collect_with_trace(
+        session_id="session-wrong-agent",
+        turn_id="turn-wrong-agent",
+        agent=agent,
+        cwd=project_root,
+        messages=(_user_message("msg-wrong-agent", "How should I run pytest?"),),
+    )
+    assert not any("Wrong Namespace" in fragment for fragment in fragments)
+
+
 def test_builtin_file_tools_exclude_reserved_memory_paths(tmp_path: Path) -> None:
     project_root = _load_claude_memory_fixture(tmp_path)
     (project_root / "README.md").write_text("Run pytest from the repo root.\n", encoding="utf-8")
@@ -504,14 +615,24 @@ def _user_message(message_id: str, text: str):
     return RuntimeMessage(message_id=message_id, role=MessageRole.USER, content=text)
 
 
-def _write_v2_memory_artifact(path: Path, *, title: str, content: str, scope: str) -> None:
+def _write_v2_memory_artifact(
+    path: Path,
+    *,
+    title: str,
+    content: str,
+    scope: str,
+    namespace: str = "shared",
+    agent_namespace: str | None = None,
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    agent_namespace_line = "" if agent_namespace is None else f"agent_namespace: {agent_namespace}\n"
     path.write_text(
         (
             "---\n"
             "memory_kind: note\n"
             f"scope: {scope}\n"
-            "namespace: shared\n"
+            f"namespace: {namespace}\n"
+            f"{agent_namespace_line}"
             "retention: durable_until_superseded\n"
             "source_pathway: rule\n"
             "created_at: 2026-04-17T04:00:00Z\n"

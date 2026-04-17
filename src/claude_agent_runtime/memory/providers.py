@@ -11,6 +11,7 @@ from .models import MemoryDocument, MemoryEntry, ResolvedMemoryScope
 from .schema import (
     AGENT_MANIFEST_KIND,
     CONSOLIDATION_MANIFEST_KIND,
+    DEFAULT_NAMESPACE,
     LONG_TERM_MANIFEST_KIND,
     SESSION_MANIFEST_KIND,
     build_manifest_envelope,
@@ -251,15 +252,20 @@ class FileMemoryProvider:
             context=context,
             fallback_created_at=fallback_created_at,
         )
-        if not parsed.valid:
+        aligned_metadata, alignment_errors = _align_artifact_metadata_to_path(
+            context=context,
+            path=path,
+            metadata=parsed.metadata,
+        )
+        if not parsed.valid or alignment_errors:
             return None
         return MemoryDocument(
             scope=context.scope,
             path=path,
             title=parsed.title,
             content=parsed.content,
-            kind=str(parsed.metadata.get("memory_kind") or "document"),
-            metadata=parsed.metadata,
+            kind=str(aligned_metadata.get("memory_kind") or "document"),
+            metadata=aligned_metadata,
         )
 
     def _long_term_manifest_entry(
@@ -304,22 +310,31 @@ class FileMemoryProvider:
         for path in sorted(context.agents_dir.iterdir()):
             if not path.is_dir():
                 continue
-            namespace_documents = [
-                document_path
-                for document_path in sorted((path / "documents").rglob("*.md"))
-                if document_path.is_file()
-            ] if (path / "documents").exists() else []
-            manifest_payload = _read_json_document(path / "namespace-manifest.json") or {}
+            agent_name = path.name
+            namespace_documents, _ = self._scan_agent_namespace_documents(context, agent_name)
+            manifest_path = context.agent_namespace_manifest_path(agent_name)
+            manifest_payload = _read_json_document(manifest_path) or {}
             raw_entries = manifest_payload.get("entries", ()) if isinstance(manifest_payload, dict) else ()
             conflict_keys = [
-                str(entry.get("conflict_key")).strip()
+                entry.get("conflict_key").strip()
                 for entry in raw_entries
-                if isinstance(entry, dict) and str(entry.get("conflict_key", "")).strip()
+                if isinstance(entry, dict)
+                and isinstance(entry.get("conflict_key"), str)
+                and entry.get("conflict_key", "").strip()
             ]
-            latest_update = _latest_path_timestamp(namespace_documents + [path / "namespace-manifest.json"])
+            if not conflict_keys:
+                conflict_keys = [
+                    document.metadata["conflict_key"]
+                    for document in namespace_documents
+                    if isinstance(document.metadata.get("conflict_key"), str)
+                    and document.metadata["conflict_key"].strip()
+                ]
+            latest_update = _latest_path_timestamp(
+                [document.path for document in namespace_documents] + [manifest_path]
+            )
             namespaces.append(
                 {
-                    "agent_name": path.name,
+                    "agent_name": agent_name,
                     "path": path.relative_to(context.memory_root).as_posix() + "/",
                     "entry_count": len(namespace_documents),
                     "last_updated_at": latest_update or utc_now_iso(),
@@ -327,6 +342,27 @@ class FileMemoryProvider:
                 }
             )
         return namespaces
+
+    def _scan_agent_namespace_documents(
+        self,
+        context: ResolvedMemoryScope,
+        agent_name: str,
+    ) -> tuple[tuple[MemoryDocument, ...], int]:
+        namespace_dir = context.agent_namespace_documents_dir(agent_name)
+        if not namespace_dir.exists():
+            return (), 0
+
+        documents: list[MemoryDocument] = []
+        invalid_count = 0
+        for path in sorted(namespace_dir.rglob("*.md")):
+            if not path.is_file():
+                continue
+            document = self._read_memory_document(context, path)
+            if document is None:
+                invalid_count += 1
+                continue
+            documents.append(document)
+        return tuple(documents), invalid_count
 
 
 def _existing_fingerprints(documents: Sequence[MemoryDocument]) -> dict[str, Path]:
@@ -386,3 +422,51 @@ def _is_stale(value: Any) -> bool:
     except ValueError:
         return False
     return stale_after <= datetime.now(timezone.utc)
+
+
+def _align_artifact_metadata_to_path(
+    *,
+    context: ResolvedMemoryScope,
+    path: Path,
+    metadata: Mapping[str, Any],
+) -> tuple[dict[str, Any], tuple[str, ...]]:
+    normalized = dict(metadata)
+    errors: list[str] = []
+    expected_scope = context.scope.value
+    if normalized.get("scope") != expected_scope:
+        errors.append("Artifact scope does not match its boundary path")
+
+    try:
+        path.relative_to(context.documents_dir)
+    except ValueError:
+        pass
+    else:
+        if normalized.get("namespace") != DEFAULT_NAMESPACE:
+            errors.append("Long-term documents must use the shared namespace")
+        if normalized.get("agent_namespace") is not None:
+            errors.append("Long-term documents cannot declare an agent namespace")
+        return normalized, tuple(errors)
+
+    try:
+        relative = path.relative_to(context.agents_dir)
+    except ValueError:
+        return normalized, tuple(errors)
+
+    if len(relative.parts) < 2:
+        errors.append("Agent namespace document path is incomplete")
+        return normalized, tuple(errors)
+
+    agent_namespace = relative.parts[0]
+    expected_namespace = f"agent:{agent_namespace}"
+    namespace = normalized.get("namespace")
+    if namespace in {None, "", DEFAULT_NAMESPACE, expected_namespace}:
+        normalized["namespace"] = expected_namespace
+    else:
+        errors.append("Artifact namespace does not match its agent namespace path")
+
+    declared_agent_namespace = normalized.get("agent_namespace")
+    if declared_agent_namespace in {None, "", agent_namespace}:
+        normalized["agent_namespace"] = agent_namespace
+    else:
+        errors.append("Artifact agent namespace does not match its path")
+    return normalized, tuple(errors)

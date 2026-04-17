@@ -7,6 +7,8 @@ from ..contracts import MessageAttachment, RuntimeMessage, TurnContext
 from ..definitions import InvocationCapabilityView
 from ..definitions import AgentDefinition
 
+_PROMPT_HIDDEN_RUNTIME_CONTEXT_KEYS = frozenset({"memory_retrieval"})
+
 
 @dataclass(frozen=True, slots=True)
 class ContextAssembly:
@@ -58,8 +60,13 @@ class ContextAssembler:
             attachment_lines = [f"- {attachment.name}: {attachment.path}" for attachment in attachments]
             sections.append("Attachments:\n" + "\n".join(attachment_lines))
         if runtime_context:
-            runtime_lines = [f"- {key}: {value}" for key, value in sorted(runtime_context.items())]
-            sections.append("Runtime Context:\n" + "\n".join(runtime_lines))
+            runtime_lines = [
+                f"- {key}: {value}"
+                for key, value in sorted(runtime_context.items())
+                if key not in _PROMPT_HIDDEN_RUNTIME_CONTEXT_KEYS
+            ]
+            if runtime_lines:
+                sections.append("Runtime Context:\n" + "\n".join(runtime_lines))
 
         turn_context = TurnContext(
             session_id=session_id,
