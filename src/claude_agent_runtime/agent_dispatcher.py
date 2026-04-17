@@ -228,7 +228,11 @@ def _coerce_optional_string(value: Any) -> str | None:
 
 
 def _task_status_for_agent_result(status: str) -> TaskStatus:
-    return TaskStatus.COMPLETED if status == AgentRunStatus.COMPLETED.value else TaskStatus.FAILED
+    if status == AgentRunStatus.COMPLETED.value:
+        return TaskStatus.COMPLETED
+    if status == AgentRunStatus.MAX_TURNS.value:
+        return TaskStatus.STOPPED
+    return TaskStatus.FAILED
 
 
 def _background_error_for_result(result: AgentRunResult) -> str | None:

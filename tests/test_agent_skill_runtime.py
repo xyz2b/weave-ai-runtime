@@ -19,7 +19,12 @@ from claude_agent_runtime.hooks import RuntimeHookPhase
 from claude_agent_runtime.isolation import BaseIsolationAdapter, IsolationManager, IsolationRequest
 from claude_agent_runtime.permissions import PermissionTarget
 from claude_agent_runtime.registries import AgentRegistry, SkillRegistry, ToolRegistry
-from claude_agent_runtime.runtime_kernel import BuiltinPackConfig, RuntimeConfig, assemble_runtime
+from claude_agent_runtime.runtime_kernel import (
+    BuiltinPackConfig,
+    ModelRouteBinding,
+    RuntimeConfig,
+    assemble_runtime,
+)
 from claude_agent_runtime.runtime_services import RuntimeServices
 from claude_agent_runtime.skill_runtime import SkillExecutor
 from claude_agent_runtime.tasking import TaskManager
@@ -28,6 +33,7 @@ from claude_agent_runtime.turn_engine import (
     ModelRequest,
     ModelStreamEvent,
     ModelStreamEventType,
+    NormalizedModelCapabilities,
     TurnEngine,
     TurnStreamEventType,
 )
@@ -137,6 +143,14 @@ def test_agent_tool_v1_contract_normalizes_and_returns_structured_payload(tmp_pa
         RuntimeConfig(
             working_directory=tmp_path,
             model_client=model_client,
+            model_routes={
+                "reviewer-route": ModelRouteBinding(
+                    client=model_client,
+                    default_model="default-reviewer-model",
+                    provider_name="provider-reviewer",
+                    capabilities=NormalizedModelCapabilities(),
+                )
+            },
             builtins=BuiltinPackConfig(
                 agents_enabled=False,
                 extra_agents=[
@@ -253,6 +267,54 @@ def test_agent_tool_rejects_invalid_cwd_input(tmp_path: Path) -> None:
 
     assert result.status == ToolCallStatus.ERROR
     assert "cwd does not exist" in (result.error or "")
+
+
+def test_agent_tool_rejects_unknown_model_route(tmp_path: Path) -> None:
+    model_client = FakeModelClient([])
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            model_client=model_client,
+            builtins=BuiltinPackConfig(
+                agents_enabled=False,
+                extra_agents=[
+                    AgentDefinition(name="main-router", description="router", prompt="route", tools=("*",)),
+                    AgentDefinition(name="verification", description="verify", prompt="verify"),
+                ],
+            ),
+        )
+    )
+    context = ToolContext(
+        session_id="session-invalid-model-route",
+        turn_id="turn-invalid-model-route",
+        agent_name="main-router",
+        cwd=tmp_path,
+        tool_registry=runtime.kernel.tool_registry,
+        agent_registry=runtime.kernel.agent_registry,
+        skill_registry=runtime.kernel.skill_registry,
+        agent_runner=runtime.run_agent_tool,
+    )
+
+    result = asyncio.run(
+        ToolScheduler(runtime.kernel.tool_registry).run(
+            [
+                ToolCall(
+                    "call-invalid-model-route",
+                    "agent",
+                    {
+                        "agent": "verification",
+                        "prompt": "run checks",
+                        "model_route": "missing-route",
+                    },
+                )
+            ],
+            context,
+        )
+    )[0]
+
+    assert result.status == ToolCallStatus.ERROR
+    assert result.error == "Unknown model route: missing-route"
+    assert model_client.requests == []
 
 
 def test_session_stream_surfaces_child_run_events(tmp_path: Path) -> None:

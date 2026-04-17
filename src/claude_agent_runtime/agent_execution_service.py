@@ -133,7 +133,6 @@ class AgentExecutionService:
         )
         execution_spec = replace(
             execution_spec,
-            requested_model=resolved_model,
             resolved_model_route=resolved_route_name,
             provider_name=route_binding.provider_name if route_binding is not None else None,
             resolved_capabilities=resolved_capabilities,
@@ -166,7 +165,7 @@ class AgentExecutionService:
                 requested_agent,
                 tools=tuple(tool.name for tool in effective_tools),
                 skills=tuple(skill.name for skill in effective_skills),
-                model=execution_spec.requested_model or requested_agent.model,
+                model=resolved_model,
                 permission_mode=policy.permission_context.mode,
                 memory=policy.memory_scope,
                 isolation=policy.isolation_mode,
@@ -522,7 +521,11 @@ class AgentExecutionService:
             or inherited_route
             or self._default_model_route
         )
-        binding = self._model_routes.get(resolved_route) if resolved_route is not None else None
+        if resolved_route is None:
+            return None, None
+        binding = self._model_routes.get(resolved_route)
+        if binding is None:
+            raise ValueError(f"Unknown model route: {resolved_route}")
         return resolved_route, binding
 
     async def _dispatch_subagent_stop(

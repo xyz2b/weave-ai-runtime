@@ -4,7 +4,13 @@ from pathlib import Path
 from claude_agent_runtime.agent_execution import AgentRunStatus, SpawnMode
 from claude_agent_runtime.agent_runtime import AgentInvocation, AgentRuntime
 from claude_agent_runtime.contracts import MessageRole
-from claude_agent_runtime.definitions import AgentDefinition, PermissionBehavior, PermissionDecision
+from claude_agent_runtime.definitions import (
+    AgentDefinition,
+    PermissionBehavior,
+    PermissionDecision,
+    ToolDefinition,
+    ToolTraits,
+)
 from claude_agent_runtime.registries import AgentRegistry, SkillRegistry, ToolRegistry
 from claude_agent_runtime.runtime_kernel import ModelRouteBinding
 from claude_agent_runtime.runtime_services import RuntimeServices
@@ -85,6 +91,14 @@ def test_sync_agent_execution_spec_and_run_record_are_structured(tmp_path: Path)
             tool_registry=ToolRegistry(),
             skill_registry=SkillRegistry(),
             task_manager=TaskManager(),
+            model_routes={
+                "reviewer-route": ModelRouteBinding(
+                    client=model_client,
+                    default_model="base-model",
+                    provider_name="provider-reviewer",
+                    capabilities=NormalizedModelCapabilities(),
+                )
+            },
         )
         result = await runtime.invoke(
             AgentInvocation(
@@ -131,6 +145,61 @@ def test_sync_agent_execution_spec_and_run_record_are_structured(tmp_path: Path)
     assert record.request_metadata["spawn_mode"] == "sync"
     assert record.terminal_metadata["request_id"] == "req-sync"
     assert record.messages[-1].text == "sync answer"
+
+
+def test_agent_default_model_does_not_overwrite_requested_model_metadata(tmp_path: Path) -> None:
+    async def scenario():
+        model_client = FakeModelClient(
+            [
+                [
+                    ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-default-model"}),
+                    ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "default model answer"}),
+                    ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+                ]
+            ]
+        )
+        agent_registry = AgentRegistry()
+        agent_registry.register(
+            AgentDefinition(
+                name="verification",
+                description="verify",
+                prompt="verify",
+                model="agent-default-model",
+            )
+        )
+        runtime = AgentRuntime(
+            turn_engine=TurnEngine(
+                model_client=model_client,
+                tool_registry=ToolRegistry(),
+                agent_registry=agent_registry,
+                skill_registry=SkillRegistry(),
+                task_manager=TaskManager(),
+            ),
+            agent_registry=agent_registry,
+            tool_registry=ToolRegistry(),
+            skill_registry=SkillRegistry(),
+            task_manager=TaskManager(),
+        )
+        result = await runtime.invoke(
+            AgentInvocation(
+                agent_name="verification",
+                prompt="run checks",
+                session_id="session-default-model",
+                cwd=tmp_path,
+            )
+        )
+        record = await runtime.run_store.get(result.run_id)
+        return model_client, result, record
+
+    model_client, result, record = asyncio.run(scenario())
+
+    assert result.execution_spec is not None
+    assert result.execution_spec.requested_model is None
+    assert model_client.requests[0].model == "agent-default-model"
+    assert model_client.requests[0].metadata["requested_model"] is None
+    assert record is not None
+    assert record.requested_model is None
+    assert record.request_metadata["requested_model"] is None
 
 
 def test_background_agent_writes_running_and_terminal_run_records(tmp_path: Path) -> None:
@@ -412,6 +481,85 @@ def test_background_failure_marks_task_failed_and_emits_failure_notification(tmp
     assert runtime.notifications[-1].text == "Background agent 'verification' failed: isolation prepare failed"
 
 
+def test_background_max_turns_marks_task_stopped(tmp_path: Path) -> None:
+    async def noop(_: dict[str, object], __) -> dict[str, bool]:
+        return {"ok": True}
+
+    async def scenario():
+        model_client = FakeModelClient(
+            [
+                [
+                    ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-max-turns"}),
+                    ModelStreamEvent(
+                        ModelStreamEventType.TOOL_CALL,
+                        {"tool_name": "noop", "tool_input": {}, "call_id": "call-noop"},
+                    ),
+                    ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "tool_use"}),
+                ]
+            ]
+        )
+        tool_registry = ToolRegistry()
+        tool_registry.register(
+            ToolDefinition(
+                name="noop",
+                description="noop",
+                input_schema={"type": "object", "properties": {}, "additionalProperties": False},
+                traits=ToolTraits(read_only=True, concurrency_safe=True),
+                execute=noop,
+            )
+        )
+        agent_registry = AgentRegistry()
+        agent_registry.register(
+            AgentDefinition(
+                name="reviewer",
+                description="review",
+                prompt="review",
+                tools=("*",),
+                max_turns=1,
+            )
+        )
+        task_manager = TaskManager()
+        runtime = AgentRuntime(
+            turn_engine=TurnEngine(
+                model_client=model_client,
+                tool_registry=tool_registry,
+                agent_registry=agent_registry,
+                skill_registry=SkillRegistry(),
+                task_manager=task_manager,
+            ),
+            agent_registry=agent_registry,
+            tool_registry=tool_registry,
+            skill_registry=SkillRegistry(),
+            task_manager=task_manager,
+        )
+        initial = await runtime.invoke(
+            AgentInvocation(
+                agent_name="reviewer",
+                prompt="hit the max turn limit",
+                session_id="session-background-max-turns",
+                cwd=tmp_path,
+                background=True,
+            )
+        )
+        completed = await runtime.wait_for_background(initial.task_id)
+        task = runtime.runtime_services.task_manager.get(initial.task_id)
+        record = await runtime.run_store.get(initial.run_id)
+        return initial, completed, task, record
+
+    initial, completed, task, record = asyncio.run(scenario())
+
+    assert initial.status == "running"
+    assert completed.status == "max_turns"
+    assert completed.notification is not None
+    assert completed.notification.text == "Background agent 'reviewer' stopped after reaching the max turn limit"
+    assert task is not None
+    assert task.status == TaskStatus.STOPPED
+    assert task.error is None
+    assert task.metadata["agent_status"] == "max_turns"
+    assert record is not None
+    assert record.status == AgentRunStatus.MAX_TURNS
+
+
 def test_route_resolution_uses_request_scoped_clients_and_persists_metadata(tmp_path: Path) -> None:
     async def scenario():
         route_a_client = FakeModelClient(
@@ -552,3 +700,59 @@ def test_route_resolution_uses_request_scoped_clients_and_persists_metadata(tmp_
     assert record.resolved_model_route == "route-b"
     assert record.provider_name == "provider-b"
     assert record.invocation_mode == ModelInvocationMode.STREAM.value
+
+
+def test_unknown_route_override_fails_before_model_request(tmp_path: Path) -> None:
+    async def scenario():
+        default_client = FakeModelClient([])
+        route_a_client = FakeModelClient([])
+        agent_registry = AgentRegistry()
+        agent_registry.register(
+            AgentDefinition(
+                name="reviewer",
+                description="review",
+                prompt="review",
+            )
+        )
+        runtime = AgentRuntime(
+            turn_engine=TurnEngine(
+                model_client=default_client,
+                tool_registry=ToolRegistry(),
+                agent_registry=agent_registry,
+                skill_registry=SkillRegistry(),
+                task_manager=TaskManager(),
+            ),
+            agent_registry=agent_registry,
+            tool_registry=ToolRegistry(),
+            skill_registry=SkillRegistry(),
+            task_manager=TaskManager(),
+            model_routes={
+                "route-a": ModelRouteBinding(
+                    client=route_a_client,
+                    default_model="route-a-default",
+                    provider_name="provider-a",
+                    capabilities=NormalizedModelCapabilities(),
+                )
+            },
+            default_model_route="route-a",
+        )
+        error = None
+        try:
+            await runtime.invoke(
+                AgentInvocation(
+                    agent_name="reviewer",
+                    prompt="review this",
+                    session_id="session-invalid-route",
+                    cwd=tmp_path,
+                    requested_model_route="missing-route",
+                )
+            )
+        except ValueError as exc:
+            error = str(exc)
+        return default_client, route_a_client, error
+
+    default_client, route_a_client, error = asyncio.run(scenario())
+
+    assert error == "Unknown model route: missing-route"
+    assert default_client.requests == []
+    assert route_a_client.requests == []

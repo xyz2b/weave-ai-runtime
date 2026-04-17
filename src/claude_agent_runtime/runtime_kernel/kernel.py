@@ -170,6 +170,12 @@ class RuntimeAssembly:
         metadata = dict(context.metadata)
         if reason is not None:
             metadata["delegation_reason"] = reason
+        normalized_model_route = _coerce_optional_string(model_route)
+        if (
+            normalized_model_route is not None
+            and normalized_model_route not in self.kernel.config.model_routes
+        ):
+            raise ValueError(f"Unknown model route: {normalized_model_route}")
         result = await self.agent_runtime.invoke(
             AgentInvocation(
                 agent_name=agent_name,
@@ -181,7 +187,7 @@ class RuntimeAssembly:
                 spawn_mode=_coerce_spawn_mode(spawn_mode),
                 parent_run_id=_coerce_optional_string(context.metadata.get("run_id")),
                 parent_turn_id=context.turn_id,
-                requested_model_route=_coerce_optional_string(model_route),
+                requested_model_route=normalized_model_route,
                 requested_model=_coerce_optional_string(model),
                 requested_permission_mode=_coerce_permission_mode(permission_mode),
                 requested_isolation=_coerce_isolation_mode(isolation),
