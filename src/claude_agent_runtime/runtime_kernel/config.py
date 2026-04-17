@@ -5,7 +5,13 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Mapping
 
 from ..agent_execution import ChildRunStore
-from ..definitions import AgentDefinition, DefinitionSource, SkillDefinition, ToolDefinition
+from ..definitions import (
+    AgentDefinition,
+    DefinitionSource,
+    InvocationProvider,
+    SkillDefinition,
+    ToolDefinition,
+)
 from ..hosts.base import HostFactory
 from ..turn_engine.models import ModelClient, NormalizedModelCapabilities, TranscriptStore
 
@@ -92,6 +98,7 @@ class RuntimeConfig:
     permission_handler: PermissionHandler | None = None
     ask_user_handler: AskUserHandler | None = None
     tool_refresh_callback: ToolRefreshCallback | None = None
+    extra_invocation_providers: list[InvocationProvider] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
 
     @classmethod

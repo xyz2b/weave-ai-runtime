@@ -165,6 +165,21 @@ class BoundHostRuntime:
             self.services.bind_host(self.host)
         return self.runtime.create_session(**kwargs)
 
+    def resolve_session_invocations(self, *args: Any, **kwargs: Any) -> Any:
+        if self.services is not None and hasattr(self.services, "bind_host"):
+            self.services.bind_host(self.host)
+        return self.runtime.resolve_session_invocations(*args, **kwargs)
+
+    def visible_invocations(self, *args: Any, **kwargs: Any) -> Any:
+        if self.services is not None and hasattr(self.services, "bind_host"):
+            self.services.bind_host(self.host)
+        return self.runtime.visible_invocations(*args, **kwargs)
+
+    def invocation_diagnostics(self, *args: Any, **kwargs: Any) -> Any:
+        if self.services is not None and hasattr(self.services, "bind_host"):
+            self.services.bind_host(self.host)
+        return self.runtime.invocation_diagnostics(*args, **kwargs)
+
     async def run_prompt(self, *args: Any, **kwargs: Any) -> Any:
         if self.services is not None and hasattr(self.services, "bind_host"):
             self.services.bind_host(self.host)

@@ -215,6 +215,12 @@ class FileState:
     def read_observed(self, path: str) -> FileObservation | None:
         return self._observations.get(str(Path(path).resolve()))
 
+    def observations(self) -> tuple[FileObservation, ...]:
+        return tuple(self._observations.values())
+
+    def observed_paths(self) -> tuple[str, ...]:
+        return tuple(sorted(self._observations))
+
     def record_read(self, path: str, digest: str | None = None) -> None:
         resolved = str(Path(path).resolve())
         self._observations[resolved] = FileObservation(

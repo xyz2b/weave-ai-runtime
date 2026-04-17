@@ -6,6 +6,8 @@ from datetime import datetime, timezone
 from enum import StrEnum
 from typing import Any, Generic, TypeAlias, TypeVar
 
+from .definitions import InvocationCapabilityView
+
 
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
@@ -106,6 +108,7 @@ class SessionCommandType(StrEnum):
     RESUME = "resume"
 
 
+# Session commands model inbound control-flow events, not invocation/catalog entries.
 @dataclass(frozen=True, slots=True)
 class SessionCommand:
     command_id: str
@@ -149,6 +152,7 @@ class TurnContext:
     available_tools: tuple[str, ...] = ()
     available_skills: tuple[str, ...] = ()
     available_agents: tuple[str, ...] = ()
+    available_invocations: tuple[InvocationCapabilityView, ...] = ()
     memory_fragments: tuple[str, ...] = ()
     hook_context: tuple[str, ...] = ()
     compaction_fragments: tuple[str, ...] = ()

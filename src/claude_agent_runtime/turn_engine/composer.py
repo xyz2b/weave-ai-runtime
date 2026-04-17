@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from typing import Any, Sequence
 
 from ..contracts import MessageAttachment, RuntimeMessage, TurnContext
+from ..definitions import InvocationCapabilityView
 from ..definitions import AgentDefinition
 
 
@@ -29,6 +30,7 @@ class ContextAssembler:
         available_tools: Sequence[str],
         available_skills: Sequence[str],
         available_agents: Sequence[AgentDefinition] = (),
+        available_invocations: Sequence[InvocationCapabilityView] = (),
         base_system_prompt: str,
         memory_fragments: Sequence[str] = (),
         hook_context: Sequence[str] = (),
@@ -68,6 +70,7 @@ class ContextAssembler:
             available_tools=tuple(available_tools),
             available_skills=tuple(available_skills),
             available_agents=tuple(definition.name for definition in available_agents),
+            available_invocations=tuple(available_invocations),
             memory_fragments=tuple(memory_fragments),
             hook_context=tuple(hook_context),
             compaction_fragments=tuple(compaction_fragments),

@@ -9,12 +9,22 @@ from ..agent_execution import SpawnMode
 from ..agent_runtime import AgentInvocation, AgentRunResult, AgentRuntime
 from ..builtins import load_builtin_pack
 from ..contracts import RuntimeMessage, serialize_content_blocks
-from ..definitions import AgentDefinition, IsolationMode, PermissionMode, SkillDefinition, ToolDefinition
+from ..definitions import (
+    AgentDefinition,
+    InvocationCapabilityView,
+    InvocationDiagnostics,
+    IsolationMode,
+    PermissionMode,
+    ResolvedInvocationCatalog,
+    SkillDefinition,
+    ToolDefinition,
+)
 from ..diagnostics import Diagnostic, DiagnosticSeverity
 from ..errors import RegistryConflictError
 from ..hosts.base import BoundHostRuntime, HostAdapter, NullHostAdapter
+from ..invocation_catalog import SkillInvocationProvider
 from ..memory import MemoryManagerService
-from ..registries import AgentRegistry, DefinitionDiscovery, SkillRegistry, ToolRegistry
+from ..registries import AgentRegistry, DefinitionDiscovery, InvocationRegistry, SkillRegistry, ToolRegistry
 from ..runtime_services import DefaultTranscriptService, RuntimeServices
 from ..session_runtime import InMemoryTranscriptStore, InboundEvent, InboundEventType, SessionController
 from ..skill_runtime import SkillExecutionResult, SkillExecutor
@@ -33,6 +43,7 @@ class RuntimeKernel:
     tool_registry: ToolRegistry
     agent_registry: AgentRegistry
     skill_registry: SkillRegistry
+    invocation_registry: InvocationRegistry
     diagnostics: tuple[Diagnostic, ...] = ()
     model_client: Any = None
     transcript_store: Any = None
@@ -75,6 +86,64 @@ class RuntimeAssembly:
             runtime=self,
             services=self.services,
         )
+
+    def resolve_invocations(
+        self,
+        *,
+        session_id: str,
+        cwd: str | Path | None = None,
+        messages: tuple[RuntimeMessage, ...] | list[RuntimeMessage] = (),
+        runtime_context: dict[str, object] | None = None,
+        turn_id: str | None = None,
+    ) -> ResolvedInvocationCatalog:
+        resolved_cwd = Path(cwd) if cwd is not None else self.kernel.config.working_directory
+        return self.turn_engine.resolve_invocation_catalog(
+            session_id=session_id,
+            turn_id=turn_id,
+            cwd=resolved_cwd,
+            messages=tuple(messages),
+            runtime_context=runtime_context,
+        )
+
+    def resolve_session_invocations(
+        self,
+        session: SessionController,
+        *,
+        runtime_context: dict[str, object] | None = None,
+    ) -> ResolvedInvocationCatalog:
+        session_runtime_context = dict(session.state.metadata)
+        if runtime_context:
+            session_runtime_context.update(runtime_context)
+        return self.resolve_invocations(
+            session_id=session.state.session_id,
+            turn_id=session.state.active_turn_id,
+            cwd=session.cwd,
+            messages=session.messages,
+            runtime_context=session_runtime_context,
+        )
+
+    def visible_invocations(
+        self,
+        session: SessionController,
+        *,
+        user_invocable: bool | None = None,
+        model_invocable: bool | None = None,
+        runtime_context: dict[str, object] | None = None,
+    ) -> tuple[InvocationCapabilityView, ...]:
+        catalog = self.resolve_session_invocations(session, runtime_context=runtime_context)
+        return catalog.visible_capabilities(
+            user_invocable=user_invocable,
+            model_invocable=model_invocable,
+        )
+
+    def invocation_diagnostics(
+        self,
+        session: SessionController,
+        *,
+        runtime_context: dict[str, object] | None = None,
+    ) -> tuple[InvocationDiagnostics, ...]:
+        catalog = self.resolve_session_invocations(session, runtime_context=runtime_context)
+        return catalog.diagnostics
 
     def create_session(
         self,
@@ -230,6 +299,7 @@ def build_runtime_kernel(config: RuntimeConfig) -> RuntimeKernel:
     tool_registry = ToolRegistry()
     agent_registry = AgentRegistry()
     skill_registry = SkillRegistry()
+    invocation_registry = InvocationRegistry()
     diagnostics: list[Diagnostic] = []
 
     builtin_pack = load_builtin_pack()
@@ -243,12 +313,16 @@ def build_runtime_kernel(config: RuntimeConfig) -> RuntimeKernel:
     _register_all(tool_registry, discovered.tools, diagnostics)
     _register_all(agent_registry, discovered.agents, diagnostics)
     _register_all(skill_registry, discovered.skills, diagnostics)
+    invocation_registry.register_provider(SkillInvocationProvider(skill_registry))
+    for provider in config.extra_invocation_providers:
+        invocation_registry.register_provider(provider)
 
     kernel = RuntimeKernel(
         config=config,
         tool_registry=tool_registry,
         agent_registry=agent_registry,
         skill_registry=skill_registry,
+        invocation_registry=invocation_registry,
         diagnostics=tuple(diagnostics),
         model_client=_default_model_client(config),
         transcript_store=config.transcript_store,
@@ -291,6 +365,7 @@ def _assemble_runtime_stack(kernel: RuntimeKernel) -> RuntimeAssembly:
         tool_registry=kernel.tool_registry,
         agent_registry=kernel.agent_registry,
         skill_registry=kernel.skill_registry,
+        invocation_registry=kernel.invocation_registry,
         runtime_services=services,
     )
     agent_runtime = AgentRuntime(

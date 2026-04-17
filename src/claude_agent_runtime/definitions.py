@@ -56,6 +56,33 @@ class SkillShell(StrEnum):
     POWERSHELL = "powershell"
 
 
+class InvocationSourceKind(StrEnum):
+    BUILTIN_SKILL = "builtin_skill"
+    SKILL_DIR = "skill_dir"
+    SLASH_COMMAND = "slash_command"
+    PLUGIN_COMMAND = "plugin_command"
+    MCP_PROMPT = "mcp_prompt"
+
+
+class InvocationTargetKind(StrEnum):
+    SKILL = "skill"
+    SLASH_COMMAND = "slash_command"
+    PLUGIN_COMMAND = "plugin_command"
+    MCP_PROMPT = "mcp_prompt"
+
+
+class InvocationPathMatchState(StrEnum):
+    MATCHED = "matched"
+    NOT_MATCHED = "not_matched"
+    INDETERMINATE = "indeterminate"
+
+
+class InvocationHiddenReason(StrEnum):
+    PATH_MISMATCH = "path_mismatch"
+    PATH_INDETERMINATE = "path_indeterminate"
+    INACTIVE = "inactive"
+
+
 class PermissionBehavior(StrEnum):
     ALLOW = "allow"
     ASK = "ask"
@@ -339,3 +366,143 @@ class SkillDefinition:
     origin: DefinitionOrigin = field(
         default_factory=lambda: DefinitionOrigin(DefinitionSource.BUNDLED)
     )
+
+
+@dataclass(frozen=True, slots=True)
+class InvocationVisibilityPolicy:
+    user_invocable: bool = True
+    model_invocable: bool = True
+    paths: tuple[str, ...] = ()
+    surface_hints: Mapping[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class InvocationExecutionPolicy:
+    target_kind: InvocationTargetKind
+    target_name: str
+    context: str | None = None
+    allowed_tools: tuple[str, ...] = ()
+    agent: str | None = None
+    model: str | None = None
+    effort: EffortValue | None = None
+    hooks: Mapping[str, Any] = field(default_factory=dict)
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class InvocationDefinition:
+    name: str
+    source_kind: InvocationSourceKind
+    description: str
+    display_name: str | None = None
+    argument_hint: str | None = None
+    aliases: tuple[str, ...] = ()
+    visibility_policy: InvocationVisibilityPolicy = field(
+        default_factory=InvocationVisibilityPolicy
+    )
+    execution_policy: InvocationExecutionPolicy | None = None
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+    origin: DefinitionOrigin = field(
+        default_factory=lambda: DefinitionOrigin(DefinitionSource.BUNDLED)
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class InvocationResolutionContext:
+    session_id: str
+    turn_id: str | None
+    cwd: Path
+    prompt_paths: tuple[str, ...] = ()
+    attachments: tuple[str, ...] = ()
+    workspace_roots: tuple[Path, ...] = ()
+    observed_paths: tuple[str, ...] = ()
+    working_set: tuple[str, ...] = ()
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class InvocationCapabilityView:
+    name: str
+    source_kind: InvocationSourceKind
+    description: str
+    display_name: str | None = None
+    argument_hint: str | None = None
+    user_invocable: bool = True
+    model_invocable: bool = True
+    source_label: str | None = None
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class InvocationDiagnostics:
+    name: str
+    source_kind: InvocationSourceKind
+    visible: bool
+    user_invocable: bool
+    model_invocable: bool
+    hidden_reason: InvocationHiddenReason | None = None
+    matched_paths: tuple[str, ...] = ()
+    path_match_state: InvocationPathMatchState = InvocationPathMatchState.MATCHED
+    narrowed_by_policy: Mapping[str, Any] = field(default_factory=dict)
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedInvocation:
+    definition: InvocationDefinition
+    capability: InvocationCapabilityView
+    diagnostics: InvocationDiagnostics
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedInvocationCatalog:
+    visible: tuple[ResolvedInvocation, ...] = ()
+    hidden: tuple[ResolvedInvocation, ...] = ()
+
+    @property
+    def diagnostics(self) -> tuple[InvocationDiagnostics, ...]:
+        return tuple(entry.diagnostics for entry in (*self.visible, *self.hidden))
+
+    def diagnostics_for(self, name: str) -> InvocationDiagnostics | None:
+        for entry in (*self.visible, *self.hidden):
+            if entry.definition.name == name:
+                return entry.diagnostics
+        return None
+
+    def visible_capabilities(
+        self,
+        *,
+        user_invocable: bool | None = None,
+        model_invocable: bool | None = None,
+    ) -> tuple[InvocationCapabilityView, ...]:
+        selected: list[InvocationCapabilityView] = []
+        for entry in self.visible:
+            if user_invocable is not None and entry.diagnostics.user_invocable != user_invocable:
+                continue
+            if model_invocable is not None and entry.diagnostics.model_invocable != model_invocable:
+                continue
+            selected.append(entry.capability)
+        return tuple(selected)
+
+    def visible_skill_definitions(
+        self,
+        *,
+        user_invocable: bool | None = None,
+        model_invocable: bool | None = None,
+    ) -> tuple[SkillDefinition, ...]:
+        selected: list[SkillDefinition] = []
+        for entry in self.visible:
+            if user_invocable is not None and entry.diagnostics.user_invocable != user_invocable:
+                continue
+            if model_invocable is not None and entry.diagnostics.model_invocable != model_invocable:
+                continue
+            candidate = entry.definition.metadata.get("skill_definition")
+            if isinstance(candidate, SkillDefinition):
+                selected.append(candidate)
+        return tuple(selected)
+
+
+class InvocationProvider(Protocol):
+    name: str
+
+    def list_invocations(self) -> tuple[InvocationDefinition, ...]: ...

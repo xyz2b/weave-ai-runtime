@@ -28,7 +28,7 @@ from ..contracts import (
     ThinkingBlock,
     ToolUseBlock,
 )
-from ..definitions import AgentDefinition, PermissionMode
+from ..definitions import AgentDefinition, PermissionMode, ResolvedInvocationCatalog
 from ..execution_policy import (
     EXECUTION_POLICY_STATE_KEY,
     ExecutionPolicyState,
@@ -38,8 +38,9 @@ from ..execution_policy import (
     serialize_runtime_metadata,
 )
 from ..hooks import StopPayload, UserPromptSubmitPayload
+from ..invocation_catalog import SkillInvocationProvider, build_invocation_resolution_context
 from ..permissions import PermissionContext
-from ..registries import AgentRegistry, SkillRegistry, ToolRegistry
+from ..registries import AgentRegistry, InvocationRegistry, SkillRegistry, ToolRegistry
 from ..runtime_services import DefaultTaskService, RuntimeServices
 from ..tool_executors import model_capabilities_for, select_tool_executor
 from ..tool_lifecycle import ToolLifecycleEvent
@@ -360,6 +361,7 @@ class TurnEngine:
         tool_registry: ToolRegistry,
         agent_registry: AgentRegistry | None = None,
         skill_registry: SkillRegistry | None = None,
+        invocation_registry: InvocationRegistry | None = None,
         prompt_composer: PromptComposer | None = None,
         permission_handler=None,
         ask_user_handler=None,
@@ -375,6 +377,7 @@ class TurnEngine:
         self._tool_registry = tool_registry
         self._agent_registry = agent_registry
         self._skill_registry = skill_registry
+        self._invocation_registry = invocation_registry or _default_invocation_registry(skill_registry)
         self._runtime_services = runtime_services or RuntimeServices(
             tasks=DefaultTaskService(task_manager or TaskManager())
         )
@@ -509,6 +512,27 @@ class TurnEngine:
             metadata=dict(metadata or {}),
         )
 
+    def resolve_invocation_catalog(
+        self,
+        *,
+        session_id: str,
+        turn_id: str | None,
+        cwd: str | Path,
+        messages: tuple[RuntimeMessage, ...] | list[RuntimeMessage],
+        runtime_context: Mapping[str, object] | None = None,
+    ):
+        registry = self._invocation_registry
+        if registry is None:
+            return _empty_invocation_catalog()
+        context = build_invocation_resolution_context(
+            session_id=session_id,
+            turn_id=turn_id,
+            cwd=cwd,
+            messages=tuple(messages),
+            runtime_context=runtime_context,
+        )
+        return registry.resolve(context)
+
     async def run_turn_stream(
         self,
         *,
@@ -624,7 +648,9 @@ class TurnEngine:
                 mode=agent.permission_mode or PermissionMode.DEFAULT,
             ),
         )
-        policy_state = policy_state_from_metadata(runtime_context)
+        incoming_policy_state = policy_state_from_metadata(runtime_context)
+        policy_state = incoming_policy_state
+        local_root_policy = policy_state is None
         if policy_state is None:
             root_tool_pool = assemble_main_thread_tool_pool(
                 self._tool_registry,
@@ -653,7 +679,6 @@ class TurnEngine:
                 runtime_metadata[EXECUTION_POLICY_STATE_KEY] = policy_state
                 runtime_metadata["permission_context"] = policy_state.effective.permission_context
                 tool_pool = policy_state.effective.tool_pool
-                active_skills = policy_state.effective.skill_pool
                 sanitized_runtime_context = serialize_runtime_metadata(runtime_metadata)
                 compaction_result = await self._prepare_compaction(
                     session_id=session_id,
@@ -676,6 +701,36 @@ class TurnEngine:
                         compacted_messages=tuple(working_messages),
                         metadata={"compaction": compaction_payload} if compaction_payload is not None else {},
                     )
+
+                resolved_invocations = self.resolve_invocation_catalog(
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    cwd=cwd,
+                    messages=tuple(working_messages),
+                    runtime_context=runtime_metadata,
+                )
+                active_skills = _resolve_iteration_skill_pool(
+                    catalog=resolved_invocations,
+                    agent=agent,
+                    policy_state=policy_state,
+                    local_root_policy=local_root_policy,
+                )
+                if active_skills != policy_state.effective.skill_pool:
+                    policy_state.apply(
+                        replace(
+                            policy_state.effective,
+                            skill_pool=active_skills,
+                            trace={
+                                "source": "invocation_catalog",
+                                "visible_invocations": [
+                                    capability.name
+                                    for capability in resolved_invocations.visible_capabilities()
+                                ],
+                                "model_invocable_skills": [skill.name for skill in active_skills],
+                            },
+                        )
+                    )
+                tool_pool = policy_state.effective.tool_pool
 
                 api_messages = normalize_messages_for_api(working_messages)
                 shared_memory_fragments = await self._collect_control_plane_fragments(
@@ -720,6 +775,7 @@ class TurnEngine:
                         current_agent=agent,
                         runtime_context=sanitized_runtime_context,
                     ),
+                    available_invocations=resolved_invocations.visible_capabilities(),
                     base_system_prompt=base_system_prompt,
                     memory_fragments=shared_memory_fragments + tuple(memory_fragments or ()),
                     hook_context=shared_hook_context
@@ -1272,6 +1328,36 @@ def _terminal_from_response(
         error=existing.error,
         abort_reason=existing.abort_reason or abort_reason,
         metadata=dict(existing.metadata),
+    )
+
+
+def _default_invocation_registry(skill_registry: SkillRegistry | None) -> InvocationRegistry | None:
+    if skill_registry is None:
+        return None
+    registry = InvocationRegistry()
+    registry.register_provider(SkillInvocationProvider(skill_registry))
+    return registry
+
+
+def _empty_invocation_catalog() -> ResolvedInvocationCatalog:
+    return ResolvedInvocationCatalog()
+
+
+def _resolve_iteration_skill_pool(
+    *,
+    catalog: ResolvedInvocationCatalog,
+    agent: AgentDefinition,
+    policy_state: ExecutionPolicyState,
+    local_root_policy: bool,
+) -> tuple[Any, ...]:
+    visible_model_skills = catalog.visible_skill_definitions(model_invocable=True)
+    if local_root_policy:
+        return resolve_skill_pool(visible_model_skills, agent.skills)
+    visible_names = {skill.name for skill in visible_model_skills}
+    return tuple(
+        skill
+        for skill in policy_state.effective.skill_pool
+        if skill.name in visible_names
     )
 
 

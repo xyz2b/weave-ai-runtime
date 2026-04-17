@@ -208,16 +208,20 @@ class StreamingToolOrchestrator:
         )
         if not result_blocks:
             return None
+        metadata: dict[str, Any] = {
+            "tool_results": [
+                _tool_result_metadata_entry(outcome)
+                for outcome in outcomes
+            ]
+        }
+        observed_paths = list(self._context.file_state.observed_paths())
+        if observed_paths:
+            metadata["observed_paths"] = observed_paths
         return RuntimeMessage(
             message_id=uuid4().hex,
             role=MessageRole.USER,
             content=result_blocks,
-            metadata={
-                "tool_results": [
-                    _tool_result_metadata_entry(outcome)
-                    for outcome in outcomes
-                ]
-            },
+            metadata=metadata,
         )
 
     async def _run_scheduled_call(

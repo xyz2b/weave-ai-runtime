@@ -7,7 +7,15 @@ from typing import Any, AsyncIterator
 from uuid import uuid4
 
 from ..compaction import latest_compaction_payload
-from ..contracts import MessageRole, RuntimeMessage, SessionCommand, SessionCommandType, SessionState, SessionStatus
+from ..contracts import (
+    MessageAttachment,
+    MessageRole,
+    RuntimeMessage,
+    SessionCommand,
+    SessionCommandType,
+    SessionState,
+    SessionStatus,
+)
 from ..definitions import AgentDefinition, PermissionMode
 from ..hooks import SessionEndPayload, SessionStartPayload
 from ..permissions import PermissionContext
@@ -68,8 +76,35 @@ class SessionController:
         return tuple(self._messages)
 
     @property
+    def cwd(self) -> str:
+        return self._cwd
+
+    @property
     def runtime_services(self) -> RuntimeServices:
         return self._runtime_services
+
+    def resolve_invocations(self):
+        return self._turn_engine.resolve_invocation_catalog(
+            session_id=self.state.session_id,
+            turn_id=self.state.active_turn_id,
+            cwd=self._cwd,
+            messages=self.messages,
+            runtime_context=dict(self.state.metadata),
+        )
+
+    def visible_invocations(
+        self,
+        *,
+        user_invocable: bool | None = None,
+        model_invocable: bool | None = None,
+    ):
+        return self.resolve_invocations().visible_capabilities(
+            user_invocable=user_invocable,
+            model_invocable=model_invocable,
+        )
+
+    def invocation_diagnostics(self):
+        return self.resolve_invocations().diagnostics
 
     async def start(self) -> None:
         if not self._started:
@@ -150,10 +185,12 @@ class SessionController:
             self.state.active_turn_id = uuid4().hex
             last_terminal = None
             turn_message_ids: list[str] = []
+            attachments = _coerce_attachments(command.payload.get("metadata"))
             message = RuntimeMessage(
                 message_id=uuid4().hex,
                 role=_role_for_command(command.command_type),
                 content=str(command.payload["content"]),
+                attachments=attachments,
                 metadata=command.payload.get("metadata", {}),
             )
             await self._record_message(
@@ -175,6 +212,7 @@ class SessionController:
                 cwd=self._cwd,
                 messages=list(self._messages),
                 base_system_prompt=self._system_prompt,
+                attachments=list(attachments),
                 runtime_context=runtime_context,
             ):
                 if event.event_type == TurnStreamEventType.COMPACTION and event.compacted_messages:
@@ -361,6 +399,38 @@ def _memory_updates_owned(
     if isinstance(metadata, dict) and metadata.get("memory_update_owned"):
         return True
     return any(message.metadata.get("memory_update_owned") for message in messages)
+
+
+def _coerce_attachments(metadata: object) -> tuple[MessageAttachment, ...]:
+    if not isinstance(metadata, dict):
+        return ()
+    raw = metadata.get("attachments")
+    if not isinstance(raw, list):
+        return ()
+    attachments: list[MessageAttachment] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        path = item.get("path")
+        name = item.get("name")
+        if not isinstance(path, str) or not path.strip():
+            continue
+        if not isinstance(name, str) or not name.strip():
+            name = path.strip().split("/")[-1] or path.strip()
+        mime_type = item.get("mime_type")
+        attachments.append(
+            MessageAttachment(
+                name=name.strip(),
+                path=path.strip(),
+                mime_type=str(mime_type).strip() if mime_type else None,
+                metadata={
+                    str(key): value
+                    for key, value in item.items()
+                    if key not in {"name", "path", "mime_type"}
+                },
+            )
+        )
+    return tuple(attachments)
 
 
 async def _maybe_await(value: Any) -> Any:
