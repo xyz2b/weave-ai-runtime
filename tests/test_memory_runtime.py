@@ -192,7 +192,7 @@ def test_session_start_loads_memory_entrypoint_and_retrieves_relevant_documents(
     fragments = model_client.requests[0].turn_context.memory_fragments
     assert any("Use pytest via `pytest -q`." in fragment for fragment in fragments)
     assert any("The project uses pytest for unit tests" in fragment for fragment in fragments)
-    trace = model_client.requests[0].turn_context.metadata["memory_retrieval"]
+    trace = model_client.requests[0].private_context.diagnostics["memory_retrieval"]
     assert "memory_retrieval" not in model_client.requests[0].system_prompt
     assert trace["applied_filters"] == (
         "manifest_header_prefilter",
@@ -511,7 +511,6 @@ def test_layered_retrieval_prioritizes_agent_namespace_shared_long_term_and_sess
 
     service = MemoryManagerService(project_root=project_root)
     agent = AgentDefinition(name="main-router", description="router", prompt="route")
-    runtime_context: dict[str, object] = {}
     asyncio.run(
         service.start_session(
             session_id="session-layered",
@@ -520,22 +519,22 @@ def test_layered_retrieval_prioritizes_agent_namespace_shared_long_term_and_sess
         )
     )
 
-    fragments = asyncio.run(
+    contribution = asyncio.run(
         service.collect(
             session_id="session-layered",
             turn_id="turn-layered",
             agent=agent,
             cwd=str(project_root),
             messages=(_user_message("msg-layered", "How should I run pytest here?"),),
-            runtime_context=runtime_context,
         )
     )
+    fragments = contribution.prompt_fragments
 
     assert "Pytest Heuristic" in fragments[0]
     assert "Shared Pytest Workflow" in fragments[1]
     assert "Session Summary" in fragments[2]
 
-    trace = runtime_context["memory_retrieval"]
+    trace = contribution.diagnostics["memory_retrieval"]
     assert trace["budget_decisions"][0]["layer"] == "agent_namespace"
     assert trace["budget_decisions"][1]["layer"] == "shared_long_term"
     assert trace["budget_decisions"][2]["layer"] == "session_summary"
@@ -2312,7 +2311,7 @@ def test_session_controller_records_memory_diagnostics_for_retrieval_and_write_r
     notification = controller.runtime_services.host.current_notifications()[-1]
     assert notification.metadata["memory_diagnostics"]["retrieval"] == diagnostics["retrieval"]
     assert notification.metadata["memory_diagnostics"]["write_receipts"] == diagnostics["write_receipts"]
-    request_diagnostics = model_client.requests[0].turn_context.metadata["memory_diagnostics"]
+    request_diagnostics = model_client.requests[0].private_context.diagnostics["memory_diagnostics"]
     assert request_diagnostics["retrieval"]["selected_doc_ids"] == diagnostics["retrieval"]["selected_doc_ids"]
 
 

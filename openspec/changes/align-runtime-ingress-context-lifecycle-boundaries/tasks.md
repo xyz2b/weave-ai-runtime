@@ -7,47 +7,47 @@
 
 ## 1. Session Ingress Contract Foundations
 
-- [ ] 1.0 Land Slice A (`session_runtime/models.py`, new ingress module, protocol fixtures) so the ingress contract exists before controller wiring moves
-- [ ] 1.1 新增 `IngressAdmission`、`IngressReplayOutput` 与 `SessionIngressResult` 模型，并固定 `admit_turn`、`local_only`、`transcript_only`、`replay_only`、`reject` 的最小语义
-- [ ] 1.2 引入 `SessionIngressProcessor` 边界，统一接收 inbound event、session snapshot 与 runtime services，并输出结构化 ingress result
-- [ ] 1.3 固定 `normalized_messages`、`replay_outputs`、`prompt_updates`、`private_updates` 与 rejection/local-only outcome 的字段职责，禁止再靠布尔值或 loose metadata 传语义
-- [ ] 1.4 增加最小协议测试，证明 query-admitted、local-only 与 reject ingress 结果可以在不检查原始 payload 的情况下被区分和消费
+- [x] 1.0 Land Slice A (`session_runtime/models.py`, new ingress module, protocol fixtures) so the ingress contract exists before controller wiring moves
+- [x] 1.1 新增 `IngressAdmission`、`IngressReplayOutput` 与 `SessionIngressResult` 模型，并固定 `admit_turn`、`local_only`、`transcript_only`、`replay_only`、`reject` 的最小语义
+- [x] 1.2 引入 `SessionIngressProcessor` 边界，统一接收 inbound event、session snapshot 与 runtime services，并输出结构化 ingress result
+- [x] 1.3 固定 `normalized_messages`、`replay_outputs`、`prompt_updates`、`private_updates` 与 rejection/local-only outcome 的字段职责，禁止再靠布尔值或 loose metadata 传语义
+- [x] 1.4 增加最小协议测试，证明 query-admitted、local-only 与 reject ingress 结果可以在不检查原始 payload 的情况下被区分和消费
 
 ## 2. SessionController Ingress Integration
 
-- [ ] 2.0 Land Slice B (`session_runtime/controller.py`, transcript/state fixtures) so every inbound session path goes through ingress before transcript mutation or turn execution
-- [ ] 2.1 将 `SessionController` 的用户输入、host 注入输入与 task/notification 输入统一改为先经过 `SessionIngressProcessor`
-- [ ] 2.2 在 admitted turn 上先持久化 ingress-normalized transcript messages，再发出首个 model request
-- [ ] 2.3 让 `local_only`、`transcript_only`、`replay_only` 与 `reject` outcome 在 session 层完成，不再把原始 inbound payload 直接落入 `TurnEngine`
-- [ ] 2.4 保持 ingress 定义的 role、visibility、source 语义，避免 `SessionController` 依据命令类型再次推断
-- [ ] 2.5 将 ingress 产出的 `prompt_updates` 与 `private_updates` 收敛到 turn 启动输入中，而不是重新摊平成原始 metadata bag
-- [ ] 2.6 增加 session regression tests，覆盖用户 prompt admission、local-only 控制输入、host-generated prompt 与 task notification 行为
+- [x] 2.0 Land Slice B (`session_runtime/controller.py`, transcript/state fixtures) so every inbound session path goes through ingress before transcript mutation or turn execution
+- [x] 2.1 将 `SessionController` 的用户输入、host 注入输入与 task/notification 输入统一改为先经过 `SessionIngressProcessor`
+- [x] 2.2 在 admitted turn 上先持久化 ingress-normalized transcript messages，再发出首个 model request
+- [x] 2.3 让 `local_only`、`transcript_only`、`replay_only` 与 `reject` outcome 在 session 层完成，不再把原始 inbound payload 直接落入 `TurnEngine`
+- [x] 2.4 保持 ingress 定义的 role、visibility、source 语义，避免 `SessionController` 依据命令类型再次推断
+- [x] 2.5 将 ingress 产出的 `prompt_updates` 与 `private_updates` 收敛到 turn 启动输入中，而不是重新摊平成原始 metadata bag
+- [x] 2.6 增加 session regression tests，覆盖用户 prompt admission、local-only 控制输入、host-generated prompt 与 task notification 行为
 
 ## 3. Prompt And Private Carrier Foundations
 
-- [ ] 3.0 Land Slice C (`contracts.py`, `turn_engine/models.py`, `tool_runtime.py`, compat helpers) so dual context carriers exist before request assembly changes
-- [ ] 3.1 新增 `PromptContextEnvelope`，固定 memory、hooks、compaction、attachments、session hints 与 `extensions` 等 prompt-safe 字段
-- [ ] 3.2 新增 `RuntimePrivateContext`，固定 permission、policy、run linkage、route、invocation mode、diagnostics 与 `extensions` 等 private 字段
-- [ ] 3.3 让 `TurnContext` 变为 prompt-safe carrier，移除 authoritative private execution state
-- [ ] 3.4 扩展 `ModelRequest`，增加独立 private carrier 或等价 non-prompt metadata field，供 provider/runtime boundary 使用
-- [ ] 3.5 扩展 `ToolContext`，使 tools、agents 与 skills 直接拿到 `RuntimePrivateContext`，而不是依赖 prompt-facing metadata
-- [ ] 3.6 增加 compat adapters，将 legacy `runtime_context` 读取路径单向收敛到新 carriers，避免新代码继续扩散旧约定
+- [x] 3.0 Land Slice C (`contracts.py`, `turn_engine/models.py`, `tool_runtime.py`, compat helpers) so dual context carriers exist before request assembly changes
+- [x] 3.1 新增 `PromptContextEnvelope`，固定 memory、hooks、compaction、attachments、session hints 与 `extensions` 等 prompt-safe 字段
+- [x] 3.2 新增 `RuntimePrivateContext`，固定 permission、policy、run linkage、route、invocation mode、diagnostics 与 `extensions` 等 private 字段
+- [x] 3.3 让 `TurnContext` 变为 prompt-safe carrier，移除 authoritative private execution state
+- [x] 3.4 扩展 `ModelRequest`，增加独立 private carrier 或等价 non-prompt metadata field，供 provider/runtime boundary 使用
+- [x] 3.5 扩展 `ToolContext`，使 tools、agents 与 skills 直接拿到 `RuntimePrivateContext`，而不是依赖 prompt-facing metadata
+- [x] 3.6 增加 compat adapters，将 legacy `runtime_context` 读取路径单向收敛到新 carriers，避免新代码继续扩散旧约定
 
 ## 4. TurnEngine Request Preparation Split
 
-- [ ] 4.0 Land Slice D (`turn_engine/engine.py`, `turn_engine/composer.py`, request fixtures) so prompt assembly and private execution state stop sharing one metadata bag
-- [ ] 4.1 将 `TurnEngine` 的 request-preparation 主路径从单一 `runtime_context` 改为显式消费 `PromptContextEnvelope` 与 `RuntimePrivateContext`
-- [ ] 4.2 收紧 `ContextAssembler` / composer，只允许消费 prompt-visible carrier，而不是直接遍历 runtime-private metadata
-- [ ] 4.3 将 permission、policy、route、run linkage 与 diagnostics 等控制面状态迁移到 `RuntimePrivateContext`
-- [ ] 4.4 保留 host/test observability：通过 `ModelRequest` 的 non-prompt metadata 暴露 private execution state，而不是通过 prompt 拼接泄露
-- [ ] 4.5 更新 serialization/sanitization helpers，把 prompt allowlist 变成正向 contract，而不是继续依赖隐藏少数字段的 blacklist 逻辑
-- [ ] 4.6 增加 request-level regression fixtures，证明 emitted prompt 不包含 private control-plane 字段，同时 private metadata 仍可被 host 和 tests 观察
+- [x] 4.0 Land Slice D (`turn_engine/engine.py`, `turn_engine/composer.py`, request fixtures) so prompt assembly and private execution state stop sharing one metadata bag
+- [x] 4.1 将 `TurnEngine` 的 request-preparation 主路径从单一 `runtime_context` 改为显式消费 `PromptContextEnvelope` 与 `RuntimePrivateContext`
+- [x] 4.2 收紧 `ContextAssembler` / composer，只允许消费 prompt-visible carrier，而不是直接遍历 runtime-private metadata
+- [x] 4.3 将 permission、policy、route、run linkage 与 diagnostics 等控制面状态迁移到 `RuntimePrivateContext`
+- [x] 4.4 保留 host/test observability：通过 `ModelRequest` 的 non-prompt metadata 暴露 private execution state，而不是通过 prompt 拼接泄露
+- [x] 4.5 更新 serialization/sanitization helpers，把 prompt allowlist 变成正向 contract，而不是继续依赖隐藏少数字段的 blacklist 逻辑
+- [x] 4.6 增加 request-level regression fixtures，证明 emitted prompt 不包含 private control-plane 字段，同时 private metadata 仍可被 host 和 tests 观察
 
 ## 5. Sidecar Contribution Contract Migration
 
 - [ ] 5.0 Land Slice E (`runtime_services/__init__.py`, `memory/manager.py`, `hooks`, `compaction/manager.py`) so sidecars contribute through one dual-channel contract
-- [ ] 5.1 定义统一 sidecar contribution result：`prompt_fragments`、`private_updates` 与 `diagnostics`
-- [ ] 5.2 更新 memory retrieval 路径，使 model guidance 与 retrieval trace/diagnostics 分通道返回
+- [x] 5.1 定义统一 sidecar contribution result：`prompt_fragments`、`private_updates` 与 `diagnostics`
+- [x] 5.2 更新 memory retrieval 路径，使 model guidance 与 retrieval trace/diagnostics 分通道返回
 - [ ] 5.3 更新 hooks 与 host contribution 路径，使 private-only diagnostics/hints 不再通过 prompt-facing carrier 传播
 - [ ] 5.4 更新 compaction 和相关 control-plane service，使 prompt summary 与 private policy/runtime metadata 分离
 - [ ] 5.5 移除 sidecars 对共享 `runtime_context` 的原地 mutate；必要时仅保留单向 compat adapter

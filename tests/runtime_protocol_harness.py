@@ -16,6 +16,11 @@ from claude_agent_runtime.definitions import (
 from claude_agent_runtime.registries import ToolRegistry
 from claude_agent_runtime.runtime_kernel import BuiltinPackConfig, RuntimeAssembly, RuntimeConfig, assemble_runtime
 from claude_agent_runtime.session_runtime import SessionController
+from claude_agent_runtime.session_runtime.models import (
+    IngressAdmission,
+    IngressReplayOutput,
+    SessionIngressResult,
+)
 from claude_agent_runtime.turn_engine import (
     ModelRequest,
     ModelStreamEvent,
@@ -109,6 +114,41 @@ def request_fixture(request: ModelRequest) -> dict[str, Any]:
     }
     if request.query_source is not None:
         fixture["query_source"] = request.query_source
+    return fixture
+
+
+def ingress_admission_fixture(admission: IngressAdmission) -> dict[str, Any]:
+    fixture: dict[str, Any] = {
+        "kind": admission.kind.value,
+        "reason": admission.reason,
+    }
+    if admission.metadata:
+        fixture["metadata"] = _normalize_fixture_value(admission.metadata)
+    return fixture
+
+
+def ingress_replay_output_fixture(output: IngressReplayOutput) -> dict[str, Any]:
+    fixture: dict[str, Any] = {
+        "role": output.role.value,
+        "content": _normalize_fixture_value(serialize_content_blocks(output.content)),
+        "visibility": output.visibility,
+        "source": output.source,
+    }
+    if output.metadata:
+        fixture["metadata"] = _normalize_fixture_value(output.metadata)
+    return fixture
+
+
+def ingress_result_fixture(result: SessionIngressResult) -> dict[str, Any]:
+    fixture: dict[str, Any] = {
+        "admission": ingress_admission_fixture(result.admission),
+        "normalized_messages": messages_fixture(result.normalized_messages),
+        "replay_outputs": [ingress_replay_output_fixture(output) for output in result.replay_outputs],
+    }
+    if result.prompt_updates:
+        fixture["prompt_updates"] = _normalize_fixture_value(result.prompt_updates)
+    if result.private_updates:
+        fixture["private_updates"] = _normalize_fixture_value(result.private_updates)
     return fixture
 
 

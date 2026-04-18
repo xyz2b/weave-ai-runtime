@@ -4,13 +4,25 @@ import json
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import StrEnum
-from typing import Any, Generic, TypeAlias, TypeVar
+from typing import Any, Generic, Mapping, TypeAlias, TypeVar
 
 from .definitions import InvocationCapabilityView
 
 
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _copy_mapping(value: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    return {str(key): inner for key, inner in value.items()}
+
+
+def _coerce_mapping(value: object) -> dict[str, Any]:
+    if isinstance(value, Mapping):
+        return {str(key): inner for key, inner in value.items()}
+    return {}
 
 
 class MessageRole(StrEnum):
@@ -80,6 +92,144 @@ class MessageAttachment:
     path: str
     mime_type: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class PromptContextEnvelope:
+    memory_fragments: tuple[str, ...] = ()
+    hook_fragments: tuple[str, ...] = ()
+    compaction_fragments: tuple[str, ...] = ()
+    attachments: tuple[MessageAttachment, ...] = ()
+    session_hints: dict[str, Any] = field(default_factory=dict)
+    compaction_summary: dict[str, Any] | None = None
+    compaction_boundary: dict[str, Any] | None = None
+    compaction_continuation: dict[str, Any] | None = None
+    extensions: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "memory_fragments", tuple(self.memory_fragments))
+        object.__setattr__(self, "hook_fragments", tuple(self.hook_fragments))
+        object.__setattr__(self, "compaction_fragments", tuple(self.compaction_fragments))
+        object.__setattr__(self, "attachments", tuple(self.attachments))
+        object.__setattr__(self, "session_hints", dict(self.session_hints))
+        object.__setattr__(self, "compaction_summary", _copy_mapping(self.compaction_summary))
+        object.__setattr__(self, "compaction_boundary", _copy_mapping(self.compaction_boundary))
+        object.__setattr__(
+            self,
+            "compaction_continuation",
+            _copy_mapping(self.compaction_continuation),
+        )
+        object.__setattr__(self, "extensions", dict(self.extensions))
+
+    def compat_metadata(self) -> dict[str, Any]:
+        metadata = dict(self.extensions)
+        if self.session_hints:
+            metadata["session_hints"] = dict(self.session_hints)
+        return metadata
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimePrivateContext:
+    permission_context: Any = None
+    policy_state: Any = None
+    run_id: str | None = None
+    parent_run_id: str | None = None
+    requested_model_route: str | None = None
+    resolved_model_route: str | None = None
+    provider_name: str | None = None
+    invocation_mode: Any = None
+    diagnostics: dict[str, Any] = field(default_factory=dict)
+    extensions: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "diagnostics", dict(self.diagnostics))
+        object.__setattr__(self, "extensions", dict(self.extensions))
+
+    def compat_metadata(self) -> dict[str, Any]:
+        metadata = dict(self.extensions)
+        if self.permission_context is not None:
+            metadata["permission_context"] = self.permission_context
+        if self.policy_state is not None:
+            metadata["execution_policy_state"] = self.policy_state
+        if self.run_id is not None:
+            metadata["run_id"] = self.run_id
+        if self.parent_run_id is not None:
+            metadata["parent_run_id"] = self.parent_run_id
+        if self.requested_model_route is not None:
+            metadata["requested_model_route"] = self.requested_model_route
+        if self.resolved_model_route is not None:
+            metadata["resolved_model_route"] = self.resolved_model_route
+        if self.provider_name is not None:
+            metadata["provider_name"] = self.provider_name
+        if self.invocation_mode is not None:
+            metadata["invocation_mode"] = self.invocation_mode
+        metadata.update(self.diagnostics)
+        return metadata
+
+
+_PRIVATE_CONTEXT_DIAGNOSTIC_KEYS = frozenset({"memory_retrieval", "memory_diagnostics"})
+
+
+def prompt_context_from_legacy_runtime_context(
+    runtime_context: Mapping[str, Any] | None,
+    *,
+    memory_fragments: tuple[str, ...] | list[str] = (),
+    hook_fragments: tuple[str, ...] | list[str] = (),
+    compaction_fragments: tuple[str, ...] | list[str] = (),
+    attachments: tuple[MessageAttachment, ...] | list[MessageAttachment] = (),
+    compaction_summary: Mapping[str, Any] | None = None,
+    compaction_boundary: Mapping[str, Any] | None = None,
+    compaction_continuation: Mapping[str, Any] | None = None,
+) -> PromptContextEnvelope:
+    session_hints: dict[str, Any] = {}
+    if runtime_context is not None:
+        session_hints = _coerce_mapping(runtime_context.get("prompt_updates"))
+    return PromptContextEnvelope(
+        memory_fragments=tuple(memory_fragments),
+        hook_fragments=tuple(hook_fragments),
+        compaction_fragments=tuple(compaction_fragments),
+        attachments=tuple(attachments),
+        session_hints=session_hints,
+        compaction_summary=_copy_mapping(compaction_summary),
+        compaction_boundary=_copy_mapping(compaction_boundary),
+        compaction_continuation=_copy_mapping(compaction_continuation),
+    )
+
+
+def private_context_from_legacy_runtime_context(
+    runtime_context: Mapping[str, Any] | None,
+) -> RuntimePrivateContext:
+    if runtime_context is None:
+        return RuntimePrivateContext()
+    raw_context = dict(runtime_context)
+    diagnostics = _coerce_mapping(raw_context.pop("diagnostics", None))
+    for key in _PRIVATE_CONTEXT_DIAGNOSTIC_KEYS:
+        if key in raw_context:
+            diagnostics[key] = raw_context.pop(key)
+    raw_context.pop("prompt_updates", None)
+    return RuntimePrivateContext(
+        permission_context=raw_context.pop("permission_context", None),
+        policy_state=raw_context.pop("execution_policy_state", None),
+        run_id=_coerce_optional_string(raw_context.pop("run_id", None)),
+        parent_run_id=_coerce_optional_string(raw_context.pop("parent_run_id", None)),
+        requested_model_route=_coerce_optional_string(
+            raw_context.pop("requested_model_route", None)
+        ),
+        resolved_model_route=_coerce_optional_string(
+            raw_context.pop("resolved_model_route", None)
+        ),
+        provider_name=_coerce_optional_string(raw_context.pop("provider_name", None)),
+        invocation_mode=raw_context.pop("invocation_mode", None),
+        diagnostics=diagnostics,
+        extensions=raw_context,
+    )
+
+
+def _coerce_optional_string(value: object) -> str | None:
+    if isinstance(value, str):
+        stripped = value.strip()
+        return stripped or None
+    return None
 
 
 @dataclass(frozen=True, slots=True)
@@ -160,7 +310,35 @@ class TurnContext:
     compaction_boundary: dict[str, Any] | None = None
     compaction_continuation: dict[str, Any] | None = None
     attachments: tuple[MessageAttachment, ...] = ()
+    prompt_context: PromptContextEnvelope = field(default_factory=PromptContextEnvelope)
     metadata: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        prompt_context = self.prompt_context
+        if prompt_context == PromptContextEnvelope():
+            prompt_context = PromptContextEnvelope(
+                memory_fragments=tuple(self.memory_fragments),
+                hook_fragments=tuple(self.hook_context),
+                compaction_fragments=tuple(self.compaction_fragments),
+                attachments=tuple(self.attachments),
+                compaction_summary=self.compaction_summary,
+                compaction_boundary=self.compaction_boundary,
+                compaction_continuation=self.compaction_continuation,
+                extensions=dict(self.metadata),
+            )
+        object.__setattr__(self, "prompt_context", prompt_context)
+        object.__setattr__(self, "memory_fragments", prompt_context.memory_fragments)
+        object.__setattr__(self, "hook_context", prompt_context.hook_fragments)
+        object.__setattr__(self, "compaction_fragments", prompt_context.compaction_fragments)
+        object.__setattr__(self, "compaction_summary", _copy_mapping(prompt_context.compaction_summary))
+        object.__setattr__(self, "compaction_boundary", _copy_mapping(prompt_context.compaction_boundary))
+        object.__setattr__(
+            self,
+            "compaction_continuation",
+            _copy_mapping(prompt_context.compaction_continuation),
+        )
+        object.__setattr__(self, "attachments", prompt_context.attachments)
+        object.__setattr__(self, "metadata", prompt_context.compat_metadata())
 
 
 class ExecutionStatus(StrEnum):

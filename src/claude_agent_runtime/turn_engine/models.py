@@ -5,7 +5,14 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, AsyncIterator, Protocol, Sequence
 
-from ..contracts import ContentBlockType, RuntimeMessage, TurnContext, utc_now
+from ..contracts import (
+    ContentBlockType,
+    RuntimeMessage,
+    RuntimePrivateContext,
+    TurnContext,
+    private_context_from_legacy_runtime_context,
+    utc_now,
+)
 from ..definitions import AgentDefinition, EffortValue, SkillDefinition, ToolDefinition
 
 
@@ -111,7 +118,14 @@ class ModelRequest:
     provider_name: str | None = None
     resolved_capabilities: NormalizedModelCapabilities | None = None
     invocation_mode: ModelInvocationMode | None = None
+    private_context: RuntimePrivateContext = field(default_factory=RuntimePrivateContext)
     metadata: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        private_context = self.private_context
+        if private_context == RuntimePrivateContext():
+            private_context = private_context_from_legacy_runtime_context(self.metadata)
+        object.__setattr__(self, "private_context", private_context)
 
 
 @dataclass(frozen=True, slots=True)

@@ -14,6 +14,7 @@ from uuid import uuid4
 
 from ..contracts import MessageRole, RuntimeMessage
 from ..definitions import AgentDefinition, MemoryScope
+from ..runtime_services import SidecarContributionResult
 from ..tasking import TaskManager, TaskStatus
 from .config import (
     MemoryRuntimeConfig,
@@ -2435,7 +2436,8 @@ class LongTermMemoryService:
         cwd: str,
         messages: Sequence[RuntimeMessage],
         runtime_context: Mapping[str, Any] | None = None,
-    ) -> tuple[str, ...]:
+    ) -> SidecarContributionResult:
+        _ = runtime_context
         fragments, trace = self.manager.collect_with_trace(
             session_id=session_id,
             turn_id=turn_id,
@@ -2443,10 +2445,13 @@ class LongTermMemoryService:
             cwd=cwd,
             messages=messages,
         )
-        if isinstance(runtime_context, dict):
-            runtime_context["memory_retrieval"] = trace
-            runtime_context["memory_diagnostics"] = {"retrieval": trace}
-        return fragments
+        return SidecarContributionResult(
+            prompt_fragments=fragments,
+            diagnostics={
+                "memory_retrieval": trace,
+                "memory_diagnostics": {"retrieval": trace},
+            },
+        )
 
     async def start_session(
         self,

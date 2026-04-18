@@ -30,6 +30,8 @@ from ..permissions import PermissionContext
 from ..runtime_services import DefaultTranscriptService, RuntimeServices
 from ..turn_engine.engine import TurnEngine, TurnStreamEvent, TurnStreamEventType
 from ..turn_engine.models import TranscriptEntry, TranscriptSession, TranscriptStore
+from .ingress import SessionIngressProcessor
+from .models import IngressReplayOutput, SessionIngressSnapshot
 
 
 class InboundEventType(StrEnum):
@@ -57,6 +59,7 @@ class SessionController:
         cwd: str,
         system_prompt: str,
         runtime_services: RuntimeServices | None = None,
+        ingress_processor: SessionIngressProcessor | None = None,
     ) -> None:
         self.state = SessionState(session_id=session_id, current_agent=agent.name)
         self._agent = agent
@@ -70,6 +73,7 @@ class SessionController:
         self._cwd = cwd
         self._system_prompt = system_prompt
         self._messages: list[RuntimeMessage] = []
+        self._ingress_processor = ingress_processor or SessionIngressProcessor()
         self._started = False
         self.state.metadata.setdefault(
             "permission_context",
@@ -197,31 +201,41 @@ class SessionController:
         while self.state.queued_commands:
             command = self.state.queued_commands.pop(0)
             prior_status = self.state.status
-            self.state.status = SessionStatus.RUNNING
-            self.state.active_turn_id = uuid4().hex
+            ingress_result = self._ingress_processor.process(
+                self._inbound_event_from_command(command),
+                session_snapshot=self._ingress_snapshot(),
+                runtime_services=self._runtime_services,
+            )
+            if ingress_result.admits_turn:
+                self.state.status = SessionStatus.RUNNING
+                self.state.active_turn_id = uuid4().hex
+                record_turn_id = self.state.active_turn_id
+            else:
+                record_turn_id = uuid4().hex if ingress_result.normalized_messages else None
+                self.state.active_turn_id = None
+            await self._record_ingress_messages(
+                ingress_result.normalized_messages,
+                turn_id=record_turn_id,
+            )
+            await self._emit_ingress_replay_outputs(ingress_result.replay_outputs)
+            if not ingress_result.admits_turn:
+                if self.state.status != SessionStatus.WAITING:
+                    self.state.status = SessionStatus.READY
+                continue
+
             last_terminal = None
             turn_retrieval_trace: dict[str, Any] | None = None
-            turn_message_ids: list[str] = []
-            attachments = _coerce_attachments(command.payload.get("metadata"))
-            message = RuntimeMessage(
-                message_id=uuid4().hex,
-                role=_role_for_command(command.command_type),
-                content=str(command.payload["content"]),
-                attachments=attachments,
-                metadata=command.payload.get("metadata", {}),
-            )
-            await self._record_message(
-                message,
-                turn_id=self.state.active_turn_id,
-            )
-            turn_message_ids.append(message.message_id)
-            runtime_context = {}
-            if isinstance(command.payload.get("metadata"), dict):
-                runtime_context.update(command.payload["metadata"])
+            turn_message_ids: list[str] = [message.message_id for message in ingress_result.normalized_messages]
+            runtime_context = dict(ingress_result.private_updates)
             runtime_context.update(
                 {
                     "command_type": command.command_type.value,
-                    "permission_context": self.state.metadata.get("permission_context"),
+                    "query_source": command.command_type.value,
+                    "permission_context": runtime_context.get(
+                        "permission_context",
+                        self.state.metadata.get("permission_context"),
+                    ),
+                    "prompt_updates": dict(ingress_result.prompt_updates),
                 }
             )
             continuation = self.state.metadata.get("compaction_continuation")
@@ -234,7 +248,7 @@ class SessionController:
                 cwd=self._cwd,
                 messages=list(self._messages),
                 base_system_prompt=self._system_prompt,
-                attachments=list(attachments),
+                attachments=list(_attachments_from_messages(ingress_result.normalized_messages)),
                 runtime_context=runtime_context,
             ):
                 if event.event_type == TurnStreamEventType.COMPACTION and event.compacted_messages:
@@ -268,7 +282,7 @@ class SessionController:
                 command.command_type == SessionCommandType.USER_PROMPT
             ):
                 if self.state.status != SessionStatus.WAITING and not _memory_updates_owned(
-                    command.payload.get("metadata"),
+                    ingress_result.private_updates,
                     turn_messages,
                 ):
                     await self._persist_turn_memory(
@@ -309,6 +323,55 @@ class SessionController:
             )
         )
         self._sync_compaction_state()
+
+    async def _record_ingress_messages(
+        self,
+        messages: tuple[RuntimeMessage, ...],
+        *,
+        turn_id: str | None,
+    ) -> None:
+        for message in messages:
+            await self._record_message(message, turn_id=turn_id)
+
+    async def _emit_ingress_replay_outputs(
+        self,
+        replay_outputs: tuple[IngressReplayOutput, ...],
+    ) -> None:
+        for output in replay_outputs:
+            await self._runtime_services.host.emit_notification(
+                RuntimeMessage(
+                    message_id=output.output_id,
+                    role=output.role,
+                    content=output.content,
+                    metadata={
+                        **output.metadata,
+                        "source": output.source,
+                        "visibility": output.visibility,
+                        "ingress_replay": True,
+                    },
+                )
+            )
+
+    def _ingress_snapshot(self) -> SessionIngressSnapshot:
+        return SessionIngressSnapshot.from_state(
+            self.state,
+            cwd=self._cwd,
+            messages=self.messages,
+        )
+
+    def _inbound_event_from_command(self, command: SessionCommand) -> InboundEvent:
+        event_type = {
+            SessionCommandType.USER_PROMPT: InboundEventType.USER_PROMPT,
+            SessionCommandType.SYSTEM_MESSAGE: InboundEventType.SYSTEM_MESSAGE,
+            SessionCommandType.TASK_NOTIFICATION: InboundEventType.TASK_NOTIFICATION,
+            SessionCommandType.HOST_EVENT: InboundEventType.HOST_EVENT,
+        }[command.command_type]
+        metadata = command.payload.get("metadata")
+        return InboundEvent(
+            event_type=event_type,
+            content=str(command.payload.get("content", "")),
+            metadata=dict(metadata) if isinstance(metadata, dict) else {},
+        )
 
     async def _apply_compaction(
         self,
@@ -724,14 +787,6 @@ def _terminal_session_status_hint(terminal: Any) -> str | None:
     return str(hint) if hint is not None else None
 
 
-def _role_for_command(command_type: SessionCommandType) -> MessageRole:
-    if command_type == SessionCommandType.SYSTEM_MESSAGE:
-        return MessageRole.SYSTEM
-    if command_type == SessionCommandType.TASK_NOTIFICATION:
-        return MessageRole.NOTIFICATION
-    return MessageRole.USER
-
-
 def _memory_updates_owned(
     metadata: object,
     messages: tuple[RuntimeMessage, ...],
@@ -771,6 +826,27 @@ def _memory_write_receipt_payload(receipt: MemoryWriteReceipt) -> dict[str, obje
 
 
 def _memory_retrieval_trace_from_request(request: object) -> dict[str, Any] | None:
+    private_context = getattr(request, "private_context", None)
+    diagnostics = getattr(private_context, "diagnostics", None)
+    if isinstance(diagnostics, dict):
+        retrieval = diagnostics.get("memory_diagnostics")
+        if isinstance(retrieval, dict):
+            nested = retrieval.get("retrieval")
+            if isinstance(nested, dict):
+                return dict(nested)
+        direct = diagnostics.get("memory_retrieval")
+        if isinstance(direct, dict):
+            return dict(direct)
+    request_metadata = getattr(request, "metadata", None)
+    if isinstance(request_metadata, dict):
+        diagnostics = request_metadata.get("memory_diagnostics")
+        if isinstance(diagnostics, dict):
+            retrieval = diagnostics.get("retrieval")
+            if isinstance(retrieval, dict):
+                return dict(retrieval)
+        retrieval = request_metadata.get("memory_retrieval")
+        if isinstance(retrieval, dict):
+            return dict(retrieval)
     turn_context = getattr(request, "turn_context", None)
     metadata = getattr(turn_context, "metadata", None)
     if not isinstance(metadata, dict):
@@ -786,35 +862,16 @@ def _memory_retrieval_trace_from_request(request: object) -> dict[str, Any] | No
     return None
 
 
-def _coerce_attachments(metadata: object) -> tuple[MessageAttachment, ...]:
-    if not isinstance(metadata, dict):
-        return ()
-    raw = metadata.get("attachments")
-    if not isinstance(raw, list):
-        return ()
+def _attachments_from_messages(messages: tuple[RuntimeMessage, ...]) -> tuple[MessageAttachment, ...]:
     attachments: list[MessageAttachment] = []
-    for item in raw:
-        if not isinstance(item, dict):
-            continue
-        path = item.get("path")
-        name = item.get("name")
-        if not isinstance(path, str) or not path.strip():
-            continue
-        if not isinstance(name, str) or not name.strip():
-            name = path.strip().split("/")[-1] or path.strip()
-        mime_type = item.get("mime_type")
-        attachments.append(
-            MessageAttachment(
-                name=name.strip(),
-                path=path.strip(),
-                mime_type=str(mime_type).strip() if mime_type else None,
-                metadata={
-                    str(key): value
-                    for key, value in item.items()
-                    if key not in {"name", "path", "mime_type"}
-                },
-            )
-        )
+    seen: set[tuple[str, str]] = set()
+    for message in messages:
+        for attachment in message.attachments:
+            key = (attachment.name, attachment.path)
+            if key in seen:
+                continue
+            seen.add(key)
+            attachments.append(attachment)
     return tuple(attachments)
 
 

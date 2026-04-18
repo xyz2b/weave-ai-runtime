@@ -52,7 +52,7 @@ def test_prompt_composer_includes_dynamic_context() -> None:
         memory_fragments=("Remember this",),
         hook_context=("Hook says hi",),
         attachments=(MessageAttachment(name="note.txt", path="/tmp/project/note.txt"),),
-        runtime_context={"mode": "test"},
+        runtime_context={"prompt_updates": {"mode": "test"}},
     )
 
     assert "Base prompt" in composition.system_prompt
@@ -63,6 +63,7 @@ def test_prompt_composer_includes_dynamic_context() -> None:
     assert "mode: test" in composition.system_prompt
     assert composition.turn_context.available_tools == ("read",)
     assert composition.turn_context.available_skills == ("verify",)
+    assert composition.turn_context.prompt_context.session_hints == {"mode": "test"}
 
 
 def test_session_controller_normalizes_priorities_and_resumes_from_transcript(
@@ -282,3 +283,156 @@ def test_session_controller_projects_interrupted_terminal_to_interrupted(tmp_pat
     assert terminal.terminal is not None
     assert terminal.terminal.stop_reason == "interrupted"
     assert controller.state.status == SessionStatus.INTERRUPTED
+
+
+def test_session_controller_persists_ingress_messages_before_first_request(tmp_path: Path) -> None:
+    transcript_store = FileTranscriptStore(tmp_path / "transcripts")
+
+    class TranscriptAwareModelClient:
+        def __init__(self) -> None:
+            self.requests: list[ModelRequest] = []
+            self.transcript_snapshot: list[tuple[str, str]] = []
+
+        async def complete(self, request: ModelRequest):  # pragma: no cover - protocol completeness
+            raise NotImplementedError
+
+        async def stream(self, request: ModelRequest):
+            self.requests.append(request)
+            transcript = await transcript_store.load("session-ordering")
+            self.transcript_snapshot = [
+                (entry.message.role.value, entry.message.text)
+                for entry in transcript.entries
+            ]
+            yield ModelStreamEvent(
+                ModelStreamEventType.MESSAGE_START,
+                {"request_id": "req-ordering"},
+            )
+            yield ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "ordered"})
+            yield ModelStreamEvent(
+                ModelStreamEventType.MESSAGE_STOP,
+                {"stop_reason": "end_turn"},
+            )
+
+    model_client = TranscriptAwareModelClient()
+    controller = SessionController(
+        session_id="session-ordering",
+        agent=AgentDefinition(name="main-router", description="router", prompt="Route the turn"),
+        turn_engine=TurnEngine(model_client=model_client, tool_registry=ToolRegistry()),
+        transcript_store=transcript_store,
+        cwd=str(tmp_path),
+        system_prompt="System prompt",
+    )
+    controller.enqueue_event(InboundEvent(InboundEventType.USER_PROMPT, "hello ordering"))
+
+    produced = asyncio.run(controller.run_until_idle())
+
+    assert model_client.transcript_snapshot == [("user", "hello ordering")]
+    assert model_client.requests[0].messages[0].role == MessageRole.USER
+    assert model_client.requests[0].messages[0].text == "hello ordering"
+    assert produced[-1].text == "ordered"
+
+
+def test_session_controller_handles_local_only_host_event_without_turn_execution(tmp_path: Path) -> None:
+    class UnexpectedTurnModelClient:
+        def __init__(self) -> None:
+            self.requests: list[ModelRequest] = []
+
+        async def complete(self, request: ModelRequest):  # pragma: no cover - protocol completeness
+            raise NotImplementedError
+
+        async def stream(self, request: ModelRequest):
+            self.requests.append(request)
+            raise AssertionError("local_only ingress should not start turn execution")
+            yield  # pragma: no cover - keep generator form
+
+    model_client = UnexpectedTurnModelClient()
+    transcript_store = FileTranscriptStore(tmp_path / "transcripts")
+    controller = SessionController(
+        session_id="session-local-only",
+        agent=AgentDefinition(name="main-router", description="router", prompt="Route the turn"),
+        turn_engine=TurnEngine(model_client=model_client, tool_registry=ToolRegistry()),
+        transcript_store=transcript_store,
+        cwd=str(tmp_path),
+        system_prompt="System prompt",
+    )
+    controller.enqueue_event(InboundEvent(InboundEventType.HOST_EVENT, "Refresh complete"))
+
+    produced = asyncio.run(controller.run_until_idle())
+    transcript = asyncio.run(transcript_store.load("session-local-only"))
+    notifications = controller.runtime_services.host.current_notifications()
+
+    assert produced == ()
+    assert model_client.requests == []
+    assert transcript.entries == ()
+    assert [message.text for message in notifications] == ["Refresh complete"]
+    assert notifications[0].metadata["ingress_replay"] is True
+
+
+def test_session_controller_admits_host_generated_prompt_with_ingress_role_preserved(tmp_path: Path) -> None:
+    model_client = FakeModelClient(
+        [
+            [
+                ModelStreamEvent(
+                    ModelStreamEventType.MESSAGE_START,
+                    {"request_id": "req-system"},
+                ),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "system reply"}),
+                ModelStreamEvent(
+                    ModelStreamEventType.MESSAGE_STOP,
+                    {"stop_reason": "end_turn"},
+                ),
+            ]
+        ]
+    )
+    transcript_store = FileTranscriptStore(tmp_path / "transcripts")
+    controller = SessionController(
+        session_id="session-system",
+        agent=AgentDefinition(name="main-router", description="router", prompt="Route the turn"),
+        turn_engine=TurnEngine(model_client=model_client, tool_registry=ToolRegistry()),
+        transcript_store=transcript_store,
+        cwd=str(tmp_path),
+        system_prompt="System prompt",
+    )
+    controller.enqueue_event(InboundEvent(InboundEventType.SYSTEM_MESSAGE, "System override"))
+
+    asyncio.run(controller.run_until_idle())
+    loaded = asyncio.run(transcript_store.load("session-system"))
+
+    assert model_client.requests[0].query_source == "system_message"
+    assert model_client.requests[0].messages[0].role == MessageRole.SYSTEM
+    assert loaded.entries[0].message.role == MessageRole.SYSTEM
+    assert loaded.entries[0].message.metadata["source"] == "system_message"
+
+
+def test_session_controller_records_task_notifications_without_turn_execution(tmp_path: Path) -> None:
+    class UnexpectedTurnModelClient:
+        def __init__(self) -> None:
+            self.requests: list[ModelRequest] = []
+
+        async def complete(self, request: ModelRequest):  # pragma: no cover - protocol completeness
+            raise NotImplementedError
+
+        async def stream(self, request: ModelRequest):
+            self.requests.append(request)
+            raise AssertionError("transcript_only ingress should not start turn execution")
+            yield  # pragma: no cover - keep generator form
+
+    model_client = UnexpectedTurnModelClient()
+    transcript_store = FileTranscriptStore(tmp_path / "transcripts")
+    controller = SessionController(
+        session_id="session-task",
+        agent=AgentDefinition(name="main-router", description="router", prompt="Route the turn"),
+        turn_engine=TurnEngine(model_client=model_client, tool_registry=ToolRegistry()),
+        transcript_store=transcript_store,
+        cwd=str(tmp_path),
+        system_prompt="System prompt",
+    )
+    controller.enqueue_event(InboundEvent(InboundEventType.TASK_NOTIFICATION, "Task finished"))
+
+    produced = asyncio.run(controller.run_until_idle())
+    loaded = asyncio.run(transcript_store.load("session-task"))
+
+    assert produced == ()
+    assert model_client.requests == []
+    assert [entry.message.role for entry in loaded.entries] == [MessageRole.NOTIFICATION]
+    assert [entry.message.text for entry in loaded.entries] == ["Task finished"]

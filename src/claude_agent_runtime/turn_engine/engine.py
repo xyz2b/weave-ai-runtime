@@ -27,6 +27,8 @@ from ..contracts import (
     TextBlock,
     ThinkingBlock,
     ToolUseBlock,
+    private_context_from_legacy_runtime_context,
+    prompt_context_from_legacy_runtime_context,
 )
 from ..definitions import AgentDefinition, PermissionMode, ResolvedInvocationCatalog
 from ..execution_policy import (
@@ -41,7 +43,7 @@ from ..hooks import PostCompactPayload, PreCompactPayload, StopPayload, UserProm
 from ..invocation_catalog import SkillInvocationProvider, build_invocation_resolution_context
 from ..permissions import PermissionContext
 from ..registries import AgentRegistry, InvocationRegistry, SkillRegistry, ToolRegistry
-from ..runtime_services import DefaultTaskService, RuntimeServices
+from ..runtime_services import DefaultTaskService, RuntimeServices, SidecarContributionResult
 from ..tool_executors import model_capabilities_for, select_tool_executor
 from ..tool_lifecycle import ToolLifecycleEvent
 from ..tasking import TaskManager
@@ -470,8 +472,9 @@ class _StreamAttemptState:
 
 @dataclass(frozen=True, slots=True)
 class _SidecarJoinResult:
-    fragments: tuple[str, ...] = ()
-    runtime_context_updates: dict[str, Any] = field(default_factory=dict)
+    prompt_fragments: tuple[str, ...] = ()
+    private_updates: dict[str, Any] = field(default_factory=dict)
+    diagnostics: dict[str, Any] = field(default_factory=dict)
 
 
 class _PreTurnSidecarSupervisor:
@@ -530,12 +533,21 @@ class _PreTurnSidecarSupervisor:
     ) -> None:
         self.start(messages=messages, runtime_context=runtime_context)
 
-    async def join(self) -> tuple[tuple[str, ...], tuple[str, ...], dict[str, Any]]:
+    async def join(
+        self,
+    ) -> tuple[tuple[str, ...], tuple[str, ...], dict[str, Any], dict[str, Any]]:
         memory_result = await self._resolve(self._memory_task)
         hook_result = await self._resolve(self._hook_task)
-        merged_updates = dict(memory_result.runtime_context_updates)
-        merged_updates.update(hook_result.runtime_context_updates)
-        return memory_result.fragments, hook_result.fragments, merged_updates
+        merged_private_updates = dict(memory_result.private_updates)
+        merged_private_updates.update(hook_result.private_updates)
+        merged_diagnostics = dict(memory_result.diagnostics)
+        merged_diagnostics.update(hook_result.diagnostics)
+        return (
+            memory_result.prompt_fragments,
+            hook_result.prompt_fragments,
+            merged_private_updates,
+            merged_diagnostics,
+        )
 
     async def close(self) -> None:
         tasks = tuple(task for task in (self._memory_task, self._hook_task) if task is not None)
@@ -940,11 +952,24 @@ class TurnEngine:
                         compacted_messages=tuple(working_messages),
                         metadata={"compaction": compaction_payload} if compaction_payload is not None else {},
                     )
-                shared_memory_fragments, shared_hook_context, sidecar_updates = await sidecars.join()
-                if sidecar_updates:
-                    runtime_context.update(sidecar_updates)
-                    runtime_metadata.update(sidecar_updates)
-                    sanitized_runtime_context.update(sidecar_updates)
+                (
+                    shared_memory_fragments,
+                    shared_hook_context,
+                    sidecar_private_updates,
+                    sidecar_diagnostics,
+                ) = await sidecars.join()
+                if sidecar_private_updates:
+                    runtime_context.update(sidecar_private_updates)
+                    runtime_metadata.update(sidecar_private_updates)
+                    sanitized_runtime_context.update(
+                        serialize_runtime_metadata(sidecar_private_updates)
+                    )
+                if sidecar_diagnostics:
+                    runtime_context.update(sidecar_diagnostics)
+                    runtime_metadata.update(sidecar_diagnostics)
+                    sanitized_runtime_context.update(
+                        serialize_runtime_metadata(sidecar_diagnostics)
+                    )
 
                 resolved_invocations = self.resolve_invocation_catalog(
                     session_id=session_id,
@@ -990,6 +1015,18 @@ class TurnEngine:
                 )
 
                 _set_turn_phase(state, TurnPhase.BUILD_REQUEST)
+                prompt_context = prompt_context_from_legacy_runtime_context(
+                    sanitized_runtime_context,
+                    memory_fragments=shared_memory_fragments + tuple(memory_fragments or ()),
+                    hook_fragments=shared_hook_context
+                    + user_prompt_hook.additional_context
+                    + tuple(hook_context or ()),
+                    compaction_fragments=shared_compaction_fragments + tuple(compaction_fragments or ()),
+                    compaction_summary=serialize_compaction_summary(compaction_result.summary),
+                    compaction_boundary=serialize_compaction_boundary(compaction_result.boundary),
+                    compaction_continuation=serialize_compaction_continuation(compaction_result.continuation),
+                    attachments=attachments or (),
+                )
                 composition = self._compose_context(
                     session_id=session_id,
                     turn_id=turn_id,
@@ -1004,16 +1041,14 @@ class TurnEngine:
                     ),
                     available_invocations=resolved_invocations.visible_capabilities(),
                     base_system_prompt=base_system_prompt,
-                    memory_fragments=shared_memory_fragments + tuple(memory_fragments or ()),
-                    hook_context=shared_hook_context
-                    + user_prompt_hook.additional_context
-                    + tuple(hook_context or ()),
-                    compaction_fragments=shared_compaction_fragments + tuple(compaction_fragments or ()),
-                    compaction_summary=serialize_compaction_summary(compaction_result.summary),
-                    compaction_boundary=serialize_compaction_boundary(compaction_result.boundary),
-                    compaction_continuation=serialize_compaction_continuation(compaction_result.continuation),
-                    attachments=attachments or (),
-                    runtime_context=sanitized_runtime_context,
+                    memory_fragments=prompt_context.memory_fragments,
+                    hook_context=prompt_context.hook_fragments,
+                    compaction_fragments=prompt_context.compaction_fragments,
+                    compaction_summary=prompt_context.compaction_summary,
+                    compaction_boundary=prompt_context.compaction_boundary,
+                    compaction_continuation=prompt_context.compaction_continuation,
+                    attachments=prompt_context.attachments,
+                    prompt_context=prompt_context,
                 )
                 abort_signal = ModelAbortSignal()
                 assistant_message_id = uuid4().hex
@@ -1032,6 +1067,7 @@ class TurnEngine:
                 request_metadata = dict(sanitized_runtime_context)
                 if compaction_payload is not None:
                     request_metadata["compaction"] = compaction_payload
+                private_context = private_context_from_legacy_runtime_context(runtime_metadata)
                 requested_capabilities = _coerce_model_capabilities(
                     runtime_metadata.get("resolved_capabilities")
                 )
@@ -1056,6 +1092,7 @@ class TurnEngine:
                     provider_name=_string_value(runtime_metadata.get("provider_name")),
                     resolved_capabilities=resolved_capabilities,
                     invocation_mode=invocation_mode,
+                    private_context=private_context,
                     metadata=request_metadata,
                 )
                 last_request = request
@@ -1551,12 +1588,28 @@ class TurnEngine:
         service: Any,
         **kwargs: Any,
     ) -> tuple[str, ...]:
+        result = await self._collect_control_plane_contribution(service, **kwargs)
+        return result.prompt_fragments
+
+    async def _collect_control_plane_contribution(
+        self,
+        service: Any,
+        **kwargs: Any,
+    ) -> _SidecarJoinResult:
         if service is None or not hasattr(service, "collect"):
-            return ()
-        fragments = await maybe_await(service.collect(**kwargs))
-        if not fragments:
-            return ()
-        return tuple(str(fragment) for fragment in fragments)
+            return _SidecarJoinResult()
+        collected = await maybe_await(service.collect(**kwargs))
+        if isinstance(collected, SidecarContributionResult):
+            return _SidecarJoinResult(
+                prompt_fragments=tuple(str(fragment) for fragment in collected.prompt_fragments),
+                private_updates=dict(collected.private_updates),
+                diagnostics=dict(collected.diagnostics),
+            )
+        if not collected:
+            return _SidecarJoinResult()
+        return _SidecarJoinResult(
+            prompt_fragments=tuple(str(fragment) for fragment in collected),
+        )
 
     async def _collect_control_plane_fragments_with_context(
         self,
@@ -1565,7 +1618,7 @@ class TurnEngine:
     ) -> _SidecarJoinResult:
         original_runtime_context = dict(kwargs.get("runtime_context") or {})
         local_runtime_context = dict(original_runtime_context)
-        fragments = await self._collect_control_plane_fragments(
+        contribution = await self._collect_control_plane_contribution(
             service,
             **{**kwargs, "runtime_context": local_runtime_context},
         )
@@ -1574,9 +1627,19 @@ class TurnEngine:
             for key, value in local_runtime_context.items()
             if original_runtime_context.get(key) != value
         }
+        compat_diagnostics = {
+            key: runtime_context_updates.pop(key)
+            for key in ("memory_retrieval", "memory_diagnostics")
+            if key in runtime_context_updates
+        }
+        private_updates = dict(contribution.private_updates)
+        private_updates.update(runtime_context_updates)
+        diagnostics = dict(contribution.diagnostics)
+        diagnostics.update(compat_diagnostics)
         return _SidecarJoinResult(
-            fragments=fragments,
-            runtime_context_updates=runtime_context_updates,
+            prompt_fragments=contribution.prompt_fragments,
+            private_updates=private_updates,
+            diagnostics=diagnostics,
         )
 
     async def _prepare_compaction(

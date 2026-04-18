@@ -7,7 +7,14 @@ from pathlib import Path
 from typing import Any, Mapping, Protocol, Sequence
 from uuid import uuid4
 
-from .contracts import ExecutionResult, ExecutionStatus, MessageRole, RuntimeMessage
+from .contracts import (
+    ExecutionResult,
+    ExecutionStatus,
+    MessageRole,
+    RuntimeMessage,
+    RuntimePrivateContext,
+    private_context_from_legacy_runtime_context,
+)
 from .definitions import (
     AgentDefinition,
     InterruptBehavior,
@@ -140,6 +147,7 @@ class ToolContext:
     tool_refresh_callback: ToolRefreshCallback | None = None
     runtime_services: RuntimeServices | None = None
     permission_context: PermissionContext | None = None
+    private_context: RuntimePrivateContext = field(default_factory=RuntimePrivateContext)
     pending_hook_effect: Any = None
     metadata: dict[str, Any] = field(default_factory=dict)
     query_context: QueryContext | None = None
@@ -166,6 +174,16 @@ class ToolContext:
     _interrupt_reason: str | None = None
 
     def __post_init__(self) -> None:
+        private_context = self.private_context
+        if private_context == RuntimePrivateContext():
+            private_context = private_context_from_legacy_runtime_context(self.metadata)
+        if private_context.permission_context is None and self.permission_context is not None:
+            private_context = replace(private_context, permission_context=self.permission_context)
+        self.private_context = private_context
+        if self.permission_context is None and self.private_context.permission_context is not None:
+            self.permission_context = self.private_context.permission_context
+        if not self.metadata:
+            self.metadata = self.private_context.compat_metadata()
         if self.app_state is None:
             self.app_state = AppState()
         if self.file_state is None:

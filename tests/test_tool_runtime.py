@@ -2,9 +2,11 @@ import asyncio
 import time
 from pathlib import Path
 
+from claude_agent_runtime.permissions import PermissionContext
 from claude_agent_runtime.definitions import (
     PermissionBehavior,
     PermissionDecision,
+    PermissionMode,
     ToolDefinition,
     ToolTraits,
     ValidationOutcome,
@@ -161,3 +163,19 @@ def test_tool_pool_resolution_and_scheduler_partitioning(tmp_path: Path) -> None
     write_start = next(index for index, entry in enumerate(log) if entry[0] == "start" and entry[1] == "write-c")
     assert all(index < write_start for index, entry in enumerate(log) if entry[0] == "end" and entry[1] in {"read-a", "read-b"})
 
+
+def test_tool_context_exposes_runtime_private_context(tmp_path: Path) -> None:
+    permission_context = PermissionContext(session_id="s3", mode=PermissionMode.ACCEPT_EDITS)
+    context = ToolContext(
+        session_id="s3",
+        turn_id="t3",
+        agent_name="main-router",
+        cwd=tmp_path,
+        permission_context=permission_context,
+        metadata={"run_id": "run-1", "parent_run_id": "run-0", "query_source": "agent_tool"},
+    )
+
+    assert context.private_context.permission_context is permission_context
+    assert context.private_context.run_id == "run-1"
+    assert context.private_context.parent_run_id == "run-0"
+    assert context.private_context.extensions["query_source"] == "agent_tool"

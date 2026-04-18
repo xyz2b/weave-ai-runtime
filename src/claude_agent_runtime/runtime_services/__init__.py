@@ -15,6 +15,18 @@ from ..permissions import PermissionEngine
 from ..tasking import TaskManager
 
 
+@dataclass(frozen=True, slots=True)
+class SidecarContributionResult:
+    prompt_fragments: tuple[str, ...] = ()
+    private_updates: dict[str, Any] = field(default_factory=dict)
+    diagnostics: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "prompt_fragments", tuple(self.prompt_fragments))
+        object.__setattr__(self, "private_updates", dict(self.private_updates))
+        object.__setattr__(self, "diagnostics", dict(self.diagnostics))
+
+
 class ContextContributionService(Protocol):
     async def collect(
         self,
@@ -25,7 +37,7 @@ class ContextContributionService(Protocol):
         cwd: str,
         messages: Sequence[RuntimeMessage],
         runtime_context: Mapping[str, Any] | None = None,
-    ) -> Sequence[str]: ...
+    ) -> Sequence[str] | SidecarContributionResult: ...
 
 
 class CompactionService(Protocol):
@@ -101,9 +113,9 @@ class NoopHookService:
         cwd: str,
         messages: Sequence[RuntimeMessage],
         runtime_context: Mapping[str, Any] | None = None,
-    ) -> tuple[str, ...]:
+    ) -> SidecarContributionResult:
         _ = session_id, turn_id, agent, cwd, messages, runtime_context
-        return ()
+        return SidecarContributionResult()
 
 
 @dataclass(slots=True)
@@ -117,9 +129,9 @@ class NoopMemoryService:
         cwd: str,
         messages: Sequence[RuntimeMessage],
         runtime_context: Mapping[str, Any] | None = None,
-    ) -> tuple[str, ...]:
+    ) -> SidecarContributionResult:
         _ = session_id, turn_id, agent, cwd, messages, runtime_context
-        return ()
+        return SidecarContributionResult()
 
 
 @dataclass(slots=True)
@@ -151,9 +163,9 @@ class NoopCompactionService:
         cwd: str,
         messages: Sequence[RuntimeMessage],
         runtime_context: Mapping[str, Any] | None = None,
-    ) -> tuple[str, ...]:
+    ) -> SidecarContributionResult:
         _ = session_id, turn_id, agent, cwd, messages, runtime_context
-        return ()
+        return SidecarContributionResult()
 
 
 @dataclass(slots=True)

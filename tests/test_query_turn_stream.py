@@ -389,7 +389,10 @@ def test_runtime_services_contribute_context_during_request_assembly() -> None:
     assert request.turn_context.memory_fragments == ("Memory line",)
     assert request.turn_context.hook_context == ("Hook line",)
     assert request.turn_context.compaction_fragments == ("Compaction line",)
+    assert request.turn_context.prompt_context.memory_fragments == ("Memory line",)
     assert request.metadata["runtime_id"] == "unit-test"
+    assert request.private_context.extensions["runtime_id"] == "unit-test"
+    assert "runtime_id" not in request.system_prompt
     assert "Memory line" in request.system_prompt
     assert "Hook line" in request.system_prompt
     assert "Compaction line" in request.system_prompt

@@ -3,11 +3,15 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Sequence
 
-from ..contracts import MessageAttachment, RuntimeMessage, TurnContext
+from ..contracts import (
+    MessageAttachment,
+    PromptContextEnvelope,
+    RuntimeMessage,
+    TurnContext,
+    prompt_context_from_legacy_runtime_context,
+)
 from ..definitions import InvocationCapabilityView
 from ..definitions import AgentDefinition
-
-_PROMPT_HIDDEN_RUNTIME_CONTEXT_KEYS = frozenset({"memory_retrieval", "memory_diagnostics"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,8 +45,19 @@ class ContextAssembler:
         compaction_boundary: dict[str, Any] | None = None,
         compaction_continuation: dict[str, Any] | None = None,
         attachments: Sequence[MessageAttachment] = (),
+        prompt_context: PromptContextEnvelope | None = None,
         runtime_context: dict[str, Any] | None = None,
     ) -> ContextAssembly:
+        resolved_prompt_context = prompt_context or prompt_context_from_legacy_runtime_context(
+            runtime_context,
+            memory_fragments=tuple(memory_fragments),
+            hook_fragments=tuple(hook_context),
+            compaction_fragments=tuple(compaction_fragments),
+            attachments=tuple(attachments),
+            compaction_summary=compaction_summary,
+            compaction_boundary=compaction_boundary,
+            compaction_continuation=compaction_continuation,
+        )
         sections: list[str] = [base_system_prompt.strip(), agent.prompt.strip()]
         if available_agents:
             agent_lines = [
@@ -50,23 +65,30 @@ class ContextAssembler:
                 for definition in available_agents
             ]
             sections.append("Agents:\n" + "\n".join(agent_lines))
-        if memory_fragments:
-            sections.append("Memory:\n" + "\n".join(memory_fragments))
-        if hook_context:
-            sections.append("Hooks:\n" + "\n".join(hook_context))
-        if compaction_fragments:
-            sections.append("Compaction:\n" + "\n".join(compaction_fragments))
-        if attachments:
-            attachment_lines = [f"- {attachment.name}: {attachment.path}" for attachment in attachments]
-            sections.append("Attachments:\n" + "\n".join(attachment_lines))
-        if runtime_context:
-            runtime_lines = [
-                f"- {key}: {value}"
-                for key, value in sorted(runtime_context.items())
-                if key not in _PROMPT_HIDDEN_RUNTIME_CONTEXT_KEYS
+        if resolved_prompt_context.memory_fragments:
+            sections.append("Memory:\n" + "\n".join(resolved_prompt_context.memory_fragments))
+        if resolved_prompt_context.hook_fragments:
+            sections.append("Hooks:\n" + "\n".join(resolved_prompt_context.hook_fragments))
+        if resolved_prompt_context.compaction_fragments:
+            sections.append("Compaction:\n" + "\n".join(resolved_prompt_context.compaction_fragments))
+        if resolved_prompt_context.attachments:
+            attachment_lines = [
+                f"- {attachment.name}: {attachment.path}"
+                for attachment in resolved_prompt_context.attachments
             ]
-            if runtime_lines:
-                sections.append("Runtime Context:\n" + "\n".join(runtime_lines))
+            sections.append("Attachments:\n" + "\n".join(attachment_lines))
+        if resolved_prompt_context.session_hints:
+            hint_lines = [
+                f"- {key}: {value}"
+                for key, value in sorted(resolved_prompt_context.session_hints.items())
+            ]
+            sections.append("Session Hints:\n" + "\n".join(hint_lines))
+        if resolved_prompt_context.extensions:
+            extension_lines = [
+                f"- {key}: {value}"
+                for key, value in sorted(resolved_prompt_context.extensions.items())
+            ]
+            sections.append("Context Extensions:\n" + "\n".join(extension_lines))
 
         turn_context = TurnContext(
             session_id=session_id,
@@ -78,16 +100,15 @@ class ContextAssembler:
             available_skills=tuple(available_skills),
             available_agents=tuple(definition.name for definition in available_agents),
             available_invocations=tuple(available_invocations),
-            memory_fragments=tuple(memory_fragments),
-            hook_context=tuple(hook_context),
-            compaction_fragments=tuple(compaction_fragments),
-            compaction_summary=dict(compaction_summary) if compaction_summary is not None else None,
-            compaction_boundary=dict(compaction_boundary) if compaction_boundary is not None else None,
-            compaction_continuation=(
-                dict(compaction_continuation) if compaction_continuation is not None else None
-            ),
-            attachments=tuple(attachments),
-            metadata=runtime_context or {},
+            memory_fragments=resolved_prompt_context.memory_fragments,
+            hook_context=resolved_prompt_context.hook_fragments,
+            compaction_fragments=resolved_prompt_context.compaction_fragments,
+            compaction_summary=resolved_prompt_context.compaction_summary,
+            compaction_boundary=resolved_prompt_context.compaction_boundary,
+            compaction_continuation=resolved_prompt_context.compaction_continuation,
+            attachments=resolved_prompt_context.attachments,
+            prompt_context=resolved_prompt_context,
+            metadata=resolved_prompt_context.compat_metadata(),
         )
 
         return ContextAssembly(
