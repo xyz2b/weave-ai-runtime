@@ -41,6 +41,7 @@ venv/
 # Build outputs / caches
 dist/
 build/
+*.egg-info/
 out/
 tmp/
 temp/
