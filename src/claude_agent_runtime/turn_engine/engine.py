@@ -477,6 +477,10 @@ class _SidecarJoinResult:
     diagnostics: dict[str, Any] = field(default_factory=dict)
 
 
+_SIDECAR_DIAGNOSTIC_KEYS = frozenset({"memory_retrieval", "memory_diagnostics"})
+_SIDECAR_PROMPT_ONLY_KEYS = frozenset({"prompt_updates"})
+
+
 class _PreTurnSidecarSupervisor:
     def __init__(
         self,
@@ -1627,14 +1631,16 @@ class TurnEngine:
             for key, value in local_runtime_context.items()
             if original_runtime_context.get(key) != value
         }
-        compat_diagnostics = {
-            key: runtime_context_updates.pop(key)
-            for key in ("memory_retrieval", "memory_diagnostics")
-            if key in runtime_context_updates
-        }
-        private_updates = dict(contribution.private_updates)
-        private_updates.update(runtime_context_updates)
+        contribution_private_updates, contribution_private_diagnostics = _split_sidecar_private_updates(
+            contribution.private_updates
+        )
+        compat_private_updates, compat_diagnostics = _split_sidecar_private_updates(
+            runtime_context_updates
+        )
+        private_updates = dict(contribution_private_updates)
+        private_updates.update(compat_private_updates)
         diagnostics = dict(contribution.diagnostics)
+        diagnostics.update(contribution_private_diagnostics)
         diagnostics.update(compat_diagnostics)
         return _SidecarJoinResult(
             prompt_fragments=contribution.prompt_fragments,
@@ -2055,6 +2061,24 @@ def _query_source(runtime_context: dict[str, object] | None) -> str | None:
         if value is not None:
             return str(value)
     return None
+
+
+def _split_sidecar_private_updates(
+    updates: Mapping[str, Any] | None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    private_updates: dict[str, Any] = {}
+    diagnostics: dict[str, Any] = {}
+    if updates is None:
+        return private_updates, diagnostics
+    for key, value in updates.items():
+        normalized_key = str(key)
+        if normalized_key in _SIDECAR_PROMPT_ONLY_KEYS:
+            continue
+        if normalized_key in _SIDECAR_DIAGNOSTIC_KEYS:
+            diagnostics[normalized_key] = value
+            continue
+        private_updates[normalized_key] = value
+    return private_updates, diagnostics
 
 
 def _synthesized_stop_reason(

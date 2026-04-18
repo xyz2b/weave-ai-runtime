@@ -355,7 +355,13 @@ def test_session_controller_handles_local_only_host_event_without_turn_execution
         cwd=str(tmp_path),
         system_prompt="System prompt",
     )
-    controller.enqueue_event(InboundEvent(InboundEventType.HOST_EVENT, "Refresh complete"))
+    controller.enqueue_event(
+        InboundEvent(
+            InboundEventType.HOST_EVENT,
+            "Refresh complete",
+            metadata={"private_updates": {"refresh": True}},
+        )
+    )
 
     produced = asyncio.run(controller.run_until_idle())
     transcript = asyncio.run(transcript_store.load("session-local-only"))
@@ -366,6 +372,7 @@ def test_session_controller_handles_local_only_host_event_without_turn_execution
     assert transcript.entries == ()
     assert [message.text for message in notifications] == ["Refresh complete"]
     assert notifications[0].metadata["ingress_replay"] is True
+    assert controller.state.metadata["refresh"] is True
 
 
 def test_session_controller_admits_host_generated_prompt_with_ingress_role_preserved(tmp_path: Path) -> None:

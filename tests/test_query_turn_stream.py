@@ -3,7 +3,7 @@ import asyncio
 from claude_agent_runtime.contracts import MessageRole, TextBlock, ToolResultBlock
 from claude_agent_runtime.definitions import AgentDefinition, ToolDefinition, ToolTraits
 from claude_agent_runtime.registries import ToolRegistry
-from claude_agent_runtime.runtime_services import RuntimeServices
+from claude_agent_runtime.runtime_services import RuntimeServices, SidecarContributionResult
 from claude_agent_runtime.turn_engine import (
     ContextAssembler,
     ModelRequest,
@@ -396,6 +396,52 @@ def test_runtime_services_contribute_context_during_request_assembly() -> None:
     assert "Memory line" in request.system_prompt
     assert "Hook line" in request.system_prompt
     assert "Compaction line" in request.system_prompt
+
+
+def test_sidecar_private_updates_cannot_reintroduce_prompt_updates() -> None:
+    class LeakyLegacySidecar:
+        async def collect(self, **kwargs):
+            kwargs["runtime_context"]["prompt_updates"] = {"legacy": "hidden"}
+            return SidecarContributionResult(
+                private_updates={"prompt_updates": {"explicit": "hidden"}, "sidecar": True}
+            )
+
+    model_client = BatchedModelClient(
+        [
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-sidecar-private"}),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "done"}),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+            ]
+        ]
+    )
+    services = RuntimeServices(
+        hooks=LeakyLegacySidecar(),
+        context_assembler=ContextAssembler(),
+    )
+    engine = TurnEngine(
+        model_client=model_client,
+        tool_registry=ToolRegistry(),
+        runtime_services=services,
+    )
+    agent = AgentDefinition(name="main-router", description="router", prompt="Answer")
+
+    asyncio.run(
+        engine.run_turn(
+            session_id="session",
+            turn_id="turn",
+            agent=agent,
+            cwd=".",
+            messages=[],
+            base_system_prompt="System",
+        )
+    )
+
+    request = model_client.requests[0]
+    assert request.turn_context.prompt_context.session_hints == {}
+    assert "legacy: hidden" not in request.system_prompt
+    assert "explicit: hidden" not in request.system_prompt
+    assert request.private_context.extensions["sidecar"] is True
 
 
 def test_interrupt_aborts_model_stream_and_discards_partial_output() -> None:

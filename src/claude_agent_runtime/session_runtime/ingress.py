@@ -47,8 +47,11 @@ class SessionIngressProcessor:
     ) -> SessionIngressResult:
         metadata = _copy_mapping(getattr(event, "metadata", None))
         event_type = _event_type_name(event)
-        admission_kind = _resolve_admission_kind(event_type, metadata)
-        reason = str(metadata.get("ingress_reason") or admission_kind.value)
+        admission_kind, invalid_admission_kind = _resolve_admission_kind(event_type, metadata)
+        reason = str(
+            metadata.get("ingress_reason")
+            or ("invalid_admission_kind" if invalid_admission_kind is not None else admission_kind.value)
+        )
         normalized_messages = self._build_normalized_messages(
             event,
             metadata=metadata,
@@ -70,6 +73,7 @@ class SessionIngressProcessor:
             runtime_services.metadata.get("ingress_private_defaults"),
             session_snapshot.metadata.get("ingress_private_defaults"),
             _metadata_private_updates(metadata),
+            _invalid_admission_private_updates(invalid_admission_kind),
             metadata.get("private_updates"),
         )
 
@@ -189,17 +193,20 @@ class SessionIngressProcessor:
 def _resolve_admission_kind(
     event_type: str,
     metadata: Mapping[str, Any],
-) -> IngressAdmissionKind:
+) -> tuple[IngressAdmissionKind, str | None]:
     raw = metadata.get("admission_kind")
     if isinstance(raw, str):
-        return IngressAdmissionKind(raw)
+        try:
+            return IngressAdmissionKind(raw), None
+        except ValueError:
+            return IngressAdmissionKind.REJECT, raw
     if event_type in {"user_prompt", "system_message"}:
-        return IngressAdmissionKind.ADMIT_TURN
+        return IngressAdmissionKind.ADMIT_TURN, None
     if event_type == "task_notification":
-        return IngressAdmissionKind.TRANSCRIPT_ONLY
+        return IngressAdmissionKind.TRANSCRIPT_ONLY, None
     if event_type == "host_event":
-        return IngressAdmissionKind.LOCAL_ONLY
-    return IngressAdmissionKind.REJECT
+        return IngressAdmissionKind.LOCAL_ONLY, None
+    return IngressAdmissionKind.REJECT, None
 
 
 def _event_type_name(event: InboundEvent) -> str:
@@ -244,6 +251,12 @@ def _normalized_message_metadata(metadata: Mapping[str, Any], event_type: str) -
 
 def _metadata_private_updates(metadata: Mapping[str, Any]) -> dict[str, Any]:
     return {str(key): value for key, value in metadata.items() if key not in _CONTROL_METADATA_KEYS}
+
+
+def _invalid_admission_private_updates(raw_value: str | None) -> dict[str, Any]:
+    if raw_value is None:
+        return {}
+    return {"invalid_admission_kind": raw_value}
 
 
 def _copy_mapping(value: object) -> dict[str, Any]:

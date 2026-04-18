@@ -151,6 +151,31 @@ def test_session_ingress_processor_defaults_task_notifications_to_transcript_onl
     assert result.prompt_updates == {}
 
 
+def test_session_ingress_invalid_admission_kind_becomes_reject_with_private_diagnostics(tmp_path) -> None:
+    processor = SessionIngressProcessor()
+    snapshot = SessionIngressSnapshot(
+        session_id="session-invalid-kind",
+        current_agent="main-router",
+        cwd=str(tmp_path),
+        status=SessionStatus.READY,
+    )
+
+    result = processor.process(
+        InboundEvent(
+            InboundEventType.HOST_EVENT,
+            "Blocked input",
+            metadata={"admission_kind": "bogus", "replay_text": "Rejected by ingress"},
+        ),
+        session_snapshot=snapshot,
+        runtime_services=RuntimeServices(),
+    )
+
+    assert result.admission.kind == IngressAdmissionKind.REJECT
+    assert result.admission.reason == "invalid_admission_kind"
+    assert result.private_updates["invalid_admission_kind"] == "bogus"
+    assert [output.text for output in result.replay_outputs] == ["Rejected by ingress"]
+
+
 def test_session_ingress_result_rejects_invalid_field_combinations() -> None:
     message = RuntimeMessage(message_id="msg-1", role=MessageRole.USER, content="hello")
     replay_output = IngressReplayOutput(

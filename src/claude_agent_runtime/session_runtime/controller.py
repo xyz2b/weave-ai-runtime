@@ -217,6 +217,8 @@ class SessionController:
                 ingress_result.normalized_messages,
                 turn_id=record_turn_id,
             )
+            if not ingress_result.admits_turn:
+                self._apply_ingress_private_updates(ingress_result.private_updates)
             await self._emit_ingress_replay_outputs(ingress_result.replay_outputs)
             if not ingress_result.admits_turn:
                 if self.state.status != SessionStatus.WAITING:
@@ -351,6 +353,10 @@ class SessionController:
                     },
                 )
             )
+
+    def _apply_ingress_private_updates(self, private_updates: dict[str, Any]) -> None:
+        for key, value in private_updates.items():
+            self.state.metadata[str(key)] = _copy_ingress_private_value(value)
 
     def _ingress_snapshot(self) -> SessionIngressSnapshot:
         return SessionIngressSnapshot.from_state(
@@ -873,6 +879,14 @@ def _attachments_from_messages(messages: tuple[RuntimeMessage, ...]) -> tuple[Me
             seen.add(key)
             attachments.append(attachment)
     return tuple(attachments)
+
+
+def _copy_ingress_private_value(value: object) -> object:
+    if isinstance(value, dict):
+        return {str(key): _copy_ingress_private_value(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_copy_ingress_private_value(item) for item in value]
+    return value
 
 
 async def _maybe_await(value: Any) -> Any:
