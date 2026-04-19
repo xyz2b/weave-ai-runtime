@@ -404,6 +404,90 @@ def test_session_controller_handles_local_only_host_event_without_turn_execution
     assert controller.state.metadata["refresh"] is True
 
 
+def test_session_controller_carries_local_only_private_updates_into_next_turn(tmp_path: Path) -> None:
+    model_client = FakeModelClient(
+        [
+            [
+                ModelStreamEvent(
+                    ModelStreamEventType.MESSAGE_START,
+                    {"request_id": "req-carried-private"},
+                ),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "turn reply"}),
+                ModelStreamEvent(
+                    ModelStreamEventType.MESSAGE_STOP,
+                    {"stop_reason": "end_turn"},
+                ),
+            ]
+        ]
+    )
+    transcript_store = FileTranscriptStore(tmp_path / "transcripts")
+    controller = SessionController(
+        session_id="session-carried-private",
+        agent=AgentDefinition(name="main-router", description="router", prompt="Route the turn"),
+        turn_engine=TurnEngine(model_client=model_client, tool_registry=ToolRegistry()),
+        transcript_store=transcript_store,
+        cwd=str(tmp_path),
+        system_prompt="System prompt",
+    )
+
+    controller.enqueue_event(
+        InboundEvent(
+            InboundEventType.HOST_EVENT,
+            "Refresh complete",
+            metadata={"private_updates": {"host_hint": "persist-me"}},
+        )
+    )
+    asyncio.run(controller.run_until_idle())
+
+    controller.enqueue_event(InboundEvent(InboundEventType.USER_PROMPT, "hello"))
+    produced = asyncio.run(controller.run_until_idle())
+
+    request = model_client.requests[0]
+    assert produced[-1].text == "turn reply"
+    assert request.private_context.extensions["host_hint"] == "persist-me"
+    assert request.turn_context.prompt_context.session_hints == {}
+    assert "host_hint: persist-me" not in request.system_prompt
+
+
+def test_session_controller_close_clears_session_scoped_hooks(tmp_path: Path) -> None:
+    services = RuntimeServices()
+    session_start_hits: list[str] = []
+    services.hook_bus.register(
+        session_id="session-reopen",
+        owner="test",
+        phase=RuntimeHookPhase.SESSION_START,
+        handler=lambda payload: session_start_hits.append(payload.session_id),
+    )
+
+    first = SessionController(
+        session_id="session-reopen",
+        agent=AgentDefinition(name="main-router", description="router", prompt="Route the turn"),
+        turn_engine=TurnEngine(model_client=FakeModelClient([]), tool_registry=ToolRegistry(), runtime_services=services),
+        transcript_store=FileTranscriptStore(tmp_path / "transcripts"),
+        cwd=str(tmp_path),
+        system_prompt="System prompt",
+        runtime_services=services,
+    )
+
+    asyncio.run(first.start())
+    asyncio.run(first.close())
+
+    second = SessionController(
+        session_id="session-reopen",
+        agent=AgentDefinition(name="main-router", description="router", prompt="Route the turn"),
+        turn_engine=TurnEngine(model_client=FakeModelClient([]), tool_registry=ToolRegistry(), runtime_services=services),
+        transcript_store=FileTranscriptStore(tmp_path / "transcripts"),
+        cwd=str(tmp_path),
+        system_prompt="System prompt",
+        runtime_services=services,
+    )
+
+    asyncio.run(second.start())
+    asyncio.run(second.close())
+
+    assert session_start_hits == ["session-reopen"]
+
+
 def test_session_controller_admits_host_generated_prompt_with_ingress_role_preserved(tmp_path: Path) -> None:
     model_client = FakeModelClient(
         [

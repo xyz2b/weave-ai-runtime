@@ -1643,8 +1643,12 @@ class TurnEngine:
         service: Any,
         **kwargs: Any,
     ) -> _SidecarJoinResult:
-        original_runtime_context = dict(kwargs.get("runtime_context") or {})
-        local_runtime_context = dict(original_runtime_context)
+        original_runtime_context = _clone_sidecar_compat_runtime_context(
+            kwargs.get("runtime_context")
+        )
+        local_runtime_context = _clone_sidecar_compat_runtime_context(
+            original_runtime_context
+        )
         contribution = await self._collect_control_plane_contribution(
             service,
             **{**kwargs, "runtime_context": local_runtime_context},
@@ -2111,6 +2115,34 @@ def _split_sidecar_private_updates(
             continue
         private_updates[normalized_key] = value
     return private_updates, diagnostics
+
+
+def _clone_sidecar_compat_runtime_context(
+    runtime_context: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    if runtime_context is None:
+        return {}
+    return {
+        str(key): _clone_sidecar_compat_value(value)
+        for key, value in runtime_context.items()
+    }
+
+
+def _clone_sidecar_compat_value(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {
+            str(inner_key): _clone_sidecar_compat_value(inner_value)
+            for inner_key, inner_value in value.items()
+        }
+    if isinstance(value, list):
+        return [_clone_sidecar_compat_value(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_clone_sidecar_compat_value(item) for item in value)
+    if isinstance(value, set):
+        return {_clone_sidecar_compat_value(item) for item in value}
+    if isinstance(value, frozenset):
+        return frozenset(_clone_sidecar_compat_value(item) for item in value)
+    return value
 
 
 def _prompt_context_from_sidecar_metadata(

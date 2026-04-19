@@ -79,6 +79,7 @@ class SessionController:
         self._closed = False
         self._close_task: asyncio.Task[None] | None = None
         self._close_callback = close_callback
+        self._session_private_context: dict[str, Any] = {}
         self.state.metadata.setdefault(
             "permission_context",
             PermissionContext(
@@ -214,6 +215,12 @@ class SessionController:
             self.state.active_turn_id = None
             self.state.status = _session_status_for_close(final_status)
             try:
+                if self._runtime_services.hook_bus is not None:
+                    self._runtime_services.hook_bus.clear_session(self.state.session_id)
+            except Exception as exc:
+                if error is None:
+                    error = exc
+            try:
                 if self._close_callback is not None:
                     await _maybe_await(self._close_callback(self, final_status))
             except Exception as exc:
@@ -258,7 +265,13 @@ class SessionController:
             last_terminal = None
             turn_retrieval_trace: dict[str, Any] | None = None
             turn_message_ids: list[str] = [message.message_id for message in ingress_result.normalized_messages]
-            runtime_context = dict(ingress_result.private_updates)
+            runtime_context = self._base_runtime_private_context()
+            runtime_context.update(
+                {
+                    str(key): _copy_ingress_private_value(value)
+                    for key, value in ingress_result.private_updates.items()
+                }
+            )
             runtime_context.update(
                 {
                     "command_type": command.command_type.value,
@@ -386,7 +399,18 @@ class SessionController:
 
     def _apply_ingress_private_updates(self, private_updates: dict[str, Any]) -> None:
         for key, value in private_updates.items():
-            self.state.metadata[str(key)] = _copy_ingress_private_value(value)
+            normalized_key = str(key)
+            copied_value = _copy_ingress_private_value(value)
+            self._session_private_context[normalized_key] = _copy_ingress_private_value(
+                copied_value
+            )
+            self.state.metadata[normalized_key] = copied_value
+
+    def _base_runtime_private_context(self) -> dict[str, Any]:
+        return {
+            str(key): _copy_ingress_private_value(value)
+            for key, value in self._session_private_context.items()
+        }
 
     def _ingress_snapshot(self) -> SessionIngressSnapshot:
         return SessionIngressSnapshot.from_state(

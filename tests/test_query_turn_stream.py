@@ -444,6 +444,49 @@ def test_sidecar_private_updates_cannot_reintroduce_prompt_updates() -> None:
     assert request.private_context.extensions["sidecar"] is True
 
 
+def test_nested_legacy_sidecar_mutations_do_not_leak_prompt_updates() -> None:
+    class NestedLeakySidecar:
+        async def collect(self, **kwargs):
+            kwargs["runtime_context"].setdefault("prompt_updates", {})["nested"] = "hidden"
+            kwargs["runtime_context"].setdefault("memory_diagnostics", {})["nested"] = "trace"
+            return SidecarContributionResult(private_updates={"sidecar": True})
+
+    model_client = BatchedModelClient(
+        [
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-sidecar-nested"}),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "done"}),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+            ]
+        ]
+    )
+    services = RuntimeServices(hooks=NestedLeakySidecar(), context_assembler=ContextAssembler())
+    engine = TurnEngine(
+        model_client=model_client,
+        tool_registry=ToolRegistry(),
+        runtime_services=services,
+    )
+    agent = AgentDefinition(name="main-router", description="router", prompt="Answer")
+
+    asyncio.run(
+        engine.run_turn(
+            session_id="session",
+            turn_id="turn",
+            agent=agent,
+            cwd=".",
+            messages=[],
+            base_system_prompt="System",
+            runtime_context={"prompt_updates": {"topic": "ops"}},
+        )
+    )
+
+    request = model_client.requests[0]
+    assert request.turn_context.prompt_context.session_hints == {"topic": "ops"}
+    assert "nested: hidden" not in request.system_prompt
+    assert request.private_context.extensions["sidecar"] is True
+    assert request.private_context.diagnostics["memory_diagnostics"] == {"nested": "trace"}
+
+
 def test_sidecar_explicit_updates_override_legacy_runtime_context_adapter() -> None:
     class MixedModeSidecar:
         async def collect(self, **kwargs):

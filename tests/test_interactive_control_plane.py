@@ -1,6 +1,8 @@
 import asyncio
 from pathlib import Path
 
+import pytest
+
 from claude_agent_runtime.builtins.tool_impls import ask_user_tool
 from claude_agent_runtime.contracts import MessageRole, RuntimeMessage, ToolResultBlock
 from claude_agent_runtime.definitions import (
@@ -454,3 +456,29 @@ def test_bound_host_runtime_reuses_host_across_multiple_sessions(tmp_path: Path)
         "session-one",
         "session-two",
     ]
+
+
+def test_bound_host_runtime_rejects_duplicate_active_session_ids(tmp_path: Path) -> None:
+    host = SdkHostRuntime(name="sdk")
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            model_client=BatchedModelClient([]),
+        )
+    )
+    bound = runtime.bind_host(host)
+
+    async def scenario():
+        await bound.startup()
+        await bound.ready()
+        first = bound.create_session(session_id="dup-session")
+        with pytest.raises(ValueError, match="dup-session"):
+            bound.create_session(session_id="dup-session")
+        await bound.shutdown()
+        return first
+
+    first = asyncio.run(scenario())
+
+    assert first.state.status.value == "completed"
+    assert host.lifecycle == ["startup", "ready", "shutdown"]
+    assert [entry["session_id"] for entry in bound.metadata["closed_sessions"]] == ["dup-session"]

@@ -206,6 +206,7 @@ class BoundHostRuntime:
 
     def create_session(self, **kwargs: Any) -> Any:
         self._bind_host()
+        self._ensure_managed_session_id_available(kwargs.get("session_id"))
         session = self.runtime.create_session(
             **kwargs,
             close_callback=self._on_managed_session_close,
@@ -237,6 +238,7 @@ class BoundHostRuntime:
     ) -> Any:
         self._bind_host()
         await self.ready()
+        self._ensure_managed_session_id_available(session_id)
         session = self.runtime.create_session(
             session_id=session_id,
             agent_name=agent_name,
@@ -270,6 +272,7 @@ class BoundHostRuntime:
     ):
         self._bind_host()
         await self.ready()
+        self._ensure_managed_session_id_available(session_id)
         session = self.runtime.create_session(
             session_id=session_id,
             agent_name=agent_name,
@@ -301,8 +304,18 @@ class BoundHostRuntime:
         if session_id is None:
             return
         session_key = str(session_id)
+        existing = self._managed_sessions.get(session_key)
+        if existing is not None and existing is not session:
+            raise ValueError(f"Managed session '{session_key}' is already active")
         self._managed_sessions[session_key] = session
         self._managed_session_owners[session_key] = owner
+
+    def _ensure_managed_session_id_available(self, session_id: str | None) -> None:
+        if session_id is None:
+            return
+        session_key = str(session_id)
+        if self._managed_sessions.get(session_key) is not None:
+            raise ValueError(f"Managed session '{session_key}' is already active")
 
     async def _on_managed_session_close(self, session: Any, final_status: str) -> None:
         session_id = getattr(getattr(session, "state", None), "session_id", None)
