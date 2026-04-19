@@ -4,7 +4,12 @@ import asyncio
 from pathlib import Path
 from typing import Any, Sequence
 
-from claude_agent_runtime.contracts import RuntimeMessage, serialize_content_blocks
+from claude_agent_runtime.contracts import (
+    PromptContextEnvelope,
+    RuntimeMessage,
+    RuntimePrivateContext,
+    serialize_content_blocks,
+)
 from claude_agent_runtime.definitions import (
     AgentDefinition,
     IsolationMode,
@@ -16,6 +21,7 @@ from claude_agent_runtime.definitions import (
 from claude_agent_runtime.registries import ToolRegistry
 from claude_agent_runtime.runtime_kernel import BuiltinPackConfig, RuntimeAssembly, RuntimeConfig, assemble_runtime
 from claude_agent_runtime.session_runtime import SessionController
+from claude_agent_runtime.execution_policy import serialize_runtime_metadata
 from claude_agent_runtime.session_runtime.models import (
     IngressAdmission,
     IngressReplayOutput,
@@ -112,9 +118,53 @@ def request_fixture(request: ModelRequest) -> dict[str, Any]:
     fixture: dict[str, Any] = {
         "messages": messages_fixture(request.messages),
     }
+    prompt_context = prompt_context_fixture(request.turn_context.prompt_context)
+    if prompt_context:
+        fixture["prompt_context"] = prompt_context
+    private_context = private_context_fixture(request.private_context)
+    if private_context:
+        fixture["private_context"] = private_context
     if request.query_source is not None:
         fixture["query_source"] = request.query_source
     return fixture
+
+
+def prompt_context_fixture(prompt_context: PromptContextEnvelope) -> dict[str, Any]:
+    fixture: dict[str, Any] = {}
+    if prompt_context.memory_fragments:
+        fixture["memory_fragments"] = _normalize_fixture_value(prompt_context.memory_fragments)
+    if prompt_context.hook_fragments:
+        fixture["hook_fragments"] = _normalize_fixture_value(prompt_context.hook_fragments)
+    if prompt_context.compaction_fragments:
+        fixture["compaction_fragments"] = _normalize_fixture_value(
+            prompt_context.compaction_fragments
+        )
+    if prompt_context.attachments:
+        fixture["attachments"] = [
+            {
+                "name": attachment.name,
+                "path": attachment.path,
+            }
+            for attachment in prompt_context.attachments
+        ]
+    if prompt_context.session_hints:
+        fixture["session_hints"] = _normalize_fixture_value(prompt_context.session_hints)
+    if prompt_context.compaction_summary:
+        fixture["compaction_summary"] = _normalize_fixture_value(prompt_context.compaction_summary)
+    if prompt_context.compaction_boundary:
+        fixture["compaction_boundary"] = _normalize_fixture_value(prompt_context.compaction_boundary)
+    if prompt_context.compaction_continuation:
+        fixture["compaction_continuation"] = _normalize_fixture_value(
+            prompt_context.compaction_continuation
+        )
+    if prompt_context.extensions:
+        fixture["extensions"] = _normalize_fixture_value(prompt_context.extensions)
+    return fixture
+
+
+def private_context_fixture(private_context: RuntimePrivateContext) -> dict[str, Any]:
+    serialized = serialize_runtime_metadata(private_context.compat_metadata())
+    return _normalize_fixture_value(serialized)
 
 
 def ingress_admission_fixture(admission: IngressAdmission) -> dict[str, Any]:

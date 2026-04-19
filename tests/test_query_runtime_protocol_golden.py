@@ -22,6 +22,7 @@ from .runtime_protocol_harness import (
     make_main_router_agent,
     message_fixture,
     messages_fixture,
+    request_fixture,
     request_messages_fixture,
     turn_event_fixture,
 )
@@ -106,6 +107,39 @@ def test_request_golden_captures_tool_use_and_tool_result_continuation() -> None
             },
         },
     ]
+
+
+def test_request_golden_captures_ingress_prompt_private_split(tmp_path: Path) -> None:
+    runtime, model_client = build_builtin_orchestration_runtime(
+        tmp_path,
+        event_batches=[
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-split"}),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "done"}),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+            ]
+        ],
+    )
+
+    produced = asyncio.run(
+        runtime.run_prompt(
+            "Inspect runtime boundaries",
+            session_id="session-split",
+            metadata={
+                "prompt_updates": {"topic": "ops"},
+                "private_updates": {"host_hint": "keep-private"},
+            },
+        )
+    )
+
+    fixture = request_fixture(model_client.requests[0])
+
+    assert fixture["query_source"] == "user_prompt"
+    assert fixture["prompt_context"]["session_hints"] == {"topic": "ops"}
+    assert fixture["private_context"]["host_hint"] == "keep-private"
+    assert fixture["private_context"]["query_source"] == "user_prompt"
+    assert "host_hint" not in model_client.requests[0].system_prompt
+    assert produced[-1].text == "done"
 
 
 def test_protocol_golden_drops_flattened_and_orphaned_tool_results() -> None:

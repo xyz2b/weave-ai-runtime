@@ -8,7 +8,12 @@ from uuid import uuid4
 from ..agent_execution import SpawnMode
 from ..agent_runtime import AgentInvocation, AgentRunResult, AgentRuntime
 from ..builtins import load_builtin_pack
-from ..contracts import RuntimeMessage, serialize_content_blocks
+from ..contracts import (
+    PromptContextEnvelope,
+    RuntimeMessage,
+    RuntimePrivateContext,
+    serialize_content_blocks,
+)
 from ..definitions import (
     AgentDefinition,
     InvocationCapabilityView,
@@ -99,6 +104,8 @@ class RuntimeAssembly:
         session_id: str,
         cwd: str | Path | None = None,
         messages: tuple[RuntimeMessage, ...] | list[RuntimeMessage] = (),
+        prompt_context: PromptContextEnvelope | None = None,
+        private_context: RuntimePrivateContext | dict[str, object] | None = None,
         runtime_context: dict[str, object] | None = None,
         turn_id: str | None = None,
     ) -> ResolvedInvocationCatalog:
@@ -108,6 +115,8 @@ class RuntimeAssembly:
             turn_id=turn_id,
             cwd=resolved_cwd,
             messages=tuple(messages),
+            prompt_context=prompt_context,
+            private_context=private_context,
             runtime_context=runtime_context,
         )
 
@@ -115,6 +124,8 @@ class RuntimeAssembly:
         self,
         session: SessionController,
         *,
+        prompt_context: PromptContextEnvelope | None = None,
+        private_context: RuntimePrivateContext | dict[str, object] | None = None,
         runtime_context: dict[str, object] | None = None,
     ) -> ResolvedInvocationCatalog:
         session_runtime_context = dict(session.state.metadata)
@@ -125,6 +136,8 @@ class RuntimeAssembly:
             turn_id=session.state.active_turn_id,
             cwd=session.cwd,
             messages=session.messages,
+            prompt_context=prompt_context,
+            private_context=private_context,
             runtime_context=session_runtime_context,
         )
 
@@ -134,9 +147,16 @@ class RuntimeAssembly:
         *,
         user_invocable: bool | None = None,
         model_invocable: bool | None = None,
+        prompt_context: PromptContextEnvelope | None = None,
+        private_context: RuntimePrivateContext | dict[str, object] | None = None,
         runtime_context: dict[str, object] | None = None,
     ) -> tuple[InvocationCapabilityView, ...]:
-        catalog = self.resolve_session_invocations(session, runtime_context=runtime_context)
+        catalog = self.resolve_session_invocations(
+            session,
+            prompt_context=prompt_context,
+            private_context=private_context,
+            runtime_context=runtime_context,
+        )
         return catalog.visible_capabilities(
             user_invocable=user_invocable,
             model_invocable=model_invocable,
@@ -146,9 +166,16 @@ class RuntimeAssembly:
         self,
         session: SessionController,
         *,
+        prompt_context: PromptContextEnvelope | None = None,
+        private_context: RuntimePrivateContext | dict[str, object] | None = None,
         runtime_context: dict[str, object] | None = None,
     ) -> tuple[InvocationDiagnostics, ...]:
-        catalog = self.resolve_session_invocations(session, runtime_context=runtime_context)
+        catalog = self.resolve_session_invocations(
+            session,
+            prompt_context=prompt_context,
+            private_context=private_context,
+            runtime_context=runtime_context,
+        )
         return catalog.diagnostics
 
     def create_session(

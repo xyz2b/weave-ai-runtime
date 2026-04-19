@@ -4,6 +4,7 @@ import asyncio
 from dataclasses import dataclass, field
 from typing import Any
 
+from ..control_plane import resolve_host_runtime
 from ..definitions import PermissionBehavior, PermissionDecision, PermissionMode, ToolDefinition
 from .models import (
     PermissionContext,
@@ -115,11 +116,7 @@ class PermissionEngine:
         if outcome.behavior != PermissionBehavior.ASK:
             return outcome
 
-        host_runtime = None
-        if runtime_context is not None and getattr(runtime_context, "runtime_services", None) is not None:
-            host_runtime = runtime_context.runtime_services.host
-        elif runtime_context is not None and getattr(runtime_context, "host_runtime", None) is not None:
-            host_runtime = runtime_context.host_runtime
+        host_runtime = resolve_host_runtime(runtime_context)
 
         if mode == PermissionMode.BUBBLE:
             return PermissionOutcome(

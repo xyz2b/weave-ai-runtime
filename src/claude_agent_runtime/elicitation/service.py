@@ -4,6 +4,7 @@ import asyncio
 from dataclasses import dataclass, field
 from typing import Any, Sequence
 
+from ..control_plane import resolve_hook_bus, resolve_host_runtime
 from ..hooks import ElicitationPayload, ElicitationResultPayload
 from .models import ElicitationRequest, ElicitationResponse
 
@@ -18,14 +19,8 @@ class SharedElicitationService:
         *,
         runtime_context: Any = None,
     ) -> ElicitationResponse:
-        hook_bus = None
-        host_runtime = None
-        if runtime_context is not None and getattr(runtime_context, "runtime_services", None) is not None:
-            hook_bus = runtime_context.runtime_services.hook_bus
-            host_runtime = runtime_context.runtime_services.host
-        elif runtime_context is not None:
-            hook_bus = getattr(runtime_context, "hook_bus", None)
-            host_runtime = getattr(runtime_context, "host_runtime", None)
+        hook_bus = resolve_hook_bus(runtime_context)
+        host_runtime = resolve_host_runtime(runtime_context)
 
         if hook_bus is not None:
             hook_result = await _maybe_await(

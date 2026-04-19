@@ -73,10 +73,10 @@
 
 ## 8. Compatibility, Fixtures, And Documentation
 
-- [ ] 8.0 Land Slice H (compat shims, fixtures, docs/comments) after ingress, carriers, and lifecycle owners are stable
-- [ ] 8.1 审计 `agent_execution_service.py`、`skill_runtime.py`、`invocation_catalog.py`、`elicitation/service.py`、host bridge 等 `runtime_context` 旧调用点，并收敛到 ingress 或双 carrier contract
-- [ ] 8.2 刷新 protocol fixtures、golden request fixtures 与 host bridge harnesses，反映 ingress outputs、prompt/private split 与 lifecycle ordering
-- [ ] 8.3 补 developer-facing contract appendix 或等价文档，说明 ingress protocol、context carriers、sidecar contribution semantics 与 host-scope lifecycle ordering
-- [ ] 8.4 定义 compat-shim removal gate：明确哪些 legacy `runtime_context` read/write 仍被允许、哪些 authoritative writes 必须归零、哪些 harness 必须通过
-- [ ] 8.5 在 compat-shim removal gate 通过后，移除残余 shared `runtime_context` authoritative writes，并将 compat shim 收窄为最小只读桥接或直接删除
-- [ ] 8.6 将刷新后的 conformance matrix 作为最终 rollout gate，确认 legacy `runtime_context` 假设已被清退后再推进默认启用或移除兼容层
+- [x] 8.0 Land Slice H (compat shims, fixtures, docs/comments) after ingress, carriers, and lifecycle owners are stable
+- [x] 8.1 审计 `agent_execution_service.py`、`skill_runtime.py`、`invocation_catalog.py`、`elicitation/service.py`、host bridge 等 `runtime_context` 旧调用点，并收敛到 ingress 或双 carrier contract
+- [x] 8.2 刷新 protocol fixtures、golden request fixtures 与 host bridge harnesses，反映 ingress outputs、prompt/private split 与 lifecycle ordering
+- [x] 8.3 补 developer-facing contract appendix 或等价文档，说明 ingress protocol、context carriers、sidecar contribution semantics 与 host-scope lifecycle ordering
+- [x] 8.4 定义 compat-shim removal gate：明确哪些 legacy `runtime_context` read/write 仍被允许、哪些 authoritative writes 必须归零、哪些 harness 必须通过
+- [x] 8.5 在 compat-shim removal gate 通过后，移除残余 shared `runtime_context` authoritative writes，并将 compat shim 收窄为最小只读桥接或直接删除
+- [x] 8.6 将刷新后的 conformance matrix 作为最终 rollout gate，确认 legacy `runtime_context` 假设已被清退后再推进默认启用或移除兼容层

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Mapping, Sequence
 from uuid import uuid4
 
@@ -11,6 +11,7 @@ from .agent_execution import (
     AgentRunStatus,
     ChildRunStore,
 )
+from .control_plane import RuntimeControlPlaneContext
 from .contracts import MessageRole, RuntimeMessage
 from .definitions import AgentDefinition, IsolationMode, PermissionBehavior, PermissionDecision
 from .execution_policy import (
@@ -327,7 +328,7 @@ class AgentExecutionService:
             context=policy.permission_context,
             message=f"Agent '{agent.name}' requires permission",
         )
-        runtime_context = _PermissionRuntimeContext(
+        runtime_context = RuntimeControlPlaneContext(
             runtime_services=self._runtime_services,
             permission_context=policy.permission_context,
         )
@@ -546,13 +547,6 @@ class AgentExecutionService:
                 turn_id=turn_id,
             ),
         )
-
-
-@dataclass(frozen=True, slots=True)
-class _PermissionRuntimeContext:
-    runtime_services: RuntimeServices
-    permission_context: PermissionContext | None = None
-
 
 def _supports_permission_requests(host: Any) -> bool:
     if isinstance(host, CallbackHostAdapter):

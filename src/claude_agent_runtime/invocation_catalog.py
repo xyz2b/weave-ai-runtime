@@ -5,7 +5,13 @@ from fnmatch import fnmatch
 from pathlib import Path, PurePath
 from typing import TYPE_CHECKING, Any, Iterable, Mapping, Sequence
 
-from .contracts import MessageRole, RuntimeMessage, ToolResultBlock
+from .contracts import (
+    MessageRole,
+    PromptContextEnvelope,
+    RuntimeMessage,
+    RuntimePrivateContext,
+    ToolResultBlock,
+)
 from .definitions import (
     DefinitionSource,
     InvocationCapabilityView,
@@ -117,10 +123,16 @@ def build_invocation_resolution_context(
     turn_id: str | None,
     cwd: str | Path,
     messages: Sequence[RuntimeMessage],
+    prompt_context: PromptContextEnvelope | None = None,
+    private_context: RuntimePrivateContext | Mapping[str, object] | None = None,
     runtime_context: Mapping[str, object] | None = None,
 ) -> InvocationResolutionContext:
     resolved_cwd = Path(cwd).resolve()
-    context_metadata = dict(runtime_context or {})
+    context_metadata = _invocation_context_metadata(
+        prompt_context=prompt_context,
+        private_context=private_context,
+        runtime_context=runtime_context,
+    )
     latest_prompt = _latest_prompt_message(messages)
     prompt_paths = set(_coerce_string_sequence(context_metadata.get("prompt_paths")))
     prompt_paths.update(_coerce_string_sequence(_metadata_values(latest_prompt, "prompt_paths")))
@@ -129,6 +141,12 @@ def build_invocation_resolution_context(
 
     attachments = set(_coerce_string_sequence(context_metadata.get("attachments")))
     attachments.update(_coerce_string_sequence(_metadata_values(latest_prompt, "attachments")))
+    if prompt_context is not None:
+        attachments.update(
+            attachment.path
+            for attachment in prompt_context.attachments
+            if getattr(attachment, "path", None)
+        )
     if latest_prompt is not None:
         attachments.update(
             attachment.path
@@ -163,6 +181,34 @@ def build_invocation_resolution_context(
         working_set=tuple(sorted(working_set)),
         metadata=context_metadata,
     )
+
+
+def _invocation_context_metadata(
+    *,
+    prompt_context: PromptContextEnvelope | None,
+    private_context: RuntimePrivateContext | Mapping[str, object] | None,
+    runtime_context: Mapping[str, object] | None,
+) -> dict[str, object]:
+    metadata: dict[str, object] = dict(runtime_context or {})
+    if prompt_context is not None:
+        metadata.update(_mapping_metadata(prompt_context.session_hints))
+        metadata.update(_mapping_metadata(prompt_context.extensions))
+    if isinstance(private_context, RuntimePrivateContext):
+        if private_context.permission_context is not None:
+            metadata["permission_context"] = private_context.permission_context
+        if private_context.policy_state is not None:
+            metadata["execution_policy_state"] = private_context.policy_state
+        metadata.update(_mapping_metadata(private_context.extensions))
+        metadata.update(_mapping_metadata(private_context.diagnostics))
+    elif isinstance(private_context, Mapping):
+        metadata.update(_mapping_metadata(private_context))
+    return metadata
+
+
+def _mapping_metadata(value: Mapping[str, object] | None) -> dict[str, object]:
+    if value is None:
+        return {}
+    return {str(key): inner for key, inner in value.items()}
 
 
 def resolve_invocation_catalog(

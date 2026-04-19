@@ -753,6 +753,8 @@ class TurnEngine:
         turn_id: str | None,
         cwd: str | Path,
         messages: tuple[RuntimeMessage, ...] | list[RuntimeMessage],
+        prompt_context: PromptContextEnvelope | None = None,
+        private_context: RuntimePrivateContext | Mapping[str, object] | None = None,
         runtime_context: Mapping[str, object] | None = None,
     ):
         registry = self._invocation_registry
@@ -763,6 +765,8 @@ class TurnEngine:
             turn_id=turn_id,
             cwd=cwd,
             messages=tuple(messages),
+            prompt_context=prompt_context,
+            private_context=private_context,
             runtime_context=runtime_context,
         )
         return registry.resolve(context)
@@ -868,6 +872,16 @@ class TurnEngine:
         max_iterations = agent.max_turns or 4
         state = TurnLoopState(working_messages=tuple(messages))
         runtime_context = dict(runtime_context or {})
+        prompt_updates = _prompt_updates_from_runtime_context(runtime_context)
+        private_context = private_context_from_legacy_runtime_context(runtime_context)
+        if private_context.permission_context is None:
+            private_context = replace(
+                private_context,
+                permission_context=PermissionContext(
+                    session_id=session_id,
+                    mode=agent.permission_mode or PermissionMode.DEFAULT,
+                ),
+            )
         child_run_key = (session_id, turn_id)
         self._child_run_events[child_run_key] = []
         sidecars = _PreTurnSidecarSupervisor(
@@ -877,14 +891,7 @@ class TurnEngine:
             agent=agent,
             cwd=cwd,
         )
-        runtime_context.setdefault(
-            "permission_context",
-            PermissionContext(
-                session_id=session_id,
-                mode=agent.permission_mode or PermissionMode.DEFAULT,
-            ),
-        )
-        incoming_policy_state = policy_state_from_metadata(runtime_context)
+        incoming_policy_state = private_context.policy_state or policy_state_from_metadata(runtime_context)
         policy_state = incoming_policy_state
         local_root_policy = policy_state is None
         if policy_state is None:
@@ -899,12 +906,16 @@ class TurnEngine:
                 agent,
                 tool_pool=root_tool_pool,
                 skill_pool=root_skill_pool,
-                permission_context=runtime_context["permission_context"],
+                permission_context=private_context.permission_context,
                 memory_scope=self._resolve_memory_scope(session_id=session_id, agent=agent, cwd=cwd),
                 isolation_mode=agent.isolation,
             )
             policy_state = ExecutionPolicyState(root_policy)
-            runtime_context[EXECUTION_POLICY_STATE_KEY] = policy_state
+        private_context = replace(
+            private_context,
+            permission_context=policy_state.effective.permission_context,
+            policy_state=policy_state,
+        )
         state.policy_state = policy_state
         last_request: ModelRequest | None = None
         last_attempt: AttemptFinished | None = None
@@ -915,21 +926,31 @@ class TurnEngine:
                 model_client = model_client_override or self._model_client
                 iteration_index = state.iteration + 1
                 state.iteration = iteration_index
-                runtime_metadata = self._merge_runtime_context(runtime_context)
-                runtime_metadata[EXECUTION_POLICY_STATE_KEY] = policy_state
-                runtime_metadata["permission_context"] = policy_state.effective.permission_context
+                private_context = replace(
+                    private_context,
+                    permission_context=policy_state.effective.permission_context,
+                    policy_state=policy_state,
+                )
+                effective_private_context = _merge_private_context_updates(
+                    private_context,
+                    private_updates=self._runtime_services.metadata,
+                )
+                runtime_metadata = self._merge_runtime_context(
+                    runtime_context,
+                    private_context=effective_private_context,
+                    prompt_updates=prompt_updates,
+                )
                 tool_pool = policy_state.effective.tool_pool
                 sanitized_runtime_context = serialize_runtime_metadata(runtime_metadata)
                 sidecar_prompt_context = _prompt_context_from_sidecar_metadata(
-                    sanitized_runtime_context
+                    runtime_metadata
                 )
-                sidecar_private_context = private_context_from_legacy_runtime_context(runtime_metadata)
                 state.sidecar_generation += 1
                 _set_turn_phase(state, TurnPhase.PREFETCH_SIDECARS)
                 sidecars.start(
                     messages=tuple(working_messages),
                     prompt_context=sidecar_prompt_context,
-                    private_context=sidecar_private_context,
+                    private_context=effective_private_context,
                     runtime_context=sanitized_runtime_context,
                 )
                 _set_turn_phase(state, TurnPhase.COMPACT_OR_REBUILD)
@@ -947,7 +968,7 @@ class TurnEngine:
                     cwd=cwd,
                     messages=tuple(working_messages),
                     prompt_context=sidecar_prompt_context,
-                    private_context=sidecar_private_context,
+                    private_context=effective_private_context,
                     runtime_context=sanitized_runtime_context,
                 )
                 compaction_payload = (
@@ -961,7 +982,7 @@ class TurnEngine:
                     await sidecars.restart(
                         messages=state.working_messages,
                         prompt_context=sidecar_prompt_context,
-                        private_context=sidecar_private_context,
+                        private_context=effective_private_context,
                         runtime_context=sanitized_runtime_context,
                     )
                     if compaction_result.summary is not None:
@@ -985,24 +1006,30 @@ class TurnEngine:
                     sidecar_private_updates,
                     sidecar_diagnostics,
                 ) = await sidecars.join()
-                if sidecar_private_updates:
-                    runtime_context.update(sidecar_private_updates)
-                    runtime_metadata.update(sidecar_private_updates)
-                    sanitized_runtime_context.update(
-                        serialize_runtime_metadata(sidecar_private_updates)
+                if sidecar_private_updates or sidecar_diagnostics:
+                    private_context = _merge_private_context_updates(
+                        private_context,
+                        private_updates=sidecar_private_updates,
+                        diagnostics=sidecar_diagnostics,
                     )
-                if sidecar_diagnostics:
-                    runtime_context.update(sidecar_diagnostics)
-                    runtime_metadata.update(sidecar_diagnostics)
-                    sanitized_runtime_context.update(
-                        serialize_runtime_metadata(sidecar_diagnostics)
+                    effective_private_context = _merge_private_context_updates(
+                        private_context,
+                        private_updates=self._runtime_services.metadata,
                     )
+                    runtime_metadata = self._merge_runtime_context(
+                        runtime_context,
+                        private_context=effective_private_context,
+                        prompt_updates=prompt_updates,
+                    )
+                    sanitized_runtime_context = serialize_runtime_metadata(runtime_metadata)
 
                 resolved_invocations = self.resolve_invocation_catalog(
                     session_id=session_id,
                     turn_id=turn_id,
                     cwd=cwd,
                     messages=tuple(working_messages),
+                    prompt_context=sidecar_prompt_context,
+                    private_context=effective_private_context,
                     runtime_context=runtime_metadata,
                 )
                 active_skills = _resolve_iteration_skill_pool(
@@ -1064,7 +1091,7 @@ class TurnEngine:
                     available_skills=[skill.name for skill in active_skills],
                     available_agents=self._available_agents_for_request(
                         current_agent=agent,
-                        runtime_context=sanitized_runtime_context,
+                        private_context=effective_private_context,
                     ),
                     available_invocations=resolved_invocations.visible_capabilities(),
                     base_system_prompt=base_system_prompt,
@@ -1094,7 +1121,6 @@ class TurnEngine:
                 request_metadata = dict(sanitized_runtime_context)
                 if compaction_payload is not None:
                     request_metadata["compaction"] = compaction_payload
-                private_context = private_context_from_legacy_runtime_context(runtime_metadata)
                 requested_capabilities = _coerce_model_capabilities(
                     runtime_metadata.get("resolved_capabilities")
                 )
@@ -1119,7 +1145,7 @@ class TurnEngine:
                     provider_name=_string_value(runtime_metadata.get("provider_name")),
                     resolved_capabilities=resolved_capabilities,
                     invocation_mode=invocation_mode,
-                    private_context=private_context,
+                    private_context=effective_private_context,
                     metadata=request_metadata,
                 )
                 last_request = request
@@ -1729,10 +1755,21 @@ class TurnEngine:
     def _merge_runtime_context(
         self,
         runtime_context: Mapping[str, object] | None,
+        *,
+        private_context: RuntimePrivateContext | None = None,
+        prompt_updates: Mapping[str, Any] | None = None,
     ) -> dict[str, object]:
         merged = dict(self._runtime_services.metadata)
         if runtime_context:
             merged.update(runtime_context)
+        if prompt_updates:
+            merged["prompt_updates"] = dict(prompt_updates)
+        if private_context is not None:
+            merged.update(private_context.compat_metadata())
+            if private_context.permission_context is not None:
+                merged["permission_context"] = private_context.permission_context
+            if private_context.policy_state is not None:
+                merged[EXECUTION_POLICY_STATE_KEY] = private_context.policy_state
         return merged
 
     def _resolve_memory_scope(
@@ -1791,13 +1828,12 @@ class TurnEngine:
         self,
         *,
         current_agent: AgentDefinition,
-        runtime_context: Mapping[str, object] | None,
+        private_context: RuntimePrivateContext | None,
     ) -> tuple[AgentDefinition, ...]:
         if self._agent_registry is None:
             return ()
-        if runtime_context and (
-            runtime_context.get("run_id") is not None
-            or runtime_context.get("parent_run_id") is not None
+        if private_context is not None and (
+            private_context.run_id is not None or private_context.parent_run_id is not None
         ):
             return ()
         return tuple(
@@ -2097,6 +2133,33 @@ def _query_source(runtime_context: dict[str, object] | None) -> str | None:
         if value is not None:
             return str(value)
     return None
+
+
+def _prompt_updates_from_runtime_context(
+    runtime_context: Mapping[str, object] | None,
+) -> dict[str, Any]:
+    if runtime_context is None:
+        return {}
+    raw = runtime_context.get("prompt_updates")
+    if not isinstance(raw, Mapping):
+        return {}
+    return {str(key): value for key, value in raw.items()}
+
+
+def _merge_private_context_updates(
+    private_context: RuntimePrivateContext,
+    *,
+    private_updates: Mapping[str, Any] | None = None,
+    diagnostics: Mapping[str, Any] | None = None,
+) -> RuntimePrivateContext:
+    merged = private_context.compat_metadata()
+    if private_context.policy_state is not None:
+        merged[EXECUTION_POLICY_STATE_KEY] = private_context.policy_state
+    if private_updates:
+        merged.update({str(key): value for key, value in private_updates.items()})
+    if diagnostics:
+        merged.update({str(key): value for key, value in diagnostics.items()})
+    return private_context_from_legacy_runtime_context(merged)
 
 
 def _split_sidecar_private_updates(

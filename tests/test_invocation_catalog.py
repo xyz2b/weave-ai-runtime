@@ -1,7 +1,14 @@
 import asyncio
 from pathlib import Path
 
-from claude_agent_runtime.contracts import MessageRole, RuntimeMessage, ToolResultBlock
+from claude_agent_runtime.contracts import (
+    MessageAttachment,
+    MessageRole,
+    PromptContextEnvelope,
+    RuntimeMessage,
+    RuntimePrivateContext,
+    ToolResultBlock,
+)
 from claude_agent_runtime.definitions import (
     AgentDefinition,
     DefinitionOrigin,
@@ -257,7 +264,7 @@ def test_execution_policy_narrows_visible_invocations_and_diagnostics(tmp_path: 
         turn_id="turn",
         cwd=tmp_path,
         messages=(_message(text="Review the workspace"),),
-        runtime_context={"execution_policy_state": policy},
+        private_context=RuntimePrivateContext(policy_state=policy),
     )
     diagnostics = catalog.diagnostics_for("beta")
 
@@ -265,6 +272,39 @@ def test_execution_policy_narrows_visible_invocations_and_diagnostics(tmp_path: 
     assert diagnostics.hidden_reason == InvocationHiddenReason.POLICY_NARROWED
     assert diagnostics.narrowed_by_policy["skill_pool"] == ("alpha",)
     assert diagnostics.narrowed_by_policy["blocked_by"] == "execution_policy.skill_pool"
+
+
+def test_prompt_context_attachments_feed_invocation_path_matching(tmp_path: Path) -> None:
+    docs_path = tmp_path / "docs" / "guide.md"
+    docs_path.parent.mkdir(parents=True)
+    docs_path.write_text("guide", encoding="utf-8")
+    registry = SkillRegistry()
+    registry.register(
+        SkillDefinition(
+            name="docs-helper",
+            description="Docs helper",
+            content="docs",
+            paths=("docs/*.md",),
+            origin=_origin("docs-helper"),
+        )
+    )
+    engine = TurnEngine(
+        model_client=FakeModelClient([]),
+        tool_registry=ToolRegistry(),
+        skill_registry=registry,
+    )
+
+    catalog = engine.resolve_invocation_catalog(
+        session_id="session",
+        turn_id="turn",
+        cwd=tmp_path,
+        messages=(),
+        prompt_context=PromptContextEnvelope(
+            attachments=(MessageAttachment(name="guide.md", path=str(docs_path)),)
+        ),
+    )
+
+    assert {entry.capability.name for entry in catalog.visible} == {"docs-helper"}
 
 
 def test_runtime_main_thread_uses_resolved_visible_invocations(tmp_path: Path) -> None:

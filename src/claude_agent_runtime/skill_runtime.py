@@ -7,6 +7,7 @@ from uuid import uuid4
 
 from .agent_execution import SpawnMode
 from .agent_runtime import AgentInvocation, AgentRunResult, AgentRuntime
+from .control_plane import RuntimeControlPlaneContext
 from .contracts import MessageRole, RuntimeMessage
 from .definitions import PermissionBehavior, PermissionDecision, SkillDefinition, SkillExecutionContext
 from .execution_policy import (
@@ -179,7 +180,7 @@ class SkillExecutor:
             context=permission_context,
             message=f"Skill '{skill.name}' requires permission",
         )
-        runtime_context = _PermissionRuntimeContext(
+        runtime_context = RuntimeControlPlaneContext(
             runtime_services=self._runtime_services,
             permission_context=permission_context,
         )
@@ -246,13 +247,6 @@ class SkillExecutor:
         if skill.origin.path is not None:
             expanded = expanded.replace("${CLAUDE_SKILL_DIR}", str(skill.origin.path.parent))
         return expanded
-
-
-@dataclass(frozen=True, slots=True)
-class _PermissionRuntimeContext:
-    runtime_services: RuntimeServices
-    permission_context: PermissionContext | None = None
-
 
 def _supports_permission_requests(host: Any) -> bool:
     if isinstance(host, CallbackHostAdapter):

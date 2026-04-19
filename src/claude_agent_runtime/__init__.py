@@ -28,6 +28,7 @@ from .contracts import (
     ToolUseBlock,
     TurnContext,
 )
+from .control_plane import RuntimeControlPlaneContext
 from .definitions import (
     AgentDefinition,
     DefinitionOrigin,
@@ -225,6 +226,7 @@ __all__ = [
     "RuntimeConfig",
     "RuntimeHookPhase",
     "RuntimeAssembly",
+    "RuntimeControlPlaneContext",
     "RuntimeKernel",
     "RuntimeMessage",
     "RuntimePrivateContext",
