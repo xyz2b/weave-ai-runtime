@@ -490,6 +490,7 @@ def builtin_tools() -> tuple[ToolDefinition, ...]:
             ),
             validate_input=validate_agent_tool,
             execute=agent_tool,
+            runtime_execution_class="privileged",
             origin=origin,
         ),
         ToolDefinition(
@@ -526,6 +527,7 @@ def builtin_tools() -> tuple[ToolDefinition, ...]:
             ),
             validate_input=validate_skill_registry_entry,
             execute=skill_tool,
+            runtime_execution_class="privileged",
             origin=origin,
         ),
         ToolDefinition(
@@ -543,6 +545,7 @@ def builtin_tools() -> tuple[ToolDefinition, ...]:
                 "additionalProperties": False,
             },
             execute=task_create_tool,
+            runtime_execution_class="privileged",
             origin=origin,
         ),
         ToolDefinition(
@@ -567,6 +570,7 @@ def builtin_tools() -> tuple[ToolDefinition, ...]:
                 ),
             ),
             execute=task_get_tool,
+            runtime_execution_class="privileged",
             origin=origin,
         ),
         ToolDefinition(
@@ -588,6 +592,7 @@ def builtin_tools() -> tuple[ToolDefinition, ...]:
                 "additionalProperties": False,
             },
             execute=task_update_tool,
+            runtime_execution_class="privileged",
             origin=origin,
         ),
         ToolDefinition(
@@ -611,6 +616,7 @@ def builtin_tools() -> tuple[ToolDefinition, ...]:
                 ),
             ),
             execute=task_list_tool,
+            runtime_execution_class="privileged",
             origin=origin,
         ),
         ToolDefinition(
@@ -642,6 +648,7 @@ def builtin_tools() -> tuple[ToolDefinition, ...]:
             ),
             check_permissions=ask_permission,
             execute=task_stop_tool,
+            runtime_execution_class="privileged",
             origin=origin,
         ),
         ToolDefinition(
@@ -661,6 +668,7 @@ def builtin_tools() -> tuple[ToolDefinition, ...]:
                 "additionalProperties": False,
             },
             execute=ask_user_tool,
+            runtime_execution_class="privileged",
             origin=origin,
         ),
         ToolDefinition(

@@ -268,10 +268,13 @@ def test_tool_context_exposes_turn_scoped_runtime_state() -> None:
             execute=lambda _tool_input, context: {
                 "roles": [message.role.value for message in context.messages],
                 "message_count": len(context.messages),
-                "has_abort_signal": context.abort_signal is not None,
-                "tool_names": [definition.name for definition in context.tool_pool],
-                "has_refresh_callback": context.tool_refresh_callback is not None,
-                "has_runtime_services": context.runtime_services is not None,
+                "has_abort_handle": context.abort_handle is not None,
+                "tool_names": [entry.name for entry in context.tool_catalog.list()],
+                "has_refresh_handle": context.refresh_capabilities is not None,
+                "has_private_context_view": context.private_context_view is not None,
+                "has_raw_private_context": hasattr(context, "private_context"),
+                "has_runtime_services": getattr(context, "runtime_services", None) is not None,
+                "has_raw_tool_pool": hasattr(context, "tool_pool"),
             },
         )
     )
@@ -335,10 +338,13 @@ def test_tool_context_exposes_turn_scoped_runtime_state() -> None:
 
     assert tool_result.content["roles"] == ["assistant"]
     assert tool_result.content["message_count"] == 1
-    assert tool_result.content["has_abort_signal"] is True
+    assert tool_result.content["has_abort_handle"] is True
     assert tool_result.content["tool_names"] == ["inspect_context"]
-    assert tool_result.content["has_refresh_callback"] is True
-    assert tool_result.content["has_runtime_services"] is True
+    assert tool_result.content["has_refresh_handle"] is True
+    assert tool_result.content["has_private_context_view"] is True
+    assert tool_result.content["has_raw_private_context"] is False
+    assert tool_result.content["has_runtime_services"] is False
+    assert tool_result.content["has_raw_tool_pool"] is False
     assert result.messages[-1].text == "context captured"
 
 

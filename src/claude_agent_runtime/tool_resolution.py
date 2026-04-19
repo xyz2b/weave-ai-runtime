@@ -16,9 +16,16 @@ from .tool_lifecycle import (
     PermissionDenied,
     ResolvedToolCall,
     ToolCallEnvelope,
+    ToolExecutionClass,
     ToolResolutionStatus,
 )
-from .tool_runtime import ToolContext, _dispatch_hook, maybe_await, validate_input_schema
+from .tool_runtime import (
+    ToolContext,
+    _dispatch_hook,
+    _prepare_tool_execution,
+    maybe_await,
+    validate_input_schema,
+)
 
 
 async def resolve_tool_call(
@@ -30,15 +37,32 @@ async def resolve_tool_call(
 ) -> ResolvedToolCall:
     canonical_tool_name = _resolve_canonical_tool_name(envelope.raw_tool_name, context)
     definition = None if canonical_tool_name is None else _get_tool_definition(canonical_tool_name, context)
-    call_context = context.for_call(
-        tool_use_id=envelope.tool_use_id,
-        replay_index=envelope.sequence_index,
-        assistant_message_id=envelope.assistant_message_id,
-        canonical_tool_name=canonical_tool_name,
-        executor_tier=executor_tier,
-        model_capabilities=model_capabilities,
-    )
-    capability_context = call_context.capability_context
+    execution_class = ToolExecutionClass.PUBLIC
+    if definition is None:
+        capability_context, call_context = context.public_execution_context_for_call(
+            tool_use_id=envelope.tool_use_id,
+            replay_index=envelope.sequence_index,
+            assistant_message_id=envelope.assistant_message_id,
+            canonical_tool_name=canonical_tool_name,
+            executor_tier=executor_tier,
+            model_capabilities=model_capabilities,
+        )
+        tool_context = capability_context
+    else:
+        prepared = _prepare_tool_execution(
+            definition,
+            context,
+            tool_use_id=envelope.tool_use_id,
+            replay_index=envelope.sequence_index,
+            assistant_message_id=envelope.assistant_message_id,
+            canonical_tool_name=canonical_tool_name,
+            executor_tier=executor_tier,
+            model_capabilities=model_capabilities,
+        )
+        execution_class = prepared.execution_class
+        call_context = prepared.call_context
+        capability_context = call_context.capability_context
+        tool_context = prepared.api_context
     if definition is None or capability_context is None:
         return ResolvedToolCall(
             envelope=envelope,
@@ -51,14 +75,8 @@ async def resolve_tool_call(
             permission_decision=None,
             scheduler_lane=None,
             replay_index=envelope.sequence_index,
-            capability_context=capability_context or call_context.for_call(
-                tool_use_id=envelope.tool_use_id,
-                replay_index=envelope.sequence_index,
-                assistant_message_id=envelope.assistant_message_id,
-                canonical_tool_name=canonical_tool_name,
-                executor_tier=executor_tier,
-                model_capabilities=model_capabilities,
-            ).capability_context,
+            capability_context=capability_context,
+            execution_class=execution_class,
         )
 
     if call_context.tool_pool and not _tool_available_in_pool(envelope.raw_tool_name, call_context.tool_pool):
@@ -79,6 +97,7 @@ async def resolve_tool_call(
             scheduler_lane=None,
             replay_index=envelope.sequence_index,
             capability_context=capability_context,
+            execution_class=execution_class,
         )
 
     try:
@@ -99,7 +118,7 @@ async def resolve_tool_call(
         )
 
     if definition.validate_input is not None:
-        validation = await maybe_await(definition.validate_input(normalized_input, call_context))
+        validation = await maybe_await(definition.validate_input(normalized_input, tool_context))
         if not validation.valid:
             return ResolvedToolCall(
                 envelope=envelope,
@@ -113,6 +132,7 @@ async def resolve_tool_call(
                 scheduler_lane=None,
                 replay_index=envelope.sequence_index,
                 capability_context=capability_context,
+                execution_class=execution_class,
             )
         if validation.updated_input is not None:
             normalized_input = validation.updated_input
@@ -152,7 +172,7 @@ async def resolve_tool_call(
     permission_decision = PermissionDecision(PermissionBehavior.ALLOW)
     if definition.check_permissions is not None:
         permission_decision = await maybe_await(
-            definition.check_permissions(normalized_input, call_context)
+            definition.check_permissions(normalized_input, tool_context)
         )
     normalized_input = permission_decision.updated_input or normalized_input
 
@@ -199,12 +219,13 @@ async def resolve_tool_call(
             scheduler_lane=None,
             replay_index=envelope.sequence_index,
             capability_context=capability_context,
+            execution_class=execution_class,
         )
 
     resolved_semantics = await resolve_execution_semantics(
         definition,
         normalized_input,
-        call_context,
+        tool_context,
     )
     return ResolvedToolCall(
         envelope=envelope,
@@ -223,13 +244,14 @@ async def resolve_tool_call(
         scheduler_lane=None,
         replay_index=envelope.sequence_index,
         capability_context=capability_context,
+        execution_class=execution_class,
     )
 
 
 async def resolve_execution_semantics(
     definition: ToolDefinition,
     tool_input: dict[str, Any],
-    context: ToolContext,
+    context: Any,
 ) -> ResolvedToolExecutionSemantics:
     semantics = definition.execution_semantics
     return ResolvedToolExecutionSemantics(

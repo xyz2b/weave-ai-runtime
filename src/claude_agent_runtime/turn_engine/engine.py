@@ -50,6 +50,7 @@ from ..tool_executors import model_capabilities_for, select_tool_executor
 from ..tool_lifecycle import ToolLifecycleEvent
 from ..tasking import TaskManager
 from ..tool_runtime import (
+    SessionScope,
     ToolCall,
     ToolContext,
     ToolRefreshCallback,
@@ -716,11 +717,22 @@ class TurnEngine:
         skill_pool=(),
         abort_signal: ModelAbortSignal | None = None,
         metadata: dict[str, Any] | None = None,
+        session_scope: SessionScope | None = None,
     ) -> ToolContext:
         notifications = ()
         if self._runtime_services.notification_provider is not None:
             notifications = tuple(self._runtime_services.notification_provider())
         permission_context = _coerce_permission_context(session_id, metadata)
+        private_context = private_context_from_legacy_runtime_context(metadata)
+        if private_context.permission_context is None and permission_context is not None:
+            private_context = replace(private_context, permission_context=permission_context)
+        owner_scope = session_scope or SessionScope(
+            session_id=session_id,
+            agent_name=agent_name,
+            cwd=cwd,
+            private_context=private_context,
+            task_manager=self._runtime_services.task_manager,
+        )
         return ToolContext(
             session_id=session_id,
             turn_id=turn_id,
@@ -743,6 +755,10 @@ class TurnEngine:
             tool_refresh_callback=self._runtime_services.tool_refresh_callback,
             runtime_services=self._runtime_services,
             permission_context=permission_context,
+            private_context=private_context,
+            session_state=owner_scope.session_state,
+            memory_access=owner_scope.memory_access,
+            session_scope=owner_scope,
             metadata=dict(metadata or {}),
         )
 
@@ -786,6 +802,7 @@ class TurnEngine:
         attachments: list[MessageAttachment] | None = None,
         runtime_context: dict[str, object] | None = None,
         model_client_override: ModelClient | None = None,
+        session_scope: SessionScope | None = None,
     ) -> AsyncIterator[TurnStreamEvent]:
         async for event in self._run_turn_stream_impl(
             session_id=session_id,
@@ -800,6 +817,7 @@ class TurnEngine:
             attachments=attachments,
             runtime_context=runtime_context,
             model_client_override=model_client_override,
+            session_scope=session_scope,
         ):
             yield event
 
@@ -818,6 +836,7 @@ class TurnEngine:
         attachments: list[MessageAttachment] | None = None,
         runtime_context: dict[str, object] | None = None,
         model_client_override: ModelClient | None = None,
+        session_scope: SessionScope | None = None,
     ) -> TurnResult:
         result = TurnResult()
         async for event in self.run_turn_stream(
@@ -833,6 +852,7 @@ class TurnEngine:
             attachments=attachments,
             runtime_context=runtime_context,
             model_client_override=model_client_override,
+            session_scope=session_scope,
         ):
             if event.event_type == TurnStreamEventType.MESSAGE and event.message is not None:
                 result.messages.append(event.message)
@@ -868,6 +888,7 @@ class TurnEngine:
         attachments: list[MessageAttachment] | None = None,
         runtime_context: dict[str, object] | None = None,
         model_client_override: ModelClient | None = None,
+        session_scope: SessionScope | None = None,
     ) -> AsyncIterator[TurnStreamEvent]:
         max_iterations = agent.max_turns or 4
         state = TurnLoopState(working_messages=tuple(messages))
@@ -1116,6 +1137,7 @@ class TurnEngine:
                     skill_pool=active_skills,
                     abort_signal=abort_signal,
                     metadata=runtime_metadata,
+                    session_scope=session_scope,
                 )
                 pending_tool_turn_events: list[TurnStreamEvent] = []
                 request_metadata = dict(sanitized_runtime_context)

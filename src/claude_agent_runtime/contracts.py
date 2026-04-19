@@ -166,6 +166,34 @@ class RuntimePrivateContext:
         metadata.update(self.diagnostics)
         return metadata
 
+    def readonly_view(self) -> "RuntimePrivateContextView":
+        return RuntimePrivateContextView(
+            run_id=self.run_id,
+            parent_run_id=self.parent_run_id,
+            requested_model_route=self.requested_model_route,
+            resolved_model_route=self.resolved_model_route,
+            provider_name=self.provider_name,
+            invocation_mode=self.invocation_mode,
+            diagnostics=self.diagnostics,
+            extensions=self.extensions,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimePrivateContextView:
+    run_id: str | None = None
+    parent_run_id: str | None = None
+    requested_model_route: str | None = None
+    resolved_model_route: str | None = None
+    provider_name: str | None = None
+    invocation_mode: Any = None
+    diagnostics: Mapping[str, Any] = field(default_factory=dict)
+    extensions: Mapping[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "diagnostics", dict(self.diagnostics))
+        object.__setattr__(self, "extensions", dict(self.extensions))
+
 
 _PRIVATE_CONTEXT_DIAGNOSTIC_KEYS = frozenset({"memory_retrieval", "memory_diagnostics"})
 

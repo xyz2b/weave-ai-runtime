@@ -411,7 +411,7 @@ def validate_skill_registry_entry(tool_input: dict[str, Any], context: ToolConte
     return ValidationOutcome(False, f"Unknown skill: {tool_input['skill']}")
 
 
-def _resolve_path(cwd: Path, file_path: str, *, context: ToolContext | None = None) -> Path:
+def _resolve_path(cwd: Path, file_path: str, *, context: Any | None = None) -> Path:
     path = Path(file_path)
     resolved = path if path.is_absolute() else (cwd / path).resolve()
     if context is not None and not _path_allowed(resolved, context):
@@ -456,7 +456,7 @@ def json_output(data: Any) -> str:
 from ..elicitation import ElicitationRequest
 
 
-def _path_allowed(path: Path, context: ToolContext) -> bool:
+def _path_allowed(path: Path, context: Any) -> bool:
     if _looks_like_memory_directory(path):
         return False
     for root in _guarded_memory_roots(context):
@@ -465,14 +465,18 @@ def _path_allowed(path: Path, context: ToolContext) -> bool:
     return True
 
 
-def _guarded_memory_roots(context: ToolContext) -> tuple[Path, ...]:
-    if context.runtime_services is None:
+def _guarded_memory_roots(context: Any) -> tuple[Path, ...]:
+    file_state = getattr(context, "file_state", None)
+    if file_state is not None and getattr(file_state, "guarded_roots", ()):
+        return tuple(Path(root).resolve() for root in file_state.guarded_roots)
+    runtime_services = getattr(context, "runtime_services", None)
+    if runtime_services is None:
         return ()
-    memory_service = getattr(context.runtime_services, "memory", None)
+    memory_service = getattr(runtime_services, "memory", None)
     if memory_service is None or not hasattr(memory_service, "guarded_roots"):
         return ()
     agent = None
-    if context.agent_registry is not None:
+    if getattr(context, "agent_registry", None) is not None:
         agent = context.agent_registry.get(context.agent_name)
     if agent is None:
         agent = AgentDefinition(name=context.agent_name, description="", prompt="")

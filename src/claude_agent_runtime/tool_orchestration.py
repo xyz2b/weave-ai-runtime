@@ -43,6 +43,7 @@ from .tool_runtime import (
     ExecutedToolCall,
     ToolCall,
     ToolContext,
+    _build_tool_execution_classifications,
     _tool_catalog_view,
     execute_resolved_tool_call,
     maybe_await,
@@ -476,7 +477,10 @@ class StreamingToolOrchestrator:
 
     async def _apply_context_update(self, update: ContextUpdate) -> None:
         if isinstance(update, AppStateSet):
-            self._context.app_state.set(update.namespace, update.key, update.value)
+            if self._context.turn_state is not None:
+                self._context.turn_state.set(update.namespace, update.key, update.value)
+            else:
+                self._context.app_state.set(update.namespace, update.key, update.value)
             return
         if isinstance(update, FileObservationRecorded):
             if update.observation_kind == "read":
@@ -526,6 +530,16 @@ class StreamingToolOrchestrator:
             return
         self._context.tool_pool = tuple(refreshed)
         self._context.tool_catalog = _tool_catalog_view(self._context.tool_pool)
+        if self._context.turn_scope is not None:
+            self._context.turn_scope.tool_pool = self._context.tool_pool
+            self._context.turn_scope.tool_catalog = self._context.tool_catalog
+        self._context.tool_execution_classifications = _build_tool_execution_classifications(
+            self._context.tool_pool
+        )
+        if self._context.internal_context is not None:
+            self._context.internal_context.execution_classifications = dict(
+                self._context.tool_execution_classifications
+            )
         policy_state = self._context.metadata.get(EXECUTION_POLICY_STATE_KEY)
         if policy_state is not None and hasattr(policy_state, "effective"):
             policy_state.effective = replace(

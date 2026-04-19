@@ -14,6 +14,7 @@ from ..contracts import (
     MessageAttachment,
     MessageRole,
     RuntimeMessage,
+    private_context_from_legacy_runtime_context,
     SessionCommand,
     SessionCommandType,
     SessionState,
@@ -28,6 +29,7 @@ from ..hooks import SessionEndPayload, SessionStartPayload
 from ..memory.schema import SESSION_MANIFEST_KIND, build_manifest_envelope
 from ..permissions import PermissionContext
 from ..runtime_services import DefaultTranscriptService, RuntimeServices
+from ..tool_runtime import SessionScope
 from ..turn_engine.engine import TurnEngine, TurnStreamEvent, TurnStreamEventType
 from ..turn_engine.models import TranscriptEntry, TranscriptSession, TranscriptStore
 from .ingress import SessionIngressProcessor
@@ -86,6 +88,13 @@ class SessionController:
                 session_id=session_id,
                 mode=agent.permission_mode or PermissionMode.DEFAULT,
             ),
+        )
+        self._session_scope = SessionScope(
+            session_id=session_id,
+            agent_name=agent.name,
+            cwd=Path(cwd),
+            private_context=self._session_scope_private_context(),
+            task_manager=self._runtime_services.task_manager,
         )
 
     @property
@@ -286,6 +295,10 @@ class SessionController:
             continuation = self.state.metadata.get("compaction_continuation")
             if isinstance(continuation, dict):
                 runtime_context["compaction_continuation"] = dict(continuation)
+            self._session_scope.private_context = self._session_scope_private_context()
+            self._session_scope.agent_name = self._agent.name
+            self._session_scope.cwd = Path(self._cwd)
+            self._session_scope.task_manager = self._runtime_services.task_manager
             async for event in self._turn_engine.run_turn_stream(
                 session_id=self.state.session_id,
                 turn_id=self.state.active_turn_id,
@@ -295,6 +308,7 @@ class SessionController:
                 base_system_prompt=self._system_prompt,
                 attachments=list(_attachments_from_messages(ingress_result.normalized_messages)),
                 runtime_context=runtime_context,
+                session_scope=self._session_scope,
             ):
                 if event.event_type == TurnStreamEventType.COMPACTION and event.compacted_messages:
                     await self._apply_compaction(
@@ -405,12 +419,21 @@ class SessionController:
                 copied_value
             )
             self.state.metadata[normalized_key] = copied_value
+        self._session_scope.private_context = self._session_scope_private_context()
 
     def _base_runtime_private_context(self) -> dict[str, Any]:
         return {
             str(key): _copy_ingress_private_value(value)
             for key, value in self._session_private_context.items()
         }
+
+    def _session_scope_private_context(self):
+        return private_context_from_legacy_runtime_context(
+            {
+                **self._base_runtime_private_context(),
+                "permission_context": self.state.metadata.get("permission_context"),
+            }
+        )
 
     def _ingress_snapshot(self) -> SessionIngressSnapshot:
         return SessionIngressSnapshot.from_state(

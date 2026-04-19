@@ -6,7 +6,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
-from .contracts import RuntimeMessage, ToolResultBlock
+from .contracts import RuntimeMessage, RuntimePrivateContextView, ToolResultBlock
 from .definitions import (
     PermissionBehavior,
     PermissionMode,
@@ -49,6 +49,12 @@ class ToolLifecycleStage(StrEnum):
     RUNNING = "running"
     TERMINAL_PENDING_REPLAY = "terminal_pending_replay"
     REPLAYED = "replayed"
+
+
+class ToolExecutionClass(StrEnum):
+    PUBLIC = "public"
+    PRIVILEGED = "privileged"
+    LEGACY_COMPAT = "legacy-compat"
 
 
 @dataclass(frozen=True, slots=True)
@@ -152,7 +158,7 @@ class QueryContext:
 
 
 @dataclass(slots=True)
-class AppState:
+class ScopedStateHandle:
     _state: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     def get(self, namespace: str, key: str) -> Any | None:
@@ -167,6 +173,21 @@ class AppState:
             return False
         self.set(namespace, key, value)
         return True
+
+
+@dataclass(slots=True)
+class SessionStateHandle(ScopedStateHandle):
+    pass
+
+
+@dataclass(slots=True)
+class TurnStateHandle(ScopedStateHandle):
+    pass
+
+
+@dataclass(slots=True)
+class AppState(TurnStateHandle):
+    pass
 
 
 @dataclass(frozen=True, slots=True)
@@ -388,23 +409,116 @@ class ToolSchedulerLane:
 
 
 @dataclass(frozen=True, slots=True)
-class ToolCapabilityContext:
+class ToolCallIdentity:
     tool_use_id: str
     canonical_tool_name: str | None
     assistant_message_id: str
     replay_index: int
     executor_tier: str
-    query_context: QueryContext
+
+
+@dataclass(frozen=True, slots=True)
+class ToolExecutionContext:
+    call: ToolCallIdentity
+    query: QueryContext
     tool_catalog: ToolCatalog
     agent_catalog: AgentCatalog
     skill_catalog: SkillCatalog
     permission_context: PermissionContextView
-    app_state: AppState
-    file_state: FileState
-    progress: ProgressHandle
-    notifications: NotificationsHandle
-    refresh_capabilities: CapabilityRefreshHandle
-    memory_access: MemoryAccess
+    session_state: SessionStateHandle | None = None
+    turn_state: TurnStateHandle | None = None
+    file_state: FileState | None = None
+    progress: ProgressHandle | None = None
+    notifications: NotificationsHandle | None = None
+    refresh_capabilities: CapabilityRefreshHandle | None = None
+    memory_access: MemoryAccess | None = None
+    abort_handle: QueryAbortHandle | None = None
+    private_context_view: RuntimePrivateContextView | None = None
+    execution_class: ToolExecutionClass = ToolExecutionClass.PUBLIC
+
+    @property
+    def tool_use_id(self) -> str:
+        return self.call.tool_use_id
+
+    @property
+    def canonical_tool_name(self) -> str | None:
+        return self.call.canonical_tool_name
+
+    @property
+    def assistant_message_id(self) -> str:
+        return self.call.assistant_message_id
+
+    @property
+    def replay_index(self) -> int:
+        return self.call.replay_index
+
+    @property
+    def executor_tier(self) -> str:
+        return self.call.executor_tier
+
+    @property
+    def query_context(self) -> QueryContext:
+        return self.query
+
+    @property
+    def session_id(self) -> str:
+        return self.query.session_id
+
+    @property
+    def turn_id(self) -> str:
+        return self.query.turn_id
+
+    @property
+    def agent_name(self) -> str:
+        return self.query.agent_name
+
+    @property
+    def cwd(self) -> Path:
+        return self.query.cwd
+
+    @property
+    def messages(self) -> tuple[RuntimeMessage, ...]:
+        return self.query.messages
+
+    @property
+    def app_state(self) -> TurnStateHandle | None:
+        return self.turn_state
+
+    @property
+    def abort_signal(self) -> Any | None:
+        if self.abort_handle is None:
+            return None
+        return self.abort_handle.signal
+
+    @property
+    def selected_executor_tier(self) -> str:
+        return self.query.selected_executor_tier
+
+    @property
+    def model_capabilities(self) -> Any:
+        return self.query.model_capabilities
+
+    async def emit_progress(
+        self,
+        tool_name: str,
+        message: str,
+        *,
+        progress: float | None = None,
+        metadata: Mapping[str, Any] | None = None,
+    ) -> None:
+        _ = tool_name, metadata
+        if self.progress is not None:
+            self.progress.update(tool_name, message, progress)
+
+    async def emit_notification(self, message: RuntimeMessage) -> None:
+        if self.notifications is not None and not message.metadata.get("skip_runtime_notification"):
+            self.notifications.emit(
+                message.text,
+                str(message.metadata.get("level", "info")),
+            )
+
+
+ToolCapabilityContext = ToolExecutionContext
 
 
 @dataclass(frozen=True, slots=True)
@@ -420,6 +534,11 @@ class ResolvedToolCall:
     scheduler_lane: ToolSchedulerLane | None
     replay_index: int
     capability_context: ToolCapabilityContext
+    execution_class: ToolExecutionClass = ToolExecutionClass.PUBLIC
+
+    @property
+    def execution_context(self) -> ToolExecutionContext:
+        return self.capability_context
 
 
 @dataclass(frozen=True, slots=True)

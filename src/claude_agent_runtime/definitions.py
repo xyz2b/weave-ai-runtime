@@ -304,6 +304,7 @@ class ToolDefinition:
     validate_input: ToolValidator | None = None
     check_permissions: ToolPermissionChecker | None = None
     execute: ToolExecutor | None = None
+    runtime_execution_class: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
     origin: DefinitionOrigin = field(
         default_factory=lambda: DefinitionOrigin(DefinitionSource.BUNDLED)

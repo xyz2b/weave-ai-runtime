@@ -684,6 +684,7 @@ def test_t6_context_update_apply_phases(tmp_path: Path) -> None:
             name="updates",
             description="updates",
             input_schema={"type": "object", "properties": {}, "additionalProperties": False},
+            runtime_execution_class="legacy-compat",
             execute=execute,
         )
     )
