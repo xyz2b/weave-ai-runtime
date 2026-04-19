@@ -45,31 +45,31 @@
 
 ## 5. Sidecar Contribution Contract Migration
 
-- [ ] 5.0 Land Slice E (`runtime_services/__init__.py`, `memory/manager.py`, `hooks`, `compaction/manager.py`) so sidecars contribute through one dual-channel contract
+- [x] 5.0 Land Slice E (`runtime_services/__init__.py`, `memory/manager.py`, `hooks`, `compaction/manager.py`) so sidecars contribute through one dual-channel contract
 - [x] 5.1 定义统一 sidecar contribution result：`prompt_fragments`、`private_updates` 与 `diagnostics`
 - [x] 5.2 更新 memory retrieval 路径，使 model guidance 与 retrieval trace/diagnostics 分通道返回
-- [ ] 5.3 更新 hooks 与 host contribution 路径，使 private-only diagnostics/hints 不再通过 prompt-facing carrier 传播
-- [ ] 5.4 更新 compaction 和相关 control-plane service，使 prompt summary 与 private policy/runtime metadata 分离
-- [ ] 5.5 移除 sidecars 对共享 `runtime_context` 的原地 mutate；必要时仅保留单向 compat adapter
-- [ ] 5.6 增加 conformance tests，证明 sidecar 可以独立影响 prompt 与 private 通道，且不会引入 prompt 泄露
+- [x] 5.3 更新 hooks 与 host contribution 路径，使 private-only diagnostics/hints 不再通过 prompt-facing carrier 传播
+- [x] 5.4 更新 compaction 和相关 control-plane service，使 prompt summary 与 private policy/runtime metadata 分离
+- [x] 5.5 移除 sidecars 对共享 `runtime_context` 的原地 mutate；必要时仅保留单向 compat adapter
+- [x] 5.6 增加 conformance tests，证明 sidecar 可以独立影响 prompt 与 private 通道，且不会引入 prompt 泄露
 
 ## 6. Lifecycle Ownership Split
 
-- [ ] 6.0 Land Slice F (`hosts/base.py`, `runtime_kernel/kernel.py`, `session_runtime/controller.py`) so host/session ownership is separated before helper behavior is tightened
-- [ ] 6.1 将 `host.startup()`、`host.ready()` 与 `host.shutdown()` 的 owner 从 `SessionController` 移出
-- [ ] 6.2 让 `SessionController` 的 `start()` / `close()` 只负责 session-scoped resource、session start/end semantics、transcript/memory artifact 与 cleanup
-- [ ] 6.3 使 session close 幂等，并保证 success、interrupt、error 下的 session-end cleanup 最多执行一次
-- [ ] 6.4 增加 regression tests，证明关闭 session 不会隐式关闭仍处于活动 scope 的 bound host
+- [x] 6.0 Land Slice F (`hosts/base.py`, `runtime_kernel/kernel.py`, `session_runtime/controller.py`) so host/session ownership is separated before helper behavior is tightened
+- [x] 6.1 将 `host.startup()`、`host.ready()` 与 `host.shutdown()` 的 owner 从 `SessionController` 移出
+- [x] 6.2 让 `SessionController` 的 `start()` / `close()` 只负责 session-scoped resource、session start/end semantics、transcript/memory artifact 与 cleanup
+- [x] 6.3 使 session close 幂等，并保证 success、interrupt、error 下的 session-end cleanup 最多执行一次
+- [x] 6.4 增加 regression tests，证明关闭 session 不会隐式关闭仍处于活动 scope 的 bound host
 
 ## 7. BoundHostRuntime Managed Scope And Helper Guarantees
 
-- [ ] 7.0 Land Slice G (`hosts/base.py`, `runtime_kernel/kernel.py`, host tests) so explicit host-scope lifecycle management exists before one-shot helpers rely on it
-- [ ] 7.1 为 `BoundHostRuntime` 增加 async context-manager 支持，`__aenter__()` 负责 `startup()` + `ready()`
-- [ ] 7.2 为 `BoundHostRuntime` 增加 managed-session registry，并固定 helper-owned / bound-owned session 的 register/deregister 语义
-- [ ] 7.3 实现 `__aexit__()` 的确定性关闭顺序：先关闭 managed sessions，完成 session cleanup，再执行 `host.shutdown()`
-- [ ] 7.4 更新 `RuntimeAssembly.run_prompt()`，保证 helper-owned session 在 success 路径下也会 `close()`
-- [ ] 7.5 更新 `RuntimeAssembly.stream_prompt()`，保证 helper-owned session 在 normal、interrupt 与 error 路径下都执行 `close()`
-- [ ] 7.6 增加 multi-session host reuse、managed-session shutdown ordering 与 one-shot helper close guarantee tests
+- [x] 7.0 Land Slice G (`hosts/base.py`, `runtime_kernel/kernel.py`, host tests) so explicit host-scope lifecycle management exists before one-shot helpers rely on it
+- [x] 7.1 为 `BoundHostRuntime` 增加 async context-manager 支持，`__aenter__()` 负责 `startup()` + `ready()`
+- [x] 7.2 为 `BoundHostRuntime` 增加 managed-session registry，并固定 helper-owned / bound-owned session 的 register/deregister 语义
+- [x] 7.3 实现 `__aexit__()` 的确定性关闭顺序：先关闭 managed sessions，完成 session cleanup，再执行 `host.shutdown()`
+- [x] 7.4 更新 `RuntimeAssembly.run_prompt()`，保证 helper-owned session 在 success 路径下也会 `close()`
+- [x] 7.5 更新 `RuntimeAssembly.stream_prompt()`，保证 helper-owned session 在 normal、interrupt 与 error 路径下都执行 `close()`
+- [x] 7.6 增加 multi-session host reuse、managed-session shutdown ordering 与 one-shot helper close guarantee tests
 
 ## 8. Compatibility, Fixtures, And Documentation
 

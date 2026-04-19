@@ -2,6 +2,7 @@ import asyncio
 from pathlib import Path
 
 from claude_agent_runtime.contracts import MessageRole
+from claude_agent_runtime.hooks import RuntimeHookPhase
 from claude_agent_runtime.definitions import (
     AgentDefinition,
     DefinitionOrigin,
@@ -33,6 +34,21 @@ class FakeModelClient:
         batch = self._event_batches.pop(0)
         for event in batch:
             yield event
+
+
+class InterruptibleModelClient:
+    def __init__(self) -> None:
+        self.requests: list[ModelRequest] = []
+
+    async def complete(self, request: ModelRequest):  # pragma: no cover - protocol completeness
+        raise NotImplementedError
+
+    async def stream(self, request: ModelRequest):
+        self.requests.append(request)
+        yield ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-interrupt"})
+        yield ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "partial"})
+        while request.abort_signal is not None and not request.abort_signal.aborted:
+            await asyncio.sleep(0.01)
 
 
 def test_runtime_kernel_applies_builtin_switches_and_discovers_project_defs(
@@ -147,3 +163,149 @@ def test_runtime_assembly_provides_runnable_session_surface(tmp_path: Path) -> N
     assert runtime.transcript_store is runtime.kernel.transcript_store
     assert len(model_client.requests) == 1
     assert model_client.requests[0].query_source == "user_prompt"
+
+
+def test_runtime_run_prompt_closes_helper_owned_session(tmp_path: Path) -> None:
+    model_client = FakeModelClient(
+        [
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-close"}),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "closed"}),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+            ]
+        ]
+    )
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            model_client=model_client,
+        )
+    )
+    closed: list[str] = []
+    runtime.services.hook_bus.register(
+        session_id="helper-session",
+        owner="test",
+        phase=RuntimeHookPhase.SESSION_END,
+        handler=lambda payload: closed.append(payload.final_status),
+    )
+
+    produced = asyncio.run(runtime.run_prompt("Hello runtime", session_id="helper-session"))
+
+    assert produced[-1].text == "closed"
+    assert closed == ["completed"]
+
+
+def test_runtime_stream_prompt_closes_helper_owned_session_on_interrupt(tmp_path: Path) -> None:
+    model_client = InterruptibleModelClient()
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            model_client=model_client,
+        )
+    )
+    closed: list[str] = []
+    runtime.services.hook_bus.register(
+        session_id="helper-stream-interrupt",
+        owner="test",
+        phase=RuntimeHookPhase.SESSION_END,
+        handler=lambda payload: closed.append(payload.final_status),
+    )
+
+    async def scenario():
+        events = []
+
+        async def collect() -> None:
+            async for event in runtime.stream_prompt(
+                "Hello runtime",
+                session_id="helper-stream-interrupt",
+            ):
+                events.append(event)
+
+        task = asyncio.create_task(collect())
+        while not model_client.requests:
+            await asyncio.sleep(0)
+        runtime.turn_engine.interrupt("user_cancel")
+        await task
+        return events
+
+    events = asyncio.run(scenario())
+
+    assert any(event.event_type.value == "terminal" for event in events)
+    assert closed == ["interrupted"]
+
+
+def test_runtime_stream_prompt_closes_helper_owned_session_on_success(tmp_path: Path) -> None:
+    model_client = FakeModelClient(
+        [
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-stream-ok"}),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "streamed"}),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+            ]
+        ]
+    )
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            model_client=model_client,
+        )
+    )
+    closed: list[str] = []
+    runtime.services.hook_bus.register(
+        session_id="helper-stream-ok",
+        owner="test",
+        phase=RuntimeHookPhase.SESSION_END,
+        handler=lambda payload: closed.append(payload.final_status),
+    )
+
+    async def scenario():
+        return [
+            event
+            async for event in runtime.stream_prompt(
+                "Hello runtime",
+                session_id="helper-stream-ok",
+            )
+        ]
+
+    events = asyncio.run(scenario())
+
+    assert any(event.event_type.value == "terminal" for event in events)
+    assert closed == ["completed"]
+
+
+def test_runtime_stream_prompt_closes_helper_owned_session_on_error(tmp_path: Path) -> None:
+    model_client = FakeModelClient(
+        [
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-error"}),
+                ModelStreamEvent(ModelStreamEventType.ERROR, {"error": "model exploded"}),
+            ]
+        ]
+    )
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            model_client=model_client,
+        )
+    )
+    closed: list[str] = []
+    runtime.services.hook_bus.register(
+        session_id="helper-stream-error",
+        owner="test",
+        phase=RuntimeHookPhase.SESSION_END,
+        handler=lambda payload: closed.append(payload.final_status),
+    )
+
+    async def scenario():
+        return [
+            event
+            async for event in runtime.stream_prompt(
+                "Hello runtime",
+                session_id="helper-stream-error",
+            )
+        ]
+
+    events = asyncio.run(scenario())
+
+    assert any(event.event_type.value == "terminal" for event in events)
+    assert closed == ["failed"]

@@ -26,12 +26,18 @@ from ..invocation_catalog import SkillInvocationProvider
 from ..memory import MemoryManagerService
 from ..registries import AgentRegistry, DefinitionDiscovery, InvocationRegistry, SkillRegistry, ToolRegistry
 from ..runtime_services import DefaultTranscriptService, RuntimeServices
-from ..session_runtime import InMemoryTranscriptStore, InboundEvent, InboundEventType, SessionController
+from ..session_runtime import (
+    InMemoryTranscriptStore,
+    InboundEvent,
+    InboundEventType,
+    SessionController,
+    SessionStatus,
+)
 from ..skill_runtime import SkillExecutionResult, SkillExecutor
 from ..tasking import TaskManager
 from ..tool_runtime import ToolContext
 from ..turn_engine.composer import ContextAssembler
-from ..turn_engine.engine import TurnEngine, TurnStreamEvent
+from ..turn_engine.engine import TurnEngine, TurnStreamEvent, TurnStreamEventType
 from ..turn_engine.models import ModelRequest, TranscriptStore
 from .config import RuntimeConfig
 from ..execution_policy import policy_state_from_metadata
@@ -152,6 +158,7 @@ class RuntimeAssembly:
         agent_name: str | None = None,
         cwd: str | Path | None = None,
         system_prompt: str | None = None,
+        close_callback: Any = None,
     ) -> SessionController:
         selected_agent = self._resolve_agent(agent_name or self.kernel.config.default_agent)
         session_cwd = Path(cwd) if cwd is not None else self.kernel.config.working_directory
@@ -163,6 +170,7 @@ class RuntimeAssembly:
             cwd=str(session_cwd),
             system_prompt=self.system_prompt if system_prompt is None else system_prompt,
             runtime_services=self.services,
+            close_callback=close_callback,
         )
 
     async def run_prompt(
@@ -181,16 +189,18 @@ class RuntimeAssembly:
             cwd=cwd,
             system_prompt=system_prompt,
         )
-        await session.resume()
-        await session.start()
-        session.enqueue_event(
-            InboundEvent(
-                InboundEventType.USER_PROMPT,
+        final_status = "completed"
+        try:
+            return await self._run_prompt_in_session(
+                session,
                 prompt,
-                metadata=metadata or {},
+                metadata=metadata,
             )
-        )
-        return await session.run_until_idle()
+        except Exception:
+            final_status = _helper_session_close_status(session, default="failed")
+            raise
+        finally:
+            await session.close(final_status=final_status)
 
     async def stream_prompt(
         self,
@@ -208,6 +218,46 @@ class RuntimeAssembly:
             cwd=cwd,
             system_prompt=system_prompt,
         )
+        final_status = "completed"
+        try:
+            await self._prepare_one_shot_session(session, prompt, metadata=metadata)
+            async for event in session.stream_until_idle():
+                if event.event_type == TurnStreamEventType.TERMINAL and event.terminal is not None:
+                    final_status = _helper_session_close_status(
+                        session,
+                        terminal=event.terminal,
+                        default=final_status,
+                    )
+                yield event
+        except Exception:
+            final_status = _helper_session_close_status(session, default="failed")
+            raise
+        finally:
+            await session.close(
+                final_status=_helper_session_close_status(session, default=final_status)
+            )
+
+    async def _run_prompt_in_session(
+        self,
+        session: SessionController,
+        prompt: str,
+        *,
+        metadata: dict[str, object] | None = None,
+    ) -> tuple[RuntimeMessage, ...]:
+        await self._prepare_one_shot_session(session, prompt, metadata=metadata)
+        produced: list[RuntimeMessage] = []
+        async for event in session.stream_until_idle():
+            if event.event_type == TurnStreamEventType.MESSAGE and event.message is not None:
+                produced.append(event.message)
+        return tuple(produced)
+
+    async def _prepare_one_shot_session(
+        self,
+        session: SessionController,
+        prompt: str,
+        *,
+        metadata: dict[str, object] | None = None,
+    ) -> None:
         await session.resume()
         await session.start()
         session.enqueue_event(
@@ -217,8 +267,6 @@ class RuntimeAssembly:
                 metadata=metadata or {},
             )
         )
-        async for event in session.stream_until_idle():
-            yield event
 
     async def run_agent_tool(
         self,
@@ -519,6 +567,28 @@ def _default_model_client(config: RuntimeConfig) -> Any:
         if binding is not None:
             return binding.client
     return None
+
+
+def _helper_session_close_status(
+    session: SessionController,
+    *,
+    terminal: Any | None = None,
+    default: str = "completed",
+) -> str:
+    if terminal is not None:
+        if getattr(terminal, "error", None):
+            return "failed"
+        if getattr(terminal, "abort_reason", None):
+            return "interrupted"
+        if getattr(terminal, "stop_reason", None) == "interrupted":
+            return "interrupted"
+    if session.state.status == SessionStatus.INTERRUPTED:
+        return "interrupted"
+    if session.state.status == SessionStatus.FAILED:
+        return "failed"
+    if session.state.status == SessionStatus.STOPPED:
+        return "stopped"
+    return default
 
 
 def _register_builtin_tools(

@@ -203,9 +203,13 @@ def private_context_from_legacy_runtime_context(
         return RuntimePrivateContext()
     raw_context = dict(runtime_context)
     diagnostics = _coerce_mapping(raw_context.pop("diagnostics", None))
-    for key in _PRIVATE_CONTEXT_DIAGNOSTIC_KEYS:
-        if key in raw_context:
-            diagnostics[key] = raw_context.pop(key)
+    diagnostic_keys = [
+        key
+        for key in tuple(raw_context)
+        if key in _PRIVATE_CONTEXT_DIAGNOSTIC_KEYS or key.endswith("_diagnostics")
+    ]
+    for key in diagnostic_keys:
+        diagnostics[key] = raw_context.pop(key)
     raw_context.pop("prompt_updates", None)
     return RuntimePrivateContext(
         permission_context=raw_context.pop("permission_context", None),

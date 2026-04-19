@@ -22,8 +22,10 @@ from ..contracts import (
     ContentBlockType,
     MessageAttachment,
     MessageRole,
+    PromptContextEnvelope,
     RedactedThinkingBlock,
     RuntimeMessage,
+    RuntimePrivateContext,
     TextBlock,
     ThinkingBlock,
     ToolUseBlock,
@@ -504,6 +506,8 @@ class _PreTurnSidecarSupervisor:
         self,
         *,
         messages: Sequence[RuntimeMessage],
+        prompt_context: PromptContextEnvelope,
+        private_context: RuntimePrivateContext,
         runtime_context: Mapping[str, object] | None,
     ) -> None:
         self.cancel()
@@ -514,6 +518,8 @@ class _PreTurnSidecarSupervisor:
             "agent": self._agent,
             "cwd": self._cwd,
             "messages": tuple(messages),
+            "prompt_context": prompt_context,
+            "private_context": private_context,
             "runtime_context": dict(runtime_context or {}),
         }
         self._memory_task = asyncio.create_task(
@@ -533,9 +539,16 @@ class _PreTurnSidecarSupervisor:
         self,
         *,
         messages: Sequence[RuntimeMessage],
+        prompt_context: PromptContextEnvelope,
+        private_context: RuntimePrivateContext,
         runtime_context: Mapping[str, object] | None,
     ) -> None:
-        self.start(messages=messages, runtime_context=runtime_context)
+        self.start(
+            messages=messages,
+            prompt_context=prompt_context,
+            private_context=private_context,
+            runtime_context=runtime_context,
+        )
 
     async def join(
         self,
@@ -907,10 +920,16 @@ class TurnEngine:
                 runtime_metadata["permission_context"] = policy_state.effective.permission_context
                 tool_pool = policy_state.effective.tool_pool
                 sanitized_runtime_context = serialize_runtime_metadata(runtime_metadata)
+                sidecar_prompt_context = _prompt_context_from_sidecar_metadata(
+                    sanitized_runtime_context
+                )
+                sidecar_private_context = private_context_from_legacy_runtime_context(runtime_metadata)
                 state.sidecar_generation += 1
                 _set_turn_phase(state, TurnPhase.PREFETCH_SIDECARS)
                 sidecars.start(
                     messages=tuple(working_messages),
+                    prompt_context=sidecar_prompt_context,
+                    private_context=sidecar_private_context,
                     runtime_context=sanitized_runtime_context,
                 )
                 _set_turn_phase(state, TurnPhase.COMPACT_OR_REBUILD)
@@ -927,6 +946,8 @@ class TurnEngine:
                     agent=agent,
                     cwd=cwd,
                     messages=tuple(working_messages),
+                    prompt_context=sidecar_prompt_context,
+                    private_context=sidecar_private_context,
                     runtime_context=sanitized_runtime_context,
                 )
                 compaction_payload = (
@@ -939,6 +960,8 @@ class TurnEngine:
                     state.working_messages = tuple(working_messages)
                     await sidecars.restart(
                         messages=state.working_messages,
+                        prompt_context=sidecar_prompt_context,
+                        private_context=sidecar_private_context,
                         runtime_context=sanitized_runtime_context,
                     )
                     if compaction_result.summary is not None:
@@ -1637,11 +1660,11 @@ class TurnEngine:
         compat_private_updates, compat_diagnostics = _split_sidecar_private_updates(
             runtime_context_updates
         )
-        private_updates = dict(contribution_private_updates)
-        private_updates.update(compat_private_updates)
-        diagnostics = dict(contribution.diagnostics)
+        private_updates = dict(compat_private_updates)
+        private_updates.update(contribution_private_updates)
+        diagnostics = dict(compat_diagnostics)
         diagnostics.update(contribution_private_diagnostics)
-        diagnostics.update(compat_diagnostics)
+        diagnostics.update(contribution.diagnostics)
         return _SidecarJoinResult(
             prompt_fragments=contribution.prompt_fragments,
             private_updates=private_updates,
@@ -1656,6 +1679,8 @@ class TurnEngine:
         agent: AgentDefinition,
         cwd: str,
         messages: tuple[RuntimeMessage, ...],
+        prompt_context: PromptContextEnvelope,
+        private_context: RuntimePrivateContext,
         runtime_context: Mapping[str, object] | None,
     ) -> CompactionResult:
         service = self._runtime_services.compaction
@@ -1667,6 +1692,8 @@ class TurnEngine:
                     agent=agent,
                     cwd=cwd,
                     messages=messages,
+                    prompt_context=prompt_context,
+                    private_context=private_context,
                     runtime_context=runtime_context,
                 )
             )
@@ -1680,9 +1707,14 @@ class TurnEngine:
             agent=agent,
             cwd=cwd,
             messages=messages,
+            prompt_context=prompt_context,
+            private_context=private_context,
             runtime_context=runtime_context,
         )
-        policy = CompactionPolicy.from_runtime_context(runtime_context)
+        policy = CompactionPolicy.from_private_context(
+            private_context,
+            legacy_runtime_context=runtime_context,
+        )
         return CompactionResult(
             messages=messages,
             policy=policy,
@@ -2079,6 +2111,25 @@ def _split_sidecar_private_updates(
             continue
         private_updates[normalized_key] = value
     return private_updates, diagnostics
+
+
+def _prompt_context_from_sidecar_metadata(
+    runtime_context: Mapping[str, Any] | None,
+) -> PromptContextEnvelope:
+    if runtime_context is None:
+        return PromptContextEnvelope()
+    return prompt_context_from_legacy_runtime_context(
+        runtime_context,
+        compaction_summary=_mapping_or_none(runtime_context.get("compaction_summary")),
+        compaction_boundary=_mapping_or_none(runtime_context.get("compaction_boundary")),
+        compaction_continuation=_mapping_or_none(runtime_context.get("compaction_continuation")),
+    )
+
+
+def _mapping_or_none(value: object) -> Mapping[str, Any] | None:
+    if isinstance(value, Mapping):
+        return value
+    return None
 
 
 def _synthesized_stop_reason(

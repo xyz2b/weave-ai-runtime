@@ -60,6 +60,7 @@ class SessionController:
         system_prompt: str,
         runtime_services: RuntimeServices | None = None,
         ingress_processor: SessionIngressProcessor | None = None,
+        close_callback: Any = None,
     ) -> None:
         self.state = SessionState(session_id=session_id, current_agent=agent.name)
         self._agent = agent
@@ -75,6 +76,9 @@ class SessionController:
         self._messages: list[RuntimeMessage] = []
         self._ingress_processor = ingress_processor or SessionIngressProcessor()
         self._started = False
+        self._closed = False
+        self._close_task: asyncio.Task[None] | None = None
+        self._close_callback = close_callback
         self.state.metadata.setdefault(
             "permission_context",
             PermissionContext(
@@ -120,8 +124,6 @@ class SessionController:
 
     async def start(self) -> None:
         if not self._started:
-            await self._runtime_services.host.startup()
-            await self._runtime_services.host.ready()
             memory_service = self._runtime_services.memory
             if memory_service is not None and hasattr(memory_service, "start_session"):
                 await _maybe_await(
@@ -177,22 +179,50 @@ class SessionController:
         self.state.active_turn_id = None
 
     async def close(self, final_status: str = "completed") -> None:
-        self._update_session_memory_status(final_status)
-        background_consolidation_task_id = await self._schedule_background_memory_consolidation()
-        if background_consolidation_task_id is not None:
-            history = self.state.metadata.setdefault("background_memory_consolidation_tasks", [])
-            if isinstance(history, list):
-                history.append(background_consolidation_task_id)
-        await self._runtime_services.hook_bus.dispatch(
-            self.state.session_id,
-            SessionEndPayload(
-                session_id=self.state.session_id,
-                final_status=final_status,
-            ),
-        )
-        if self._started:
-            await self._runtime_services.host.shutdown()
+        if self._closed:
+            return
+        current_task = asyncio.current_task()
+        if self._close_task is not None:
+            if self._close_task is current_task:
+                return
+            await asyncio.shield(self._close_task)
+            return
+        if current_task is None:  # pragma: no cover - defensive async boundary
+            raise RuntimeError("SessionController.close() requires an active asyncio task")
+
+        self._close_task = current_task
+        error: Exception | None = None
+        try:
+            self._update_session_memory_status(final_status)
+            background_consolidation_task_id = await self._schedule_background_memory_consolidation()
+            if background_consolidation_task_id is not None:
+                history = self.state.metadata.setdefault("background_memory_consolidation_tasks", [])
+                if isinstance(history, list):
+                    history.append(background_consolidation_task_id)
+            await self._runtime_services.hook_bus.dispatch(
+                self.state.session_id,
+                SessionEndPayload(
+                    session_id=self.state.session_id,
+                    final_status=final_status,
+                ),
+            )
+        except Exception as exc:
+            error = exc
+        finally:
             self._started = False
+            self._closed = True
+            self.state.active_turn_id = None
+            self.state.status = _session_status_for_close(final_status)
+            try:
+                if self._close_callback is not None:
+                    await _maybe_await(self._close_callback(self, final_status))
+            except Exception as exc:
+                if error is None:
+                    error = exc
+            self._close_task = None
+
+        if error is not None:
+            raise error
 
     async def stream_until_idle(self) -> AsyncIterator[TurnStreamEvent]:
         if self.state.status == SessionStatus.IDLE:
@@ -791,6 +821,17 @@ def _terminal_session_status_hint(terminal: Any) -> str | None:
         return None
     hint = getattr(post_effects, "session_status_hint", None)
     return str(hint) if hint is not None else None
+
+
+def _session_status_for_close(final_status: str) -> SessionStatus:
+    normalized = final_status.strip().lower()
+    if normalized in {"interrupt", "interrupted"}:
+        return SessionStatus.INTERRUPTED
+    if normalized in {"error", "failed", "failure"}:
+        return SessionStatus.FAILED
+    if normalized in {"stopped", "blocked"}:
+        return SessionStatus.STOPPED
+    return SessionStatus.COMPLETED
 
 
 def _memory_updates_owned(

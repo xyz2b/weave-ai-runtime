@@ -6,6 +6,7 @@ from fnmatch import fnmatch
 from typing import Any, Callable, Iterable, Mapping, Sequence
 from uuid import uuid4
 
+from ..contracts import PromptContextEnvelope, RuntimeMessage, RuntimePrivateContext
 from .models import HookEffect, RuntimeHookPhase
 
 HookHandler = Callable[[Any], Any]
@@ -42,8 +43,19 @@ class HookBus:
     metadata: dict[str, Any] = field(default_factory=dict)
     _registrations: dict[str, list[HookRegistration]] = field(default_factory=dict)
 
-    async def collect(self, **kwargs: Any) -> tuple[str, ...]:
-        _ = kwargs
+    async def collect(
+        self,
+        *,
+        session_id: str,
+        turn_id: str,
+        agent: Any,
+        cwd: str,
+        messages: Sequence[RuntimeMessage],
+        prompt_context: PromptContextEnvelope | None = None,
+        private_context: RuntimePrivateContext | None = None,
+        runtime_context: Mapping[str, Any] | None = None,
+    ) -> tuple[str, ...]:
+        _ = session_id, turn_id, agent, cwd, messages, prompt_context, private_context, runtime_context
         return ()
 
     def register(

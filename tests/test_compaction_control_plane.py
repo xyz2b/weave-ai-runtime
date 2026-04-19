@@ -7,7 +7,7 @@ from claude_agent_runtime.compaction import (
     CompactionStepResult,
     ContextPressure,
 )
-from claude_agent_runtime.contracts import MessageRole, RuntimeMessage
+from claude_agent_runtime.contracts import MessageRole, RuntimeMessage, RuntimePrivateContext
 from claude_agent_runtime.definitions import AgentDefinition
 from claude_agent_runtime.registries import AgentRegistry, SkillRegistry, ToolRegistry
 from claude_agent_runtime.runtime_services import RuntimeServices
@@ -83,6 +83,34 @@ def test_compaction_manager_applies_ordered_strategies() -> None:
     assert [step.strategy_name for step in result.steps] == ["early", "late"]
     assert result.steps[1].metadata["prior"] == ["early"]
     assert result.fragments == ("early", "late")
+
+
+def test_compaction_manager_reads_policy_from_private_context_extensions() -> None:
+    manager = CompactionManager()
+    agent = AgentDefinition(name="main-router", description="router", prompt="Route")
+
+    result = asyncio.run(
+        manager.prepare_turn(
+            session_id="session",
+            turn_id="turn",
+            agent=agent,
+            cwd=".",
+            messages=(
+                RuntimeMessage(message_id="u1", role=MessageRole.USER, content="older prompt one"),
+                RuntimeMessage(message_id="a1", role=MessageRole.ASSISTANT, content="older answer one"),
+                RuntimeMessage(message_id="u2", role=MessageRole.USER, content="older prompt two"),
+                RuntimeMessage(message_id="a2", role=MessageRole.ASSISTANT, content="older answer two"),
+                RuntimeMessage(message_id="u3", role=MessageRole.USER, content="latest prompt"),
+            ),
+            private_context=RuntimePrivateContext(
+                extensions={"compaction_policy": {"max_message_count": 3, "keep_recent_messages": 2}}
+            ),
+        )
+    )
+
+    assert result.applied is True
+    assert result.summary is not None
+    assert result.policy.max_message_count == 3
 
 
 def test_turn_engine_emits_structured_compaction_request_context() -> None:

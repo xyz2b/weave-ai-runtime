@@ -9,7 +9,9 @@ from claude_agent_runtime.contracts import (
     ToolUseBlock,
 )
 from claude_agent_runtime.definitions import AgentDefinition, ToolDefinition, ToolTraits
+from claude_agent_runtime.hooks import RuntimeHookPhase
 from claude_agent_runtime.registries import ToolRegistry
+from claude_agent_runtime.runtime_services import RuntimeServices
 from claude_agent_runtime.session_runtime import (
     FileTranscriptStore,
     InboundEvent,
@@ -189,6 +191,33 @@ def test_session_controller_normalizes_priorities_and_resumes_from_transcript(
     assert controller.state.status == SessionStatus.READY
     assert len(controller.messages) == len(loaded.entries)
     assert all(entry.turn_id is not None for entry in loaded.entries)
+
+
+def test_session_controller_close_is_idempotent(tmp_path: Path) -> None:
+    services = RuntimeServices()
+    session_end_statuses: list[str] = []
+    services.hook_bus.register(
+        session_id="session-close",
+        owner="test",
+        phase=RuntimeHookPhase.SESSION_END,
+        handler=lambda payload: session_end_statuses.append(payload.final_status),
+    )
+    controller = SessionController(
+        session_id="session-close",
+        agent=AgentDefinition(name="main-router", description="router", prompt="Route the turn"),
+        turn_engine=TurnEngine(model_client=FakeModelClient([]), tool_registry=ToolRegistry(), runtime_services=services),
+        transcript_store=FileTranscriptStore(tmp_path / "transcripts"),
+        cwd=str(tmp_path),
+        system_prompt="System prompt",
+        runtime_services=services,
+    )
+
+    asyncio.run(controller.start())
+    asyncio.run(controller.close())
+    asyncio.run(controller.close(final_status="failed"))
+
+    assert session_end_statuses == ["completed"]
+    assert controller.state.status == SessionStatus.COMPLETED
 
 
 def test_session_controller_streams_turn_events_until_idle(tmp_path: Path) -> None:

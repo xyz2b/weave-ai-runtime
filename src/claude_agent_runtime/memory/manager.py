@@ -2435,9 +2435,11 @@ class LongTermMemoryService:
         agent: AgentDefinition,
         cwd: str,
         messages: Sequence[RuntimeMessage],
+        prompt_context: object | None = None,
+        private_context: object | None = None,
         runtime_context: Mapping[str, Any] | None = None,
     ) -> SidecarContributionResult:
-        _ = runtime_context
+        _ = prompt_context, private_context, runtime_context
         fragments, trace = self.manager.collect_with_trace(
             session_id=session_id,
             turn_id=turn_id,

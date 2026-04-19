@@ -444,6 +444,102 @@ def test_sidecar_private_updates_cannot_reintroduce_prompt_updates() -> None:
     assert request.private_context.extensions["sidecar"] is True
 
 
+def test_sidecar_explicit_updates_override_legacy_runtime_context_adapter() -> None:
+    class MixedModeSidecar:
+        async def collect(self, **kwargs):
+            kwargs["runtime_context"]["sidecar"] = "compat"
+            kwargs["runtime_context"]["memory_diagnostics"] = {"source": "compat"}
+            return SidecarContributionResult(
+                private_updates={"sidecar": "explicit"},
+                diagnostics={"memory_diagnostics": {"source": "explicit"}},
+            )
+
+    model_client = BatchedModelClient(
+        [
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-sidecar-precedence"}),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "done"}),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+            ]
+        ]
+    )
+    services = RuntimeServices(hooks=MixedModeSidecar(), context_assembler=ContextAssembler())
+    engine = TurnEngine(
+        model_client=model_client,
+        tool_registry=ToolRegistry(),
+        runtime_services=services,
+    )
+    agent = AgentDefinition(name="main-router", description="router", prompt="Answer")
+
+    asyncio.run(
+        engine.run_turn(
+            session_id="session",
+            turn_id="turn",
+            agent=agent,
+            cwd=".",
+            messages=[],
+            base_system_prompt="System",
+        )
+    )
+
+    request = model_client.requests[0]
+    assert request.private_context.extensions["sidecar"] == "explicit"
+    assert request.private_context.diagnostics["memory_diagnostics"] == {"source": "explicit"}
+
+
+def test_sidecar_prompt_and_private_channels_stay_separate() -> None:
+    class StructuredSidecar:
+        async def collect(self, **kwargs):
+            prompt_context = kwargs["prompt_context"]
+            private_context = kwargs["private_context"]
+            assert prompt_context.session_hints == {"topic": "ops"}
+            assert private_context.extensions["host_hint"] == "keep-private"
+            return SidecarContributionResult(
+                prompt_fragments=("Hook line",),
+                private_updates={"host_hint": "still-private"},
+                diagnostics={"hook_diagnostics": {"matched": True}},
+            )
+
+    model_client = BatchedModelClient(
+        [
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-sidecar-split"}),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "done"}),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+            ]
+        ]
+    )
+    services = RuntimeServices(hooks=StructuredSidecar(), context_assembler=ContextAssembler())
+    engine = TurnEngine(
+        model_client=model_client,
+        tool_registry=ToolRegistry(),
+        runtime_services=services,
+    )
+    agent = AgentDefinition(name="main-router", description="router", prompt="Answer")
+
+    asyncio.run(
+        engine.run_turn(
+            session_id="session",
+            turn_id="turn",
+            agent=agent,
+            cwd=".",
+            messages=[],
+            base_system_prompt="System",
+            runtime_context={
+                "prompt_updates": {"topic": "ops"},
+                "host_hint": "keep-private",
+            },
+        )
+    )
+
+    request = model_client.requests[0]
+    assert "Hook line" in request.system_prompt
+    assert "host_hint" not in request.system_prompt
+    assert "hook_diagnostics" not in request.system_prompt
+    assert request.private_context.extensions["host_hint"] == "still-private"
+    assert request.private_context.diagnostics["hook_diagnostics"] == {"matched": True}
+
+
 def test_interrupt_aborts_model_stream_and_discards_partial_output() -> None:
     model_client = InterruptibleModelClient()
     engine = TurnEngine(model_client=model_client, tool_registry=ToolRegistry())

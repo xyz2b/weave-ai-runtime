@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Sequence
 
-from ..contracts import RuntimeMessage
+from ..contracts import PromptContextEnvelope, RuntimeMessage, RuntimePrivateContext
 from ..definitions import AgentDefinition
 
 
@@ -84,6 +84,30 @@ class CompactionPolicy:
             },
         )
 
+    @classmethod
+    def from_private_context(
+        cls,
+        private_context: RuntimePrivateContext | Mapping[str, Any] | None,
+        *,
+        legacy_runtime_context: Mapping[str, Any] | None = None,
+        default: "CompactionPolicy | None" = None,
+    ) -> "CompactionPolicy":
+        if isinstance(private_context, RuntimePrivateContext):
+            private_extensions: Mapping[str, Any] | None = private_context.extensions
+        elif isinstance(private_context, Mapping):
+            private_extensions = private_context
+        else:
+            private_extensions = None
+
+        if private_extensions is None:
+            return cls.from_runtime_context(legacy_runtime_context, default=default)
+
+        merged_context: dict[str, Any] = {}
+        if legacy_runtime_context is not None:
+            merged_context.update(legacy_runtime_context)
+        merged_context.update(private_extensions)
+        return cls.from_runtime_context(merged_context, default=default)
+
 
 @dataclass(frozen=True, slots=True)
 class ContextPressure:
@@ -103,6 +127,8 @@ class CompactionRequest:
     agent: AgentDefinition
     cwd: str
     messages: tuple[RuntimeMessage, ...]
+    prompt_context: PromptContextEnvelope = field(default_factory=PromptContextEnvelope)
+    private_context: RuntimePrivateContext = field(default_factory=RuntimePrivateContext)
     runtime_context: Mapping[str, Any] | None = None
 
 

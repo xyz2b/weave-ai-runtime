@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping, Protocol, Sequence
 
 from ..compaction import CompactionManager, CompactionPolicy, CompactionResult, evaluate_context_pressure
-from ..contracts import RuntimeMessage
+from ..contracts import PromptContextEnvelope, RuntimeMessage, RuntimePrivateContext
 from ..definitions import AgentDefinition, ToolDefinition
 from ..elicitation import SharedElicitationService
 from ..hooks import HookBus
@@ -36,6 +36,8 @@ class ContextContributionService(Protocol):
         agent: AgentDefinition,
         cwd: str,
         messages: Sequence[RuntimeMessage],
+        prompt_context: PromptContextEnvelope | None = None,
+        private_context: RuntimePrivateContext | None = None,
         runtime_context: Mapping[str, Any] | None = None,
     ) -> Sequence[str] | SidecarContributionResult: ...
 
@@ -49,6 +51,8 @@ class CompactionService(Protocol):
         agent: AgentDefinition,
         cwd: str,
         messages: Sequence[RuntimeMessage],
+        prompt_context: PromptContextEnvelope | None = None,
+        private_context: RuntimePrivateContext | None = None,
         runtime_context: Mapping[str, Any] | None = None,
     ) -> CompactionResult: ...
 
@@ -60,6 +64,8 @@ class CompactionService(Protocol):
         agent: AgentDefinition,
         cwd: str,
         messages: Sequence[RuntimeMessage],
+        prompt_context: PromptContextEnvelope | None = None,
+        private_context: RuntimePrivateContext | None = None,
         runtime_context: Mapping[str, Any] | None = None,
     ) -> Sequence[str]: ...
 
@@ -112,9 +118,11 @@ class NoopHookService:
         agent: AgentDefinition,
         cwd: str,
         messages: Sequence[RuntimeMessage],
+        prompt_context: PromptContextEnvelope | None = None,
+        private_context: RuntimePrivateContext | None = None,
         runtime_context: Mapping[str, Any] | None = None,
     ) -> SidecarContributionResult:
-        _ = session_id, turn_id, agent, cwd, messages, runtime_context
+        _ = session_id, turn_id, agent, cwd, messages, prompt_context, private_context, runtime_context
         return SidecarContributionResult()
 
 
@@ -128,9 +136,11 @@ class NoopMemoryService:
         agent: AgentDefinition,
         cwd: str,
         messages: Sequence[RuntimeMessage],
+        prompt_context: PromptContextEnvelope | None = None,
+        private_context: RuntimePrivateContext | None = None,
         runtime_context: Mapping[str, Any] | None = None,
     ) -> SidecarContributionResult:
-        _ = session_id, turn_id, agent, cwd, messages, runtime_context
+        _ = session_id, turn_id, agent, cwd, messages, prompt_context, private_context, runtime_context
         return SidecarContributionResult()
 
 
@@ -144,9 +154,11 @@ class NoopCompactionService:
         agent: AgentDefinition,
         cwd: str,
         messages: Sequence[RuntimeMessage],
+        prompt_context: PromptContextEnvelope | None = None,
+        private_context: RuntimePrivateContext | None = None,
         runtime_context: Mapping[str, Any] | None = None,
     ) -> CompactionResult:
-        _ = session_id, turn_id, agent, cwd, runtime_context
+        _ = session_id, turn_id, agent, cwd, prompt_context, private_context, runtime_context
         policy = CompactionPolicy(enabled=False)
         return CompactionResult(
             messages=tuple(messages),
@@ -162,9 +174,11 @@ class NoopCompactionService:
         agent: AgentDefinition,
         cwd: str,
         messages: Sequence[RuntimeMessage],
+        prompt_context: PromptContextEnvelope | None = None,
+        private_context: RuntimePrivateContext | None = None,
         runtime_context: Mapping[str, Any] | None = None,
     ) -> SidecarContributionResult:
-        _ = session_id, turn_id, agent, cwd, messages, runtime_context
+        _ = session_id, turn_id, agent, cwd, messages, prompt_context, private_context, runtime_context
         return SidecarContributionResult()
 
 

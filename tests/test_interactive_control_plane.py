@@ -305,3 +305,152 @@ def test_bound_host_runtime_emits_lifecycle_and_turn_events(tmp_path: Path) -> N
     assert produced[-1].text == "host reply"
     assert host.lifecycle == ["startup", "ready", "shutdown"]
     assert any(event.event_type.value == "terminal" for _, event in host.turn_events)
+
+
+def test_session_close_does_not_shutdown_active_bound_host(tmp_path: Path) -> None:
+    host = SdkHostRuntime(name="sdk")
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            model_client=BatchedModelClient(
+                [
+                    [
+                        ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-session"}),
+                        ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "session reply"}),
+                        ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+                    ]
+                ]
+            ),
+        )
+    )
+    bound = runtime.bind_host(host)
+
+    async def scenario() -> None:
+        await bound.startup()
+        await bound.ready()
+        session = bound.create_session(session_id="bound-session")
+        await session.start()
+        session.enqueue_event(InboundEvent(InboundEventType.USER_PROMPT, "hello"))
+        await session.run_until_idle()
+        await session.close()
+        assert host.lifecycle == ["startup", "ready"]
+        assert bound.metadata["closed_sessions"][-1]["owner"] == "bound"
+        await bound.shutdown()
+
+    asyncio.run(scenario())
+
+    assert host.lifecycle == ["startup", "ready", "shutdown"]
+
+
+def test_bound_host_runtime_shutdown_closes_managed_sessions_before_host_shutdown(tmp_path: Path) -> None:
+    events: list[str] = []
+
+    class RecordingHost(SdkHostRuntime):
+        async def shutdown(self) -> None:
+            events.append("host_shutdown")
+            await super().shutdown()
+
+    host = RecordingHost(name="sdk")
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            model_client=BatchedModelClient(
+                [
+                    [
+                        ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-managed"}),
+                        ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "managed reply"}),
+                        ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+                    ]
+                ]
+            ),
+        )
+    )
+    runtime.services.hook_bus.register(
+        session_id="managed-session",
+        owner="test",
+        phase=RuntimeHookPhase.SESSION_END,
+        handler=lambda _payload: events.append("session_end"),
+    )
+    bound = runtime.bind_host(host)
+
+    async def scenario() -> None:
+        await bound.startup()
+        await bound.ready()
+        session = bound.create_session(session_id="managed-session")
+        await session.start()
+        await bound.shutdown()
+
+    asyncio.run(scenario())
+
+    assert events == ["session_end", "host_shutdown"]
+    assert host.lifecycle == ["startup", "ready", "shutdown"]
+    assert bound.metadata["managed_shutdown_order"] == ["managed-session"]
+
+
+def test_bound_host_runtime_supports_async_context_scope(tmp_path: Path) -> None:
+    host = SdkHostRuntime(name="sdk")
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            model_client=BatchedModelClient(
+                [
+                    [
+                        ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-context"}),
+                        ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "context reply"}),
+                        ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+                    ]
+                ]
+            ),
+        )
+    )
+
+    async def scenario():
+        async with runtime.bind_host(host) as bound:
+            session = bound.create_session(session_id="ctx-session")
+            await session.start()
+            return bound
+
+    bound = asyncio.run(scenario())
+
+    assert host.lifecycle == ["startup", "ready", "shutdown"]
+    assert bound.metadata["closed_sessions"][-1]["session_id"] == "ctx-session"
+
+
+def test_bound_host_runtime_reuses_host_across_multiple_sessions(tmp_path: Path) -> None:
+    host = SdkHostRuntime(name="sdk")
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            model_client=BatchedModelClient(
+                [
+                    [
+                        ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-first"}),
+                        ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "first reply"}),
+                        ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+                    ],
+                    [
+                        ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-second"}),
+                        ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "second reply"}),
+                        ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+                    ],
+                ]
+            ),
+        )
+    )
+
+    async def scenario():
+        async with runtime.bind_host(host) as bound:
+            first = await bound.run_prompt("first", session_id="session-one")
+            second = await bound.run_prompt("second", session_id="session-two")
+            assert host.lifecycle == ["startup", "ready"]
+            return first, second, bound
+
+    first, second, bound = asyncio.run(scenario())
+
+    assert first[-1].text == "first reply"
+    assert second[-1].text == "second reply"
+    assert host.lifecycle == ["startup", "ready", "shutdown"]
+    assert [entry["session_id"] for entry in bound.metadata["closed_sessions"][-2:]] == [
+        "session-one",
+        "session-two",
+    ]

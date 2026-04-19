@@ -5,7 +5,14 @@ from dataclasses import replace
 from typing import Any, Protocol, Sequence
 from uuid import uuid4
 
-from ..contracts import MessageRole, RuntimeMessage, ToolResultBlock, ToolUseBlock
+from ..contracts import (
+    MessageRole,
+    PromptContextEnvelope,
+    RuntimeMessage,
+    RuntimePrivateContext,
+    ToolResultBlock,
+    ToolUseBlock,
+)
 from .models import (
     CompactionBoundary,
     CompactionContinuation,
@@ -58,9 +65,15 @@ class CompactionManager:
         agent: Any,
         cwd: str,
         messages: Sequence[RuntimeMessage],
+        prompt_context: PromptContextEnvelope | None = None,
+        private_context: RuntimePrivateContext | None = None,
         runtime_context: dict[str, Any] | None = None,
     ) -> CompactionResult:
-        policy = CompactionPolicy.from_runtime_context(runtime_context, default=self._default_policy)
+        policy = CompactionPolicy.from_private_context(
+            private_context,
+            legacy_runtime_context=runtime_context,
+            default=self._default_policy,
+        )
         current_messages = tuple(messages)
         initial_pressure = evaluate_context_pressure(current_messages, policy)
         request = CompactionRequest(
@@ -69,6 +82,8 @@ class CompactionManager:
             agent=agent,
             cwd=cwd,
             messages=current_messages,
+            prompt_context=prompt_context or PromptContextEnvelope(),
+            private_context=private_context or RuntimePrivateContext(),
             runtime_context=runtime_context,
         )
         steps: list[CompactionStepResult] = []

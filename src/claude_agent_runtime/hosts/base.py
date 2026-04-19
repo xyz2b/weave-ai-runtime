@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Mapping, Protocol, Sequence
 
 from ..definitions import PermissionBehavior
@@ -146,50 +147,179 @@ class BoundHostRuntime:
     runtime: Any = None
     services: Any = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    _host_started: bool = False
+    _host_ready: bool = False
+    _managed_sessions: dict[str, Any] = field(default_factory=dict)
+    _managed_session_owners: dict[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        if self.services is not None and hasattr(self.services, "bind_host"):
-            self.services.bind_host(self.host)
+        self._bind_host()
+
+    async def __aenter__(self) -> "BoundHostRuntime":
+        await self.startup()
+        await self.ready()
+        return self
+
+    async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+        _ = exc_type, exc, tb
+        await self.shutdown()
 
     async def startup(self) -> None:
+        self._bind_host()
+        if self._host_started:
+            return
         await self.host.startup()
+        self._host_started = True
 
     async def ready(self) -> None:
+        self._bind_host()
+        if not self._host_started:
+            await self.startup()
+        if self._host_ready:
+            return
         await self.host.ready()
+        self._host_ready = True
 
     async def shutdown(self) -> None:
-        await self.host.shutdown()
+        self._bind_host()
+        errors: list[Exception] = []
+        managed_sessions = tuple(self._managed_sessions.values())
+        self.metadata["managed_shutdown_order"] = [
+            session.state.session_id for session in managed_sessions if hasattr(session, "state")
+        ]
+        for session in managed_sessions:
+            try:
+                await session.close(final_status=_managed_session_close_status(session))
+            except Exception as exc:  # pragma: no cover - defensive cleanup path
+                errors.append(exc)
+                self.metadata.setdefault("managed_session_shutdown_errors", []).append(str(exc))
+        if self._host_started or self._host_ready:
+            try:
+                await self.host.shutdown()
+            except Exception as exc:  # pragma: no cover - defensive cleanup path
+                errors.append(exc)
+                self.metadata.setdefault("managed_session_shutdown_errors", []).append(str(exc))
+        self._host_started = False
+        self._host_ready = False
+        if errors:
+            raise errors[0]
 
     def create_session(self, **kwargs: Any) -> Any:
-        if self.services is not None and hasattr(self.services, "bind_host"):
-            self.services.bind_host(self.host)
-        return self.runtime.create_session(**kwargs)
+        self._bind_host()
+        session = self.runtime.create_session(
+            **kwargs,
+            close_callback=self._on_managed_session_close,
+        )
+        self._register_managed_session(session, owner="bound")
+        return session
 
     def resolve_session_invocations(self, *args: Any, **kwargs: Any) -> Any:
-        if self.services is not None and hasattr(self.services, "bind_host"):
-            self.services.bind_host(self.host)
+        self._bind_host()
         return self.runtime.resolve_session_invocations(*args, **kwargs)
 
     def visible_invocations(self, *args: Any, **kwargs: Any) -> Any:
-        if self.services is not None and hasattr(self.services, "bind_host"):
-            self.services.bind_host(self.host)
+        self._bind_host()
         return self.runtime.visible_invocations(*args, **kwargs)
 
     def invocation_diagnostics(self, *args: Any, **kwargs: Any) -> Any:
-        if self.services is not None and hasattr(self.services, "bind_host"):
-            self.services.bind_host(self.host)
+        self._bind_host()
         return self.runtime.invocation_diagnostics(*args, **kwargs)
 
-    async def run_prompt(self, *args: Any, **kwargs: Any) -> Any:
-        if self.services is not None and hasattr(self.services, "bind_host"):
-            self.services.bind_host(self.host)
-        return await self.runtime.run_prompt(*args, **kwargs)
+    async def run_prompt(
+        self,
+        prompt: str,
+        *,
+        session_id: str | None = None,
+        agent_name: str | None = None,
+        cwd: str | Path | None = None,
+        system_prompt: str | None = None,
+        metadata: dict[str, object] | None = None,
+    ) -> Any:
+        self._bind_host()
+        await self.ready()
+        session = self.runtime.create_session(
+            session_id=session_id,
+            agent_name=agent_name,
+            cwd=cwd,
+            system_prompt=system_prompt,
+            close_callback=self._on_managed_session_close,
+        )
+        self._register_managed_session(session, owner="helper")
+        final_status = "completed"
+        try:
+            return await self.runtime._run_prompt_in_session(
+                session,
+                prompt,
+                metadata=metadata,
+            )
+        except Exception:
+            final_status = _managed_session_close_status(session, default="failed")
+            raise
+        finally:
+            await session.close(final_status=final_status)
 
-    async def stream_prompt(self, *args: Any, **kwargs: Any):
+    async def stream_prompt(
+        self,
+        prompt: str,
+        *,
+        session_id: str | None = None,
+        agent_name: str | None = None,
+        cwd: str | Path | None = None,
+        system_prompt: str | None = None,
+        metadata: dict[str, object] | None = None,
+    ):
+        self._bind_host()
+        await self.ready()
+        session = self.runtime.create_session(
+            session_id=session_id,
+            agent_name=agent_name,
+            cwd=cwd,
+            system_prompt=system_prompt,
+            close_callback=self._on_managed_session_close,
+        )
+        self._register_managed_session(session, owner="helper")
+        final_status = "completed"
+        try:
+            await self.runtime._prepare_one_shot_session(session, prompt, metadata=metadata)
+            async for event in session.stream_until_idle():
+                if getattr(event, "event_type", None) is not None and getattr(event.event_type, "value", None) == "terminal":
+                    terminal = getattr(event, "terminal", None)
+                    final_status = _managed_session_close_status(session, terminal=terminal)
+                yield event
+        except Exception:
+            final_status = _managed_session_close_status(session, default="failed")
+            raise
+        finally:
+            await session.close(final_status=final_status)
+
+    def _bind_host(self) -> None:
         if self.services is not None and hasattr(self.services, "bind_host"):
             self.services.bind_host(self.host)
-        async for event in self.runtime.stream_prompt(*args, **kwargs):
-            yield event
+
+    def _register_managed_session(self, session: Any, *, owner: str) -> None:
+        session_id = getattr(getattr(session, "state", None), "session_id", None)
+        if session_id is None:
+            return
+        session_key = str(session_id)
+        self._managed_sessions[session_key] = session
+        self._managed_session_owners[session_key] = owner
+
+    async def _on_managed_session_close(self, session: Any, final_status: str) -> None:
+        session_id = getattr(getattr(session, "state", None), "session_id", None)
+        if session_id is None:
+            return
+        session_key = str(session_id)
+        self._managed_sessions.pop(session_key, None)
+        owner = self._managed_session_owners.pop(session_key, None)
+        closed_history = self.metadata.setdefault("closed_sessions", [])
+        if isinstance(closed_history, list):
+            closed_history.append(
+                {
+                    "session_id": session_key,
+                    "owner": owner,
+                    "final_status": final_status,
+                }
+            )
 
 
 __all__ = [
@@ -200,6 +330,30 @@ __all__ = [
     "HostRuntime",
     "NullHostAdapter",
 ]
+
+
+def _managed_session_close_status(
+    session: Any,
+    *,
+    terminal: Any | None = None,
+    default: str = "completed",
+) -> str:
+    if terminal is not None:
+        if getattr(terminal, "error", None):
+            return "failed"
+        if getattr(terminal, "abort_reason", None):
+            return "interrupted"
+        if getattr(terminal, "stop_reason", None) == "interrupted":
+            return "interrupted"
+    status = getattr(getattr(session, "state", None), "status", None)
+    normalized = str(status) if status is not None else ""
+    if normalized.endswith("INTERRUPTED") or normalized.endswith("interrupted"):
+        return "interrupted"
+    if normalized.endswith("FAILED") or normalized.endswith("failed"):
+        return "failed"
+    if normalized.endswith("STOPPED") or normalized.endswith("stopped"):
+        return "stopped"
+    return default
 
 
 async def _maybe_await(value: Any) -> Any:
