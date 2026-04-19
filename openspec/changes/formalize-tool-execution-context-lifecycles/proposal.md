@@ -12,9 +12,12 @@
 - Replace the ambiguous single `app_state` concept with explicit scoped state handles for session-scoped and turn-scoped runtime state.
 - Define explicit `SessionScope`, `TurnScope`, and call-scope ownership and lifecycle boundaries, including who creates, mutates, and disposes each scope.
 - Establish an explicit tool trust model separating public tools, privileged built-in tools, and legacy compatibility paths.
+- Make runtime-owned registration and assembly data the sole authority for routing tools onto `public`, `privileged`, or `legacy-compat` paths; tool self-description may inform routing but cannot grant elevated execution class by itself.
 - Keep any prompt/private execution metadata on the public tool path behind narrow read-only projections or explicit fields rather than exposing the raw private carrier.
 - Remove the requirement for public tool execution paths to access raw `runtime_services`, while preserving internal compatibility paths for privileged built-in tools.
 - Add a compatibility path so legacy tools can continue to execute while the runtime migrates from the current mixed `ToolContext` ABI to the new public/internal split.
+- Define the migration contract for temporary compatibility aliases and bridges, including the requirement that newly added public tools target `ToolExecutionContext` directly and do not depend on compat-only aliases.
+- Define terminal lifecycle semantics for session start/resume, turn admission/completion, and call completion, including interruption/failure paths and call disposal after replay commit or equivalent terminal non-executable completion.
 
 ## Capabilities
 
@@ -28,8 +31,32 @@
 ## Impact
 
 - Affected code: `src/claude_agent_runtime/tool_runtime.py`, `src/claude_agent_runtime/tool_lifecycle.py`, `src/claude_agent_runtime/tool_resolution.py`, `src/claude_agent_runtime/tool_orchestration.py`, `src/claude_agent_runtime/turn_engine/engine.py`, `src/claude_agent_runtime/session_runtime/controller.py`, `src/claude_agent_runtime/builtins/tool_impls.py`, and runtime conformance tests.
-- Affected APIs: tool execution ABI, internal runtime assembly interfaces, runtime state handles, and lifecycle ownership expectations across session and turn layers.
+- Affected APIs: tool execution ABI, internal runtime assembly interfaces, runtime state handles, temporary compatibility aliases during cutover, and lifecycle ownership expectations across session and turn layers.
 - Affected systems: tool execution, session control, capability refresh, notification/progress surfaces, tool trust classification and routing authority, and legacy built-in tool compatibility.
+
+## Proposal-Level Clarifications
+
+### Trust Routing Authority
+
+- Runtime-owned registration and assembly data are the authoritative source of truth for `public`, `privileged`, and `legacy-compat` routing.
+- Definition frontmatter, plugin metadata, or other tool self-description may act as hints, but they MUST NOT independently grant `privileged` or `legacy-compat` routing.
+- Non-runtime-owned tools default to the `public` execution path unless runtime-owned registration explicitly classifies them otherwise.
+
+### Compatibility Contract And Exit Criteria
+
+- During migration, compat-only surface area may remain available for legacy tools that still depend on the mixed `ToolContext` ABI, including temporary aliases such as `app_state`-style turn-state compatibility, raw top-level query identity projections, and metadata/private-carrier bridges needed to preserve existing execution.
+- That compat surface is a migration bridge only. Newly added public tools MUST target `ToolExecutionContext` directly and MUST NOT rely on compat-only aliases, raw `runtime_services`, or unrestricted internal registries/runners.
+- Runtime-owned built-ins that genuinely need privileged control-plane access should move to the privileged internal path rather than remain indefinitely on the compat path.
+- Compat exit criteria are: ordinary tools no longer require the mixed `ToolContext` ABI, runtime-owned built-ins have been reclassified onto `public` or `privileged` paths as appropriate, and conformance coverage proves that newly added non-runtime-owned tools do not default onto the compat route.
+
+### Lifecycle Semantics Across Terminal Paths
+
+- `SessionScope` is created when a session starts or resumes into active execution and remains authoritative across admitted turns in that session.
+- `SessionScope` is disposed exactly once when session close semantics complete, including close after success, interruption, or failure.
+- `TurnScope` is created when ingress admits a turn for execution and remains authoritative only for that admitted turn.
+- When a turn reaches terminal completion, the runtime disposes or replaces that turn scope before any later turn in the same session becomes authoritative.
+- `ToolExecutionContext` is call-scoped: it is created after resolution and before execute, remains valid for one tool call, and is disposed after replay commit or equivalent terminal non-executable completion for that call.
+- Multiple calls within one turn may share the same turn-scoped handles, but each call receives its own frozen call identity and resolved execution metadata.
 
 ## Appendix A: `ToolContext` Field Migration Matrix
 
