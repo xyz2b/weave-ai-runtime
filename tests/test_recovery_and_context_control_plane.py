@@ -1,4 +1,5 @@
 import asyncio
+import time
 from pathlib import Path
 
 from claude_agent_runtime.contracts import (
@@ -540,6 +541,32 @@ def test_budget_hook_failure_mode_supports_pass_through_and_fail_prepare() -> No
         raise AssertionError("FAIL_PREPARE should surface the hook error")
 
 
+def test_sync_budget_hook_timeout_surfaces_timeout_without_blocking_main_loop() -> None:
+    class SlowHook:
+        def plan(self, request):  # pragma: no cover - exercised via invoke_budget_hook
+            _ = request
+            time.sleep(0.2)
+            return None
+
+    request = ContextBudgetRequest(turn_id="turn", attempt_index=1)
+
+    async def scenario() -> tuple[object, list[str], float]:
+        started_at = time.perf_counter()
+        plan, diagnostics = await invoke_budget_hook(
+            SlowHook(),
+            request,
+            failure_mode=ContextBudgetHookFailureMode.PASS_THROUGH,
+            timeout_seconds=0.01,
+        )
+        return plan, diagnostics, time.perf_counter() - started_at
+
+    plan, diagnostics, elapsed = asyncio.run(scenario())
+
+    assert plan is None
+    assert diagnostics == ["context_budget_hook_error:TimeoutError"]
+    assert elapsed < 0.15
+
+
 def test_context_budget_hook_receives_structured_request() -> None:
     class CapturingHook:
         def __init__(self) -> None:
@@ -816,6 +843,64 @@ def test_session_resume_replays_explicit_resumable_request_override(tmp_path: Pa
 
     assert model_client.requests[1].model == "resume-model"
     assert model_client.requests[2].model == "baseline-model"
+
+
+def test_emitted_resumable_request_override_survives_provider_error(tmp_path: Path) -> None:
+    model_client = SequencedModelClient(
+        [
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-error"}),
+                ModelStreamEvent(ModelStreamEventType.ERROR, {"error": "transport boom"}),
+            ],
+        ]
+    )
+    store = InMemoryTranscriptStore()
+
+    async def seed_metadata() -> None:
+        await store.save_session_metadata(
+            "session-error-resume-override",
+            {
+                "resumable_request_override": {
+                    "requested_model": "resume-model",
+                    "source": "stop:resume",
+                    "resumable": True,
+                    "metadata": {"sources": ["stop:resume"]},
+                }
+            },
+        )
+
+    asyncio.run(seed_metadata())
+
+    services = RuntimeServices()
+    controller = SessionController(
+        session_id="session-error-resume-override",
+        agent=AgentDefinition(
+            name="main-router",
+            description="router",
+            prompt="route",
+            model="baseline-model",
+        ),
+        turn_engine=TurnEngine(
+            model_client=model_client,
+            tool_registry=ToolRegistry(),
+            runtime_services=services,
+        ),
+        transcript_store=store,
+        cwd=str(tmp_path),
+        system_prompt="System",
+        runtime_services=services,
+    )
+
+    async def scenario() -> None:
+        await controller.resume()
+        await controller.start()
+        controller.enqueue_event(InboundEvent(InboundEventType.USER_PROMPT, "resume"))
+        await controller.run_until_idle()
+
+    asyncio.run(scenario())
+
+    assert model_client.requests[0].model == "resume-model"
+    assert controller.state.metadata["resumable_request_override"]["requested_model"] == "resume-model"
 
 
 def test_observability_metadata_exposes_control_plane_and_recovery_fields(tmp_path: Path) -> None:

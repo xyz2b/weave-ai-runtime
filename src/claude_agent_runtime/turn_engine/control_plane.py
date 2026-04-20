@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
@@ -866,12 +867,14 @@ async def invoke_budget_hook(
     timeout_seconds: float | None,
 ) -> tuple[BudgetPlan | None, list[str]]:
     diagnostics: list[str] = []
+    started_at = asyncio.get_running_loop().time()
     try:
-        raw = hook.plan(request) if hasattr(hook, "plan") else hook(request)
-        if timeout_seconds is not None:
-            raw = await asyncio.wait_for(maybe_await(raw), timeout=timeout_seconds)
-        else:
-            raw = await maybe_await(raw)
+        raw = await _invoke_budget_hook_callable(
+            hook.plan if hasattr(hook, "plan") else hook,
+            request,
+            timeout_seconds=timeout_seconds,
+            started_at=started_at,
+        )
     except Exception as exc:
         diagnostics.append(f"context_budget_hook_error:{type(exc).__name__}")
         if failure_mode == ContextBudgetHookFailureMode.FAIL_PREPARE:
@@ -1664,6 +1667,51 @@ def _coerce_optional_float(value: object) -> float | None:
 async def maybe_await(value: Any) -> Any:
     if asyncio.iscoroutine(value):
         return await value
+    return value
+
+
+async def _invoke_budget_hook_callable(
+    hook_callable: Any,
+    request: ContextBudgetRequest,
+    *,
+    timeout_seconds: float | None,
+    started_at: float,
+) -> Any:
+    if inspect.iscoroutinefunction(hook_callable):
+        return await _await_with_timeout(
+            hook_callable(request),
+            timeout_seconds=timeout_seconds,
+            started_at=started_at,
+        )
+    if timeout_seconds is None:
+        return await maybe_await(hook_callable(request))
+    result = await _await_with_timeout(
+        asyncio.to_thread(hook_callable, request),
+        timeout_seconds=timeout_seconds,
+        started_at=started_at,
+    )
+    if inspect.isawaitable(result):
+        return await _await_with_timeout(
+            result,
+            timeout_seconds=timeout_seconds,
+            started_at=started_at,
+        )
+    return result
+
+
+async def _await_with_timeout(
+    value: Any,
+    *,
+    timeout_seconds: float | None,
+    started_at: float,
+) -> Any:
+    if inspect.isawaitable(value):
+        if timeout_seconds is None:
+            return await value
+        remaining = timeout_seconds - (asyncio.get_running_loop().time() - started_at)
+        if remaining <= 0:
+            raise TimeoutError
+        return await asyncio.wait_for(value, timeout=remaining)
     return value
 
 

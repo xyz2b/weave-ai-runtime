@@ -221,6 +221,7 @@ class TurnLoopState:
     sidecar_generation: int = 0
     prepared_context: PreparedContext | None = None
     recovery_state: RecoveryState = field(default_factory=RecoveryState)
+    consumed_request_override: RequestOverrideState | None = None
     transition: TurnTransition | None = None
     terminal: TurnTerminal | None = None
     post_effects: TurnPostEffects = field(default_factory=TurnPostEffects)
@@ -1296,9 +1297,7 @@ class TurnEngine:
                     metadata=request_metadata,
                 )
                 last_request = request
-                if pending_request_override is not None:
-                    private_context = _clear_request_override(private_context)
-                    state.recovery_state = state.recovery_state.clear_pending_override()
+                state.consumed_request_override = pending_request_override
                 tool_executor = select_tool_executor(
                     model_client,
                     context=tool_context,
@@ -1338,6 +1337,9 @@ class TurnEngine:
                     phase=state.phase,
                     request=request,
                 )
+                if pending_request_override is not None:
+                    private_context = _clear_request_override(private_context)
+                    state.recovery_state = state.recovery_state.clear_pending_override()
 
                 attempt_state = _StreamAttemptState()
                 pending_tool_use_closed_at_message_stop = False
@@ -1577,6 +1579,7 @@ class TurnEngine:
                                     resumable_override := _resumable_request_override_metadata(
                                         decision,
                                         private_context,
+                                        consumed_request_override=state.consumed_request_override,
                                     )
                                 )
                                 is not None
@@ -1641,6 +1644,7 @@ class TurnEngine:
                                     resumable_override := _resumable_request_override_metadata(
                                         decision,
                                         private_context,
+                                        consumed_request_override=state.consumed_request_override,
                                     )
                                 )
                                 is not None
@@ -1707,6 +1711,7 @@ class TurnEngine:
                                     resumable_override := _resumable_request_override_metadata(
                                         decision,
                                         private_context,
+                                        consumed_request_override=state.consumed_request_override,
                                     )
                                 )
                                 is not None
@@ -1832,6 +1837,7 @@ class TurnEngine:
                                     resumable_override := _resumable_request_override_metadata(
                                         decision,
                                         private_context,
+                                        consumed_request_override=state.consumed_request_override,
                                     )
                                 )
                                 is not None
@@ -2439,11 +2445,20 @@ def _prepared_context_event_metadata(
 def _resumable_request_override_metadata(
     decision: RecoveryDecision | None,
     private_context: RuntimePrivateContext,
+    *,
+    consumed_request_override: RequestOverrideState | None = None,
 ) -> dict[str, Any] | None:
     if decision is not None:
         serialized = serialize_resumable_request_override(decision.request_override)
         if serialized is not None:
             return serialized
+        if decision.terminal_reason not in {
+            TurnTerminalReason.END_TURN.value,
+            TurnTerminalReason.MESSAGE_STOP.value,
+        }:
+            serialized = serialize_resumable_request_override(consumed_request_override)
+            if serialized is not None:
+                return serialized
     return serialize_resumable_request_override(_request_override_from_private_context(private_context))
 
 
