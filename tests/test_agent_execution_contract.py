@@ -2,23 +2,23 @@ import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 
-from claude_agent_runtime.agent_execution import AgentRunStatus, SpawnMode
-from claude_agent_runtime.agent_execution_service import _agent_run_status_from_turn_result
-from claude_agent_runtime.agent_runtime import AgentInvocation, AgentRuntime
-from claude_agent_runtime.contracts import MessageRole
-from claude_agent_runtime.definitions import (
+from runtime.agent_execution import AgentRunStatus, SpawnMode
+from runtime.agent_execution_service import _agent_run_status_from_turn_result
+from runtime.agent_runtime import AgentInvocation, AgentRuntime
+from runtime.contracts import MessageRole
+from runtime.definitions import (
     AgentDefinition,
     PermissionBehavior,
     PermissionDecision,
     ToolDefinition,
     ToolTraits,
 )
-from claude_agent_runtime.hooks import RuntimeHookPhase
-from claude_agent_runtime.registries import AgentRegistry, SkillRegistry, ToolRegistry
-from claude_agent_runtime.runtime_kernel import ModelRouteBinding
-from claude_agent_runtime.runtime_services import RuntimeServices
-from claude_agent_runtime.tasking import TaskManager, TaskStatus
-from claude_agent_runtime.turn_engine import (
+from runtime.hooks import RuntimeHookPhase
+from runtime.registries import AgentRegistry, SkillRegistry, ToolRegistry
+from runtime.runtime_kernel import ModelRouteBinding
+from runtime.runtime_services import RuntimeServices
+from runtime.tasking import TaskManager, TaskStatus
+from runtime.turn_engine import (
     ModelInvocationMode,
     ModelRequest,
     ModelStreamEvent,

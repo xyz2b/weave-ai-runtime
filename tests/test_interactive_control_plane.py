@@ -3,9 +3,9 @@ from pathlib import Path
 
 import pytest
 
-from claude_agent_runtime.builtins.tool_impls import ask_user_tool
-from claude_agent_runtime.contracts import MessageRole, RuntimeMessage, ToolResultBlock
-from claude_agent_runtime.definitions import (
+from runtime.builtins.tool_impls import ask_user_tool
+from runtime.contracts import MessageRole, RuntimeMessage, ToolResultBlock
+from runtime.definitions import (
     AgentDefinition,
     PermissionBehavior,
     PermissionDecision,
@@ -13,16 +13,16 @@ from claude_agent_runtime.definitions import (
     ToolDefinition,
     ToolTraits,
 )
-from claude_agent_runtime.elicitation import ElicitationRequest
-from claude_agent_runtime.hooks import HookBus, RuntimeHookPhase
-from claude_agent_runtime.hosts import SdkHostRuntime
-from claude_agent_runtime.permissions import PermissionContext
-from claude_agent_runtime.registries import ToolRegistry
-from claude_agent_runtime.runtime_kernel import RuntimeConfig, assemble_runtime
-from claude_agent_runtime.runtime_services import RuntimeServices
-from claude_agent_runtime.session_runtime import FileTranscriptStore, InboundEvent, InboundEventType, SessionController
-from claude_agent_runtime.tool_runtime import ToolCall, ToolContext, ToolScheduler
-from claude_agent_runtime.turn_engine import ModelRequest, ModelStreamEvent, ModelStreamEventType, TurnEngine
+from runtime.elicitation import ElicitationRequest
+from runtime.hooks import HookBus, RuntimeHookPhase
+from runtime.hosts import SdkHostRuntime
+from runtime.permissions import PermissionContext
+from runtime.registries import ToolRegistry
+from runtime.runtime_kernel import RuntimeConfig, assemble_runtime
+from runtime.runtime_services import RuntimeServices
+from runtime.session_runtime import FileTranscriptStore, InboundEvent, InboundEventType, SessionController
+from runtime.tool_runtime import ToolCall, ToolContext, ToolScheduler
+from runtime.turn_engine import ModelRequest, ModelStreamEvent, ModelStreamEventType, TurnEngine
 
 
 class BatchedModelClient:

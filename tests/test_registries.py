@@ -1,13 +1,13 @@
 from pathlib import Path
 
-from claude_agent_runtime.definitions import (
+from runtime.definitions import (
     AgentDefinition,
     DefinitionOrigin,
     DefinitionSource,
     SkillDefinition,
     ToolDefinition,
 )
-from claude_agent_runtime.registries import AgentRegistry, SkillRegistry, ToolRegistry
+from runtime.registries import AgentRegistry, SkillRegistry, ToolRegistry
 
 
 def origin(source: DefinitionSource, name: str) -> DefinitionOrigin:

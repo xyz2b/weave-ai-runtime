@@ -1,8 +1,8 @@
 from pathlib import Path
 
-from claude_agent_runtime.definitions import DefinitionSource
-from claude_agent_runtime.registries import DefinitionDiscovery
-from claude_agent_runtime.runtime_kernel import DefinitionSourcePaths
+from runtime.definitions import DefinitionSource
+from runtime.registries import DefinitionDiscovery
+from runtime.runtime_kernel import DefinitionSourcePaths
 
 
 def test_definition_discovery_loads_tools_agents_and_skills(tmp_path: Path) -> None:
@@ -27,7 +27,7 @@ traits:
     )
     (tools_dir / "hello.py").write_text(
         """
-from claude_agent_runtime.definitions import ToolDefinition
+from runtime.definitions import ToolDefinition
 
 TOOL_DEFINITION = ToolDefinition(name="hello", description="Say hello")
 """.strip(),

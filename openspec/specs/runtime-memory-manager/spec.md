@@ -1,17 +1,17 @@
 # runtime-memory-manager Specification
 
 ## Purpose
-TBD - created by archiving change add-claude-style-memory-subsystem. Update Purpose after archive.
+TBD - created by archiving change add-file-based-memory-subsystem. Update Purpose after archive.
 ## Requirements
-### Requirement: Runtime provides a Claude-style memory manager
-The runtime SHALL provide a Claude-style memory manager that owns memory path resolution, entrypoint loading, relevant memory retrieval, post-turn extraction, and agent memory scope behavior.
+### Requirement: Runtime provides a reference-style memory manager
+The runtime SHALL provide a reference-style memory manager that owns memory path resolution, entrypoint loading, relevant memory retrieval, post-turn extraction, and agent memory scope behavior.
 
 #### Scenario: Session starts with default memory enabled
 - **WHEN** a session starts with the default memory manager enabled
 - **THEN** the runtime SHALL resolve the applicable memory scope and load the memory entrypoint content for that session context
 
-### Requirement: Memory entrypoint loading follows Claude-style file semantics
-The runtime SHALL use Claude-style file-based memory entrypoint semantics centered on `MEMORY.md` rather than a generic key-value lookup.
+### Requirement: Memory entrypoint loading follows reference-style file semantics
+The runtime SHALL use reference-style file-based memory entrypoint semantics centered on `MEMORY.md` rather than a generic key-value lookup.
 
 #### Scenario: Project-scoped memory is available
 - **WHEN** a session resolves to a project-scoped memory boundary with a `MEMORY.md` entrypoint

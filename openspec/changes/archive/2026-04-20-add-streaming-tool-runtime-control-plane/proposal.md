@@ -1,6 +1,6 @@
 ## Why
 
-当前 runtime 的 tools 子系统已经具备重 `ToolContext`、共享 permission/hook control plane 和基础调度器，但核心执行模型仍然停留在“assistant message 完整结束后再批量执行 tools”。这和 Claude Code 依赖的 streaming tool runtime 仍有明显偏差，尤其体现在工具契约、输入相关并发语义、sibling failure policy，以及 progress / capability refresh 的控制面打通上。
+当前 runtime 的 tools 子系统已经具备重 `ToolContext`、共享 permission/hook control plane 和基础调度器，但核心执行模型仍然停留在“assistant message 完整结束后再批量执行 tools”。这和参考实现依赖的 streaming tool runtime 仍有明显偏差，尤其体现在工具契约、输入相关并发语义、sibling failure policy，以及 progress / capability refresh 的控制面打通上。
 
 ## What Changes
 
@@ -26,8 +26,8 @@
 
 ## Impact
 
-- 主要影响 `src/claude_agent_runtime/definitions.py`、`src/claude_agent_runtime/tool_runtime.py`、`src/claude_agent_runtime/turn_engine/engine.py`、`src/claude_agent_runtime/turn_engine/models.py`、built-in tools，以及 host/control-plane wiring。
-- 很可能新增 `src/claude_agent_runtime/tool_lifecycle.py`、`src/claude_agent_runtime/tool_resolution.py`、`src/claude_agent_runtime/tool_orchestration.py`、`src/claude_agent_runtime/tool_executors.py` 这类按 ownership 拆分的模块，并让 `tool_runtime.py` 退回兼容 facade。
+- 主要影响 `src/runtime/definitions.py`、`src/runtime/tool_runtime.py`、`src/runtime/turn_engine/engine.py`、`src/runtime/turn_engine/models.py`、built-in tools，以及 host/control-plane wiring。
+- 很可能新增 `src/runtime/tool_lifecycle.py`、`src/runtime/tool_resolution.py`、`src/runtime/tool_orchestration.py`、`src/runtime/tool_executors.py` 这类按 ownership 拆分的模块，并让 `tool_runtime.py` 退回兼容 facade。
 - 会影响 `ToolDefinition`、`ToolContext`、tool discovery / builtin wiring 以及与 permission、host UI、classifier、memory 的交界面。
 - 会引入新的 tool call lifecycle object model，并影响 tool execution pipeline、scheduler、permission flow 和 replay buffer 的边界。
 - 会让 `TurnEngine`、`SessionController` 和 host adapter 通过 first-class turn events 消费 tool lifecycle，而不是只看 transcript/message 结果。

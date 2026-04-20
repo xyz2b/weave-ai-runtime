@@ -10,7 +10,7 @@ The runtime SHALL treat each skill as a composite runtime object made of prompt 
 - **WHEN** the runtime loads a valid file-backed skill definition
 - **THEN** that skill SHALL participate in prompt expansion, invocation visibility, and execution policy resolution as one coherent runtime object
 
-### Requirement: Skill prompt bodies support Claude-compatible variable expansion
+### Requirement: Skill prompt bodies support reference-compatible variable expansion
 The runtime SHALL expand file-backed skill prompt bodies before inline injection and forked execution, supporting `$ARGUMENTS`, `${ARG1...}`, `${CLAUDE_SESSION_ID}`, and `${CLAUDE_SKILL_DIR}`.
 
 #### Scenario: Inline skill expands arguments and runtime variables
@@ -18,7 +18,7 @@ The runtime SHALL expand file-backed skill prompt bodies before inline injection
 - **THEN** the injected skill content SHALL contain the substituted argument values, the current session identifier, and the resolved skill directory path instead of the raw placeholder tokens
 
 ### Requirement: Skill shell blocks execute through the runtime shell path
-The runtime SHALL execute Claude Code-compatible shell blocks embedded in local skill bodies through the existing shell tool execution path, using the `shell` frontmatter value to select the interpreter.
+The runtime SHALL execute reference-compatible shell blocks embedded in local skill bodies through the existing shell tool execution path, using the `shell` frontmatter value to select the interpreter.
 
 #### Scenario: Skill declares a non-default shell for prompt expansion
 - **WHEN** a local skill declares `shell: powershell` and contains executable shell blocks during prompt expansion

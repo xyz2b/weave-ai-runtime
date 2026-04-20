@@ -30,7 +30,7 @@
 
 ## Impact
 
-- Affected code: `src/claude_agent_runtime/tool_runtime.py`, `src/claude_agent_runtime/tool_lifecycle.py`, `src/claude_agent_runtime/tool_resolution.py`, `src/claude_agent_runtime/tool_orchestration.py`, `src/claude_agent_runtime/turn_engine/engine.py`, `src/claude_agent_runtime/session_runtime/controller.py`, `src/claude_agent_runtime/builtins/tool_impls.py`, and runtime conformance tests.
+- Affected code: `src/runtime/tool_runtime.py`, `src/runtime/tool_lifecycle.py`, `src/runtime/tool_resolution.py`, `src/runtime/tool_orchestration.py`, `src/runtime/turn_engine/engine.py`, `src/runtime/session_runtime/controller.py`, `src/runtime/builtins/tool_impls.py`, and runtime conformance tests.
 - Affected APIs: tool execution ABI, internal runtime assembly interfaces, runtime state handles, temporary compatibility aliases during cutover, and lifecycle ownership expectations across session and turn layers.
 - Affected systems: tool execution, session control, capability refresh, notification/progress surfaces, tool trust classification and routing authority, and legacy built-in tool compatibility.
 

@@ -1,6 +1,6 @@
 ## Why
 
-协议、stream 和 assembly 逐步补齐之后，如果测试仍然只断言“发了几轮 request”或“最后输出了什么字符串”，runtime 很快会再次偏离 Claude Code 的 query contract。当前测试对 request payload、pairing repair、interrupt、resume 和 model-generated agent/skill path 几乎没有保护，因此需要单独的 conformance/golden change 来锁定这些边界。
+协议、stream 和 assembly 逐步补齐之后，如果测试仍然只断言“发了几轮 request”或“最后输出了什么字符串”，runtime 很快会再次偏离参考实现的 query contract。当前测试对 request payload、pairing repair、interrupt、resume 和 model-generated agent/skill path 几乎没有保护，因此需要单独的 conformance/golden change 来锁定这些边界。
 
 ## What Changes
 

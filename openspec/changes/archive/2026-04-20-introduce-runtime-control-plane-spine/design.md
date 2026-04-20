@@ -1,6 +1,6 @@
 ## Context
 
-当前 runtime 已经形成了 `RuntimeKernel -> SessionController -> TurnEngine -> Tool/Agent/Skill runtimes` 的基础执行链路，但 control plane 相关能力仍然以零散 callback、placeholder 类型和局部 wiring 的方式存在。这样虽然足够支撑最小 headless demo，却无法稳定承接 Claude Code 的 hooks、permissions、elicitation、memory、compaction 与 host bridge 等 cross-cutting 能力。
+当前 runtime 已经形成了 `RuntimeKernel -> SessionController -> TurnEngine -> Tool/Agent/Skill runtimes` 的基础执行链路，但 control plane 相关能力仍然以零散 callback、placeholder 类型和局部 wiring 的方式存在。这样虽然足够支撑最小 headless demo，却无法稳定承接参考实现的 hooks、permissions、elicitation、memory、compaction 与 host bridge 等 cross-cutting 能力。
 
 现有问题主要集中在三点：
 
@@ -32,7 +32,7 @@ runtime 将新增一个显式的 `RuntimeServices` 聚合对象，用于承载 h
 Why:
 
 - 现有 callback 式 wiring 无法表达控制面依赖图，也不利于后续增量扩展。
-- Claude Code 的主循环不是只靠几个局部 callback 维持，而是依赖一套共享 control plane。
+- 参考实现的主循环不是只靠几个局部 callback 维持，而是依赖一套共享 control plane。
 - 聚合对象比把每个 service 独立穿透到所有构造函数更容易管理依赖与测试边界。
 
 Alternatives considered:
@@ -49,7 +49,7 @@ runtime 将显式区分：
 
 Why:
 
-- Claude Code 的稳定性来自这些 cross-cutting systems 的协调，而不是单纯的 tool loop。
+- 参考实现的稳定性来自这些 cross-cutting systems 的协调，而不是单纯的 tool loop。
 - 这种分层能避免把 permissions、hooks、memory 等长期塞进 TurnEngine。
 - execution plane 更适合被 headless 与 interactive hosts 复用。
 
@@ -76,7 +76,7 @@ Alternatives considered:
 
 Why:
 
-- Claude Code 的 system prompt 与 context 不是简单字符串拼接，而是多来源控制面信息的稳定装配结果。
+- 参考实现的 system prompt 与 context 不是简单字符串拼接，而是多来源控制面信息的稳定装配结果。
 - 未来 memory 与 compaction 接入后，需要一个稳定位置承接这些贡献。
 
 Alternatives considered:

@@ -1,19 +1,19 @@
 import asyncio
 from pathlib import Path
 
-from claude_agent_runtime.agent_runtime import AgentInvocation, AgentRuntime
-from claude_agent_runtime.compaction import (
+from runtime.agent_runtime import AgentInvocation, AgentRuntime
+from runtime.compaction import (
     CompactionManager,
     CompactionStepResult,
     ContextPressure,
 )
-from claude_agent_runtime.contracts import MessageRole, RuntimeMessage, RuntimePrivateContext
-from claude_agent_runtime.definitions import AgentDefinition
-from claude_agent_runtime.registries import AgentRegistry, SkillRegistry, ToolRegistry
-from claude_agent_runtime.runtime_services import RuntimeServices
-from claude_agent_runtime.session_runtime import InMemoryTranscriptStore, InboundEvent, InboundEventType, SessionController
-from claude_agent_runtime.tasking import TaskManager
-from claude_agent_runtime.turn_engine import (
+from runtime.contracts import MessageRole, RuntimeMessage, RuntimePrivateContext
+from runtime.definitions import AgentDefinition
+from runtime.registries import AgentRegistry, SkillRegistry, ToolRegistry
+from runtime.runtime_services import RuntimeServices
+from runtime.session_runtime import InMemoryTranscriptStore, InboundEvent, InboundEventType, SessionController
+from runtime.tasking import TaskManager
+from runtime.turn_engine import (
     ModelRequest,
     ModelStreamEvent,
     ModelStreamEventType,
@@ -269,7 +269,7 @@ def test_session_resume_uses_rewritten_compacted_transcript() -> None:
     )
 
     async def seed() -> None:
-        from claude_agent_runtime.turn_engine import TranscriptEntry
+        from runtime.turn_engine import TranscriptEntry
 
         for message in seed_messages:
             await transcript_store.append(

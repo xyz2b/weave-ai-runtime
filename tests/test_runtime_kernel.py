@@ -1,15 +1,15 @@
 import asyncio
 from pathlib import Path
 
-from claude_agent_runtime.contracts import MessageRole
-from claude_agent_runtime.hooks import RuntimeHookPhase
-from claude_agent_runtime.definitions import (
+from runtime.contracts import MessageRole
+from runtime.hooks import RuntimeHookPhase
+from runtime.definitions import (
     AgentDefinition,
     DefinitionOrigin,
     DefinitionSource,
 )
-from claude_agent_runtime.hosts.base import NullHostAdapter
-from claude_agent_runtime.runtime_kernel import (
+from runtime.hosts.base import NullHostAdapter
+from runtime.runtime_kernel import (
     BuiltinPackConfig,
     DefinitionSourcePaths,
     HostBinding,
@@ -18,7 +18,7 @@ from claude_agent_runtime.runtime_kernel import (
     assemble_runtime,
     build_runtime_kernel,
 )
-from claude_agent_runtime.turn_engine import ModelRequest, ModelStreamEvent, ModelStreamEventType
+from runtime.turn_engine import ModelRequest, ModelStreamEvent, ModelStreamEventType
 
 
 class FakeModelClient:

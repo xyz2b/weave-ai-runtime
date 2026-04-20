@@ -8,7 +8,7 @@
 
 - 引入显式的 Runtime 主循环状态机 contract，覆盖 turn preparation、sidecar 预取、compaction、模型流式输出、tool replay、stop handling、budget/recovery 和 continuation transition。
 - 明确 `run_turn_stream()` / `stream_until_idle()` 所代表的 async generator event stream 是 Runtime 主循环的 canonical surface，聚合 helper 只能建立在这条流之上。
-- 保留当前 `SessionController -> TurnEngine -> StreamingToolOrchestrator` 的分层，不复制 Claude Code 那种巨型单文件 `query.ts` 实现。
+- 保留当前 `SessionController -> TurnEngine -> StreamingToolOrchestrator` 的分层，不复制参考实现那种巨型单文件 `query.ts` 实现。
 - 为每轮 continuation 增加结构化 transition reason 和 phase metadata，使 host、tests 和后续控制面逻辑能够解释“为什么继续、为什么阻塞、为什么恢复、为什么结束”。
 - 定义 pre-turn sidecar 和 post-turn effects 的统一边界，让 memory retrieval、hook context、compaction artifacts、session persistence 和 background extraction 不再通过隐式时序耦合。
 - 收紧 host-facing terminal contract：`TERMINAL` 只保留 turn-final 语义，旧的 `TERMINAL(stop_reason=tool_use)` 等 attempt-final 消费方必须迁移到 `ATTEMPT_FINISHED` 或等价 attempt metadata。
@@ -31,7 +31,7 @@
 
 ## Impact
 
-- 影响 `src/claude_agent_runtime/turn_engine/`、`src/claude_agent_runtime/session_runtime/`、`src/claude_agent_runtime/runtime_services/`、`src/claude_agent_runtime/tool_executors.py`、`src/claude_agent_runtime/tool_orchestration.py`、`src/claude_agent_runtime/memory/` 与 `src/claude_agent_runtime/compaction/` 的主循环边界。
+- 影响 `src/runtime/turn_engine/`、`src/runtime/session_runtime/`、`src/runtime/runtime_services/`、`src/runtime/tool_executors.py`、`src/runtime/tool_orchestration.py`、`src/runtime/memory/` 与 `src/runtime/compaction/` 的主循环边界。
 - 影响 host 可观察事件、terminal metadata、turn-level diagnostics 和 runtime conformance tests。
 - 影响所有仍把 `TERMINAL(stop_reason=tool_use)` 视为 attempt-final signal 的现有消费方，它们必须切换到新的 attempt-level event/metadata。
 - 为后续 memory、compaction、hook、route fallback、budget guard 和 long-running session 行为提供统一延展点。

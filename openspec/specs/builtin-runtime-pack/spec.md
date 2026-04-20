@@ -1,7 +1,7 @@
 # builtin-runtime-pack Specification
 
 ## Purpose
-TBD - created by archiving change python-claude-compatible-agent-runtime. Update Purpose after archive.
+TBD - created by archiving change python-agent-runtime-foundation. Update Purpose after archive.
 ## Requirements
 ### Requirement: 内置 tool pack
 runtime SHALL 默认随附一个内置 tool pack，其中包括 `read`、`edit`、`write`、`glob`、`grep`、`bash`、`web_fetch`、`web_search`、`agent`、`skill`、`task_create`、`task_get`、`task_update`、`task_list`、`task_stop`、`ask_user` 与 `sleep`。

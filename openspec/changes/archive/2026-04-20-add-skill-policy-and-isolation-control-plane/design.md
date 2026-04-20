@@ -6,7 +6,7 @@
 - 从 agent 定义解析 `permissionMode`、`memory`、`isolation`
 - 以 inline 或 forked 方式执行 skill
 
-但这些能力大多还停留在“字段被解析出来了”这一层。真正缺少的是 Claude Code 风格的 runtime policy semantics：
+但这些能力大多还停留在“字段被解析出来了”这一层。真正缺少的是参考实现风格的 runtime policy semantics：
 
 - skill 是否只能收窄 capability，而不能扩大 capability
 - inline skill 与 forked skill 分别如何继承 permission、hooks 与 tool pool
@@ -42,7 +42,7 @@ skill invocation 的 policy 解析遵循 non-escalation 原则：
 
 Why:
 
-- Claude Code 的 skill 更像对 runtime 能力的受限包装，而不是 capability escalation surface。
+- 参考实现的 skill 更像对 runtime 能力的受限包装，而不是 capability escalation surface。
 - 只有 non-escalation 规则稳定，用户才容易推理 skill 的安全边界。
 
 Alternatives considered:
@@ -67,7 +67,7 @@ skill 注册的 hooks 将被标记为 invocation-owned registration，并在 ski
 Why:
 
 - 没有 ownership，skill hooks 很容易泄漏到后续 turn 或其他 invocation。
-- 这也是 Claude 风格 runtime policy 的关键部分。
+- 这也是参考实现风格 runtime policy 的关键部分。
 
 ### 4. isolation 通过 `IsolationManager`/adapters 执行，而不是只修改 cwd
 
@@ -98,7 +98,7 @@ delegated execution 不只是 tool pool 裁剪，还必须显式继承：
 
 Why:
 
-- Claude 风格的 subagent 并不是“重新启动一个无约束 agent”。
+- 参考实现风格的 subagent 并不是“重新启动一个无约束 agent”。
 - 这样 `main-router`、skill fork 与 background agent 才会形成统一 delegation semantics。
 
 ## Risks / Trade-offs

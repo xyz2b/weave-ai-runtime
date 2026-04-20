@@ -24,6 +24,6 @@
 
 ## Impact
 
-- Affected code: `src/claude_agent_runtime/definitions.py`, `src/claude_agent_runtime/registries/discovery.py`, `src/claude_agent_runtime/registries/skill_registry.py`, `src/claude_agent_runtime/runtime_kernel/kernel.py`, `src/claude_agent_runtime/runtime_kernel/config.py`, `src/claude_agent_runtime/contracts.py`, `src/claude_agent_runtime/turn_engine/composer.py`, `src/claude_agent_runtime/turn_engine/engine.py`, `src/claude_agent_runtime/tool_runtime.py`, `src/claude_agent_runtime/skill_runtime.py`, and host-facing runtime surfaces.
+- Affected code: `src/runtime/definitions.py`, `src/runtime/registries/discovery.py`, `src/runtime/registries/skill_registry.py`, `src/runtime/runtime_kernel/kernel.py`, `src/runtime/runtime_kernel/config.py`, `src/runtime/contracts.py`, `src/runtime/turn_engine/composer.py`, `src/runtime/turn_engine/engine.py`, `src/runtime/tool_runtime.py`, `src/runtime/skill_runtime.py`, and host-facing runtime surfaces.
 - Affected behavior: skill exposure, path-scoped activation, user/model invocability, root capability presentation, and runtime diagnostics.
 - Follow-on integration points: slash-command adapters, plugin command providers, and MCP prompt providers can attach to the new provider pipeline without redefining execution policy semantics.

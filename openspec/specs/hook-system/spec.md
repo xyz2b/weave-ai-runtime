@@ -1,13 +1,13 @@
 # hook-system Specification
 
 ## Purpose
-TBD - created by archiving change python-claude-compatible-agent-runtime. Update Purpose after archive.
+TBD - created by archiving change python-agent-runtime-foundation. Update Purpose after archive.
 ## Requirements
-### Requirement: Claude 兼容的 runtime hook phases
-runtime SHALL 支持与 Claude Code 兼容的 runtime hook phase 名称与契约，覆盖 session、prompt、tool、stop、elicitation、compact、notification 与 subagent lifecycle events。
+### Requirement: 参考实现兼容的 runtime hook phases
+runtime SHALL 支持与参考实现兼容的 runtime hook phase 名称与契约，覆盖 session、prompt、tool、stop、elicitation、compact、notification 与 subagent lifecycle events。
 
-#### Scenario: 在 Claude 兼容 phase 中执行 hook
-- **WHEN** 某个 hook 被注册到 `SessionStart`、`UserPromptSubmit`、`PreToolUse`、`PostToolUse`、`Stop`、`SubagentStop` 或 `SessionEnd` 等 Claude 兼容事件上
+#### Scenario: 在参考实现兼容 phase 中执行 hook
+- **WHEN** 某个 hook 被注册到 `SessionStart`、`UserPromptSubmit`、`PreToolUse`、`PostToolUse`、`Stop`、`SubagentStop` 或 `SessionEnd` 等参考实现兼容事件上
 - **THEN** runtime SHALL 在对应 runtime phase 中，按照该事件定义的 hook payload contract 调用该 hook
 
 ### Requirement: hooks 可以影响 runtime flow

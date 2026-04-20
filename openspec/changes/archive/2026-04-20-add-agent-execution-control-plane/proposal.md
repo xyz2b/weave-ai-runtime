@@ -7,7 +7,7 @@
 - `agent` / `skill` 通过 assembled runtime 主路径执行
 - policy ceiling 已经开始承担 capability trimming，而不是只依赖 prompt
 
-但这套实现距离 Claude Code 想表达的 agent runtime 还有几个明显缺口：
+但这套实现距离参考实现想表达的 agent runtime 还有几个明显缺口：
 
 - agent execution 入口仍然偏薄，缺少一等的 execution spec，很多差异仍靠零散 metadata 塑形
 - runtime 仍把所有 agent 绑定到单一全局 `model_client`，`agent.model` 也只是简单字符串透传，缺少一层正式的 route resolution contract，无法在 runtime 内按 agent 选择不同的 `BASE_URL / KEY / MODEL`

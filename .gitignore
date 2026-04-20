@@ -1,6 +1,6 @@
 # Project-specific exclusions
 /cc-src/
-/.claude/
+/.runtime/
 /.codex/
 /docs/cc/
 

@@ -1,6 +1,6 @@
 ## Why
 
-当前 memory 子系统已经完成 v1：`MEMORY.md` 入口、`user/project/local` scopes、pre-turn retrieval、post-turn extraction 与 path guard 都已具备。但它仍然是单层 durable memory control plane，而不是 Claude Code 那种按时间尺度和作用范围拆开的 layered memory runtime。
+当前 memory 子系统已经完成 v1：`MEMORY.md` 入口、`user/project/local` scopes、pre-turn retrieval、post-turn extraction 与 path guard 都已具备。但它仍然是单层 durable memory control plane，而不是参考实现那种按时间尺度和作用范围拆开的 layered memory runtime。
 
 当前缺口主要有四类：
 
@@ -9,7 +9,7 @@
 - 缺少真正的 `AgentNamespaceMemory`，agent 目前只有 scope ceiling，没有独立持久工作记忆。
 - 检索与抽取策略仍是轻量规则实现，尚未形成“确定性 shortlist + 可选模型参与”的混合式 policy。
 
-memory v2 的目标不是推翻 Claude 兼容语义，而是在保留 Claude 风格外部心智模型的前提下，把内部实现升级成更适合 runtime framework 的 layered architecture。
+memory v2 的目标不是推翻参考实现兼容语义，而是在保留参考实现风格外部心智模型的前提下，把内部实现升级成更适合 runtime framework 的 layered architecture。
 
 ## What Changes
 
@@ -27,10 +27,10 @@ memory v2 的目标不是推翻 Claude 兼容语义，而是在保留 Claude 风
 
 ### Modified Capabilities
 
-- `runtime-memory-manager`: 从单层 Claude-style memory manager 扩展为 layered memory runtime 的长期记忆基础层。
+- `runtime-memory-manager`: 从单层 reference-style memory manager 扩展为 layered memory runtime 的长期记忆基础层。
 
 ## Impact
 
-- 影响 `src/claude_agent_runtime/memory/`、`src/claude_agent_runtime/session_runtime/`、`src/claude_agent_runtime/turn_engine/`、`src/claude_agent_runtime/tool_runtime/` 与 built-in memory skills 的语义边界。
+- 影响 `src/runtime/memory/`、`src/runtime/session_runtime/`、`src/runtime/turn_engine/`、`src/runtime/tool_runtime/` 与 built-in memory skills 的语义边界。
 - 会引入新的 memory artifact layout、background extraction/consolidation orchestration 与更清晰的 provenance/namespace model。
 - 为后续多模型部署、成本控制、可解释性调试和跨 session 记忆演化提供更稳定的基础。

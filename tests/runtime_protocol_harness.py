@@ -4,13 +4,13 @@ import asyncio
 from pathlib import Path
 from typing import Any, Sequence
 
-from claude_agent_runtime.contracts import (
+from runtime.contracts import (
     PromptContextEnvelope,
     RuntimeMessage,
     RuntimePrivateContext,
     serialize_content_blocks,
 )
-from claude_agent_runtime.definitions import (
+from runtime.definitions import (
     AgentDefinition,
     IsolationMode,
     SkillDefinition,
@@ -18,16 +18,16 @@ from claude_agent_runtime.definitions import (
     ToolDefinition,
     ToolTraits,
 )
-from claude_agent_runtime.registries import ToolRegistry
-from claude_agent_runtime.runtime_kernel import BuiltinPackConfig, RuntimeAssembly, RuntimeConfig, assemble_runtime
-from claude_agent_runtime.session_runtime import SessionController
-from claude_agent_runtime.execution_policy import serialize_runtime_metadata
-from claude_agent_runtime.session_runtime.models import (
+from runtime.registries import ToolRegistry
+from runtime.runtime_kernel import BuiltinPackConfig, RuntimeAssembly, RuntimeConfig, assemble_runtime
+from runtime.session_runtime import SessionController
+from runtime.execution_policy import serialize_runtime_metadata
+from runtime.session_runtime.models import (
     IngressAdmission,
     IngressReplayOutput,
     SessionIngressResult,
 )
-from claude_agent_runtime.turn_engine import (
+from runtime.turn_engine import (
     ModelRequest,
     ModelStreamEvent,
     TranscriptEntry,

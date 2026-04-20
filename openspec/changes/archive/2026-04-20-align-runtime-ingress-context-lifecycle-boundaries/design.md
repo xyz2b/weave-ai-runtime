@@ -12,7 +12,7 @@ RuntimeAssembly -> SessionController -> TurnEngine -> Tool/Agent/Skill runtimes
 - prompt-visible context 与 runtime-private context 仍然混用。`TurnEngine` 生成的 `runtime_context` 会一路传给 `ContextAssembler`，后者又把其中大部分直接拼入 system prompt，导致 policy、permission、diagnostics 等 runtime 私有状态泄露到模型可见层。
 - lifecycle ownership 交叉。`SessionController.start()/close()` 直接调用 host startup/shutdown，而 `RuntimeAssembly` / `BoundHostRuntime` 也暴露 lifecycle surface；同时 `run_prompt()/stream_prompt()` 这类 one-shot helper 会创建并启动 session，却不保证 close 语义。
 
-这个 change 不需要引入新的 monolithic `QueryEngine`。目标是保留当前更清晰的 Python 分层，同时把 Claude Code 中真正值得吸收的三个边界补齐。
+这个 change 不需要引入新的 monolithic `QueryEngine`。目标是保留当前更清晰的 Python 分层，同时把参考实现中真正值得吸收的三个边界补齐。
 
 ## Goals / Non-Goals
 

@@ -7,7 +7,7 @@
 3. 使用 batch scheduler 执行 tools
 4. 将 `tool_result` 统一回填为下一轮 continuation
 
-这个模型能支持基础工具调用，但还没有进入 Claude Code 那种“tool 是 runtime-managed capability，`tool_use` block 一出现就可进入调度器”的运行方式。当前主要缺口有四类：
+这个模型能支持基础工具调用，但还没有进入参考实现那种“tool 是 runtime-managed capability，`tool_use` block 一出现就可进入调度器”的运行方式。当前主要缺口有四类：
 
 - 工具契约仍偏静态，`traits` 无法表达输入相关并发语义、fatal failure policy、host-facing render/classifier metadata 等运行语义。
 - tool orchestration 是 post-message batch 模式，没有 provider-agnostic 的 capability 分层、没有 early start，也没有稳定的 ordered replay buffer。
@@ -21,7 +21,7 @@
 - 让工具定义从“可执行 schema + traits”升级为“包含运行语义的 capability contract”。
 - 让 `ToolDefinition` 形成稳定的两阶段工具契约：定义期的 `ToolExecutionSemantics` 与调用期的 `ResolvedToolExecutionSemantics`。
 - 在 `TurnEngine` 下引入 streaming tool orchestration，使工具能够在 streamed `tool_use` 成形后尽早执行。
-- 让 `StreamingToolExecutor` 成为 provider-agnostic 的能力分层组件，而不是默认假设所有模型都具备 Claude 风格 block streaming。
+- 让 `StreamingToolExecutor` 成为 provider-agnostic 的能力分层组件，而不是默认假设所有模型都具备参考实现风格 block streaming。
 - 将并发、安全性和 failure cascade 的判定建立在规范化输入和工具语义上，而不是仅靠静态布尔值。
 - 打通 tool progress、tool result ordering 和 capability refresh 到 shared control plane 与 host bridge。
 - 将 `ToolContext` 从 service bag 提升为显式 capability container，并把标准 capability 从 `metadata` / `runtime_services` 中拆出来。
@@ -30,7 +30,7 @@
 **Non-Goals:**
 
 - 不在这个 change 中重做整个 turn engine 或 query message protocol。
-- 不要求第一版完整复刻 Claude Code 所有 UI 呈现细节或产品专用 classifier 流程。
+- 不要求第一版完整复刻参考实现所有 UI 呈现细节或产品专用 classifier 流程。
 - 不在这个 change 中引入新的外部调度依赖或完整 plugin / MCP 发现系统。
 - 不强制所有 builtin / user tools 立刻迁移到全新的定义格式，只要求提供兼容适配层。
 
@@ -306,9 +306,7 @@ Alternatives considered:
 - 直接把 `RuntimeServices` 暴露给 tools，并通过约定限制用法。拒绝，因为约定无法替代 capability boundary。
 - 让每个 tool 自行注入所需 helper。拒绝，因为这会让 builtin 和 user tools 的能力模型分裂。
 
-### 3. 将工具调用生命周期收敛为显式对象模型
-
-Claude Code 已经隐含存在工具调用生命周期，但状态分散在 streamed tool queue、tool execution pipeline、context modifier 和 tool result message 之间。为了让这个 runtime 更适合作为 framework，我们应将生命周期对象显式化为：
+### 3. 将工具调用生命周期收敛为显式对象模型参考实现已经隐含存在工具调用生命周期，但状态分散在 streamed tool queue、tool execution pipeline、context modifier 和 tool result message 之间。为了让这个 runtime 更适合作为 framework，我们应将生命周期对象显式化为：
 
 ```text
 ToolCallEnvelope
@@ -647,13 +645,13 @@ parseable tool_use observed
 - replay buffer 只允许按 `replay_index` 提交连续窗口；`completion_index` 只用于调试、指标和 race 分析，不参与 transcript 排序。
 - progress、lifecycle events 和 notifications 可以绕过 replay buffer 立即发出；真正进入 continuation history 的 terminal `tool_result` 必须服从 replay 顺序。
 
-对照 Claude Code，这一层并不是没有，而是没有被显式建模成统一对象：
+对照参考实现，这一层并不是没有，而是没有被显式建模成统一对象：
 
 - `ToolCallEnvelope` 的隐式对应物大致是 `StreamingToolExecutor` 中刚入队的 `TrackedTool` 加 streamed `tool_use` block。
 - `ResolvedToolCall` 的隐式对应物分散在 `runToolUse()` / `checkPermissionsAndCallTool()` 内部，从 `parsedInput`、`processedInput`、hook rewrites、`permissionDecision.updatedInput` 一路收敛到真正传给 `tool.call()` 的 `callInput`。
 - `ToolOutcome` 的隐式对应物则是最终生成的 `tool_result` message、附带的 attachment/progress、以及 `contextModifier`。
 
-所以结论不是“Claude 没有生命周期”，而是“Claude 有真实生命周期，但它主要存在于控制流和局部变量里，而不是 framework 友好的领域对象里”。
+所以结论不是“参考实现没有生命周期”，而是“参考实现有真实生命周期，但它主要存在于控制流和局部变量里，而不是 framework 友好的领域对象里”。
 
 Why:
 
@@ -677,7 +675,7 @@ Alternatives considered:
 
 Why:
 
-- Claude 风格的 tool runtime 关键不是“并行执行”本身，而是“在流中调度，然后按稳定顺序回放”。
+- 参考实现风格的 tool runtime 关键不是“并行执行”本身，而是“在流中调度，然后按稳定顺序回放”。
 - ordered replay buffer 和 execution lanes 都是 orchestration 关注点，不应继续耦合在 `TurnEngine` 的 post-processing 代码中。
 - 独立组件更便于 golden tests 和 host event instrumentation。
 
@@ -688,7 +686,7 @@ Alternatives considered:
 
 ### 5. `StreamingToolExecutor` 采用 capability tier 设计，并按 provider 实际能力自动降级
 
-runtime 不会按 “Claude / ChatGPT / DeepSeek / Qwen” 这种 provider 名称选择工具执行器，而是按 adapter 归一化后的 model capabilities 选择最高可行 tier。我们定义三层执行器：
+runtime 不会按 “参考实现 / ChatGPT / DeepSeek / Qwen” 这种 provider 名称选择工具执行器，而是按 adapter 归一化后的 model capabilities 选择最高可行 tier。我们定义三层执行器：
 
 - `FullStreamingToolExecutor`
   - 需要结构化 tool calls
@@ -716,13 +714,13 @@ selector 会根据 model adapter 暴露的 capability profile 决定本轮使用
 
 Why:
 
-- 框架目标是 provider-agnostic runtime，不能把 Claude 的 block protocol 当成硬前提。
+- 框架目标是 provider-agnostic runtime，不能把参考实现的 block protocol 当成硬前提。
 - 三层模型能让高能力 provider 获得 early start 收益，同时让其他 provider 复用同一套 tool runtime 语义。
 - capability-based selection 比 provider name branching 更稳定，也更适合作为 OpenAI、DeepSeek、Qwen 等 adapter 的统一契约。
 
 Alternatives considered:
 
-- 只实现 Claude 风格 full streaming executor。拒绝，因为这会直接把 runtime 绑死在少数 provider 的协议能力上。
+- 只实现参考实现风格 full streaming executor。拒绝，因为这会直接把 runtime 绑死在少数 provider 的协议能力上。
 - 对所有 provider 一律走 batch。拒绝，因为这会放弃高能力 provider 上已经可获得的早启动与并发收益。
 
 ### 6. 并发策略基于“规范化输入后的 execution semantics”，并通过 lane 模型执行
@@ -758,7 +756,7 @@ Why:
 
 Alternatives considered:
 
-- 继续用 `read_only && concurrency_safe` 的静态分批逻辑。拒绝，因为这正是当前偏离 Claude 设计的核心限制。
+- 继续用 `read_only && concurrency_safe` 的静态分批逻辑。拒绝，因为这正是当前偏离参考实现设计的核心限制。
 - 将并发判定推迟到工具内部。拒绝，因为那会让 runtime 失去统一编排能力。
 
 ### 7. 用 result ordering buffer 和 failure policy 统一处理 replay 与 sibling cancellation
@@ -779,7 +777,7 @@ Alternatives considered:
 
 Why:
 
-- ordered replay 是 Claude 风格 streaming tool execution 的关键稳定性保证。
+- ordered replay 是参考实现风格 streaming tool execution 的关键稳定性保证。
 - fatal failure cascade 必须是 runtime policy，而不是依赖工具自己随意抛异常。
 - 明确状态有助于 host 呈现、后续模型 continuation 和 golden tests。
 
@@ -807,8 +805,8 @@ Alternatives considered:
 
 上面的对象和事件模型如果没有落到具体模块 ownership，上线时很容易重新退化成两个坏结果：
 
-- 把 `ResolvedToolCall`、lane、replay、permission 收敛逻辑继续塞进 [tool_runtime.py](/Users/xyzjiao/AIProject/AIAgentRuntime/src/claude_agent_runtime/tool_runtime.py)
-- 或者把 stream observation、orchestration、host event emission 全挤进 [turn_engine/engine.py](/Users/xyzjiao/AIProject/AIAgentRuntime/src/claude_agent_runtime/turn_engine/engine.py)
+- 把 `ResolvedToolCall`、lane、replay、permission 收敛逻辑继续塞进 [tool_runtime.py](/Users/xyzjiao/AIProject/AIAgentRuntime/src/runtime/tool_runtime.py)
+- 或者把 stream observation、orchestration、host event emission 全挤进 [turn_engine/engine.py](/Users/xyzjiao/AIProject/AIAgentRuntime/src/runtime/turn_engine/engine.py)
 
 更稳妥的做法是沿着当前代码库已有边界增量拆分，而不是一次性重写目录结构。建议的 ownership 如下：
 

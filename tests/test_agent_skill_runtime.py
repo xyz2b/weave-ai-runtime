@@ -4,9 +4,9 @@ from pathlib import Path
 
 import pytest
 
-from claude_agent_runtime.agent_runtime import AgentInvocation, AgentRuntime
-from claude_agent_runtime.contracts import MessageRole, RuntimeMessage, ToolResultBlock
-from claude_agent_runtime.definitions import (
+from runtime.agent_runtime import AgentInvocation, AgentRuntime
+from runtime.contracts import MessageRole, RuntimeMessage, ToolResultBlock
+from runtime.definitions import (
     AgentDefinition,
     DefinitionOrigin,
     DefinitionSource,
@@ -19,22 +19,22 @@ from claude_agent_runtime.definitions import (
     ToolDefinition,
     ToolTraits,
 )
-from claude_agent_runtime.hooks import RuntimeHookPhase
-from claude_agent_runtime.isolation import BaseIsolationAdapter, IsolationManager, IsolationRequest
-from claude_agent_runtime.permissions import PermissionTarget
-from claude_agent_runtime.registries import AgentRegistry, SkillRegistry, ToolRegistry
-from claude_agent_runtime.runtime_kernel import (
+from runtime.hooks import RuntimeHookPhase
+from runtime.isolation import BaseIsolationAdapter, IsolationManager, IsolationRequest
+from runtime.permissions import PermissionTarget
+from runtime.registries import AgentRegistry, SkillRegistry, ToolRegistry
+from runtime.runtime_kernel import (
     BuiltinPackConfig,
     DefinitionSourcePaths,
     ModelRouteBinding,
     RuntimeConfig,
     assemble_runtime,
 )
-from claude_agent_runtime.runtime_services import RuntimeServices
-from claude_agent_runtime.skill_runtime import SkillExecutor
-from claude_agent_runtime.tasking import TaskManager
-from claude_agent_runtime.tool_runtime import ToolCall, ToolCallStatus, ToolContext, ToolScheduler
-from claude_agent_runtime.turn_engine import (
+from runtime.runtime_services import RuntimeServices
+from runtime.skill_runtime import SkillExecutor
+from runtime.tasking import TaskManager
+from runtime.tool_runtime import ToolCall, ToolCallStatus, ToolContext, ToolScheduler
+from runtime.turn_engine import (
     ModelRequest,
     ModelStreamEvent,
     ModelStreamEventType,
@@ -331,7 +331,7 @@ def test_agent_tool_rejects_unknown_model_route(tmp_path: Path) -> None:
 
 
 def test_skill_tool_executes_dynamic_overlay_skill_from_session_view(tmp_path: Path) -> None:
-    nested_skill_dir = tmp_path / "packages" / "app" / ".claude" / "skills" / "review"
+    nested_skill_dir = tmp_path / "packages" / "app" / ".runtime" / "skills" / "review"
     observed = tmp_path / "packages" / "app" / "src" / "main.py"
     nested_skill_dir.mkdir(parents=True)
     observed.parent.mkdir(parents=True)
@@ -350,7 +350,7 @@ review body
             working_directory=tmp_path,
             model_client=FakeModelClient([]),
             discovery_sources=(
-                DefinitionSourcePaths(DefinitionSource.PROJECT, tmp_path / ".claude"),
+                DefinitionSourcePaths(DefinitionSource.PROJECT, tmp_path / ".runtime"),
             ),
             builtins=BuiltinPackConfig(
                 skills_enabled=False,

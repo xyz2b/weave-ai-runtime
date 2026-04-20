@@ -1,28 +1,28 @@
 import asyncio
 from pathlib import Path
 
-from claude_agent_runtime.agent_runtime import AgentInvocation, AgentRuntime
-from claude_agent_runtime.control_plane import RuntimeControlPlaneContext
-from claude_agent_runtime.definitions import (
+from runtime.agent_runtime import AgentInvocation, AgentRuntime
+from runtime.control_plane import RuntimeControlPlaneContext
+from runtime.definitions import (
     AgentDefinition,
     PermissionBehavior,
     PermissionDecision,
     PermissionMode,
     SkillDefinition,
 )
-from claude_agent_runtime.elicitation import ElicitationRequest, SharedElicitationService
-from claude_agent_runtime.hooks import HookEffect, RuntimeHookPhase
-from claude_agent_runtime.permissions import (
+from runtime.elicitation import ElicitationRequest, SharedElicitationService
+from runtime.hooks import HookEffect, RuntimeHookPhase
+from runtime.permissions import (
     PermissionContext,
     PermissionEngine,
     PermissionRequest,
     PermissionTarget,
 )
-from claude_agent_runtime.registries import AgentRegistry, SkillRegistry, ToolRegistry
-from claude_agent_runtime.runtime_services import RuntimeServices
-from claude_agent_runtime.skill_runtime import SkillExecutor
-from claude_agent_runtime.tasking import TaskManager
-from claude_agent_runtime.turn_engine import ModelRequest, ModelStreamEvent, ModelStreamEventType, TurnEngine
+from runtime.registries import AgentRegistry, SkillRegistry, ToolRegistry
+from runtime.runtime_services import RuntimeServices
+from runtime.skill_runtime import SkillExecutor
+from runtime.tasking import TaskManager
+from runtime.turn_engine import ModelRequest, ModelStreamEvent, ModelStreamEventType, TurnEngine
 
 
 class FakeModelClient:

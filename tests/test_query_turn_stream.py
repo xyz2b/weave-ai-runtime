@@ -1,10 +1,10 @@
 import asyncio
 
-from claude_agent_runtime.contracts import MessageRole, TextBlock, ToolResultBlock
-from claude_agent_runtime.definitions import AgentDefinition, ToolDefinition, ToolTraits
-from claude_agent_runtime.registries import ToolRegistry
-from claude_agent_runtime.runtime_services import RuntimeServices, SidecarContributionResult
-from claude_agent_runtime.turn_engine import (
+from runtime.contracts import MessageRole, TextBlock, ToolResultBlock
+from runtime.definitions import AgentDefinition, ToolDefinition, ToolTraits
+from runtime.registries import ToolRegistry
+from runtime.runtime_services import RuntimeServices, SidecarContributionResult
+from runtime.turn_engine import (
     ContextAssembler,
     ModelRequest,
     ModelStreamEvent,

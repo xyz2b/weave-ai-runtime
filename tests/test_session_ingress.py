@@ -1,13 +1,13 @@
 import pytest
 
-from claude_agent_runtime.contracts import MessageRole, RuntimeMessage
-from claude_agent_runtime.runtime_services import RuntimeServices
-from claude_agent_runtime.session_runtime import (
+from runtime.contracts import MessageRole, RuntimeMessage
+from runtime.runtime_services import RuntimeServices
+from runtime.session_runtime import (
     InboundEvent,
     InboundEventType,
     SessionIngressProcessor,
 )
-from claude_agent_runtime.session_runtime.models import (
+from runtime.session_runtime.models import (
     IngressAdmission,
     IngressAdmissionKind,
     IngressReplayOutput,

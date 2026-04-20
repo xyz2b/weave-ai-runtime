@@ -1,8 +1,8 @@
 ## Why
 
-Claude Code 中的 skill 本体不是一段提示词文本，而是 `prompt body + typed metadata + runtime policy envelope`。当前 runtime 已经支持 Claude Code 风格 skill 的定义加载、部分 policy narrowing、forked execution、hook ownership 与 invocation catalog，但仍有几类关键 frontmatter 字段停留在“已解析、未完全执行”的状态。
+参考实现中的 skill 本体不是一段提示词文本，而是 `prompt body + typed metadata + runtime policy envelope`。当前 runtime 已经支持参考实现风格 skill 的定义加载、部分 policy narrowing、forked execution、hook ownership 与 invocation catalog，但仍有几类关键 frontmatter 字段停留在“已解析、未完全执行”的状态。
 
-这个缺口让 skill 的真实行为与 Claude Code 不一致，也让 host、model 和实现者都难以稳定推理 skill 何时可见、何时激活、以及哪些约束会真正生效。
+这个缺口让 skill 的真实行为与参考实现不一致，也让 host、model 和实现者都难以稳定推理 skill 何时可见、何时激活、以及哪些约束会真正生效。
 
 ## What Changes
 
@@ -17,7 +17,7 @@ Claude Code 中的 skill 本体不是一段提示词文本，而是 `prompt body
 ## Capabilities
 
 ### New Capabilities
-- `skill-runtime-semantics`: 定义并执行 Claude Code 风格 skill 的 runtime policy envelope，包括 prompt expansion、shell execution、model/effort override 与统一 invocation gate。
+- `skill-runtime-semantics`: 定义并执行参考实现风格 skill 的 runtime policy envelope，包括 prompt expansion、shell execution、model/effort override 与统一 invocation gate。
 - `skill-activation-lifecycle`: 定义 skill metadata 在 discovery / activation / visibility 阶段的生命周期，包括 path-scoped skill 的发现、资格判定、激活与稳定诊断面。
 
 ### Modified Capabilities
@@ -25,13 +25,13 @@ Claude Code 中的 skill 本体不是一段提示词文本，而是 `prompt body
 ## Impact
 
 - Affected code:
-  - `src/claude_agent_runtime/registries/discovery.py`
-  - `src/claude_agent_runtime/definitions.py`
-  - `src/claude_agent_runtime/registries/skill_registry.py`
-  - `src/claude_agent_runtime/invocation_catalog.py`
-  - `src/claude_agent_runtime/skill_runtime.py`
-  - `src/claude_agent_runtime/turn_engine/engine.py`
-  - `src/claude_agent_runtime/runtime_kernel/kernel.py`
+  - `src/runtime/registries/discovery.py`
+  - `src/runtime/definitions.py`
+  - `src/runtime/registries/skill_registry.py`
+  - `src/runtime/invocation_catalog.py`
+  - `src/runtime/skill_runtime.py`
+  - `src/runtime/turn_engine/engine.py`
+  - `src/runtime/runtime_kernel/kernel.py`
   - `tests/test_discovery.py`
   - `tests/test_invocation_catalog.py`
   - `tests/test_agent_skill_runtime.py`

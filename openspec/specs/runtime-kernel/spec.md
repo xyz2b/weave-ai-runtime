@@ -1,7 +1,7 @@
 # runtime-kernel Specification
 
 ## Purpose
-TBD - created by archiving change python-claude-compatible-agent-runtime. Update Purpose after archive.
+TBD - created by archiving change python-agent-runtime-foundation. Update Purpose after archive.
 ## Requirements
 ### Requirement: Python runtime kernel 引导
 runtime SHALL 提供一个 Python runtime kernel，用于从 bundled 和用户提供的 runtime definitions 引导 configuration、registries、persistence wiring 与默认子系统。

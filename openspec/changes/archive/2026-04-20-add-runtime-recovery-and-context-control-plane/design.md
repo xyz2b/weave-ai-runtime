@@ -36,7 +36,7 @@
 
 **Non-Goals:**
 
-- 不在本 change 中逐项复刻 Claude Code 的所有 compaction 算法，如 snip、microcompact、contextCollapse 等完整产品逻辑。
+- 不在本 change 中逐项复刻参考实现的所有 compaction 算法，如 snip、microcompact、contextCollapse 等完整产品逻辑。
 - 不在本 change 中引入新的 host UI 渲染协议，只增加 host-visible metadata / transition contract。
 - 不要求 provider adapter 在第一阶段实现完整 retry/fallback 产品策略，只要求暴露足够的标准化 failure classification。
 - 不重做 transcript store 的整体持久化模型，只在需要时为 spillover artifact 增加最小补充接口。
@@ -285,7 +285,7 @@ Why:
 
 - 当前 `CompactionManager` 太窄，不能承载完整的 context shaping。
 - 不同业务的 budget 计算方式不同，runtime 需要稳定的调用边界，而不是统一的内建公式。
-- Claude Code 的关键不是某个具体 compaction 算法，而是“所有上下文整理都走同一个主循环 join point”。
+- 参考实现的关键不是某个具体 compaction 算法，而是“所有上下文整理都走同一个主循环 join point”。
 
 Alternatives considered:
 
@@ -379,7 +379,7 @@ StopPhaseOutcome
 
 Why:
 
-- 布尔式 `continue_execution` 过于粗糙，无法支持 Claude Code 风格的 stop-hook continuation。
+- 布尔式 `continue_execution` 过于粗糙，无法支持参考实现风格的 stop-hook continuation。
 - stop hook 应该表达结构化意图，而不是直接改写 terminal precedence。
 
 Alternatives considered:

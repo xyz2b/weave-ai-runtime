@@ -1,6 +1,6 @@
 ## Why
 
-当前 Python runtime 已经具备可运行的 execution plane，但 control plane 仍然散落在零散 callback、占位类型和局部 wiring 中，无法稳定承接 Claude Code 里的 hooks、permissions、elicitation、memory、compaction 与 host bridge。要让抽象出的 runtime framework 真正与 Claude Code 的主要框架对齐，必须先补出统一的 control-plane spine。
+当前 Python runtime 已经具备可运行的 execution plane，但 control plane 仍然散落在零散 callback、占位类型和局部 wiring 中，无法稳定承接参考实现里的 hooks、permissions、elicitation、memory、compaction 与 host bridge。要让抽象出的 runtime framework 真正与参考实现的主要框架对齐，必须先补出统一的 control-plane spine。
 
 ## What Changes
 
@@ -18,6 +18,6 @@
 
 ## Impact
 
-- 影响 `src/claude_agent_runtime/runtime_kernel/`、`src/claude_agent_runtime/turn_engine/`、`src/claude_agent_runtime/session_runtime/`、`src/claude_agent_runtime/tool_runtime.py`、`src/claude_agent_runtime/agent_runtime.py`、`src/claude_agent_runtime/skill_runtime.py`。
+- 影响 `src/runtime/runtime_kernel/`、`src/runtime/turn_engine/`、`src/runtime/session_runtime/`、`src/runtime/tool_runtime.py`、`src/runtime/agent_runtime.py`、`src/runtime/skill_runtime.py`。
 - 需要新增 runtime services 与 control-plane 相关的模块边界，但不直接引入新的产品层 UI 逻辑。
 - 为后续 hooks、permissions、host、memory、compaction 的 follow-up 变更提供统一装配基础。

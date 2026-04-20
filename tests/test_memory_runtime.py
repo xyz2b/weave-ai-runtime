@@ -7,17 +7,17 @@ from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from claude_agent_runtime.builtins.tools import builtin_tools
-from claude_agent_runtime.contracts import MessageRole, RuntimeMessage
-from claude_agent_runtime.definitions import (
+from runtime.builtins.tools import builtin_tools
+from runtime.contracts import MessageRole, RuntimeMessage
+from runtime.definitions import (
     AgentDefinition,
     MemoryScope,
     PermissionBehavior,
     PermissionDecision,
 )
-from claude_agent_runtime.execution_policy import build_root_execution_policy, resolve_agent_execution_policy
-from claude_agent_runtime.hooks import RuntimeHookPhase
-from claude_agent_runtime.memory import (
+from runtime.execution_policy import build_root_execution_policy, resolve_agent_execution_policy
+from runtime.hooks import RuntimeHookPhase
+from runtime.memory import (
     MemoryEntry,
     MemoryManager,
     MemoryManagerService,
@@ -26,21 +26,21 @@ from claude_agent_runtime.memory import (
     MemoryRetrievalRankedHit,
     MemoryTurnResult,
 )
-from claude_agent_runtime.memory.schema import serialize_memory_artifact
-from claude_agent_runtime.permissions import PermissionContext
-from claude_agent_runtime.registries import AgentRegistry, ToolRegistry
-from claude_agent_runtime.runtime_kernel import BuiltinPackConfig, RuntimeConfig, assemble_runtime
-from claude_agent_runtime.runtime_services import RuntimeServices
-from claude_agent_runtime.session_runtime import (
+from runtime.memory.schema import serialize_memory_artifact
+from runtime.permissions import PermissionContext
+from runtime.registries import AgentRegistry, ToolRegistry
+from runtime.runtime_kernel import BuiltinPackConfig, RuntimeConfig, assemble_runtime
+from runtime.runtime_services import RuntimeServices
+from runtime.session_runtime import (
     InMemoryTranscriptStore,
     InboundEvent,
     InboundEventType,
     SessionController,
     SessionStatus,
 )
-from claude_agent_runtime.tasking import TaskManager, TaskStatus
-from claude_agent_runtime.tool_runtime import ToolCall, ToolCallStatus, ToolContext, ToolScheduler
-from claude_agent_runtime.turn_engine import (
+from runtime.tasking import TaskManager, TaskStatus
+from runtime.tool_runtime import ToolCall, ToolCallStatus, ToolContext, ToolScheduler
+from runtime.turn_engine import (
     ContextAssembler,
     ModelRequest,
     ModelStreamEvent,
@@ -112,7 +112,7 @@ def test_memory_manager_resolves_user_project_and_local_scopes(tmp_path: Path) -
     project_root = tmp_path / "project"
     workspace = project_root / "workspace"
     workspace.mkdir(parents=True)
-    user_root = tmp_path / "user-home" / ".claude"
+    user_root = tmp_path / "user-home" / ".runtime"
 
     manager = MemoryManager(project_root=project_root, user_root=user_root)
     default_agent = AgentDefinition(name="main-router", description="router", prompt="route")
@@ -134,15 +134,15 @@ def test_memory_manager_resolves_user_project_and_local_scopes(tmp_path: Path) -
     local_context = manager.resolve_context(session_id="session", agent=local_agent, cwd=workspace)
 
     assert project_context.scope == MemoryScope.PROJECT
-    assert project_context.entrypoint_path == project_root / ".claude" / "memory" / "MEMORY.md"
+    assert project_context.entrypoint_path == project_root / ".runtime" / "memory" / "MEMORY.md"
     assert user_context.scope == MemoryScope.USER
     assert user_context.entrypoint_path == user_root / "memory" / "MEMORY.md"
     assert local_context.scope == MemoryScope.LOCAL
-    assert local_context.entrypoint_path == workspace / ".claude" / "memory" / "MEMORY.md"
+    assert local_context.entrypoint_path == workspace / ".runtime" / "memory" / "MEMORY.md"
 
 
 def test_session_start_loads_memory_entrypoint_and_retrieves_relevant_documents(tmp_path: Path) -> None:
-    project_root = _load_claude_memory_fixture(tmp_path)
+    project_root = _load_reference_memory_fixture(tmp_path)
     model_client = FakeModelClient(
         [
             [
@@ -247,8 +247,8 @@ def test_main_thread_memory_extraction_persists_and_surfaces_on_next_turn(tmp_pa
     )
     asyncio.run(controller.run_until_idle())
 
-    preference_documents = sorted((project_root / ".claude" / "memory" / "documents" / "preferences").glob("*.md"))
-    convention_documents = sorted((project_root / ".claude" / "memory" / "documents" / "conventions").glob("*.md"))
+    preference_documents = sorted((project_root / ".runtime" / "memory" / "documents" / "preferences").glob("*.md"))
+    convention_documents = sorted((project_root / ".runtime" / "memory" / "documents" / "conventions").glob("*.md"))
     assert len(preference_documents) == 1
     assert len(convention_documents) == 1
     assert "memory_kind: preference" in preference_documents[0].read_text(encoding="utf-8")
@@ -257,7 +257,7 @@ def test_main_thread_memory_extraction_persists_and_surfaces_on_next_turn(tmp_pa
     assert "The project uses pytest" in convention_documents[0].read_text(encoding="utf-8")
 
     manifest_payload = json.loads(
-        (project_root / ".claude" / "memory" / "manifests" / "long-term-manifest.json").read_text(encoding="utf-8")
+        (project_root / ".runtime" / "memory" / "manifests" / "long-term-manifest.json").read_text(encoding="utf-8")
     )
     assert manifest_payload["schema_version"] == "memory.v2"
     assert manifest_payload["manifest_kind"] == "long_term"
@@ -313,9 +313,9 @@ def test_record_turn_with_receipts_routes_fact_taxonomy_to_shared_agent_session_
     assert len(result.persisted_documents) == 4
     persisted_kinds = {document.kind for document in result.persisted_documents}
     assert persisted_kinds == {"preference", "project_convention", "workflow_command", "agent_workflow"}
-    assert any(document.path.is_relative_to(project_root / ".claude" / "memory" / "documents" / "preferences") for document in result.persisted_documents)
-    assert any(document.path.is_relative_to(project_root / ".claude" / "memory" / "documents" / "conventions") for document in result.persisted_documents)
-    assert any(document.path.is_relative_to(project_root / ".claude" / "memory" / "agents" / "main-router") for document in result.persisted_documents)
+    assert any(document.path.is_relative_to(project_root / ".runtime" / "memory" / "documents" / "preferences") for document in result.persisted_documents)
+    assert any(document.path.is_relative_to(project_root / ".runtime" / "memory" / "documents" / "conventions") for document in result.persisted_documents)
+    assert any(document.path.is_relative_to(project_root / ".runtime" / "memory" / "agents" / "main-router") for document in result.persisted_documents)
 
     receipts_by_fact = {receipt.fact_type: receipt for receipt in result.receipts}
     assert receipts_by_fact["preference"].action == "persisted"
@@ -416,7 +416,7 @@ def test_memory_update_owned_skips_automatic_extraction(tmp_path: Path) -> None:
     )
     asyncio.run(controller.run_until_idle())
 
-    documents_root = project_root / ".claude" / "memory" / "documents"
+    documents_root = project_root / ".runtime" / "memory" / "documents"
     assert list(documents_root.rglob("*.md")) == []
     assert controller.state.metadata.get("memory_write_receipts") in (None, [])
 
@@ -451,7 +451,7 @@ def test_memory_start_initializes_layered_layout_and_agent_manifest(tmp_path: Pa
 
 def test_invalid_frontmatter_memory_artifact_degrades_without_breaking_retrieval(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
-    documents_dir = project_root / ".claude" / "memory" / "documents" / "shared"
+    documents_dir = project_root / ".runtime" / "memory" / "documents" / "shared"
     documents_dir.mkdir(parents=True)
     _write_v2_memory_artifact(
         documents_dir / "valid-pytest.md",
@@ -482,7 +482,7 @@ def test_invalid_frontmatter_memory_artifact_degrades_without_breaking_retrieval
     assert trace["budget_decisions"][1]["layer"] == "shared_long_term"
 
     manifest_payload = json.loads(
-        (project_root / ".claude" / "memory" / "manifests" / "long-term-manifest.json").read_text(encoding="utf-8")
+        (project_root / ".runtime" / "memory" / "manifests" / "long-term-manifest.json").read_text(encoding="utf-8")
     )
     assert manifest_payload["stats"]["entry_count"] == 1
     assert manifest_payload["stats"]["invalid_entry_count"] == 1
@@ -490,7 +490,7 @@ def test_invalid_frontmatter_memory_artifact_degrades_without_breaking_retrieval
 
 def test_layered_retrieval_prioritizes_agent_namespace_shared_long_term_and_session_summary(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
-    memory_root = project_root / ".claude" / "memory"
+    memory_root = project_root / ".runtime" / "memory"
     _write_v2_memory_artifact(
         memory_root / "documents" / "shared" / "pytest-shared.md",
         title="Shared Pytest Workflow",
@@ -541,7 +541,7 @@ def test_layered_retrieval_prioritizes_agent_namespace_shared_long_term_and_sess
     assert trace["selected_doc_ids"][0] == "agents/main-router/documents/heuristics/pytest-heuristic.md"
 
     agent_manifest = json.loads(
-        (project_root / ".claude" / "memory" / "manifests" / "agent-manifest.json").read_text(encoding="utf-8")
+        (project_root / ".runtime" / "memory" / "manifests" / "agent-manifest.json").read_text(encoding="utf-8")
     )
     assert agent_manifest["namespaces"][0]["agent_name"] == "main-router"
     assert agent_manifest["namespaces"][0]["entry_count"] == 1
@@ -549,7 +549,7 @@ def test_layered_retrieval_prioritizes_agent_namespace_shared_long_term_and_sess
 
 def test_agent_namespace_retrieval_prefers_query_match_over_path_order(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
-    memory_root = project_root / ".claude" / "memory"
+    memory_root = project_root / ".runtime" / "memory"
     agent_docs = memory_root / "agents" / "main-router" / "documents" / "heuristics"
     agent_docs.mkdir(parents=True)
     (agent_docs / "aaa-build.md").write_text(
@@ -580,7 +580,7 @@ def test_agent_namespace_retrieval_prefers_query_match_over_path_order(tmp_path:
 
 def test_agent_namespace_retrieval_skips_irrelevant_documents_without_query_match(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
-    memory_root = project_root / ".claude" / "memory"
+    memory_root = project_root / ".runtime" / "memory"
     agent_docs = memory_root / "agents" / "main-router" / "documents" / "heuristics"
     agent_docs.mkdir(parents=True)
     (agent_docs / "build.md").write_text(
@@ -609,7 +609,7 @@ def test_agent_namespace_retrieval_skips_irrelevant_documents_without_query_matc
 
 def test_embedding_shortlist_can_add_semantic_candidate_and_report_divergence(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
-    memory_root = project_root / ".claude" / "memory" / "documents" / "shared"
+    memory_root = project_root / ".runtime" / "memory" / "documents" / "shared"
     _write_v2_memory_artifact(
         memory_root / "backend-checklist.md",
         title="Backend Checklist",
@@ -652,7 +652,7 @@ def test_embedding_shortlist_can_add_semantic_candidate_and_report_divergence(tm
 
 def test_hybrid_retrieval_keeps_embedding_candidate_when_lexical_pool_saturates(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
-    memory_root = project_root / ".claude" / "memory" / "documents" / "shared"
+    memory_root = project_root / ".runtime" / "memory" / "documents" / "shared"
     for index in range(8):
         _write_v2_memory_artifact(
             memory_root / f"lexical-{index}.md",
@@ -699,7 +699,7 @@ def test_hybrid_retrieval_keeps_embedding_candidate_when_lexical_pool_saturates(
 
 def test_long_term_retrieval_rerank_skips_when_deterministic_choice_is_clear(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
-    memory_root = project_root / ".claude" / "memory" / "documents" / "shared"
+    memory_root = project_root / ".runtime" / "memory" / "documents" / "shared"
     _write_v2_memory_artifact(
         memory_root / "pytest-command.md",
         title="Pytest Command",
@@ -741,7 +741,7 @@ def test_long_term_retrieval_rerank_skips_when_deterministic_choice_is_clear(tmp
 
 def test_long_term_retrieval_uses_rerank_when_hybrid_shortlists_diverge(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
-    memory_root = project_root / ".claude" / "memory" / "documents" / "shared"
+    memory_root = project_root / ".runtime" / "memory" / "documents" / "shared"
     _write_v2_memory_artifact(
         memory_root / "python-verification.md",
         title="Python Verification",
@@ -787,7 +787,7 @@ def test_long_term_retrieval_uses_rerank_when_hybrid_shortlists_diverge(tmp_path
 
 def test_long_term_retrieval_reports_budget_denied_when_rerank_would_trigger(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
-    memory_root = project_root / ".claude" / "memory" / "documents" / "shared"
+    memory_root = project_root / ".runtime" / "memory" / "documents" / "shared"
     _write_v2_memory_artifact(
         memory_root / "python-verification.md",
         title="Python Verification",
@@ -835,7 +835,7 @@ def test_long_term_retrieval_reports_budget_denied_when_rerank_would_trigger(tmp
 
 def test_long_term_retrieval_applies_contested_stale_and_confidence_controls(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
-    memory_root = project_root / ".claude" / "memory" / "documents" / "shared"
+    memory_root = project_root / ".runtime" / "memory" / "documents" / "shared"
     _write_v2_memory_artifact(
         memory_root / "fresh-pytest.md",
         title="Fresh Pytest Workflow",
@@ -903,7 +903,7 @@ def test_long_term_retrieval_applies_contested_stale_and_confidence_controls(tmp
 
 def test_embedding_shortlist_preserves_contested_decay_penalties(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
-    memory_root = project_root / ".claude" / "memory" / "documents" / "shared"
+    memory_root = project_root / ".runtime" / "memory" / "documents" / "shared"
     _write_v2_memory_artifact(
         memory_root / "fresh-pytest.md",
         title="Fresh Pytest Workflow",
@@ -952,7 +952,7 @@ def test_embedding_shortlist_preserves_contested_decay_penalties(tmp_path: Path)
 
 def test_scope_mismatched_long_term_artifact_is_excluded_from_manifest(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
-    misplaced = project_root / ".claude" / "memory" / "documents" / "shared" / "misplaced.md"
+    misplaced = project_root / ".runtime" / "memory" / "documents" / "shared" / "misplaced.md"
     _write_v2_memory_artifact(
         misplaced,
         title="Misplaced Scope",
@@ -971,7 +971,7 @@ def test_scope_mismatched_long_term_artifact_is_excluded_from_manifest(tmp_path:
 
 def test_agent_namespace_manifest_ignores_invalid_docs_and_non_string_conflict_keys(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
-    namespace_root = project_root / ".claude" / "memory" / "agents" / "main-router"
+    namespace_root = project_root / ".runtime" / "memory" / "agents" / "main-router"
     _write_v2_memory_artifact(
         namespace_root / "documents" / "heuristics" / "valid.md",
         title="Valid Namespace Note",
@@ -1002,7 +1002,7 @@ def test_agent_namespace_manifest_ignores_invalid_docs_and_non_string_conflict_k
 
 def test_agent_namespace_document_must_match_its_namespace_path(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
-    namespace_root = project_root / ".claude" / "memory" / "agents" / "main-router" / "documents" / "heuristics"
+    namespace_root = project_root / ".runtime" / "memory" / "agents" / "main-router" / "documents" / "heuristics"
     _write_v2_memory_artifact(
         namespace_root / "wrong-agent.md",
         title="Wrong Namespace",
@@ -1055,13 +1055,13 @@ def test_agent_namespace_durable_writes_refresh_namespace_manifest(tmp_path: Pat
 
     assert len(persisted) == 1
     path = persisted[0].path
-    assert path.parent == project_root / ".claude" / "memory" / "agents" / "main-router" / "documents" / "heuristics"
+    assert path.parent == project_root / ".runtime" / "memory" / "agents" / "main-router" / "documents" / "heuristics"
     raw_document = path.read_text(encoding="utf-8")
     assert "namespace: agent:main-router" in raw_document
     assert "agent_namespace: main-router" in raw_document
 
     namespace_manifest = json.loads(
-        (project_root / ".claude" / "memory" / "agents" / "main-router" / "namespace-manifest.json").read_text(
+        (project_root / ".runtime" / "memory" / "agents" / "main-router" / "namespace-manifest.json").read_text(
             encoding="utf-8"
         )
     )
@@ -1072,7 +1072,7 @@ def test_agent_namespace_durable_writes_refresh_namespace_manifest(tmp_path: Pat
     assert namespace_manifest["entries"][0]["agent_namespace"] == "main-router"
 
     agent_manifest = json.loads(
-        (project_root / ".claude" / "memory" / "manifests" / "agent-manifest.json").read_text(encoding="utf-8")
+        (project_root / ".runtime" / "memory" / "manifests" / "agent-manifest.json").read_text(encoding="utf-8")
     )
     assert agent_manifest["namespaces"][0]["agent_name"] == "main-router"
     assert agent_manifest["namespaces"][0]["entry_count"] == 1
@@ -1132,8 +1132,8 @@ def test_agent_namespace_durable_writes_honor_effective_scope_ceiling_and_active
     assert worker_policy.memory_scope == MemoryScope.LOCAL
     assert len(persisted) == 1
     path = persisted[0].path
-    assert path.is_relative_to(workspace / ".claude" / "memory" / "agents" / "worker")
-    assert not path.is_relative_to(project_root / ".claude" / "memory" / "agents" / "worker")
+    assert path.is_relative_to(workspace / ".runtime" / "memory" / "agents" / "worker")
+    assert not path.is_relative_to(project_root / ".runtime" / "memory" / "agents" / "worker")
     raw_document = path.read_text(encoding="utf-8")
     assert "namespace: agent:worker" in raw_document
     assert "agent_namespace: worker" in raw_document
@@ -1141,7 +1141,7 @@ def test_agent_namespace_durable_writes_honor_effective_scope_ceiling_and_active
 
 def test_agent_namespace_retrieval_does_not_fallback_to_other_agent_namespaces(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
-    worker_docs = project_root / ".claude" / "memory" / "agents" / "worker" / "documents" / "heuristics"
+    worker_docs = project_root / ".runtime" / "memory" / "agents" / "worker" / "documents" / "heuristics"
     worker_docs.mkdir(parents=True)
     (worker_docs / "worker-only.md").write_text(
         "# Worker Only\n\nRun cargo test -q for Rust verification inside the worker namespace.\n",
@@ -1192,11 +1192,11 @@ def test_agent_namespace_durable_writes_dedupe_duplicate_content(tmp_path: Path)
     assert len(first_write) == 1
     assert second_write == ()
     documents = sorted(
-        (project_root / ".claude" / "memory" / "agents" / "main-router" / "documents" / "heuristics").glob("*.md")
+        (project_root / ".runtime" / "memory" / "agents" / "main-router" / "documents" / "heuristics").glob("*.md")
     )
     assert len(documents) == 1
     namespace_manifest = json.loads(
-        (project_root / ".claude" / "memory" / "agents" / "main-router" / "namespace-manifest.json").read_text(
+        (project_root / ".runtime" / "memory" / "agents" / "main-router" / "namespace-manifest.json").read_text(
             encoding="utf-8"
         )
     )
@@ -1240,7 +1240,7 @@ def test_session_memory_artifacts_refresh_and_inject_on_follow_up_turn(tmp_path:
     )
 
     asyncio.run(controller.start())
-    session_root = project_root / ".claude" / "memory" / "sessions" / "session-summary-lifecycle"
+    session_root = project_root / ".runtime" / "memory" / "sessions" / "session-summary-lifecycle"
     assert not (session_root / "session-summary.md").exists()
     assert (session_root / "open-threads.md").exists()
     initial_metadata = json.loads((session_root / "metadata.json").read_text(encoding="utf-8"))
@@ -1267,7 +1267,7 @@ def test_session_memory_artifacts_refresh_and_inject_on_follow_up_turn(tmp_path:
     assert refreshed_metadata["open_thread_count"] == 0
 
     session_manifest = json.loads(
-        (project_root / ".claude" / "memory" / "manifests" / "session-manifest.json").read_text(encoding="utf-8")
+        (project_root / ".runtime" / "memory" / "manifests" / "session-manifest.json").read_text(encoding="utf-8")
     )
     session_record = session_manifest["sessions"][0]
     assert session_record["session_id"] == "session-summary-lifecycle"
@@ -1333,7 +1333,7 @@ def test_session_summary_refreshes_after_turn_threshold(tmp_path: Path) -> None:
     metadata = json.loads(
         (
             project_root
-            / ".claude"
+            / ".runtime"
             / "memory"
             / "sessions"
             / "session-summary-threshold"
@@ -1396,7 +1396,7 @@ def test_open_threads_blocked_turn_uses_stable_thread_key_and_upserts(tmp_path: 
         asyncio.run(controller.run_until_idle())
 
     open_threads = (
-        project_root / ".claude" / "memory" / "sessions" / "session-open-threads" / "open-threads.md"
+        project_root / ".runtime" / "memory" / "sessions" / "session-open-threads" / "open-threads.md"
     ).read_text(encoding="utf-8")
     thread_key = "blocker:investigate-pytest-fixture-mismatch:main-router"
     assert open_threads.count(f"## Thread: {thread_key}") == 1
@@ -1404,7 +1404,7 @@ def test_open_threads_blocked_turn_uses_stable_thread_key_and_upserts(tmp_path: 
     metadata = json.loads(
         (
             project_root
-            / ".claude"
+            / ".runtime"
             / "memory"
             / "sessions"
             / "session-open-threads"
@@ -1486,12 +1486,12 @@ def test_blocked_open_thread_surfaces_pre_turn_and_clears_after_resolution(tmp_p
     assert any("Open Threads" in fragment for fragment in second_fragments)
     assert any("fixture mismatch is still blocking progress" in fragment for fragment in second_fragments)
 
-    open_threads_path = project_root / ".claude" / "memory" / "sessions" / "session-open-threads-clear" / "open-threads.md"
+    open_threads_path = project_root / ".runtime" / "memory" / "sessions" / "session-open-threads-clear" / "open-threads.md"
     assert open_threads_path.read_text(encoding="utf-8") == "# Open Threads\n"
     metadata = json.loads(
         (
             project_root
-            / ".claude"
+            / ".runtime"
             / "memory"
             / "sessions"
             / "session-open-threads-clear"
@@ -1580,13 +1580,13 @@ def test_waiting_user_open_thread_surfaces_pre_turn_and_clears_after_answer(tmp_
     assert any("Which memory scope should we use" in fragment for fragment in second_fragments)
 
     open_threads_path = (
-        project_root / ".claude" / "memory" / "sessions" / "session-waiting-user-threads" / "open-threads.md"
+        project_root / ".runtime" / "memory" / "sessions" / "session-waiting-user-threads" / "open-threads.md"
     )
     assert open_threads_path.read_text(encoding="utf-8") == "# Open Threads\n"
     metadata = json.loads(
         (
             project_root
-            / ".claude"
+            / ".runtime"
             / "memory"
             / "sessions"
             / "session-waiting-user-threads"
@@ -1741,7 +1741,7 @@ def test_session_memory_survives_compaction_after_refresh(tmp_path: Path) -> Non
     metadata = json.loads(
         (
             project_root
-            / ".claude"
+            / ".runtime"
             / "memory"
             / "sessions"
             / "session-compaction-memory"
@@ -1765,7 +1765,7 @@ def test_session_memory_survives_compaction_after_refresh(tmp_path: Path) -> Non
 
 
 def test_builtin_file_tools_exclude_reserved_memory_paths(tmp_path: Path) -> None:
-    project_root = _load_claude_memory_fixture(tmp_path)
+    project_root = _load_reference_memory_fixture(tmp_path)
     (project_root / "README.md").write_text("Run pytest from the repo root.\n", encoding="utf-8")
 
     tool_registry = ToolRegistry()
@@ -1795,17 +1795,17 @@ def test_builtin_file_tools_exclude_reserved_memory_paths(tmp_path: Path) -> Non
     results = asyncio.run(
         scheduler.run(
             [
-                ToolCall("1", "read", {"file_path": ".claude/memory/MEMORY.md"}),
+                ToolCall("1", "read", {"file_path": ".runtime/memory/MEMORY.md"}),
                 ToolCall(
                     "2",
                     "edit",
                     {
-                        "file_path": ".claude/memory/MEMORY.md",
+                        "file_path": ".runtime/memory/MEMORY.md",
                         "old_string": "pytest",
                         "new_string": "nose",
                     },
                 ),
-                ToolCall("3", "write", {"file_path": ".claude/memory/notes.md", "content": "blocked"}),
+                ToolCall("3", "write", {"file_path": ".runtime/memory/notes.md", "content": "blocked"}),
                 ToolCall("4", "glob", {"pattern": "**/*.md", "root": "."}),
                 ToolCall("5", "grep", {"pattern": "pytest", "path": "."}),
             ],
@@ -1822,25 +1822,25 @@ def test_builtin_file_tools_exclude_reserved_memory_paths(tmp_path: Path) -> Non
     assert results[3].status == ToolCallStatus.SUCCESS
     assert results[3].output["matches"] == [str((project_root / "README.md").resolve())]
     assert results[4].status == ToolCallStatus.SUCCESS
-    assert all(".claude/memory" not in match["file_path"] for match in results[4].output["matches"])
+    assert all(".runtime/memory" not in match["file_path"] for match in results[4].output["matches"])
     assert results[4].output["matches"][0]["file_path"] == str((project_root / "README.md").resolve())
 
 
 def test_delegated_agent_uses_explicit_project_memory_scope(tmp_path: Path) -> None:
-    project_root = _load_claude_memory_fixture(tmp_path)
+    project_root = _load_reference_memory_fixture(tmp_path)
     workspace = project_root / "workspace"
-    (project_root / ".claude" / "memory" / "agents" / "worker" / "documents" / "heuristics").mkdir(parents=True)
-    (project_root / ".claude" / "memory" / "agents" / "worker" / "documents" / "heuristics" / "project-memory.md").write_text(
+    (project_root / ".runtime" / "memory" / "agents" / "worker" / "documents" / "heuristics").mkdir(parents=True)
+    (project_root / ".runtime" / "memory" / "agents" / "worker" / "documents" / "heuristics" / "project-memory.md").write_text(
         "# Worker Project Memory\n\nProject-scoped worker guidance that should stay behind the local ceiling.\n",
         encoding="utf-8",
     )
-    (workspace / ".claude" / "memory" / "agents" / "main-router" / "documents" / "heuristics").mkdir(parents=True)
-    (workspace / ".claude" / "memory" / "agents" / "main-router" / "documents" / "heuristics" / "local-memory.md").write_text(
+    (workspace / ".runtime" / "memory" / "agents" / "main-router" / "documents" / "heuristics").mkdir(parents=True)
+    (workspace / ".runtime" / "memory" / "agents" / "main-router" / "documents" / "heuristics" / "local-memory.md").write_text(
         "# Main Router Local Memory\n\nMain router local heuristic for temporary refactors.\n",
         encoding="utf-8",
     )
-    (workspace / ".claude" / "memory" / "agents" / "worker" / "documents" / "heuristics").mkdir(parents=True)
-    (workspace / ".claude" / "memory" / "agents" / "worker" / "documents" / "heuristics" / "local-worker-memory.md").write_text(
+    (workspace / ".runtime" / "memory" / "agents" / "worker" / "documents" / "heuristics").mkdir(parents=True)
+    (workspace / ".runtime" / "memory" / "agents" / "worker" / "documents" / "heuristics" / "local-worker-memory.md").write_text(
         "# Worker Local Memory\n\nWorker-specific local guidance for delegated verification.\n",
         encoding="utf-8",
     )
@@ -1994,10 +1994,10 @@ def test_background_extraction_persists_synthesized_memory_after_turn_completion
     assert task.status == TaskStatus.COMPLETED
     assert len(result.persisted_documents) >= 2
 
-    preferences = list((project_root / ".claude" / "memory" / "documents" / "preferences").glob("*.md"))
-    topics = list((project_root / ".claude" / "memory" / "documents" / "topics").glob("*.md"))
+    preferences = list((project_root / ".runtime" / "memory" / "documents" / "preferences").glob("*.md"))
+    topics = list((project_root / ".runtime" / "memory" / "documents" / "topics").glob("*.md"))
     agent_notes = list(
-        (project_root / ".claude" / "memory" / "agents" / "main-router" / "documents" / "durable-notes").glob("*.md")
+        (project_root / ".runtime" / "memory" / "agents" / "main-router" / "documents" / "durable-notes").glob("*.md")
     )
     assert preferences
     assert topics
@@ -2067,9 +2067,9 @@ def test_background_extraction_queue_coalesces_and_merges_trailing_runs(tmp_path
     assert task.metadata["queued_merge"] is True
     assert any(document.kind == "preference" for document in result.persisted_documents)
     assert any(document.kind == "agent_note" for document in result.persisted_documents)
-    preferences = list((project_root / ".claude" / "memory" / "documents" / "preferences").glob("*.md"))
+    preferences = list((project_root / ".runtime" / "memory" / "documents" / "preferences").glob("*.md"))
     agent_notes = list(
-        (project_root / ".claude" / "memory" / "agents" / "main-router" / "documents" / "durable-notes").glob("*.md")
+        (project_root / ".runtime" / "memory" / "agents" / "main-router" / "documents" / "durable-notes").glob("*.md")
     )
     assert len(preferences) == 1
     assert len(agent_notes) == 1
@@ -2101,7 +2101,7 @@ def test_record_turn_with_receipts_merges_provenance_for_existing_project_conven
 
     assert any(receipt.action == "persisted" for receipt in first.receipts)
     assert any(receipt.action == "merged" for receipt in second.receipts)
-    conventions = sorted((project_root / ".claude" / "memory" / "documents" / "conventions").glob("*.md"))
+    conventions = sorted((project_root / ".runtime" / "memory" / "documents" / "conventions").glob("*.md"))
     assert len(conventions) == 1
     convention_text = conventions[0].read_text(encoding="utf-8")
     assert "merge_policy: merge_with_provenance" in convention_text
@@ -2144,7 +2144,7 @@ def test_agent_namespace_overwrite_supersedes_existing_artifact_and_decay_prefer
     namespace_manifest = json.loads(
         (
             project_root
-            / ".claude"
+            / ".runtime"
             / "memory"
             / "agents"
             / "main-router"
@@ -2166,7 +2166,7 @@ def test_agent_namespace_overwrite_supersedes_existing_artifact_and_decay_prefer
 
     assert any("inspect failing modules" in fragment for fragment in fragments)
     assert "superseded_artifact" in trace["decays"]
-    assert trace["selected_doc_ids"][0] == str(superseding_receipt.path.relative_to(project_root / ".claude" / "memory"))
+    assert trace["selected_doc_ids"][0] == str(superseding_receipt.path.relative_to(project_root / ".runtime" / "memory"))
 
 
 def test_background_extraction_is_merge_safe_for_conflict_keys(tmp_path: Path) -> None:
@@ -2234,7 +2234,7 @@ def test_background_extraction_is_merge_safe_for_conflict_keys(tmp_path: Path) -
 
     assert any(document.kind == "topic_memory" for document in first_result.persisted_documents)
     assert any(receipt.action == "staged_contested" for receipt in second_result.receipts)
-    topic_documents = list((project_root / ".claude" / "memory" / "documents" / "topics").glob("*.md"))
+    topic_documents = list((project_root / ".runtime" / "memory" / "documents" / "topics").glob("*.md"))
     assert len(topic_documents) == 2
     assert any("contested: true" in path.read_text(encoding="utf-8") for path in topic_documents)
     assert any("retention: review_required" in path.read_text(encoding="utf-8") for path in topic_documents)
@@ -2255,7 +2255,7 @@ def test_background_extraction_is_merge_safe_for_conflict_keys(tmp_path: Path) -
 
 def test_session_controller_records_memory_diagnostics_for_retrieval_and_write_receipts(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
-    memory_root = project_root / ".claude" / "memory" / "documents" / "shared"
+    memory_root = project_root / ".runtime" / "memory" / "documents" / "shared"
     _write_v2_memory_artifact(
         memory_root / "pytest-workflow.md",
         title="Pytest Workflow",
@@ -2344,7 +2344,7 @@ def test_runtime_config_memory_config_is_wired_into_memory_service(tmp_path: Pat
 
 def test_runtime_memory_config_override_takes_precedence_over_file_config(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
-    config_path = project_root / ".claude" / "memory" / "config.yaml"
+    config_path = project_root / ".runtime" / "memory" / "config.yaml"
     config_path.parent.mkdir(parents=True)
     config_path.write_text(
         "\n".join(
@@ -2386,14 +2386,14 @@ def test_memory_config_preferred_tags_and_never_capture_apply(tmp_path: Path) ->
     project_root = tmp_path / "project"
     project_root.mkdir()
     _write_v2_memory_artifact(
-        project_root / ".claude" / "memory" / "documents" / "shared" / "a-reference.md",
+        project_root / ".runtime" / "memory" / "documents" / "shared" / "a-reference.md",
         title="Verification Reference",
         content="Verification runbook for repository checks after collecting logs.",
         scope="project",
         tags=("scratch",),
     )
     _write_v2_memory_artifact(
-        project_root / ".claude" / "memory" / "documents" / "shared" / "b-reference.md",
+        project_root / ".runtime" / "memory" / "documents" / "shared" / "b-reference.md",
         title="Verification Reference",
         content="Verification runbook for repository checks using pytest first.",
         scope="project",
@@ -2470,7 +2470,7 @@ def test_memory_config_always_capture_overrides_never_capture(tmp_path: Path) ->
 
 def test_memory_config_stale_decay_days_penalizes_old_entries_without_explicit_stale_after(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
-    memory_root = project_root / ".claude" / "memory" / "documents" / "shared"
+    memory_root = project_root / ".runtime" / "memory" / "documents" / "shared"
     old_confirmed_at = (datetime.now(timezone.utc) - timedelta(days=45)).replace(microsecond=0).isoformat().replace(
         "+00:00",
         "Z",
@@ -2524,7 +2524,7 @@ def test_memory_config_stale_decay_days_penalizes_old_entries_without_explicit_s
 
 def test_invalid_memory_config_and_partial_fallback_warn_with_safe_defaults(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
-    config_path = project_root / ".claude" / "memory" / "config.yaml"
+    config_path = project_root / ".runtime" / "memory" / "config.yaml"
     config_path.parent.mkdir(parents=True)
     config_path.write_text(
         "\n".join(
@@ -2632,24 +2632,24 @@ def test_multi_session_consolidation_generates_artifacts_and_topic_memory(tmp_pa
     )
     assert second_task_id is not None
 
-    topic_documents = list((project_root / ".claude" / "memory" / "documents" / "topics").glob("*.md"))
+    topic_documents = list((project_root / ".runtime" / "memory" / "documents" / "topics").glob("*.md"))
     assert topic_documents
     assert any("Cross-session discussion repeatedly centered on" in path.read_text(encoding="utf-8") for path in topic_documents)
 
     consolidation_manifest = json.loads(
-        (project_root / ".claude" / "memory" / "manifests" / "consolidation-manifest.json").read_text(encoding="utf-8")
+        (project_root / ".runtime" / "memory" / "manifests" / "consolidation-manifest.json").read_text(encoding="utf-8")
     )
     assert consolidation_manifest["recent_runs"][-1]["status"] == "success"
     assert consolidation_manifest["backlog"]["closed_session_count"] == 0
-    assert list((project_root / ".claude" / "memory" / "consolidations" / "checkpoints").glob("*.json"))
-    assert list((project_root / ".claude" / "memory" / "consolidations" / "staging").glob("*.json"))
-    assert list((project_root / ".claude" / "memory" / "consolidations" / "logs").glob("*.md"))
+    assert list((project_root / ".runtime" / "memory" / "consolidations" / "checkpoints").glob("*.json"))
+    assert list((project_root / ".runtime" / "memory" / "consolidations" / "staging").glob("*.json"))
+    assert list((project_root / ".runtime" / "memory" / "consolidations" / "logs").glob("*.md"))
 
     session_one_metadata = json.loads(
-        (project_root / ".claude" / "memory" / "sessions" / "session-cons-1" / "metadata.json").read_text(encoding="utf-8")
+        (project_root / ".runtime" / "memory" / "sessions" / "session-cons-1" / "metadata.json").read_text(encoding="utf-8")
     )
     session_two_metadata = json.loads(
-        (project_root / ".claude" / "memory" / "sessions" / "session-cons-2" / "metadata.json").read_text(encoding="utf-8")
+        (project_root / ".runtime" / "memory" / "sessions" / "session-cons-2" / "metadata.json").read_text(encoding="utf-8")
     )
     assert session_one_metadata["last_consolidated_at"]
     assert session_two_metadata["last_consolidated_at"]
@@ -2729,8 +2729,8 @@ def test_consolidation_failure_rolls_back_existing_durable_memory(tmp_path: Path
     def failing_merge(self, *, context, agent, cwd, decisions):
         raise RuntimeError("forced consolidation failure")
 
-    preferences_before = sorted((project_root / ".claude" / "memory" / "documents" / "preferences").glob("*.md"))
-    conventions_before = sorted((project_root / ".claude" / "memory" / "documents" / "conventions").glob("*.md"))
+    preferences_before = sorted((project_root / ".runtime" / "memory" / "documents" / "preferences").glob("*.md"))
+    conventions_before = sorted((project_root / ".runtime" / "memory" / "documents" / "conventions").glob("*.md"))
     snapshot_before = {
         path.relative_to(project_root).as_posix(): path.read_text(encoding="utf-8")
         for path in (*preferences_before, *conventions_before)
@@ -2746,23 +2746,23 @@ def test_consolidation_failure_rolls_back_existing_durable_memory(tmp_path: Path
     finally:
         MemoryManager._merge_consolidation_proposals = original_merge
 
-    preferences_after = sorted((project_root / ".claude" / "memory" / "documents" / "preferences").glob("*.md"))
-    conventions_after = sorted((project_root / ".claude" / "memory" / "documents" / "conventions").glob("*.md"))
+    preferences_after = sorted((project_root / ".runtime" / "memory" / "documents" / "preferences").glob("*.md"))
+    conventions_after = sorted((project_root / ".runtime" / "memory" / "documents" / "conventions").glob("*.md"))
     snapshot_after = {
         path.relative_to(project_root).as_posix(): path.read_text(encoding="utf-8")
         for path in (*preferences_after, *conventions_after)
     }
     assert snapshot_after == snapshot_before
-    assert list((project_root / ".claude" / "memory" / "documents" / "topics").glob("*.md")) == []
+    assert list((project_root / ".runtime" / "memory" / "documents" / "topics").glob("*.md")) == []
 
     consolidation_manifest = json.loads(
-        (project_root / ".claude" / "memory" / "manifests" / "consolidation-manifest.json").read_text(encoding="utf-8")
+        (project_root / ".runtime" / "memory" / "manifests" / "consolidation-manifest.json").read_text(encoding="utf-8")
     )
     assert consolidation_manifest["active_lock"] is None
     assert consolidation_manifest["recent_runs"][-1]["status"] == "failed"
 
     rollback_metadata = json.loads(
-        (project_root / ".claude" / "memory" / "sessions" / "session-rollback-2" / "metadata.json").read_text(encoding="utf-8")
+        (project_root / ".runtime" / "memory" / "sessions" / "session-rollback-2" / "metadata.json").read_text(encoding="utf-8")
     )
     assert rollback_metadata.get("last_consolidated_at") in (None, "")
 
@@ -2907,9 +2907,9 @@ def test_consolidation_lock_prevents_cross_manager_duplicate_runs(tmp_path: Path
     finally:
         MemoryManager._acquire_consolidation_lock = original_acquire
 
-    checkpoints = list((project_root / ".claude" / "memory" / "consolidations" / "checkpoints").glob("*.json"))
+    checkpoints = list((project_root / ".runtime" / "memory" / "consolidations" / "checkpoints").glob("*.json"))
     consolidation_manifest = json.loads(
-        (project_root / ".claude" / "memory" / "manifests" / "consolidation-manifest.json").read_text(encoding="utf-8")
+        (project_root / ".runtime" / "memory" / "manifests" / "consolidation-manifest.json").read_text(encoding="utf-8")
     )
     assert len(checkpoints) == 1
     assert len(consolidation_manifest["recent_runs"]) == 1
@@ -3005,22 +3005,22 @@ def test_phase_one_and_two_contracts_hold_with_consolidation_enabled(tmp_path: P
     controller.enqueue_event(InboundEvent(InboundEventType.USER_PROMPT, "Continue with the same pytest fixture debugging plan."))
     asyncio.run(controller.run_until_idle())
 
-    summary_path = project_root / ".claude" / "memory" / "sessions" / "session-long-regression" / "session-summary.md"
+    summary_path = project_root / ".runtime" / "memory" / "sessions" / "session-long-regression" / "session-summary.md"
     assert summary_path.exists()
 
 
-def _load_claude_memory_fixture(tmp_path: Path) -> Path:
+def _load_reference_memory_fixture(tmp_path: Path) -> Path:
     project_root = tmp_path / "project"
     shutil.copytree(_fixture_root(), project_root, dirs_exist_ok=True)
     return project_root
 
 
 def _fixture_root() -> Path:
-    return Path(__file__).resolve().parent / "fixtures" / "memory" / "claude_style" / "project"
+    return Path(__file__).resolve().parent / "fixtures" / "memory" / "reference_style" / "project"
 
 
 def _user_message(message_id: str, text: str):
-    from claude_agent_runtime.contracts import MessageRole, RuntimeMessage
+    from runtime.contracts import MessageRole, RuntimeMessage
 
     return RuntimeMessage(message_id=message_id, role=MessageRole.USER, content=text)
 

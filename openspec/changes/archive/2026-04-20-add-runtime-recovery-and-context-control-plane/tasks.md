@@ -1,6 +1,6 @@
 ## 1. Recovery Contracts
 
-- [x] 1.1 在 `src/claude_agent_runtime/contracts.py` 或 `src/claude_agent_runtime/turn_engine/` 新增 provider-neutral failure classification 模型，统一表示 `context_limit`、`output_limit`、`media_limit`、`provider_overload`、`auth_error`、`internal_error` 等分类
+- [x] 1.1 在 `src/runtime/contracts.py` 或 `src/runtime/turn_engine/` 新增 provider-neutral failure classification 模型，统一表示 `context_limit`、`output_limit`、`media_limit`、`provider_overload`、`auth_error`、`internal_error` 等分类
 - [x] 1.2 新增 `RecoveryState` dataclass，显式承载 retry counters、prior compaction attempts、active failure class 与 pending override snapshot
 - [x] 1.3 新增 `RecoveryDecision` dataclass，覆盖 `halt`、`continue_same_turn`、`rebuild_request`、`compact_and_retry`、`retry_with_override` 的 action、reason、metadata 与 injected messages
 - [x] 1.4 新增 `StopPhaseOutcome` dataclass，替代 stop 阶段只靠 `continue_execution: bool` 的表达
@@ -10,7 +10,7 @@
 
 ## 2. Recovery Policy And Override Lifecycle
 
-- [x] 2.1 从 `src/claude_agent_runtime/turn_engine/engine.py` 提取 attempt outcome normalization helper，把 provider stop reason / error / abort 转成标准化 recovery input
+- [x] 2.1 从 `src/runtime/turn_engine/engine.py` 提取 attempt outcome normalization helper，把 provider stop reason / error / abort 转成标准化 recovery input
 - [x] 2.2 实现 `RecoveryPolicy` 骨架接口，使 `RECOVERY_DECISION` 不再直接依赖 `engine.py` 的本地 if/else 分支
 - [x] 2.3 实现 context-limit / output-limit / media-limit / non-retryable provider failure 的基线决策矩阵
 - [x] 2.4 实现 interrupted / aborted / max-turns / tool executor unavailable 的 halt-class 决策矩阵
@@ -45,27 +45,27 @@
 
 ## 5. Spillover Artifact Store And Replay
 
-- [x] 5.1 在 `src/claude_agent_runtime/session_runtime/transcript.py` 或相邻模块新增 transcript artifact store interface，支持 persist / load spillover payload
+- [x] 5.1 在 `src/runtime/session_runtime/transcript.py` 或相邻模块新增 transcript artifact store interface，支持 persist / load spillover payload
 - [x] 5.2 为 file-backed transcript store 增加 spillover artifact persistence 实现，定义 companion manifest 或等价落盘格式
 - [x] 5.3 为 in-memory transcript store 增加 spillover artifact store 实现，支撑单测和集成测试
 - [x] 5.4 新增 `ArtifactManifestEntry` 或等价 manifest metadata，至少记录 `artifact_ref`、producing turn、kind、digest、created_at、retention class
 - [x] 5.5 实现“被 transcript 或 session metadata 引用时不得 GC”的最小 retention 规则
 - [x] 5.6 扩展 `tool_result` metadata，使 replay slot 能携带 `externalized`、`summarized`、`artifact_ref`、decision reason 与 `policy_tag`
-- [x] 5.7 更新 `src/claude_agent_runtime/tool_orchestration.py`，使 summarized / externalized 结果仍按原始 `tool_use` 顺序回填
-- [x] 5.8 更新 `src/claude_agent_runtime/tool_runtime.py` 与相关 lifecycle 代码，保证 replay slot payload 可使用 full / summary / artifact-ref 三种形式
+- [x] 5.7 更新 `src/runtime/tool_orchestration.py`，使 summarized / externalized 结果仍按原始 `tool_use` 顺序回填
+- [x] 5.8 更新 `src/runtime/tool_runtime.py` 与相关 lifecycle 代码，保证 replay slot payload 可使用 full / summary / artifact-ref 三种形式
 - [x] 5.9 实现 missing artifact / unresolved spillover ref 的 degraded placeholder + diagnostics fallback，禁止静默丢失 replay slot
 - [x] 5.10 打通 resume 路径，使 session 恢复后可重新解析 spillover refs、compaction continuation 与其他 resumable context metadata
 
 ## 6. Hooks, Main Loop, And Session Integration
 
-- [x] 6.1 在 `src/claude_agent_runtime/turn_engine/engine.py` 中把 `COMPACT_OR_REBUILD` 改为显式调用 `ContextControlPlane.prepare(...)`
-- [x] 6.2 在 `src/claude_agent_runtime/turn_engine/engine.py` 中把 `RECOVERY_DECISION` 改为显式调用 `RecoveryPolicy.evaluate(...)`
+- [x] 6.1 在 `src/runtime/turn_engine/engine.py` 中把 `COMPACT_OR_REBUILD` 改为显式调用 `ContextControlPlane.prepare(...)`
+- [x] 6.2 在 `src/runtime/turn_engine/engine.py` 中把 `RECOVERY_DECISION` 改为显式调用 `RecoveryPolicy.evaluate(...)`
 - [x] 6.3 用共享 `RequestOverrideState` 替换当前 skill-only override flow，使 `BUILD_REQUEST`、tool outcome、stop hooks 和 recovery 共用一套 override surface
-- [x] 6.4 升级 `src/claude_agent_runtime/hooks/bus.py` 的 effect aggregation，使 `additional_context` / `notifications` 按 registration order 稳定聚合
-- [x] 6.5 在 `src/claude_agent_runtime/hooks/bus.py` 中实现 stop disposition precedence，固定 `halt_failure > block_session > continue_same_turn > allow_terminal`
+- [x] 6.4 升级 `src/runtime/hooks/bus.py` 的 effect aggregation，使 `additional_context` / `notifications` 按 registration order 稳定聚合
+- [x] 6.5 在 `src/runtime/hooks/bus.py` 中实现 stop disposition precedence，固定 `halt_failure > block_session > continue_same_turn > allow_terminal`
 - [x] 6.6 将 stop-hook 聚合结果投影为 `StopPhaseOutcome`，并把 hook-level override 先在 hook 侧聚合，再交给 runtime-wide override merge
 - [x] 6.7 将 sidecar supervisor 的重启 / 丢弃规则绑定到 `context_generation`，覆盖 projection、budget rewrite、compaction 与 recovery rebuild
-- [x] 6.8 更新 `src/claude_agent_runtime/session_runtime/controller.py`，把 compaction continuation、spillover refs、resumable override snapshot 等写入 session metadata
+- [x] 6.8 更新 `src/runtime/session_runtime/controller.py`，把 compaction continuation、spillover refs、resumable override snapshot 等写入 session metadata
 - [x] 6.9 更新 session resume 入口，使恢复时从 transcript truth + session-resumable metadata 重建 prepared context，而不是恢复 opaque active view
 - [x] 6.10 为 host-visible turn events 定义 canonical control-plane metadata schema，至少包含 context generation、effect kinds、recovery action、failure class、policy tag、matched hook owners 与 override sources
 - [x] 6.11 更新 child-run projection 与 `TurnResult` 汇总逻辑，使 recovery / stop / context effects 成为 status 与 diagnostics 的 authoritative 输入

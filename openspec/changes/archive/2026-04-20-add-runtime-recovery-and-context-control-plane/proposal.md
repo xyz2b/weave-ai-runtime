@@ -45,7 +45,7 @@
 
 ## Impact
 
-- 影响 `src/claude_agent_runtime/turn_engine/`、`src/claude_agent_runtime/session_runtime/`、`src/claude_agent_runtime/compaction/`、`src/claude_agent_runtime/tool_runtime.py`、`src/claude_agent_runtime/tool_orchestration.py`、`src/claude_agent_runtime/hooks/` 与 `src/claude_agent_runtime/contracts.py` 的主循环与上下文边界。
+- 影响 `src/runtime/turn_engine/`、`src/runtime/session_runtime/`、`src/runtime/compaction/`、`src/runtime/tool_runtime.py`、`src/runtime/tool_orchestration.py`、`src/runtime/hooks/` 与 `src/runtime/contracts.py` 的主循环与上下文边界。
 - 影响 turn-scoped metadata、session-resumable continuation metadata、request shaping、compaction continuation、tool-result replay metadata 与 sidecar restart semantics。
 - 影响 child-run / session status projection，因为新的 recovery 和 terminal metadata 会成为外围状态投影的 authoritative 输入。
 - 为后续 provider fallback、reactive compact、context collapse、long-session spillover、resume-safe continuation 和 AI-driven implementation 留出稳定的实现边界。

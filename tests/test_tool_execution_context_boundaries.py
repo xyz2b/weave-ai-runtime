@@ -2,25 +2,25 @@ import asyncio
 from pathlib import Path
 from typing import Any
 
-from claude_agent_runtime.contracts import MessageRole, RuntimeMessage, ToolResultBlock
-from claude_agent_runtime.definitions import (
+from runtime.contracts import MessageRole, RuntimeMessage, ToolResultBlock
+from runtime.definitions import (
     AgentDefinition,
     DefinitionOrigin,
     DefinitionSource,
     ToolDefinition,
     ToolTraits,
 )
-from claude_agent_runtime.registries import ToolRegistry
-from claude_agent_runtime.runtime_services import RuntimeServices
-from claude_agent_runtime.session_runtime import (
+from runtime.registries import ToolRegistry
+from runtime.runtime_services import RuntimeServices
+from runtime.session_runtime import (
     FileTranscriptStore,
     InboundEvent,
     InboundEventType,
     SessionController,
 )
-from claude_agent_runtime.tool_lifecycle import AppStateSet
-from claude_agent_runtime.tool_runtime import ToolCall, ToolContext, ToolScheduler
-from claude_agent_runtime.turn_engine import ModelStreamEvent, ModelStreamEventType, TurnEngine
+from runtime.tool_lifecycle import AppStateSet
+from runtime.tool_runtime import ToolCall, ToolContext, ToolScheduler
+from runtime.turn_engine import ModelStreamEvent, ModelStreamEventType, TurnEngine
 
 
 class BatchedModelClient:

@@ -2,8 +2,8 @@ import asyncio
 import time
 from pathlib import Path
 
-from claude_agent_runtime.permissions import PermissionContext
-from claude_agent_runtime.definitions import (
+from runtime.permissions import PermissionContext
+from runtime.definitions import (
     PermissionBehavior,
     PermissionDecision,
     PermissionMode,
@@ -11,8 +11,8 @@ from claude_agent_runtime.definitions import (
     ToolTraits,
     ValidationOutcome,
 )
-from claude_agent_runtime.registries import ToolRegistry
-from claude_agent_runtime.tool_runtime import (
+from runtime.registries import ToolRegistry
+from runtime.tool_runtime import (
     ToolCall,
     ToolCallStatus,
     ToolContext,

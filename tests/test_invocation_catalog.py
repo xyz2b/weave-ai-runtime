@@ -1,7 +1,7 @@
 import asyncio
 from pathlib import Path
 
-from claude_agent_runtime.contracts import (
+from runtime.contracts import (
     MessageAttachment,
     MessageRole,
     PromptContextEnvelope,
@@ -9,7 +9,7 @@ from claude_agent_runtime.contracts import (
     RuntimePrivateContext,
     ToolResultBlock,
 )
-from claude_agent_runtime.definitions import (
+from runtime.definitions import (
     AgentDefinition,
     DefinitionOrigin,
     DefinitionSource,
@@ -23,24 +23,24 @@ from claude_agent_runtime.definitions import (
     SkillDefinition,
     SkillExecutionContext,
 )
-from claude_agent_runtime.execution_policy import ExecutionPolicy, ExecutionPolicyState
-from claude_agent_runtime.invocation_catalog import (
+from runtime.execution_policy import ExecutionPolicy, ExecutionPolicyState
+from runtime.invocation_catalog import (
     McpPromptInvocationProvider,
     PluginCommandInvocationProvider,
     SkillInvocationProvider,
     SlashCommandInvocationProvider,
 )
-from claude_agent_runtime.permissions import PermissionContext
-from claude_agent_runtime.registries import InvocationRegistry, SkillRegistry, ToolRegistry
-from claude_agent_runtime.runtime_kernel import (
+from runtime.permissions import PermissionContext
+from runtime.registries import InvocationRegistry, SkillRegistry, ToolRegistry
+from runtime.runtime_kernel import (
     BuiltinPackConfig,
     DefinitionSourcePaths,
     RuntimeConfig,
     assemble_runtime,
 )
-from claude_agent_runtime.turn_engine import TranscriptEntry
-from claude_agent_runtime.session_runtime import InboundEvent, InboundEventType
-from claude_agent_runtime.turn_engine import ModelRequest, ModelStreamEvent, ModelStreamEventType, TurnEngine
+from runtime.turn_engine import TranscriptEntry
+from runtime.session_runtime import InboundEvent, InboundEventType
+from runtime.turn_engine import ModelRequest, ModelStreamEvent, ModelStreamEventType, TurnEngine
 
 
 class FakeModelClient:
@@ -544,8 +544,8 @@ def test_observed_paths_activate_skills_and_preserve_policy_narrowing(tmp_path: 
 def test_runtime_discovers_nested_skill_roots_and_prefers_deeper_project_skills(
     tmp_path: Path,
 ) -> None:
-    root_skill_dir = tmp_path / ".claude" / "skills" / "review"
-    nested_skill_dir = tmp_path / "packages" / "app" / ".claude" / "skills" / "review"
+    root_skill_dir = tmp_path / ".runtime" / "skills" / "review"
+    nested_skill_dir = tmp_path / "packages" / "app" / ".runtime" / "skills" / "review"
     observed = tmp_path / "packages" / "app" / "src" / "main.py"
     root_skill_dir.mkdir(parents=True)
     nested_skill_dir.mkdir(parents=True)
@@ -575,7 +575,7 @@ nested review
             working_directory=tmp_path,
             model_client=FakeModelClient([]),
             discovery_sources=(
-                DefinitionSourcePaths(DefinitionSource.PROJECT, tmp_path / ".claude"),
+                DefinitionSourcePaths(DefinitionSource.PROJECT, tmp_path / ".runtime"),
             ),
             builtins=BuiltinPackConfig(skills_enabled=False),
         )
@@ -598,7 +598,7 @@ nested review
     assert resolved is not None
     assert resolved.diagnostics.visible is True
     assert resolved.diagnostics.metadata["skill_root"] == str(
-        (tmp_path / "packages" / "app" / ".claude" / "skills").resolve()
+        (tmp_path / "packages" / "app" / ".runtime" / "skills").resolve()
     )
     effective_skill = resolved.definition.metadata["skill_definition"]
     assert isinstance(effective_skill, SkillDefinition)
@@ -606,7 +606,7 @@ nested review
 
 
 def test_runtime_reloads_dynamic_skill_root_after_skill_edit(tmp_path: Path) -> None:
-    nested_skill_dir = tmp_path / "packages" / "app" / ".claude" / "skills" / "review"
+    nested_skill_dir = tmp_path / "packages" / "app" / ".runtime" / "skills" / "review"
     observed = tmp_path / "packages" / "app" / "src" / "main.py"
     nested_skill_dir.mkdir(parents=True)
     observed.parent.mkdir(parents=True)
@@ -627,7 +627,7 @@ version one
             working_directory=tmp_path,
             model_client=FakeModelClient([]),
             discovery_sources=(
-                DefinitionSourcePaths(DefinitionSource.PROJECT, tmp_path / ".claude"),
+                DefinitionSourcePaths(DefinitionSource.PROJECT, tmp_path / ".runtime"),
             ),
             builtins=BuiltinPackConfig(skills_enabled=False),
         )
@@ -673,7 +673,7 @@ version two
 
 
 def test_session_resume_restores_dynamic_skill_roots_from_observed_paths(tmp_path: Path) -> None:
-    nested_skill_dir = tmp_path / "services" / "api" / ".claude" / "skills" / "api-review"
+    nested_skill_dir = tmp_path / "services" / "api" / ".runtime" / "skills" / "api-review"
     observed = tmp_path / "services" / "api" / "src" / "handler.py"
     nested_skill_dir.mkdir(parents=True)
     observed.parent.mkdir(parents=True)
@@ -693,7 +693,7 @@ api review
             working_directory=tmp_path,
             model_client=FakeModelClient([]),
             discovery_sources=(
-                DefinitionSourcePaths(DefinitionSource.PROJECT, tmp_path / ".claude"),
+                DefinitionSourcePaths(DefinitionSource.PROJECT, tmp_path / ".runtime"),
             ),
             builtins=BuiltinPackConfig(skills_enabled=False),
         )
@@ -719,7 +719,7 @@ api review
     assert session.state.metadata["observed_paths"] == [str(observed)]
     assert session.state.metadata["skill_dynamic_roots"] == [
         {
-            "root": str((tmp_path / "services" / "api" / ".claude" / "skills").resolve()),
+            "root": str((tmp_path / "services" / "api" / ".runtime" / "skills").resolve()),
             "source": "project",
             "discovered_from": [str(observed)],
         }

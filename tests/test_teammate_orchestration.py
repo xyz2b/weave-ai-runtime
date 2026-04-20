@@ -3,7 +3,7 @@ from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from claude_agent_runtime import (
+from runtime import (
     AgentDefinition,
     BuiltinPackConfig,
     MessageRole,
@@ -13,9 +13,9 @@ from claude_agent_runtime import (
     TeammateOrchestrationConfig,
     assemble_runtime,
 )
-from claude_agent_runtime.permissions import PermissionOutcome, PermissionRequest
-from claude_agent_runtime.tasking import TaskStatus
-from claude_agent_runtime.turn_engine import ModelRequest, ModelStreamEvent, ModelStreamEventType
+from runtime.permissions import PermissionOutcome, PermissionRequest
+from runtime.tasking import TaskStatus
+from runtime.turn_engine import ModelRequest, ModelStreamEvent, ModelStreamEventType
 
 
 class FakeModelClient:
@@ -99,7 +99,7 @@ def test_runtime_feature_gate_exposes_persistent_teammate_orchestration(tmp_path
 
     assert disabled.teammates is None
     assert enabled.teammates is not None
-    assert enabled.teammates.mailbox.root == (tmp_path / ".claude" / "teammates").resolve()
+    assert enabled.teammates.mailbox.root == (tmp_path / ".runtime" / "teammates").resolve()
 
 
 def test_mailbox_publish_is_atomic_and_claims_are_exclusive(tmp_path: Path) -> None:

@@ -20,6 +20,6 @@
 
 ## Impact
 
-- 影响 `src/claude_agent_runtime/skill_runtime.py`、`src/claude_agent_runtime/agent_runtime.py`、`src/claude_agent_runtime/tool_runtime.py`、runtime assembly 与 delegated execution path。
+- 影响 `src/runtime/skill_runtime.py`、`src/runtime/agent_runtime.py`、`src/runtime/tool_runtime.py`、runtime assembly 与 delegated execution path。
 - 会把当前 frontmatter 解析与 isolation enum 升级为真正的 runtime enforcement。
 - 让后续用户自定义 `Tool`、`Agent`、`Skill` 能在统一 policy/isolation 语义下闭环运行。

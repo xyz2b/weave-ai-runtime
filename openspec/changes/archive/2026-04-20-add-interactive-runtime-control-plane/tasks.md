@@ -1,7 +1,7 @@
 ## 1. Hook Bus Foundations
 
 - [x] 1.1 新增 `HookBus`、hook registry、hook execution result 与 session-scoped ownership 模型
-- [x] 1.2 实现 Claude 兼容 runtime phases 的 dispatch、matcher 解析与 structured effect 聚合
+- [x] 1.2 实现参考实现兼容 runtime phases 的 dispatch、matcher 解析与 structured effect 聚合
 
 ## 2. Permission and Elicitation
 

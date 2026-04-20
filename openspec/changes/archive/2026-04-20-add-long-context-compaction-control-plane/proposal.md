@@ -1,6 +1,6 @@
 ## Why
 
-long-context compaction 是 Claude Code 抽象里最容易被低估、但最像 runtime 核心的部分。当前 runtime 还没有显式的 compaction control plane，这意味着长会话只能依赖零散截断或外部手工压缩，无法形成 Claude 风格的 continuation semantics。
+long-context compaction 是参考实现抽象里最容易被低估、但最像 runtime 核心的部分。当前 runtime 还没有显式的 compaction control plane，这意味着长会话只能依赖零散截断或外部手工压缩，无法形成参考实现风格的 continuation semantics。
 
 ## What Changes
 
@@ -19,6 +19,6 @@ long-context compaction 是 Claude Code 抽象里最容易被低估、但最像 
 
 ## Impact
 
-- 影响 `src/claude_agent_runtime/compaction/`、`src/claude_agent_runtime/session_runtime/`、`src/claude_agent_runtime/turn_engine/`、transcript flow 与上下文装配。
+- 影响 `src/runtime/compaction/`、`src/runtime/session_runtime/`、`src/runtime/turn_engine/`、transcript flow 与上下文装配。
 - 会把当前隐式 context truncation 升级为真正的 runtime control plane。
 - 为长会话、resume、background continuation 与 future compact hooks 提供稳定边界。

@@ -3,8 +3,8 @@
 ## Purpose
 TBD - created by archiving change add-interactive-runtime-control-plane. Update Purpose after archive.
 ## Requirements
-### Requirement: Runtime hook bus manages Claude-compatible runtime phases
-The runtime SHALL provide a session-scoped hook bus that manages Claude-compatible runtime hook phases, including registration, deregistration, matcher evaluation, and phase-based dispatch.
+### Requirement: Runtime hook bus manages reference-compatible runtime phases
+The runtime SHALL provide a session-scoped hook bus that manages reference-compatible runtime hook phases, including registration, deregistration, matcher evaluation, and phase-based dispatch.
 
 #### Scenario: Dispatching a runtime phase
 - **WHEN** the runtime reaches a hookable phase such as `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `Stop`, `SubagentStop`, or `SessionEnd`

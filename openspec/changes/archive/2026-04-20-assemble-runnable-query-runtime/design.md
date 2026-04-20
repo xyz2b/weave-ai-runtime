@@ -1,8 +1,6 @@
 ## Context
 
-当前 Python runtime 里已经存在 `TurnEngine`、`AgentRuntime`、`SkillExecutor`、`SessionController` 等零件，但它们没有被一个正式 assembly 层组装成可运行系统。`build_runtime_kernel()` 只产出 registries 与 config 容器，`assemble_host_runtime()` 只绑定空 host；与此同时，builtin `agent` / `skill` tools 需要 `context.agent_runner` / `context.skill_runner`，而这两个 handler 目前没有正式 wiring。
-
-Claude Code 的 REPL 路径会先构造完整的 `ToolUseContext`、system prompt、tool/agent definitions，再调用统一的 `query()`。这个 change 的目标是把 Python runtime 也提升到“正式装配”的层次，而不是继续依赖测试手工拼对象。
+当前 Python runtime 里已经存在 `TurnEngine`、`AgentRuntime`、`SkillExecutor`、`SessionController` 等零件，但它们没有被一个正式 assembly 层组装成可运行系统。`build_runtime_kernel()` 只产出 registries 与 config 容器，`assemble_host_runtime()` 只绑定空 host；与此同时，builtin `agent` / `skill` tools 需要 `context.agent_runner` / `context.skill_runner`，而这两个 handler 目前没有正式 wiring。参考实现的 REPL 路径会先构造完整的 `ToolUseContext`、system prompt、tool/agent definitions，再调用统一的 `query()`。这个 change 的目标是把 Python runtime 也提升到“正式装配”的层次，而不是继续依赖测试手工拼对象。
 
 ## Goals / Non-Goals
 
@@ -53,7 +51,7 @@ Alternatives considered:
 
 - 在 builtin tools 内部直接 new 运行时对象。拒绝，因为会引入隐藏依赖和循环装配。
 
-### 3. `ToolContext` 向 Claude 风格的 `ToolUseContext` 收敛，但只做 query runtime 最小集
+### 3. `ToolContext` 向参考实现风格的 `ToolUseContext` 收敛，但只做 query runtime 最小集
 
 扩展 `ToolContext` 至少包含：
 

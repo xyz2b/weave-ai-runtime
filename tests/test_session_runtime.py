@@ -1,25 +1,25 @@
 import asyncio
 from pathlib import Path
 
-from claude_agent_runtime.contracts import (
+from runtime.contracts import (
     MessageAttachment,
     MessageRole,
     RuntimeMessage,
     ToolResultBlock,
     ToolUseBlock,
 )
-from claude_agent_runtime.definitions import AgentDefinition, ToolDefinition, ToolTraits
-from claude_agent_runtime.hooks import RuntimeHookPhase
-from claude_agent_runtime.registries import ToolRegistry
-from claude_agent_runtime.runtime_services import RuntimeServices
-from claude_agent_runtime.session_runtime import (
+from runtime.definitions import AgentDefinition, ToolDefinition, ToolTraits
+from runtime.hooks import RuntimeHookPhase
+from runtime.registries import ToolRegistry
+from runtime.runtime_services import RuntimeServices
+from runtime.session_runtime import (
     FileTranscriptStore,
     InboundEvent,
     InboundEventType,
     SessionController,
 )
-from claude_agent_runtime.session_runtime.models import SessionStatus
-from claude_agent_runtime.turn_engine import ModelRequest, ModelStreamEvent, ModelStreamEventType, PromptComposer, TurnEngine
+from runtime.session_runtime.models import SessionStatus
+from runtime.turn_engine import ModelRequest, ModelStreamEvent, ModelStreamEventType, PromptComposer, TurnEngine
 
 
 class FakeModelClient:

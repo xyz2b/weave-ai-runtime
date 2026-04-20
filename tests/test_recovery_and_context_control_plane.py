@@ -2,7 +2,7 @@ import asyncio
 import time
 from pathlib import Path
 
-from claude_agent_runtime.contracts import (
+from runtime.contracts import (
     MessageAttachment,
     MessageRole,
     PromptContextEnvelope,
@@ -13,26 +13,26 @@ from claude_agent_runtime.contracts import (
     ToolUseBlock,
     merge_request_override_state,
 )
-from claude_agent_runtime.compaction import CompactionManager
-from claude_agent_runtime.definitions import AgentDefinition
-from claude_agent_runtime.hooks import HookBus, HookStopDisposition, RuntimeHookPhase
-from claude_agent_runtime.registries import ToolRegistry
-from claude_agent_runtime.runtime_services import NoopCompactionService, RuntimeServices
-from claude_agent_runtime.session_runtime import (
+from runtime.compaction import CompactionManager
+from runtime.definitions import AgentDefinition
+from runtime.hooks import HookBus, HookStopDisposition, RuntimeHookPhase
+from runtime.registries import ToolRegistry
+from runtime.runtime_services import NoopCompactionService, RuntimeServices
+from runtime.session_runtime import (
     FileTranscriptStore,
     InMemoryTranscriptStore,
     InboundEvent,
     InboundEventType,
     SessionController,
 )
-from claude_agent_runtime.turn_engine import (
+from runtime.turn_engine import (
     ModelRequest,
     ModelStreamEvent,
     ModelStreamEventType,
     TranscriptEntry,
     TurnEngine,
 )
-from claude_agent_runtime.turn_engine.control_plane import (
+from runtime.turn_engine.control_plane import (
     BudgetAction,
     BudgetDecision,
     BudgetPlan,
@@ -52,7 +52,7 @@ from claude_agent_runtime.turn_engine.control_plane import (
     invoke_budget_hook,
     normalize_attempt_outcome,
 )
-from claude_agent_runtime.turn_engine.engine import AttemptFinished
+from runtime.turn_engine.engine import AttemptFinished
 
 
 class SequencedModelClient:

@@ -22,7 +22,7 @@
 
 ## Impact
 
-- Affected code: `src/claude_agent_runtime/session_runtime/`, `src/claude_agent_runtime/turn_engine/`, `src/claude_agent_runtime/runtime_kernel/`, `src/claude_agent_runtime/runtime_services/`, `src/claude_agent_runtime/hosts/`, `src/claude_agent_runtime/tool_runtime.py`
+- Affected code: `src/runtime/session_runtime/`, `src/runtime/turn_engine/`, `src/runtime/runtime_kernel/`, `src/runtime/runtime_services/`, `src/runtime/hosts/`, `src/runtime/tool_runtime.py`
 - Affected contracts: `TurnContext`, `ToolContext`, `ModelRequest`, session ingress/result model, prompt/private context carriers, runtime helper surfaces, host lifecycle interfaces
 - Affected systems: headless runtime, host bridge, memory/hooks/compaction sidecars, runtime protocol/conformance tests
 - Public-ish surface migration notes: `TurnContext.metadata` no longer acts as the authoritative private metadata carrier, `ToolContext` and `ModelRequest` continue exposing runtime-private state only through non-prompt channels, and one-shot helpers guarantee session close but not outer host shutdown.

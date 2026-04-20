@@ -22,6 +22,6 @@
 
 ## Impact
 
-- 影响 `src/claude_agent_runtime/runtime_kernel/*`、`src/claude_agent_runtime/turn_engine/engine.py`、`src/claude_agent_runtime/agent_runtime.py`、`src/claude_agent_runtime/skill_runtime.py` 与 `src/claude_agent_runtime/session_runtime/controller.py`。
+- 影响 `src/runtime/runtime_kernel/*`、`src/runtime/turn_engine/engine.py`、`src/runtime/agent_runtime.py`、`src/runtime/skill_runtime.py` 与 `src/runtime/session_runtime/controller.py`。
 - 需要新增正式的 runtime assembly 数据结构和 host-facing session/run surface。
 - 会改变 builtin `agent` / `skill` tools 的真实执行路径，并为后续最小 interactive/headless host 提供统一入口。

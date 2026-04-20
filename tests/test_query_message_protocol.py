@@ -2,10 +2,10 @@ import asyncio
 import json
 from pathlib import Path
 
-from claude_agent_runtime.contracts import MessageRole, RuntimeMessage, TextBlock, ToolResultBlock, ToolUseBlock
-from claude_agent_runtime.session_runtime import FileTranscriptStore
-from claude_agent_runtime.turn_engine import TranscriptEntry
-from claude_agent_runtime.turn_engine.message_protocol import normalize_messages_for_api
+from runtime.contracts import MessageRole, RuntimeMessage, TextBlock, ToolResultBlock, ToolUseBlock
+from runtime.session_runtime import FileTranscriptStore
+from runtime.turn_engine import TranscriptEntry
+from runtime.turn_engine.message_protocol import normalize_messages_for_api
 
 
 def test_transcript_store_round_trips_structured_blocks(tmp_path: Path) -> None:

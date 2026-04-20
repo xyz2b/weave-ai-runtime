@@ -1,6 +1,6 @@
 ## Why
 
-当前 runtime 在 agent/tool 的执行骨架上已经成立，但和 Claude Code 相比，模型对可委派 agent 的认知、`agent` tool 的调用表达力、child agent 的可观测性，以及 route-aware / buffered tool execution 的行为完整度仍有明显缺口。现在收口这些行为差距，可以让现有实现从“架构正确”提升到“产品行为可用且可预期”。
+当前 runtime 在 agent/tool 的执行骨架上已经成立，但和参考实现相比，模型对可委派 agent 的认知、`agent` tool 的调用表达力、child agent 的可观测性，以及 route-aware / buffered tool execution 的行为完整度仍有明显缺口。现在收口这些行为差距，可以让现有实现从“架构正确”提升到“产品行为可用且可预期”。
 
 ## What Changes
 
@@ -22,6 +22,6 @@
 
 ## Impact
 
-- Affected code: `src/claude_agent_runtime/contracts.py`, `src/claude_agent_runtime/turn_engine/composer.py`, `src/claude_agent_runtime/turn_engine/engine.py`, `src/claude_agent_runtime/turn_engine/models.py`, `src/claude_agent_runtime/builtins/agents.py`, `src/claude_agent_runtime/builtins/tools.py`, `src/claude_agent_runtime/builtins/tool_impls.py`, `src/claude_agent_runtime/agent_runtime.py`, `src/claude_agent_runtime/agent_dispatcher.py`, `src/claude_agent_runtime/agent_execution.py`, `src/claude_agent_runtime/agent_execution_service.py`, `src/claude_agent_runtime/runtime_kernel/config.py`, `src/claude_agent_runtime/runtime_kernel/kernel.py`.
+- Affected code: `src/runtime/contracts.py`, `src/runtime/turn_engine/composer.py`, `src/runtime/turn_engine/engine.py`, `src/runtime/turn_engine/models.py`, `src/runtime/builtins/agents.py`, `src/runtime/builtins/tools.py`, `src/runtime/builtins/tool_impls.py`, `src/runtime/agent_runtime.py`, `src/runtime/agent_dispatcher.py`, `src/runtime/agent_execution.py`, `src/runtime/agent_execution_service.py`, `src/runtime/runtime_kernel/config.py`, `src/runtime/runtime_kernel/kernel.py`.
 - Affected tests: `tests/test_agent_skill_runtime.py`, `tests/test_streaming_tool_runtime.py`, and new coverage for child-run persistence and route-aware model execution.
 - Runtime behavior: child agent selection, delegation payload shape, child run observability, model route resolution, and tool execution mode selection.

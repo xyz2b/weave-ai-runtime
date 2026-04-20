@@ -1,16 +1,16 @@
 import asyncio
 from pathlib import Path
 
-from claude_agent_runtime.builtins.tools import builtin_tools
-from claude_agent_runtime.definitions import (
+from runtime.builtins.tools import builtin_tools
+from runtime.definitions import (
     AgentDefinition,
     PermissionBehavior,
     PermissionDecision,
     SkillDefinition,
 )
-from claude_agent_runtime.registries import AgentRegistry, SkillRegistry, ToolRegistry
-from claude_agent_runtime.tasking import TaskManager
-from claude_agent_runtime.tool_runtime import ToolCall, ToolCallStatus, ToolContext, ToolScheduler
+from runtime.registries import AgentRegistry, SkillRegistry, ToolRegistry
+from runtime.tasking import TaskManager
+from runtime.tool_runtime import ToolCall, ToolCallStatus, ToolContext, ToolScheduler
 
 
 class FakeHeaders:
@@ -123,7 +123,7 @@ def test_builtin_external_orchestration_and_task_tools(tmp_path: Path, monkeypat
             )
         return FakeResponse("fetch body")
 
-    monkeypatch.setattr("claude_agent_runtime.builtins.tool_impls.urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("runtime.builtins.tool_impls.urllib.request.urlopen", fake_urlopen)
 
     results = asyncio.run(
         scheduler.run(
