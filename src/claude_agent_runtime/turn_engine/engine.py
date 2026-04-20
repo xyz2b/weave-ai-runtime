@@ -26,9 +26,13 @@ from ..contracts import (
     RedactedThinkingBlock,
     RuntimeMessage,
     RuntimePrivateContext,
+    SkillRequestOverrideState,
     TextBlock,
     ThinkingBlock,
     ToolUseBlock,
+    coerce_skill_request_override_state,
+    deserialize_content_blocks,
+    merge_skill_request_override_state,
     private_context_from_legacy_runtime_context,
     prompt_context_from_legacy_runtime_context,
 )
@@ -1143,6 +1147,13 @@ class TurnEngine:
                 request_metadata = dict(sanitized_runtime_context)
                 if compaction_payload is not None:
                     request_metadata["compaction"] = compaction_payload
+                pending_request_override = _skill_request_override_from_private_context(
+                    effective_private_context
+                )
+                if pending_request_override is not None:
+                    request_metadata["skill_request_override"] = (
+                        pending_request_override.serialize()
+                    )
                 requested_capabilities = _coerce_model_capabilities(
                     runtime_metadata.get("resolved_capabilities")
                 )
@@ -1158,8 +1169,18 @@ class TurnEngine:
                     tools=tool_pool,
                     skills=active_skills,
                     agent=agent,
-                    model=agent.model,
-                    effort=agent.effort,
+                    model=(
+                        pending_request_override.requested_model
+                        if pending_request_override is not None
+                        and pending_request_override.requested_model is not None
+                        else agent.model
+                    ),
+                    effort=(
+                        pending_request_override.requested_effort
+                        if pending_request_override is not None
+                        and pending_request_override.requested_effort is not None
+                        else agent.effort
+                    ),
                     abort_signal=abort_signal,
                     query_source=_query_source(request_metadata),
                     requested_model_route=_string_value(runtime_metadata.get("requested_model_route")),
@@ -1171,6 +1192,8 @@ class TurnEngine:
                     metadata=request_metadata,
                 )
                 last_request = request
+                if pending_request_override is not None:
+                    private_context = _clear_skill_request_override(private_context)
                 tool_executor = select_tool_executor(
                     model_client,
                     context=tool_context,
@@ -1576,6 +1599,25 @@ class TurnEngine:
                         phase=state.phase,
                         request=request,
                         message=tool_message,
+                        transition=transition,
+                    )
+                injected_skill_messages, pending_request_override = _skill_runtime_updates_from_outcomes(
+                    outcomes
+                )
+                if pending_request_override is not None:
+                    private_context = _apply_skill_request_override(
+                        private_context,
+                        pending_request_override,
+                    )
+                for injected_message in injected_skill_messages:
+                    working_messages.append(injected_message)
+                    state.working_messages = tuple(working_messages)
+                    yield TurnStreamEvent(
+                        event_type=TurnStreamEventType.MESSAGE,
+                        iteration=iteration_index,
+                        phase=state.phase,
+                        request=request,
+                        message=injected_message,
                         transition=transition,
                     )
                 for child_event in self._drain_child_run_events(
@@ -2182,6 +2224,93 @@ def _merge_private_context_updates(
     if diagnostics:
         merged.update({str(key): value for key, value in diagnostics.items()})
     return private_context_from_legacy_runtime_context(merged)
+
+
+def _skill_request_override_from_private_context(
+    private_context: RuntimePrivateContext,
+) -> SkillRequestOverrideState | None:
+    return coerce_skill_request_override_state(
+        private_context.extensions.get("skill_request_override")
+    )
+
+
+def _apply_skill_request_override(
+    private_context: RuntimePrivateContext,
+    pending: SkillRequestOverrideState,
+) -> RuntimePrivateContext:
+    extensions = dict(private_context.extensions)
+    current = _skill_request_override_from_private_context(private_context)
+    merged = merge_skill_request_override_state(current, pending)
+    if merged is None:
+        extensions.pop("skill_request_override", None)
+    else:
+        extensions["skill_request_override"] = merged.serialize()
+    return replace(private_context, extensions=extensions)
+
+
+def _clear_skill_request_override(
+    private_context: RuntimePrivateContext,
+) -> RuntimePrivateContext:
+    if "skill_request_override" not in private_context.extensions:
+        return private_context
+    extensions = dict(private_context.extensions)
+    extensions.pop("skill_request_override", None)
+    return replace(private_context, extensions=extensions)
+
+
+def _skill_runtime_updates_from_outcomes(
+    outcomes: Sequence[Any],
+) -> tuple[tuple[RuntimeMessage, ...], SkillRequestOverrideState | None]:
+    injected_messages: list[RuntimeMessage] = []
+    pending_request_override: SkillRequestOverrideState | None = None
+    for outcome in outcomes:
+        raw_output = getattr(outcome, "raw_output", None)
+        if not isinstance(raw_output, Mapping):
+            continue
+        if "skill" not in raw_output or "mode" not in raw_output:
+            continue
+        for payload in raw_output.get("injected_messages", ()) or ():
+            message = _deserialize_runtime_message_payload(payload)
+            if message is not None:
+                injected_messages.append(message)
+        pending_request_override = merge_skill_request_override_state(
+            pending_request_override,
+            coerce_skill_request_override_state(raw_output.get("request_override")),
+        )
+    return tuple(injected_messages), pending_request_override
+
+
+def _deserialize_runtime_message_payload(payload: Any) -> RuntimeMessage | None:
+    if not isinstance(payload, Mapping):
+        return None
+    role_value = payload.get("role")
+    if role_value is None:
+        return None
+    attachments_payload = payload.get("attachments")
+    attachments: list[MessageAttachment] = []
+    if isinstance(attachments_payload, Sequence):
+        for item in attachments_payload:
+            if not isinstance(item, Mapping):
+                continue
+            attachments.append(
+                MessageAttachment(
+                    name=str(item.get("name", "")),
+                    path=str(item.get("path", "")),
+                    mime_type=str(item["mime_type"]) if item.get("mime_type") is not None else None,
+                    metadata=dict(item.get("metadata", {}))
+                    if isinstance(item.get("metadata"), Mapping)
+                    else {},
+                )
+            )
+    return RuntimeMessage(
+        message_id=str(payload.get("message_id") or uuid4().hex),
+        role=MessageRole(str(role_value)),
+        content=deserialize_content_blocks(payload.get("content", [])),
+        attachments=tuple(attachments),
+        metadata=dict(payload.get("metadata", {}))
+        if isinstance(payload.get("metadata"), Mapping)
+        else {},
+    )
 
 
 def _split_sidecar_private_updates(

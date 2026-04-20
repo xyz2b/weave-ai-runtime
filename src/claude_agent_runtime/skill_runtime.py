@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Sequence
@@ -8,8 +9,20 @@ from uuid import uuid4
 from .agent_execution import SpawnMode
 from .agent_runtime import AgentInvocation, AgentRunResult, AgentRuntime
 from .control_plane import RuntimeControlPlaneContext
-from .contracts import MessageRole, RuntimeMessage
-from .definitions import PermissionBehavior, PermissionDecision, SkillDefinition, SkillExecutionContext
+from .contracts import (
+    MessageRole,
+    RuntimeMessage,
+    SkillRequestOverrideState,
+)
+from .definitions import (
+    DefinitionSource,
+    PermissionBehavior,
+    PermissionDecision,
+    SkillDefinition,
+    SkillExecutionContext,
+    SkillShell,
+    ToolCallStatus,
+)
 from .execution_policy import (
     EXECUTION_POLICY_STATE_KEY,
     ExecutionPolicyState,
@@ -21,6 +34,7 @@ from .hosts.base import CallbackHostAdapter, NullHostAdapter
 from .permissions import PermissionContext, PermissionRequest, PermissionTarget
 from .registries import SkillRegistry
 from .runtime_services import RuntimeServices
+from .tool_runtime import ToolCall, ToolContext, execute_tool_call
 
 
 @dataclass(slots=True)
@@ -29,6 +43,7 @@ class SkillExecutionResult:
     mode: SkillExecutionContext
     injected_messages: list[RuntimeMessage] = field(default_factory=list)
     agent_result: AgentRunResult | None = None
+    request_override: SkillRequestOverrideState | None = None
 
 
 class SkillExecutor:
@@ -61,13 +76,13 @@ class SkillExecutor:
         parent_run_id: str | None = None,
         policy_state: ExecutionPolicyState | None = None,
     ) -> SkillExecutionResult:
-        skill = self._resolve_skill(skill_name)
         parent_policy = policy_state.effective if policy_state is not None else None
         available_skills = (
             tuple(parent_skill_pool)
             if parent_skill_pool
             else (parent_policy.skill_pool if parent_policy is not None else self._skill_registry.resolve_active())
         )
+        skill = self._resolve_skill(skill_name, available_skills)
         if (parent_policy is not None or parent_skill_pool) and not policy_allows_skill(skill.name, available_skills):
             raise PermissionError(f"Skill '{skill.name}' is not available in the current execution policy")
         resolved_permission_context = (
@@ -96,7 +111,14 @@ class SkillExecutor:
             session_id=session_id,
             permission_context=resolved_policy.permission_context,
         )
-        expanded = self._expand_skill_content(skill, session_id=session_id, arguments=arguments)
+        expanded = await self._expand_skill_content(
+            skill,
+            session_id=session_id,
+            arguments=arguments,
+            cwd=cwd,
+            turn_id=turn_id,
+            policy_state=resolved_policy,
+        )
         if skill.execution_context == SkillExecutionContext.FORK:
             hook_owner = self._skill_hook_owner(skill.name)
             agent_result = await self._agent_runtime.invoke(
@@ -110,6 +132,7 @@ class SkillExecutor:
                     parent_run_id=parent_run_id,
                     parent_turn_id=turn_id,
                     requested_model=skill.model,
+                    requested_effort=skill.effort,
                     parent_tool_pool=resolved_policy.tool_pool,
                     parent_skill_pool=resolved_policy.skill_pool,
                     metadata={
@@ -146,12 +169,20 @@ class SkillExecutor:
                     policy_state=policy_state,
                     resolved_policy=resolved_policy,
                 ),
+                request_override=_skill_request_override(skill),
             )
         finally:
             if release_owner and hook_owner is not None:
                 self._runtime_services.hook_bus.release_owner(session_id, hook_owner)
 
-    def _resolve_skill(self, skill_name: str) -> SkillDefinition:
+    def _resolve_skill(
+        self,
+        skill_name: str,
+        available_skills: Sequence[SkillDefinition],
+    ) -> SkillDefinition:
+        for skill in available_skills:
+            if skill.name == skill_name:
+                return skill
         skill = self._skill_registry.get(skill_name)
         if skill is None:
             raise KeyError(skill_name)
@@ -233,8 +264,85 @@ class SkillExecutor:
             )
         ]
 
-    @staticmethod
-    def _expand_skill_content(
+    async def _expand_skill_content(
+        self,
+        skill: SkillDefinition,
+        *,
+        session_id: str,
+        arguments: Sequence[str],
+        cwd: Path,
+        turn_id: str | None,
+        policy_state: Any,
+    ) -> str:
+        expander = _SkillPromptExpander(
+            runtime_services=self._runtime_services,
+            agent_runtime=self._agent_runtime,
+        )
+        return await expander.expand(
+            skill,
+            session_id=session_id,
+            arguments=arguments,
+            cwd=cwd,
+            turn_id=turn_id,
+            policy_state=policy_state,
+        )
+
+
+class _SkillPromptExpander:
+    _ARG_RANGE_PATTERN = re.compile(r"\$\{ARG(\d+)\.\.\.\}")
+    _ARG_PATTERN = re.compile(r"\$\{ARG(\d+)\}")
+    _FENCED_PATTERN = re.compile(
+        r"```(?P<lang>bash|sh|shell|powershell|pwsh)?\n(?P<body>.*?)```",
+        re.DOTALL,
+    )
+    _INLINE_PATTERN = re.compile(r"(?m)^(?P<indent>[ \t]*)!(?P<body>[^\n]+)$")
+
+    def __init__(
+        self,
+        *,
+        runtime_services: RuntimeServices,
+        agent_runtime: AgentRuntime,
+    ) -> None:
+        self._runtime_services = runtime_services
+        self._agent_runtime = agent_runtime
+
+    async def expand(
+        self,
+        skill: SkillDefinition,
+        *,
+        session_id: str,
+        arguments: Sequence[str],
+        cwd: Path,
+        turn_id: str | None,
+        policy_state: Any,
+    ) -> str:
+        expanded = self._substitute_variables(
+            skill,
+            session_id=session_id,
+            arguments=arguments,
+        )
+        if "!" not in expanded and "```" not in expanded:
+            return expanded
+        if not _is_local_file_backed_skill(skill):
+            raise RuntimeError("Skill shell expansion is only supported for local file-backed skills")
+        expanded = await self._expand_fenced_blocks(
+            expanded,
+            skill=skill,
+            cwd=cwd,
+            turn_id=turn_id,
+            policy_state=policy_state,
+        )
+        expanded = await self._expand_inline_blocks(
+            expanded,
+            skill=skill,
+            cwd=cwd,
+            turn_id=turn_id,
+            policy_state=policy_state,
+        )
+        return expanded
+
+    def _substitute_variables(
+        self,
         skill: SkillDefinition,
         *,
         session_id: str,
@@ -242,11 +350,165 @@ class SkillExecutor:
     ) -> str:
         expanded = skill.content.replace("${CLAUDE_SESSION_ID}", session_id)
         expanded = expanded.replace("$ARGUMENTS", " ".join(arguments))
-        for index, argument in enumerate(arguments, start=1):
-            expanded = expanded.replace(f"${{ARG{index}}}", argument)
+        expanded = self._ARG_RANGE_PATTERN.sub(
+            lambda match: " ".join(arguments[int(match.group(1)) - 1 :]),
+            expanded,
+        )
+        expanded = self._ARG_PATTERN.sub(
+            lambda match: _argument_at(arguments, int(match.group(1))),
+            expanded,
+        )
         if skill.origin.path is not None:
             expanded = expanded.replace("${CLAUDE_SKILL_DIR}", str(skill.origin.path.parent))
         return expanded
+
+    async def _expand_fenced_blocks(
+        self,
+        content: str,
+        *,
+        skill: SkillDefinition,
+        cwd: Path,
+        turn_id: str | None,
+        policy_state: Any,
+    ) -> str:
+        pieces: list[str] = []
+        last_index = 0
+        for match in self._FENCED_PATTERN.finditer(content):
+            pieces.append(content[last_index : match.start()])
+            shell = _shell_from_language(match.group("lang")) or skill.shell or SkillShell.BASH
+            pieces.append(
+                await self._run_shell_block(
+                    skill,
+                    command=match.group("body").strip(),
+                    shell=shell,
+                    cwd=cwd,
+                    turn_id=turn_id,
+                    policy_state=policy_state,
+                )
+            )
+            last_index = match.end()
+        pieces.append(content[last_index:])
+        return "".join(pieces)
+
+    async def _expand_inline_blocks(
+        self,
+        content: str,
+        *,
+        skill: SkillDefinition,
+        cwd: Path,
+        turn_id: str | None,
+        policy_state: Any,
+    ) -> str:
+        pieces: list[str] = []
+        last_index = 0
+        for match in self._INLINE_PATTERN.finditer(content):
+            pieces.append(content[last_index : match.start()])
+            replacement = await self._run_shell_block(
+                skill,
+                command=match.group("body").strip(),
+                shell=skill.shell or SkillShell.BASH,
+                cwd=cwd,
+                turn_id=turn_id,
+                policy_state=policy_state,
+            )
+            indentation = match.group("indent") or ""
+            if replacement:
+                lines = replacement.splitlines()
+                pieces.append("\n".join(f"{indentation}{line}" for line in lines))
+            last_index = match.end()
+        pieces.append(content[last_index:])
+        return "".join(pieces)
+
+    async def _run_shell_block(
+        self,
+        skill: SkillDefinition,
+        *,
+        command: str,
+        shell: SkillShell,
+        cwd: Path,
+        turn_id: str | None,
+        policy_state: Any,
+    ) -> str:
+        if not command:
+            return ""
+        bash_definition = self._agent_runtime.tool_registry.get("bash")
+        if bash_definition is None:
+            raise RuntimeError("Skill shell expansion requires the bash tool")
+        if not any(definition.matches("bash") for definition in policy_state.tool_pool):
+            raise RuntimeError("Skill shell expansion is not available in the current execution policy")
+        tool_context = ToolContext(
+            session_id=str(policy_state.permission_context.session_id),
+            turn_id=turn_id or uuid4().hex,
+            agent_name="skill-runtime",
+            cwd=cwd,
+            tool_registry=self._agent_runtime.tool_registry,
+            skill_registry=self._agent_runtime.skill_registry,
+            tool_pool=tuple(policy_state.tool_pool),
+            skill_pool=tuple(policy_state.skill_pool),
+            runtime_services=self._runtime_services,
+            permission_context=policy_state.permission_context,
+            metadata={
+                "permission_context": policy_state.permission_context,
+                EXECUTION_POLICY_STATE_KEY: ExecutionPolicyState(policy_state),
+                "query_source": "skill_prompt_expansion",
+            },
+        )
+        result = await execute_tool_call(
+            bash_definition,
+            ToolCall(
+                call_id=f"skill-shell-{uuid4().hex}",
+                tool_name="bash",
+                tool_input={
+                    "command": command,
+                    "cwd": str(cwd),
+                    "shell": shell.value,
+                },
+            ),
+            tool_context,
+        )
+        if result.status != ToolCallStatus.SUCCESS:
+            raise RuntimeError(result.error or "Skill shell expansion failed")
+        output = result.output if isinstance(result.output, dict) else {}
+        stdout = str(output.get("stdout") or "")
+        stderr = str(output.get("stderr") or "")
+        exit_code = int(output.get("exit_code", 0) or 0)
+        if exit_code != 0:
+            raise RuntimeError(stderr or stdout or "Skill shell expansion failed")
+        return stdout.rstrip("\n")
+
+
+def _skill_request_override(skill: SkillDefinition) -> SkillRequestOverrideState | None:
+    state = SkillRequestOverrideState(
+        requested_model=skill.model,
+        requested_effort=skill.effort,
+        source_skill=skill.name if skill.model is not None or skill.effort is not None else None,
+    )
+    return state if state else None
+
+
+def _argument_at(arguments: Sequence[str], index: int) -> str:
+    resolved = index - 1
+    if resolved < 0 or resolved >= len(arguments):
+        return ""
+    return arguments[resolved]
+
+
+def _shell_from_language(value: str | None) -> SkillShell | None:
+    if value is None:
+        return None
+    normalized = value.strip().lower()
+    if normalized in {"bash", "sh", "shell"}:
+        return SkillShell.BASH
+    if normalized in {"powershell", "pwsh"}:
+        return SkillShell.POWERSHELL
+    return None
+
+
+def _is_local_file_backed_skill(skill: SkillDefinition) -> bool:
+    return skill.origin.path is not None and skill.origin.source in {
+        DefinitionSource.USER,
+        DefinitionSource.PROJECT,
+    }
 
 def _supports_permission_requests(host: Any) -> bool:
     if isinstance(host, CallbackHostAdapter):

@@ -129,6 +129,7 @@ class AgentExecutionService:
             or agent.model
             or (route_binding.default_model if route_binding is not None else None)
         )
+        resolved_effort = execution_spec.requested_effort or agent.effort
         resolved_capabilities = (
             route_binding.capabilities if route_binding is not None else execution_spec.resolved_capabilities
         )
@@ -167,6 +168,7 @@ class AgentExecutionService:
                 tools=tuple(tool.name for tool in effective_tools),
                 skills=tuple(skill.name for skill in effective_skills),
                 model=resolved_model,
+                effort=resolved_effort,
                 permission_mode=policy.permission_context.mode,
                 memory=policy.memory_scope,
                 isolation=policy.isolation_mode,
@@ -406,6 +408,7 @@ class AgentExecutionService:
             "query_source": execution_spec.query_source,
             "requested_model_route": execution_spec.requested_model_route,
             "requested_model": execution_spec.requested_model,
+            "requested_effort": execution_spec.requested_effort,
             "resolved_model_route": execution_spec.resolved_model_route,
             "provider_name": execution_spec.provider_name,
             "resolved_capabilities": _serialize_capabilities(execution_spec.resolved_capabilities),
@@ -437,6 +440,7 @@ class AgentExecutionService:
                 "query_source": execution_spec.query_source,
                 "requested_model_route": execution_spec.requested_model_route,
                 "requested_model": execution_spec.requested_model,
+                "requested_effort": execution_spec.requested_effort,
                 "resolved_model_route": execution_spec.resolved_model_route,
                 "provider_name": execution_spec.provider_name,
                 "resolved_capabilities": _serialize_capabilities(execution_spec.resolved_capabilities),
@@ -494,6 +498,7 @@ class AgentExecutionService:
             query_source=execution_spec.query_source,
             requested_model_route=execution_spec.requested_model_route,
             requested_model=execution_spec.requested_model,
+            requested_effort=execution_spec.requested_effort,
             resolved_model_route=execution_spec.resolved_model_route,
             provider_name=execution_spec.provider_name,
             resolved_capabilities=_serialize_capabilities(execution_spec.resolved_capabilities),

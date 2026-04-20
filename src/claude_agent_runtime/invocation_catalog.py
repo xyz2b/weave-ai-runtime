@@ -40,11 +40,28 @@ _LEADING_PATH_PUNCTUATION = "\"'`([<{"
 class SkillInvocationProvider:
     name = "skills"
 
-    def __init__(self, registry: "SkillRegistry") -> None:
+    def __init__(
+        self,
+        registry: "SkillRegistry",
+        *,
+        skill_resolver: Any | None = None,
+    ) -> None:
         self._registry = registry
+        self._skill_resolver = skill_resolver
 
     def list_invocations(self) -> tuple[InvocationDefinition, ...]:
         return tuple(self._to_invocation(skill) for skill in self._registry.definitions())
+
+    def list_invocations_for_context(
+        self,
+        context: InvocationResolutionContext,
+    ) -> tuple[InvocationDefinition, ...]:
+        if self._skill_resolver is None:
+            return self.list_invocations()
+        return tuple(
+            self._to_invocation(skill)
+            for skill in self._skill_resolver.resolve(context)
+        )
 
     def _to_invocation(self, skill: SkillDefinition) -> InvocationDefinition:
         surface_hints: dict[str, Any] = {}
@@ -52,10 +69,17 @@ class SkillInvocationProvider:
             surface_hints["when_to_use"] = skill.when_to_use
         if skill.argument_names:
             surface_hints["argument_names"] = tuple(skill.argument_names)
+        activation_enabled = True
+        registry_skill = self._registry.get(skill.name)
+        if registry_skill is not None:
+            activation_enabled = self._registry.is_active(skill.name)
         metadata = {
-            "activation_enabled": self._registry.is_active(skill.name),
+            "activation_enabled": activation_enabled,
             "frontmatter": dict(skill.metadata.get("raw_frontmatter", {})),
             "skill_definition": skill,
+            "skill_root": str(skill.origin.root) if skill.origin.root is not None else None,
+            "skill_source": skill.origin.source.value,
+            "dynamic_root": skill.metadata.get("dynamic_root"),
         }
         source_kind = (
             InvocationSourceKind.BUILTIN_SKILL
@@ -373,6 +397,15 @@ def _capability_metadata(definition: InvocationDefinition) -> dict[str, Any]:
 def _diagnostics_metadata(definition: InvocationDefinition) -> dict[str, Any]:
     metadata = _capability_metadata(definition)
     metadata["source_label"] = definition.origin.label
+    skill_root = definition.metadata.get("skill_root")
+    if skill_root is not None:
+        metadata["skill_root"] = skill_root
+    skill_source = definition.metadata.get("skill_source")
+    if skill_source is not None:
+        metadata["skill_source"] = skill_source
+    dynamic_root = definition.metadata.get("dynamic_root")
+    if dynamic_root is not None:
+        metadata["dynamic_root"] = dynamic_root
     return metadata
 
 

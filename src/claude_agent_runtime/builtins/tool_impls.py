@@ -15,6 +15,7 @@ from ..definitions import (
     PermissionBehavior,
     PermissionDecision,
     PermissionMode,
+    SkillShell,
     ValidationOutcome,
 )
 from ..tasking import TaskManager, TaskStatus
@@ -134,18 +135,33 @@ async def write_file_tool(tool_input: dict[str, Any], context: ToolContext) -> d
 def validate_bash_tool(tool_input: dict[str, Any], _: ToolContext) -> ValidationOutcome:
     if not tool_input["command"].strip():
         return ValidationOutcome(False, "command must be non-empty")
+    shell = _normalize_optional_string(tool_input.get("shell"))
+    if shell is not None and shell not in {SkillShell.BASH.value, SkillShell.POWERSHELL.value}:
+        return ValidationOutcome(False, f"Unsupported shell: {shell}")
     return ValidationOutcome(True)
 
 
 async def bash_tool(tool_input: dict[str, Any], context: ToolContext) -> dict[str, Any]:
     cwd = _resolve_path(context.cwd, tool_input.get("cwd", "."), context=context)
     timeout_ms = tool_input.get("timeout_ms", 30_000)
-    process = await asyncio.create_subprocess_shell(
-        tool_input["command"],
-        cwd=str(cwd),
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
+    shell = _normalize_optional_string(tool_input.get("shell")) or SkillShell.BASH.value
+    if shell == SkillShell.POWERSHELL.value:
+        process = await asyncio.create_subprocess_exec(
+            "pwsh",
+            "-NoProfile",
+            "-Command",
+            tool_input["command"],
+            cwd=str(cwd),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    else:
+        process = await asyncio.create_subprocess_shell(
+            tool_input["command"],
+            cwd=str(cwd),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
     try:
         stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout_ms / 1000)
     except asyncio.TimeoutError:
@@ -158,6 +174,7 @@ async def bash_tool(tool_input: dict[str, Any], context: ToolContext) -> dict[st
         raise
     return {
         "command": tool_input["command"],
+        "shell": shell,
         "exit_code": process.returncode,
         "stdout": stdout.decode("utf-8", errors="replace"),
         "stderr": stderr.decode("utf-8", errors="replace"),

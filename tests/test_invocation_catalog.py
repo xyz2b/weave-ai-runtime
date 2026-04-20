@@ -32,7 +32,13 @@ from claude_agent_runtime.invocation_catalog import (
 )
 from claude_agent_runtime.permissions import PermissionContext
 from claude_agent_runtime.registries import InvocationRegistry, SkillRegistry, ToolRegistry
-from claude_agent_runtime.runtime_kernel import BuiltinPackConfig, RuntimeConfig, assemble_runtime
+from claude_agent_runtime.runtime_kernel import (
+    BuiltinPackConfig,
+    DefinitionSourcePaths,
+    RuntimeConfig,
+    assemble_runtime,
+)
+from claude_agent_runtime.turn_engine import TranscriptEntry
 from claude_agent_runtime.session_runtime import InboundEvent, InboundEventType
 from claude_agent_runtime.turn_engine import ModelRequest, ModelStreamEvent, ModelStreamEventType, TurnEngine
 
@@ -533,6 +539,125 @@ def test_observed_paths_activate_skills_and_preserve_policy_narrowing(tmp_path: 
     assert {entry.capability.name for entry in catalog.visible} == {"python-review"}
     assert diagnostics.path_match_state == InvocationPathMatchState.MATCHED
     assert diagnostics.narrowed_by_policy["allowed_tools"] == ("read",)
+
+
+def test_runtime_discovers_nested_skill_roots_and_prefers_deeper_project_skills(
+    tmp_path: Path,
+) -> None:
+    root_skill_dir = tmp_path / ".claude" / "skills" / "review"
+    nested_skill_dir = tmp_path / "packages" / "app" / ".claude" / "skills" / "review"
+    observed = tmp_path / "packages" / "app" / "src" / "main.py"
+    root_skill_dir.mkdir(parents=True)
+    nested_skill_dir.mkdir(parents=True)
+    observed.parent.mkdir(parents=True)
+    observed.write_text("print('ok')", encoding="utf-8")
+    (root_skill_dir / "SKILL.md").write_text(
+        """
+---
+description: broad review
+---
+root review
+""".strip(),
+        encoding="utf-8",
+    )
+    (nested_skill_dir / "SKILL.md").write_text(
+        """
+---
+description: nested review
+---
+nested review
+""".strip(),
+        encoding="utf-8",
+    )
+
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            model_client=FakeModelClient([]),
+            discovery_sources=(
+                DefinitionSourcePaths(DefinitionSource.PROJECT, tmp_path / ".claude"),
+            ),
+            builtins=BuiltinPackConfig(skills_enabled=False),
+        )
+    )
+
+    catalog = runtime.resolve_invocations(
+        session_id="session-dynamic",
+        cwd=tmp_path,
+        messages=(
+            RuntimeMessage(
+                message_id="observed",
+                role=MessageRole.USER,
+                content="{}",
+                metadata={"observed_paths": [str(observed)]},
+            ),
+        ),
+    )
+
+    resolved = catalog.entry_for("review")
+    assert resolved is not None
+    assert resolved.diagnostics.visible is True
+    assert resolved.diagnostics.metadata["skill_root"] == str(
+        (tmp_path / "packages" / "app" / ".claude" / "skills").resolve()
+    )
+    effective_skill = resolved.definition.metadata["skill_definition"]
+    assert isinstance(effective_skill, SkillDefinition)
+    assert effective_skill.content == "nested review"
+
+
+def test_session_resume_restores_dynamic_skill_roots_from_observed_paths(tmp_path: Path) -> None:
+    nested_skill_dir = tmp_path / "services" / "api" / ".claude" / "skills" / "api-review"
+    observed = tmp_path / "services" / "api" / "src" / "handler.py"
+    nested_skill_dir.mkdir(parents=True)
+    observed.parent.mkdir(parents=True)
+    observed.write_text("print('ok')", encoding="utf-8")
+    (nested_skill_dir / "SKILL.md").write_text(
+        """
+---
+description: api review
+---
+api review
+""".strip(),
+        encoding="utf-8",
+    )
+
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            model_client=FakeModelClient([]),
+            discovery_sources=(
+                DefinitionSourcePaths(DefinitionSource.PROJECT, tmp_path / ".claude"),
+            ),
+            builtins=BuiltinPackConfig(skills_enabled=False),
+        )
+    )
+    asyncio.run(
+        runtime.transcript_store.append(
+            TranscriptEntry(
+                session_id="resume-dynamic",
+                turn_id="seed-turn",
+                message=RuntimeMessage(
+                    message_id="tool-result",
+                    role=MessageRole.USER,
+                    content="{}",
+                    metadata={"observed_paths": [str(observed)]},
+                ),
+            )
+        )
+    )
+
+    session = runtime.create_session(session_id="resume-dynamic", cwd=tmp_path)
+    asyncio.run(session.resume())
+
+    assert session.state.metadata["observed_paths"] == [str(observed)]
+    assert session.state.metadata["skill_dynamic_roots"] == [
+        {
+            "root": str((tmp_path / "services" / "api" / ".claude" / "skills").resolve()),
+            "source": "project",
+            "discovered_from": [str(observed)],
+        }
+    ]
+    assert {entry.name for entry in session.visible_invocations()} == {"api-review"}
 
 
 def test_placeholder_providers_integrate_with_invocation_registry(tmp_path: Path) -> None:

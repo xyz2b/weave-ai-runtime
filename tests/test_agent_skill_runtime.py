@@ -2,10 +2,14 @@ import asyncio
 import json
 from pathlib import Path
 
+import pytest
+
 from claude_agent_runtime.agent_runtime import AgentInvocation, AgentRuntime
 from claude_agent_runtime.contracts import MessageRole, ToolResultBlock
 from claude_agent_runtime.definitions import (
     AgentDefinition,
+    DefinitionOrigin,
+    DefinitionSource,
     IsolationMode,
     PermissionBehavior,
     PermissionDecision,
@@ -61,6 +65,14 @@ class AllowingPermissionService:
 
     async def authorize(self, definition, tool_input, decision, context):  # pragma: no cover - protocol completeness
         _ = definition, tool_input, decision, context
+        return PermissionDecision(PermissionBehavior.ALLOW)
+
+
+class DenyingToolPermissionService(AllowingPermissionService):
+    async def authorize(self, definition, tool_input, decision, context):  # pragma: no cover - protocol completeness
+        _ = tool_input, decision, context
+        if definition.name == "bash":
+            return PermissionDecision(PermissionBehavior.DENY, "shell denied")
         return PermissionDecision(PermissionBehavior.ALLOW)
 
 
@@ -664,6 +676,407 @@ def test_assembled_runtime_executes_model_generated_agent_and_skill_tools(
     assert skill_tool_result.content["mode"] == SkillExecutionContext.FORK.value
     assert skill_tool_result.content["agent_result"]["messages"][-1]["content"][0]["text"] == "forked answer"
     assert skill_messages[-1].text == "skill delegation done"
+
+
+def test_inline_skill_request_override_shapes_next_request_and_is_consumed_once(
+    tmp_path: Path,
+) -> None:
+    model_client = FakeModelClient(
+        [
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-override-1"}),
+                ModelStreamEvent(
+                    ModelStreamEventType.TOOL_CALL,
+                    {
+                        "tool_name": "skill",
+                        "tool_input": {"skill": "config-request"},
+                        "call_id": "call-config-request",
+                    },
+                ),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "tool_use"}),
+            ],
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-override-2"}),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "override applied"}),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+            ],
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-override-3"}),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "baseline restored"}),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+            ],
+        ]
+    )
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            model_client=model_client,
+            builtins=BuiltinPackConfig(
+                agent_replacements={
+                    "main-router": AgentDefinition(
+                        name="main-router",
+                        description="router",
+                        prompt="route",
+                        model="baseline-model",
+                        effort="low",
+                    )
+                },
+                skills_enabled=False,
+                extra_skills=[
+                    SkillDefinition(
+                        name="config-request",
+                        description="configure the next request",
+                        content="Use the configured request shape.",
+                        model="override-model",
+                        effort="high",
+                    )
+                ],
+            ),
+        )
+    )
+
+    first_turn = asyncio.run(runtime.run_prompt("Use the config skill", session_id="session-override"))
+    second_turn = asyncio.run(runtime.run_prompt("No skill this time", session_id="session-override"))
+
+    assert model_client.requests[0].model == "baseline-model"
+    assert model_client.requests[0].effort == "low"
+    assert model_client.requests[1].model == "override-model"
+    assert model_client.requests[1].effort == "high"
+    assert model_client.requests[1].metadata["skill_request_override"] == {
+        "requested_model": "override-model",
+        "requested_effort": "high",
+        "source_skill": "config-request",
+    }
+    assert model_client.requests[2].model == "baseline-model"
+    assert model_client.requests[2].effort == "low"
+    assert any(
+        message.role == MessageRole.SYSTEM and message.metadata.get("skill") == "config-request"
+        for message in first_turn
+    )
+    assert second_turn[-1].text == "baseline restored"
+
+
+def test_multiple_inline_skills_merge_request_override_fields(tmp_path: Path) -> None:
+    model_client = FakeModelClient(
+        [
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-merge-1"}),
+                ModelStreamEvent(
+                    ModelStreamEventType.TOOL_CALL,
+                    {
+                        "tool_name": "skill",
+                        "tool_input": {"skill": "set-model-a"},
+                        "call_id": "call-set-model-a",
+                    },
+                ),
+                ModelStreamEvent(
+                    ModelStreamEventType.TOOL_CALL,
+                    {
+                        "tool_name": "skill",
+                        "tool_input": {"skill": "set-effort"},
+                        "call_id": "call-set-effort",
+                    },
+                ),
+                ModelStreamEvent(
+                    ModelStreamEventType.TOOL_CALL,
+                    {
+                        "tool_name": "skill",
+                        "tool_input": {"skill": "set-model-b"},
+                        "call_id": "call-set-model-b",
+                    },
+                ),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "tool_use"}),
+            ],
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-merge-2"}),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "merged"}),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+            ],
+        ]
+    )
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            model_client=model_client,
+            builtins=BuiltinPackConfig(
+                agent_replacements={
+                    "main-router": AgentDefinition(
+                        name="main-router",
+                        description="router",
+                        prompt="route",
+                        model="baseline-model",
+                        effort="low",
+                    )
+                },
+                skills_enabled=False,
+                extra_skills=[
+                    SkillDefinition(
+                        name="set-model-a",
+                        description="set model a",
+                        content="model a",
+                        model="alpha-model",
+                    ),
+                    SkillDefinition(
+                        name="set-effort",
+                        description="set effort",
+                        content="effort",
+                        effort="high",
+                    ),
+                    SkillDefinition(
+                        name="set-model-b",
+                        description="set model b",
+                        content="model b",
+                        model="beta-model",
+                    ),
+                ],
+            ),
+        )
+    )
+
+    asyncio.run(runtime.run_prompt("Merge request shaping", session_id="session-merge"))
+
+    assert model_client.requests[1].model == "beta-model"
+    assert model_client.requests[1].effort == "high"
+    assert model_client.requests[1].metadata["skill_request_override"]["source_skill"] == "set-model-b"
+
+
+def test_forked_skill_propagates_requested_effort_to_child_request(tmp_path: Path) -> None:
+    model_client = FakeModelClient(
+        [
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-fork-1"}),
+                ModelStreamEvent(
+                    ModelStreamEventType.TOOL_CALL,
+                    {
+                        "tool_name": "skill",
+                        "tool_input": {"skill": "fork-config"},
+                        "call_id": "call-fork-config",
+                    },
+                ),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "tool_use"}),
+            ],
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-fork-child"}),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "child done"}),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+            ],
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-fork-2"}),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "parent done"}),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+            ],
+        ]
+    )
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            model_client=model_client,
+            builtins=BuiltinPackConfig(
+                extra_agents=[
+                    AgentDefinition(
+                        name="general-purpose",
+                        description="general",
+                        prompt="general",
+                        tools=("*",),
+                    )
+                ],
+                extra_skills=[
+                    SkillDefinition(
+                        name="fork-config",
+                        description="fork with request override",
+                        content="Forked request override",
+                        execution_context=SkillExecutionContext.FORK,
+                        agent="general-purpose",
+                        model="fork-model",
+                        effort="high",
+                    )
+                ],
+            ),
+        )
+    )
+
+    messages = asyncio.run(runtime.run_prompt("Fork with request override", session_id="session-fork"))
+
+    assert model_client.requests[1].model == "fork-model"
+    assert model_client.requests[1].effort == "high"
+    skill_tool_result_message = next(
+        message
+        for message in messages
+        if message.role == MessageRole.USER and any(isinstance(block, ToolResultBlock) for block in message.content)
+    )
+    skill_tool_result = next(
+        block for block in skill_tool_result_message.content if isinstance(block, ToolResultBlock)
+    )
+    assert skill_tool_result.content["agent_result"]["requested_model"] == "fork-model"
+    assert skill_tool_result.content["agent_result"]["requested_effort"] == "high"
+
+
+def test_local_skill_shell_expansion_uses_shell_tool_output(tmp_path: Path) -> None:
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            model_client=FakeModelClient([]),
+            builtins=BuiltinPackConfig(skills_enabled=False),
+        )
+    )
+    runtime.services.permissions = AllowingPermissionService()
+    skill_dir = tmp_path / "local-skills" / "shell-inline"
+    skill_dir.mkdir(parents=True)
+    skill_path = skill_dir / "SKILL.md"
+    skill_path.write_text("placeholder", encoding="utf-8")
+    runtime.kernel.skill_registry.register(
+        SkillDefinition(
+            name="shell-inline",
+            description="shell inline",
+            content="Before\n!printf 'hello'\nAfter",
+            origin=DefinitionOrigin(
+                DefinitionSource.USER,
+                path=skill_path,
+                root=skill_dir.parent,
+            ),
+        )
+    )
+
+    result = asyncio.run(
+        runtime.skill_executor.execute(
+            "shell-inline",
+            arguments=(),
+            session_id="session-shell",
+            cwd=tmp_path,
+        )
+    )
+
+    assert result.injected_messages[0].text == "Before\nhello\nAfter"
+
+
+def test_skill_shell_expansion_fails_closed_when_shell_tool_is_denied(tmp_path: Path) -> None:
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            model_client=FakeModelClient([]),
+            builtins=BuiltinPackConfig(skills_enabled=False),
+        )
+    )
+    runtime.services.permissions = DenyingToolPermissionService()
+    skill_dir = tmp_path / "local-skills" / "shell-denied"
+    skill_dir.mkdir(parents=True)
+    skill_path = skill_dir / "SKILL.md"
+    skill_path.write_text("placeholder", encoding="utf-8")
+    runtime.kernel.skill_registry.register(
+        SkillDefinition(
+            name="shell-denied",
+            description="shell denied",
+            content="!printf 'blocked'",
+            origin=DefinitionOrigin(
+                DefinitionSource.USER,
+                path=skill_path,
+                root=skill_dir.parent,
+            ),
+        )
+    )
+
+    with pytest.raises(RuntimeError, match="shell denied"):
+        asyncio.run(
+            runtime.skill_executor.execute(
+                "shell-denied",
+                arguments=(),
+                session_id="session-shell-denied",
+                cwd=tmp_path,
+            )
+        )
+
+
+def test_skill_shell_expansion_rejects_non_local_skills(tmp_path: Path) -> None:
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            model_client=FakeModelClient([]),
+            builtins=BuiltinPackConfig(skills_enabled=False),
+        )
+    )
+    runtime.services.permissions = AllowingPermissionService()
+    runtime.kernel.skill_registry.register(
+        SkillDefinition(
+            name="bundled-shell",
+            description="bundled shell",
+            content="!printf 'hello'",
+            origin=DefinitionOrigin(
+                DefinitionSource.BUNDLED,
+                path=tmp_path / "bundled-shell" / "SKILL.md",
+            ),
+        )
+    )
+
+    with pytest.raises(RuntimeError, match="local file-backed"):
+        asyncio.run(
+            runtime.skill_executor.execute(
+                "bundled-shell",
+                arguments=(),
+                session_id="session-bundled-shell",
+                cwd=tmp_path,
+            )
+        )
+
+
+def test_user_originated_skill_route_rejects_non_user_invocable_and_inactive_path(
+    tmp_path: Path,
+) -> None:
+    agent_registry = AgentRegistry()
+    agent_registry.register(AgentDefinition(name="main-router", description="router", prompt="route"))
+    skill_registry = SkillRegistry()
+    skill_registry.register(
+        SkillDefinition(
+            name="host-hidden",
+            description="not user invocable",
+            content="hidden",
+            user_invocable=False,
+        )
+    )
+    skill_registry.register(
+        SkillDefinition(
+            name="python-only",
+            description="needs a python path",
+            content="python",
+            paths=("src/**/*.py",),
+        )
+    )
+    runtime = AgentRuntime(
+        turn_engine=TurnEngine(
+            model_client=FakeModelClient([]),
+            tool_registry=ToolRegistry(),
+            agent_registry=agent_registry,
+            skill_registry=skill_registry,
+            task_manager=TaskManager(),
+        ),
+        agent_registry=agent_registry,
+        tool_registry=ToolRegistry(),
+        skill_registry=skill_registry,
+        task_manager=TaskManager(),
+    )
+
+    with pytest.raises(PermissionError, match="not user-invocable"):
+        asyncio.run(
+            runtime.invoke(
+                AgentInvocation(
+                    agent_name="main-router",
+                    prompt="/skill host-hidden",
+                    session_id="session-user-hidden",
+                    cwd=tmp_path,
+                )
+            )
+        )
+
+    with pytest.raises(PermissionError, match="not active"):
+        asyncio.run(
+            runtime.invoke(
+                AgentInvocation(
+                    agent_name="main-router",
+                    prompt="/skill python-only",
+                    session_id="session-user-path",
+                    cwd=tmp_path,
+                )
+            )
+        )
 
 
 def test_inline_skill_narrows_tools_and_records_policy_trace(tmp_path: Path) -> None:

@@ -185,6 +185,7 @@ class SessionController:
         transcript = await self._transcript_store.load(self.state.session_id)
         self._messages = [entry.message for entry in transcript.entries]
         self._sync_compaction_state()
+        _sync_skill_runtime_metadata(self.state.metadata, self._messages, self._cwd)
         self.state.status = SessionStatus.READY
         self.state.active_turn_id = None
 
@@ -382,6 +383,7 @@ class SessionController:
             )
         )
         self._sync_compaction_state()
+        _sync_skill_runtime_metadata(self.state.metadata, self._messages, self._cwd)
 
     async def _record_ingress_messages(
         self,
@@ -1424,3 +1426,77 @@ def _thread_subject(text: str) -> str:
     if not parts:
         return "session-thread"
     return "-".join(parts[:6])
+
+
+def _sync_skill_runtime_metadata(
+    metadata: dict[str, Any],
+    messages: list[RuntimeMessage],
+    cwd: str,
+) -> None:
+    observed_paths = sorted(
+        {
+            str(path)
+            for message in messages
+            for path in _coerce_string_list(message.metadata.get("observed_paths"))
+        }
+    )
+    if observed_paths:
+        metadata["observed_paths"] = observed_paths
+    dynamic_roots = _discover_dynamic_skill_roots(Path(cwd), observed_paths)
+    if dynamic_roots:
+        metadata["skill_dynamic_roots"] = dynamic_roots
+
+
+def _coerce_string_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        stripped = value.strip()
+        return [stripped] if stripped else []
+    if isinstance(value, (list, tuple, set)):
+        return [str(item).strip() for item in value if str(item).strip()]
+    return []
+
+
+def _discover_dynamic_skill_roots(
+    session_cwd: Path,
+    observed_paths: list[str],
+) -> list[dict[str, Any]]:
+    ledger: dict[str, dict[str, Any]] = {}
+    for observed_path in observed_paths:
+        resolved = _resolve_observed_path(session_cwd, observed_path)
+        if resolved is None:
+            continue
+        cursor = resolved if resolved.is_dir() else resolved.parent
+        resolved_cwd = session_cwd.resolve()
+        while True:
+            candidate = (cursor / ".claude" / "skills").resolve()
+            if candidate.is_dir():
+                record = ledger.setdefault(
+                    str(candidate),
+                    {
+                        "root": str(candidate),
+                        "source": "project",
+                        "discovered_from": [],
+                    },
+                )
+                discovered_from = set(record["discovered_from"])
+                discovered_from.add(observed_path)
+                record["discovered_from"] = sorted(discovered_from)
+            if cursor == resolved_cwd or resolved_cwd not in cursor.parents:
+                break
+            cursor = cursor.parent
+    return [
+        ledger[root]
+        for root in sorted(ledger, key=lambda candidate: (len(Path(candidate).parts), candidate))
+    ]
+
+
+def _resolve_observed_path(session_cwd: Path, observed_path: str) -> Path | None:
+    candidate = Path(observed_path)
+    resolved = candidate.resolve() if candidate.is_absolute() else (session_cwd / candidate).resolve()
+    try:
+        resolved.relative_to(session_cwd.resolve())
+    except ValueError:
+        return None
+    return resolved

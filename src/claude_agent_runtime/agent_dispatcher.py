@@ -78,6 +78,9 @@ class AgentDispatcher:
             or _coerce_optional_string(invocation.metadata.get("requested_model_route")),
             requested_model=invocation.requested_model
             or _coerce_optional_string(invocation.metadata.get("requested_model")),
+            requested_effort=invocation.requested_effort
+            if invocation.requested_effort is not None
+            else invocation.metadata.get("requested_effort"),
             requested_permission_mode=invocation.requested_permission_mode,
             requested_isolation=invocation.requested_isolation,
             max_turns=invocation.max_turns,

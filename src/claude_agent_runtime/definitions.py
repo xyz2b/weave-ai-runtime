@@ -471,6 +471,12 @@ class ResolvedInvocationCatalog:
                 return entry.diagnostics
         return None
 
+    def entry_for(self, name: str) -> ResolvedInvocation | None:
+        for entry in (*self.visible, *self.hidden):
+            if entry.definition.name == name:
+                return entry
+        return None
+
     def visible_capabilities(
         self,
         *,

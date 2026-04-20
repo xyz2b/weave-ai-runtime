@@ -292,6 +292,7 @@ def builtin_tools() -> tuple[ToolDefinition, ...]:
                 "properties": {
                     "command": {"type": "string"},
                     "cwd": {"type": "string"},
+                    "shell": {"type": "string", "enum": ["bash", "powershell"]},
                     "timeout_ms": {"type": "integer", "minimum": 1},
                 },
                 "required": ["command"],

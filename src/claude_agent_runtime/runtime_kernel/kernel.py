@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, AsyncIterator
 from uuid import uuid4
@@ -16,8 +16,11 @@ from ..contracts import (
 )
 from ..definitions import (
     AgentDefinition,
+    DefinitionOrigin,
+    DefinitionSource,
     InvocationCapabilityView,
     InvocationDiagnostics,
+    InvocationResolutionContext,
     IsolationMode,
     PermissionMode,
     ResolvedInvocationCatalog,
@@ -44,8 +47,10 @@ from ..tool_runtime import ToolContext
 from ..turn_engine.composer import ContextAssembler
 from ..turn_engine.engine import TurnEngine, TurnStreamEvent, TurnStreamEventType
 from ..turn_engine.models import ModelRequest, TranscriptStore
-from .config import RuntimeConfig
+from .config import DefinitionSourcePaths, RuntimeConfig
 from ..execution_policy import policy_state_from_metadata
+
+SKILL_DYNAMIC_ROOTS_KEY = "skill_dynamic_roots"
 
 
 @dataclass(slots=True)
@@ -60,6 +65,87 @@ class RuntimeKernel:
     transcript_store: Any = None
     services: RuntimeServices | None = None
     hosts: dict[str, HostAdapter] = field(default_factory=dict)
+    skill_view_resolver: Any = None
+
+
+class _SessionSkillViewResolver:
+    def __init__(
+        self,
+        *,
+        session_cwd: Path,
+        base_registry: SkillRegistry,
+    ) -> None:
+        self._session_cwd = session_cwd.resolve()
+        self._base_registry = base_registry
+        self._skill_cache: dict[str, tuple[SkillDefinition, ...]] = {}
+
+    def resolve(self, context: InvocationResolutionContext) -> tuple[SkillDefinition, ...]:
+        merged: tuple[SkillDefinition, ...] = self._base_registry.definitions()
+        root_records = _discover_dynamic_skill_root_records(
+            session_cwd=self._session_cwd,
+            observed_paths=context.observed_paths,
+            existing=context.metadata.get(SKILL_DYNAMIC_ROOTS_KEY),
+        )
+        for record in root_records:
+            merged = _merge_skill_definitions(
+                merged,
+                self._load_root(
+                    Path(str(record["root"])),
+                    source=_coerce_definition_source(record.get("source")),
+                ),
+            )
+        return merged
+
+    def root_records(
+        self,
+        *,
+        observed_paths: tuple[str, ...] | list[str] = (),
+        existing: Any = None,
+    ) -> tuple[dict[str, Any], ...]:
+        return _discover_dynamic_skill_root_records(
+            session_cwd=self._session_cwd,
+            observed_paths=tuple(str(path) for path in observed_paths),
+            existing=existing,
+        )
+
+    def _load_root(
+        self,
+        root: Path,
+        *,
+        source: DefinitionSource,
+    ) -> tuple[SkillDefinition, ...]:
+        resolved_root = root.resolve()
+        cache_key = str(resolved_root)
+        cached = self._skill_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        report = DefinitionDiscovery(
+            (
+                DefinitionSourcePaths(
+                    source=source,
+                    root=resolved_root.parent,
+                    skills_subdir=resolved_root.name,
+                ),
+            )
+        ).discover()
+        loaded: list[SkillDefinition] = []
+        for skill in report.skills:
+            metadata = dict(skill.metadata)
+            metadata["dynamic_root"] = cache_key
+            loaded.append(
+                replace(
+                    skill,
+                    metadata=metadata,
+                    origin=DefinitionOrigin(
+                        source=source,
+                        path=skill.origin.path,
+                        root=resolved_root,
+                    ),
+                )
+            )
+        self._skill_cache[cache_key] = tuple(loaded)
+        return self._skill_cache[cache_key]
 
 
 class _UnconfiguredModelClient:
@@ -370,11 +456,150 @@ class RuntimeAssembly:
         return agent
 
 
+def _discover_dynamic_skill_root_records(
+    *,
+    session_cwd: Path,
+    observed_paths: tuple[str, ...] | list[str],
+    existing: Any = None,
+) -> tuple[dict[str, Any], ...]:
+    ledger: dict[str, dict[str, Any]] = {}
+    for record in _coerce_dynamic_skill_root_records(existing):
+        ledger[record["root"]] = record
+    for observed_path in observed_paths:
+        for root in _discover_roots_for_observed_path(
+            session_cwd=session_cwd,
+            observed_path=str(observed_path),
+        ):
+            entry = ledger.setdefault(
+                root,
+                {
+                    "root": root,
+                    "source": DefinitionSource.PROJECT.value,
+                    "discovered_from": [],
+                },
+            )
+            discovered_from = {
+                str(path)
+                for path in entry.get("discovered_from", ())
+                if isinstance(path, str) and path.strip()
+            }
+            discovered_from.add(str(observed_path))
+            entry["discovered_from"] = sorted(discovered_from)
+    return tuple(
+        ledger[root]
+        for root in sorted(
+            ledger,
+            key=lambda candidate: (len(Path(candidate).parts), candidate),
+        )
+    )
+
+
+def _coerce_dynamic_skill_root_records(value: Any) -> tuple[dict[str, Any], ...]:
+    if not isinstance(value, (list, tuple)):
+        return ()
+    normalized: list[dict[str, Any]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        root = str(item.get("root") or "").strip()
+        if not root:
+            continue
+        normalized.append(
+            {
+                "root": str(Path(root).resolve()),
+                "source": str(item.get("source") or DefinitionSource.PROJECT.value),
+                "discovered_from": sorted(
+                    {
+                        str(path)
+                        for path in item.get("discovered_from", ())
+                        if str(path).strip()
+                    }
+                ),
+            }
+        )
+    return tuple(normalized)
+
+
+def _discover_roots_for_observed_path(
+    *,
+    session_cwd: Path,
+    observed_path: str,
+) -> tuple[str, ...]:
+    resolved_path = _resolve_path_within_cwd(session_cwd, observed_path)
+    if resolved_path is None:
+        return ()
+    cursor = resolved_path if resolved_path.is_dir() else resolved_path.parent
+    resolved_cwd = session_cwd.resolve()
+    discovered: list[str] = []
+    while True:
+        candidate = (cursor / ".claude" / "skills").resolve()
+        if candidate.is_dir():
+            discovered.append(str(candidate))
+        if cursor == resolved_cwd:
+            break
+        if resolved_cwd not in cursor.parents:
+            break
+        cursor = cursor.parent
+    return tuple(dict.fromkeys(discovered))
+
+
+def _resolve_path_within_cwd(session_cwd: Path, value: str) -> Path | None:
+    candidate = Path(value)
+    resolved = candidate.resolve() if candidate.is_absolute() else (session_cwd / candidate).resolve()
+    try:
+        resolved.relative_to(session_cwd.resolve())
+    except ValueError:
+        return None
+    return resolved
+
+
+def _merge_skill_definitions(
+    current: tuple[SkillDefinition, ...],
+    incoming: tuple[SkillDefinition, ...],
+) -> tuple[SkillDefinition, ...]:
+    merged: dict[str, SkillDefinition] = {skill.name: skill for skill in current}
+    for skill in incoming:
+        existing = merged.get(skill.name)
+        if existing is None or _prefer_skill_definition(skill, existing):
+            merged[skill.name] = skill
+    return tuple(merged.values())
+
+
+def _prefer_skill_definition(incoming: SkillDefinition, existing: SkillDefinition) -> bool:
+    if incoming.origin.priority != existing.origin.priority:
+        return incoming.origin.priority > existing.origin.priority
+    if incoming.origin.source == existing.origin.source:
+        incoming_specificity = _root_specificity(incoming.origin.root)
+        existing_specificity = _root_specificity(existing.origin.root)
+        if incoming_specificity != existing_specificity:
+            return incoming_specificity > existing_specificity
+    return incoming.origin.label < existing.origin.label
+
+
+def _root_specificity(root: Path | None) -> int:
+    if root is None:
+        return -1
+    return len(root.resolve().parts)
+
+
+def _coerce_definition_source(value: Any) -> DefinitionSource:
+    if isinstance(value, DefinitionSource):
+        return value
+    try:
+        return DefinitionSource(str(value))
+    except ValueError:
+        return DefinitionSource.PROJECT
+
+
 def build_runtime_kernel(config: RuntimeConfig) -> RuntimeKernel:
     tool_registry = ToolRegistry()
     agent_registry = AgentRegistry()
     skill_registry = SkillRegistry()
     invocation_registry = InvocationRegistry()
+    skill_view_resolver = _SessionSkillViewResolver(
+        session_cwd=config.working_directory,
+        base_registry=skill_registry,
+    )
     diagnostics: list[Diagnostic] = []
 
     builtin_pack = load_builtin_pack()
@@ -388,7 +613,12 @@ def build_runtime_kernel(config: RuntimeConfig) -> RuntimeKernel:
     _register_all(tool_registry, discovered.tools, diagnostics)
     _register_all(agent_registry, discovered.agents, diagnostics)
     _register_all(skill_registry, discovered.skills, diagnostics)
-    invocation_registry.register_provider(SkillInvocationProvider(skill_registry))
+    invocation_registry.register_provider(
+        SkillInvocationProvider(
+            skill_registry,
+            skill_resolver=skill_view_resolver,
+        )
+    )
     for provider in config.extra_invocation_providers:
         invocation_registry.register_provider(provider)
     diagnostics.extend(invocation_registry.diagnostics())
@@ -402,6 +632,7 @@ def build_runtime_kernel(config: RuntimeConfig) -> RuntimeKernel:
         diagnostics=tuple(diagnostics),
         model_client=_default_model_client(config),
         transcript_store=config.transcript_store,
+        skill_view_resolver=skill_view_resolver,
     )
     kernel.services = _build_runtime_services(kernel)
     kernel.transcript_store = kernel.services.transcript_store
@@ -518,6 +749,9 @@ def _serialize_agent_run_result(result: AgentRunResult) -> dict[str, Any]:
         "requested_model": (
             result.execution_spec.requested_model if result.execution_spec is not None else None
         ),
+        "requested_effort": (
+            result.execution_spec.requested_effort if result.execution_spec is not None else None
+        ),
         "requested_model_route": (
             result.execution_spec.requested_model_route if result.execution_spec is not None else None
         ),
@@ -534,6 +768,11 @@ def _serialize_skill_execution_result(result: SkillExecutionResult) -> dict[str,
         "skill": result.skill_name,
         "mode": result.mode.value,
         "injected_messages": [_serialize_message(message) for message in result.injected_messages],
+        "request_override": (
+            result.request_override.serialize()
+            if result.request_override is not None
+            else None
+        ),
     }
     if result.agent_result is not None:
         payload["agent_result"] = _serialize_agent_run_result(result.agent_result)

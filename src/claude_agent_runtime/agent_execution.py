@@ -55,6 +55,7 @@ class AgentExecutionSpec:
     parent_policy_state: ExecutionPolicyState | None = None
     requested_model_route: str | None = None
     requested_model: str | None = None
+    requested_effort: Any = None
     resolved_model_route: str | None = None
     provider_name: str | None = None
     resolved_capabilities: NormalizedModelCapabilities | None = None
@@ -89,6 +90,7 @@ class AgentRunRecord:
     query_source: str | None = None
     requested_model_route: str | None = None
     requested_model: str | None = None
+    requested_effort: Any = None
     resolved_model_route: str | None = None
     provider_name: str | None = None
     resolved_capabilities: dict[str, Any] | None = None

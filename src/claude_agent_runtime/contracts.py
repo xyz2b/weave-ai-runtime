@@ -195,6 +195,27 @@ class RuntimePrivateContextView:
         object.__setattr__(self, "extensions", dict(self.extensions))
 
 
+@dataclass(frozen=True, slots=True)
+class SkillRequestOverrideState:
+    requested_model: str | None = None
+    requested_effort: Any = None
+    source_skill: str | None = None
+
+    def __bool__(self) -> bool:
+        return (
+            self.requested_model is not None
+            or self.requested_effort is not None
+            or self.source_skill is not None
+        )
+
+    def serialize(self) -> dict[str, Any]:
+        return {
+            "requested_model": self.requested_model,
+            "requested_effort": self.requested_effort,
+            "source_skill": self.source_skill,
+        }
+
+
 _PRIVATE_CONTEXT_DIAGNOSTIC_KEYS = frozenset({"memory_retrieval", "memory_diagnostics"})
 
 
@@ -262,6 +283,43 @@ def _coerce_optional_string(value: object) -> str | None:
         stripped = value.strip()
         return stripped or None
     return None
+
+
+def coerce_skill_request_override_state(value: object) -> SkillRequestOverrideState | None:
+    if isinstance(value, SkillRequestOverrideState):
+        return value if value else None
+    if not isinstance(value, Mapping):
+        return None
+    state = SkillRequestOverrideState(
+        requested_model=_coerce_optional_string(value.get("requested_model")),
+        requested_effort=value.get("requested_effort"),
+        source_skill=_coerce_optional_string(value.get("source_skill")),
+    )
+    return state if state else None
+
+
+def merge_skill_request_override_state(
+    current: SkillRequestOverrideState | None,
+    incoming: SkillRequestOverrideState | None,
+) -> SkillRequestOverrideState | None:
+    if incoming is None:
+        return current
+    if current is None:
+        return incoming
+    merged = SkillRequestOverrideState(
+        requested_model=(
+            incoming.requested_model
+            if incoming.requested_model is not None
+            else current.requested_model
+        ),
+        requested_effort=(
+            incoming.requested_effort
+            if incoming.requested_effort is not None
+            else current.requested_effort
+        ),
+        source_skill=incoming.source_skill or current.source_skill,
+    )
+    return merged if merged else None
 
 
 @dataclass(frozen=True, slots=True)

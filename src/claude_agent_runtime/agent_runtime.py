@@ -33,6 +33,7 @@ class AgentInvocation:
     parent_turn_id: str | None = None
     requested_model_route: str | None = None
     requested_model: str | None = None
+    requested_effort: Any = None
     requested_permission_mode: PermissionMode | None = None
     requested_isolation: IsolationMode | None = None
     max_turns: int | None = None
@@ -111,6 +112,10 @@ class AgentRuntime:
         return self._tool_registry
 
     @property
+    def skill_registry(self) -> SkillRegistry:
+        return self._skill_registry
+
+    @property
     def run_store(self) -> ChildRunStore:
         return self._run_store
 
@@ -141,16 +146,16 @@ class AgentRuntime:
         # These string-prefixed routes remain as a compatibility/debug surface.
         # The assembled dispatcher/execution service path is the primary runtime path.
         stripped = invocation.prompt.strip()
+        compat_message = RuntimeMessage(
+            message_id=uuid4().hex,
+            role=MessageRole.USER,
+            content=invocation.prompt,
+        )
         if stripped.startswith("/tool "):
             _, remainder = stripped.split(" ", 1)
             tool_name, raw_payload = remainder.split(" ", 1)
             payload = json.loads(raw_payload)
             scheduler = ToolScheduler(self._tool_registry)
-            compat_message = RuntimeMessage(
-                message_id=uuid4().hex,
-                role=MessageRole.USER,
-                content=invocation.prompt,
-            )
             tool_pool = tuple(invocation.parent_tool_pool) or self._tool_registry.definitions()
             skill_pool = tuple(invocation.parent_skill_pool) or self._skill_registry.resolve_active()
             context = self._turn_engine.create_tool_context(
@@ -200,13 +205,29 @@ class AgentRuntime:
                 from .skill_runtime import SkillExecutor
 
                 executor = SkillExecutor(skill_registry=self._skill_registry, agent_runtime=self)
+            compat_catalog = self._turn_engine.resolve_invocation_catalog(
+                session_id=invocation.session_id,
+                turn_id=execution_spec.turn_id,
+                cwd=invocation.cwd,
+                messages=(compat_message,),
+                runtime_context=dict(invocation.metadata),
+            )
+            resolved_skill = compat_catalog.entry_for(skill_name)
+            if resolved_skill is not None:
+                diagnostics = resolved_skill.diagnostics
+                if not diagnostics.visible:
+                    raise PermissionError(
+                        f"Skill '{skill_name}' is not active for the current session context"
+                    )
+                if not diagnostics.user_invocable:
+                    raise PermissionError(f"Skill '{skill_name}' is not user-invocable")
             skill_result = await executor.execute(
                 skill_name,
                 arguments=arguments,
                 session_id=invocation.session_id,
                 cwd=invocation.cwd,
+                parent_skill_pool=compat_catalog.visible_skill_definitions(user_invocable=True),
                 parent_tool_pool=invocation.parent_tool_pool,
-                parent_skill_pool=invocation.parent_skill_pool,
                 permission_context=invocation.metadata.get("permission_context"),
                 turn_id=execution_spec.turn_id,
                 parent_run_id=execution_spec.run_id,

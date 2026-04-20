@@ -44,11 +44,18 @@ class InvocationRegistry:
         _, diagnostics = self._collect_definitions()
         return diagnostics
 
-    def _collect_definitions(self) -> tuple[tuple[InvocationDefinition, ...], tuple[Diagnostic, ...]]:
+    def _collect_definitions(
+        self,
+        context: InvocationResolutionContext | None = None,
+    ) -> tuple[tuple[InvocationDefinition, ...], tuple[Diagnostic, ...]]:
         collected: dict[str, InvocationDefinition] = {}
         diagnostics = list(self._provider_diagnostics)
         for provider in self._providers.values():
-            for definition in provider.list_invocations():
+            if context is not None and hasattr(provider, "list_invocations_for_context"):
+                definitions = provider.list_invocations_for_context(context)
+            else:
+                definitions = provider.list_invocations()
+            for definition in definitions:
                 existing = collected.get(definition.name)
                 if existing is None:
                     collected[definition.name] = definition
@@ -63,7 +70,8 @@ class InvocationRegistry:
     def resolve(self, context: InvocationResolutionContext) -> ResolvedInvocationCatalog:
         from ..invocation_catalog import resolve_invocation_catalog
 
-        return resolve_invocation_catalog(self.definitions(), context)
+        definitions, _ = self._collect_definitions(context)
+        return resolve_invocation_catalog(definitions, context)
 
 
 def _resolve_invocation_conflict(
