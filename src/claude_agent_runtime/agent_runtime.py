@@ -135,6 +135,28 @@ class AgentRuntime:
             execution_spec=execution_spec,
         )
 
+    def prepare_execution(self, invocation: AgentInvocation) -> tuple[Any, AgentExecutionSpec]:
+        agent = self._dispatcher.resolve_agent(invocation.agent_name)
+        execution_spec = self._dispatcher.build_execution_spec(invocation, agent)
+        return agent, execution_spec
+
+    async def dispatch_prepared(
+        self,
+        invocation: AgentInvocation,
+        *,
+        agent: Any,
+        execution_spec: AgentExecutionSpec,
+    ) -> AgentRunResult:
+        if getattr(agent, "name", None) == "main-router":
+            routed = await self._try_compat_route(invocation, execution_spec)
+            if routed is not None:
+                return routed
+        return await self._dispatcher.dispatch(
+            invocation,
+            agent=agent,
+            execution_spec=execution_spec,
+        )
+
     async def wait_for_background(self, task_id: str) -> AgentRunResult:
         return await self._dispatcher.wait_for_background(task_id)
 

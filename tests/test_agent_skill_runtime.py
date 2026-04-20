@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from claude_agent_runtime.agent_runtime import AgentInvocation, AgentRuntime
-from claude_agent_runtime.contracts import MessageRole, ToolResultBlock
+from claude_agent_runtime.contracts import MessageRole, RuntimeMessage, ToolResultBlock
 from claude_agent_runtime.definitions import (
     AgentDefinition,
     DefinitionOrigin,

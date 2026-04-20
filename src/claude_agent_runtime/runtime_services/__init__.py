@@ -221,6 +221,7 @@ class RuntimeServices:
     context_assembler: Any = None
     agent_runner: Any = None
     skill_runner: Any = None
+    teammates: Any = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -265,7 +266,15 @@ class RuntimeServices:
         self.skill_runner = skill_runner
 
     def bind_host(self, host: HostRuntime) -> None:
+        if self.teammates is not None and hasattr(self.teammates, "bind_host"):
+            self.host = self.teammates.bind_host(host)
+            return
         self.host = host
+
+    def bind_teammates(self, teammates: Any) -> None:
+        self.teammates = teammates
+        if self.host is not None and hasattr(teammates, "bind_host"):
+            self.host = teammates.bind_host(self.host)
 
     def configure_compat(
         self,

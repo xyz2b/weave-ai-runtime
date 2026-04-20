@@ -44,6 +44,7 @@ from ..session_runtime import (
 )
 from ..skill_runtime import SkillExecutionResult, SkillExecutor
 from ..tasking import TaskManager
+from ..teammate_orchestration import PersistentTeammateOrchestrator
 from ..tool_runtime import ToolContext
 from ..turn_engine.composer import ContextAssembler
 from ..turn_engine.engine import TurnEngine, TurnStreamEvent, TurnStreamEventType
@@ -200,6 +201,7 @@ class RuntimeAssembly:
     skill_executor: SkillExecutor
     transcript_store: TranscriptStore
     task_manager: TaskManager
+    teammates: PersistentTeammateOrchestrator | None = None
     system_prompt: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -719,6 +721,22 @@ def _assemble_runtime_stack(kernel: RuntimeKernel) -> RuntimeAssembly:
         runtime_services=services,
     )
     agent_runtime.bind_skill_executor(skill_executor)
+    services.configure_compat(
+        permission_handler=kernel.config.permission_handler,
+        ask_user_handler=kernel.config.ask_user_handler,
+        notification_provider=lambda: agent_runtime.notifications,
+        tool_refresh_callback=kernel.config.tool_refresh_callback,
+    )
+    teammates = None
+    teammate_config = kernel.config.teammate_orchestration
+    if teammate_config is not None and teammate_config.enabled:
+        teammates = PersistentTeammateOrchestrator(
+            config=teammate_config,
+            project_root=kernel.config.working_directory,
+            runtime_services=services,
+            execution_core=agent_runtime,
+        )
+        services.bind_teammates(teammates)
     runtime = RuntimeAssembly(
         kernel=kernel,
         services=services,
@@ -727,18 +745,13 @@ def _assemble_runtime_stack(kernel: RuntimeKernel) -> RuntimeAssembly:
         skill_executor=skill_executor,
         transcript_store=transcript_store,
         task_manager=task_manager,
+        teammates=teammates,
         system_prompt=kernel.config.system_prompt,
         metadata=dict(kernel.config.metadata),
     )
     services.bind_execution(
         agent_runner=runtime.run_agent_tool,
         skill_runner=runtime.run_skill_tool,
-    )
-    services.configure_compat(
-        permission_handler=kernel.config.permission_handler,
-        ask_user_handler=kernel.config.ask_user_handler,
-        notification_provider=lambda: agent_runtime.notifications,
-        tool_refresh_callback=kernel.config.tool_refresh_callback,
     )
     return runtime
 
