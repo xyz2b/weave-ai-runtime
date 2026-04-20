@@ -69,6 +69,25 @@ class ControlledPermissionHost:
         return None
 
 
+class GatedModelClient(FakeModelClient):
+    def __init__(self, event_batches: list[list[ModelStreamEvent]]) -> None:
+        super().__init__(event_batches)
+        self.first_batch_started = asyncio.Event()
+        self.release_first_batch = asyncio.Event()
+        self._stream_count = 0
+
+    async def stream(self, request: ModelRequest):
+        self.requests.append(request)
+        batch = self._event_batches.pop(0)
+        stream_index = self._stream_count
+        self._stream_count += 1
+        for index, event in enumerate(batch):
+            if stream_index == 0 and index == 1:
+                self.first_batch_started.set()
+                await self.release_first_batch.wait()
+            yield event
+
+
 def test_runtime_feature_gate_exposes_persistent_teammate_orchestration(tmp_path: Path) -> None:
     disabled = assemble_runtime(RuntimeConfig(working_directory=tmp_path))
     enabled = assemble_runtime(
@@ -265,6 +284,277 @@ def test_recovery_requeues_stale_claims_and_enforces_retry_ceiling(tmp_path: Pat
     assert list(inbox_paths.inbox.glob("*.json")) == []
     assert len(list(inbox_paths.failed.glob("*.json"))) == 1
     assert teammates.snapshot("team-alpha", "tm-recovery").state == TeammateLifecycleState.IDLE
+
+
+def test_recovery_retries_lost_permission_waits_after_restart(tmp_path: Path) -> None:
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            teammate_orchestration=TeammateOrchestrationConfig(
+                enabled=True,
+                claim_lease_ms=25,
+                retry_max_attempts=2,
+            ),
+        )
+    )
+    teammates = runtime.teammates
+    assert teammates is not None
+    teammates.register_teammate(
+        team_id="team-alpha",
+        teammate_id="tm-waiting",
+        agent_name="worker",
+        session_id="session-waiting",
+        working_directory=tmp_path,
+        retry_max_attempts=2,
+    )
+
+    message = teammates.publish_work_item(
+        team_id="team-alpha",
+        teammate_id="tm-waiting",
+        prompt="resume me",
+    )
+    claim = teammates.mailbox.claim_next(
+        "team-alpha",
+        "tm-waiting",
+        claimer_identity="worker-a",
+        now=datetime.now(timezone.utc),
+    )
+    assert claim is not None
+    stale_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+    teammates.mailbox.update_claim(
+        replace(
+            claim,
+            claimed_at=stale_at,
+            last_heartbeat_at=stale_at,
+        )
+    )
+    waiting_snapshot = teammates.snapshot("team-alpha", "tm-waiting").activate(
+        message_id=message.message_id,
+        run_id="run-waiting",
+        claim_id=str(claim.claim_id),
+    ).waiting_permission("perm-lost")
+    teammates._write_snapshot(waiting_snapshot)  # noqa: SLF001
+
+    restarted = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            teammate_orchestration=TeammateOrchestrationConfig(
+                enabled=True,
+                claim_lease_ms=25,
+                retry_max_attempts=2,
+            ),
+        )
+    )
+    restarted_teammates = restarted.teammates
+    assert restarted_teammates is not None
+
+    recovery = asyncio.run(
+        restarted_teammates.recover(team_id="team-alpha", teammate_id="tm-waiting")
+    )
+    inbox_paths = restarted_teammates.mailbox.ensure_paths("team-alpha", "tm-waiting")
+    requeued = restarted_teammates.mailbox.claim_next(
+        "team-alpha",
+        "tm-waiting",
+        claimer_identity="worker-b",
+        now=datetime.now(timezone.utc),
+    )
+
+    assert recovery[0].action == "retry"
+    assert recovery[0].reason == "lost_permission_wait"
+    assert requeued is not None
+    assert requeued.attempt == 2
+    assert len(list(inbox_paths.retry.glob("*.json"))) == 1
+    assert restarted_teammates.snapshot("team-alpha", "tm-waiting").state == TeammateLifecycleState.IDLE
+
+
+def test_process_next_work_item_recovers_each_teammate_independently(tmp_path: Path) -> None:
+    setup_runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            teammate_orchestration=TeammateOrchestrationConfig(
+                enabled=True,
+                claim_lease_ms=25,
+                retry_max_attempts=2,
+            ),
+        )
+    )
+    setup_teammates = setup_runtime.teammates
+    assert setup_teammates is not None
+    for teammate_id in ("tm-a", "tm-b"):
+        setup_teammates.register_teammate(
+            team_id="team-alpha",
+            teammate_id=teammate_id,
+            agent_name="worker",
+            session_id=f"session-{teammate_id}",
+            working_directory=tmp_path,
+            retry_max_attempts=2,
+        )
+
+    message = setup_teammates.publish_work_item(
+        team_id="team-alpha",
+        teammate_id="tm-b",
+        prompt="recover me before work",
+    )
+    claim = setup_teammates.mailbox.claim_next(
+        "team-alpha",
+        "tm-b",
+        claimer_identity="worker-a",
+        now=datetime.now(timezone.utc),
+    )
+    assert claim is not None
+    stale_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+    setup_teammates.mailbox.update_claim(
+        replace(
+            claim,
+            claimed_at=stale_at,
+            last_heartbeat_at=stale_at,
+        )
+    )
+    setup_teammates._write_snapshot(  # noqa: SLF001
+        setup_teammates.snapshot("team-alpha", "tm-b").activate(
+            message_id=message.message_id,
+            run_id="run-stale",
+            claim_id=str(claim.claim_id),
+        )
+    )
+
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            model_client=FakeModelClient(
+                [
+                    [
+                        ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-recovered"}),
+                        ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "done"}),
+                        ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+                    ]
+                ]
+            ),
+            builtins=BuiltinPackConfig(
+                extra_agents=[
+                    AgentDefinition(
+                        name="worker",
+                        description="persistent teammate worker",
+                        prompt="work mailbox",
+                        tools=(),
+                    )
+                ]
+            ),
+            teammate_orchestration=TeammateOrchestrationConfig(
+                enabled=True,
+                claim_lease_ms=25,
+                retry_max_attempts=2,
+            ),
+        )
+    )
+    teammates = runtime.teammates
+    assert teammates is not None
+
+    async def scenario():
+        first_result = await teammates.process_next_work_item(team_id="team-alpha", teammate_id="tm-a")
+        second_result = await teammates.process_next_work_item(team_id="team-alpha", teammate_id="tm-b")
+        return first_result, second_result
+
+    first_result, second_result = asyncio.run(scenario())
+    paths = teammates.mailbox.ensure_paths("team-alpha", "tm-b")
+
+    assert first_result is None
+    assert second_result is not None
+    assert second_result.status == "completed"
+    assert len(list(paths.retry.glob("*.json"))) == 1
+    assert len(list(paths.done.glob("*.json"))) == 1
+    assert teammates.snapshot("team-alpha", "tm-b").state == TeammateLifecycleState.IDLE
+
+
+def test_process_next_work_item_serializes_teammate_runs_and_marks_tasks_running(tmp_path: Path) -> None:
+    model_client = GatedModelClient(
+        [
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-serial-1"}),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "first"}),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+            ],
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-serial-2"}),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "second"}),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+            ],
+        ]
+    )
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            model_client=model_client,
+            builtins=BuiltinPackConfig(
+                extra_agents=[
+                    AgentDefinition(
+                        name="worker",
+                        description="persistent teammate worker",
+                        prompt="work mailbox",
+                        tools=(),
+                    )
+                ]
+            ),
+            teammate_orchestration=TeammateOrchestrationConfig(enabled=True, heartbeat_interval_ms=10),
+        )
+    )
+    teammates = runtime.teammates
+    assert teammates is not None
+    teammates.register_teammate(
+        team_id="team-alpha",
+        teammate_id="tm-serial",
+        agent_name="worker",
+        session_id="session-serial",
+        working_directory=tmp_path,
+    )
+    teammates.publish_work_item(
+        team_id="team-alpha",
+        teammate_id="tm-serial",
+        prompt="first job",
+    )
+    teammates.publish_work_item(
+        team_id="team-alpha",
+        teammate_id="tm-serial",
+        prompt="second job",
+    )
+
+    async def scenario():
+        first_task = asyncio.create_task(
+            teammates.process_next_work_item(team_id="team-alpha", teammate_id="tm-serial")
+        )
+        await model_client.first_batch_started.wait()
+        second_task = asyncio.create_task(
+            teammates.process_next_work_item(team_id="team-alpha", teammate_id="tm-serial")
+        )
+        await asyncio.sleep(0)
+
+        snapshot = teammates.snapshot("team-alpha", "tm-serial")
+        projection = teammates.projection("team-alpha", "tm-serial")
+        claimed = teammates.mailbox.list_claimed("team-alpha", "tm-serial")
+        inbox = teammates.mailbox.ensure_paths("team-alpha", "tm-serial").inbox
+        tasks = runtime.task_manager.list()
+        assert snapshot is not None
+        assert projection is not None
+        assert snapshot.state == TeammateLifecycleState.ACTIVE
+        assert projection.lifecycle_state == TeammateLifecycleState.ACTIVE
+        assert len(claimed) == 1
+        assert len(list(inbox.glob("*.json"))) == 1
+        assert len(tasks) == 1
+        assert tasks[0].status == TaskStatus.RUNNING
+        assert tasks[0].metadata["teammate_state"] == TeammateLifecycleState.ACTIVE.value
+        assert projection.task_id == tasks[0].task_id
+
+        model_client.release_first_batch.set()
+        return await asyncio.gather(first_task, second_task)
+
+    first_result, second_result = asyncio.run(scenario())
+
+    assert first_result.status == "completed"
+    assert second_result.status == "completed"
+    assert [task.status for task in runtime.task_manager.list()] == [
+        TaskStatus.COMPLETED,
+        TaskStatus.COMPLETED,
+    ]
 
 
 def test_teammate_identity_permission_bridge_and_idle_projection_consistency(tmp_path: Path) -> None:

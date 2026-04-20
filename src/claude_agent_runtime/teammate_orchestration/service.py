@@ -89,7 +89,7 @@ class PersistentTeammateHostBridge:
         )
         try:
             outcome = await self._delegate.request_permission(request)
-        except Exception:
+        except BaseException:
             self._orchestrator.exit_permission_wait(
                 team_id=details["team_id"],
                 teammate_id=details["teammate_id"],
@@ -139,7 +139,9 @@ class PersistentTeammateOrchestrator:
         self._snapshots: dict[tuple[str, str], TeammateStateSnapshot] = {}
         self._projections: dict[tuple[str, str], TeammateProjection] = {}
         self._heartbeat_tasks: dict[tuple[str, str], asyncio.Task[None]] = {}
-        self._recovered = False
+        self._processing_locks: dict[tuple[str, str], asyncio.Lock] = {}
+        self._recovered_targets: set[tuple[str, str]] = set()
+        self._live_permission_waits: set[tuple[str, str, str]] = set()
         self._host_bridge: PersistentTeammateHostBridge | None = None
 
     @property
@@ -280,11 +282,13 @@ class PersistentTeammateOrchestrator:
             else self._mailbox.scan_teammates()
         )
         for resolved_team_id, resolved_teammate_id in targets:
+            key = (resolved_team_id, resolved_teammate_id)
             snapshot = self._mailbox.read_state(resolved_team_id, resolved_teammate_id)
             if snapshot is None:
                 continue
             self._snapshots[(resolved_team_id, resolved_teammate_id)] = snapshot
             self._restore_registration(snapshot)
+            live_permission_wait = self._has_live_permission_wait(snapshot)
             claimed = self._mailbox.list_claimed(resolved_team_id, resolved_teammate_id)
             if not claimed and snapshot.state in {
                 TeammateLifecycleState.ACTIVE,
@@ -301,16 +305,43 @@ class PersistentTeammateOrchestrator:
                         action="reset_idle",
                     )
                 )
+                self._recovered_targets.add(key)
                 continue
 
             for envelope in claimed:
                 active_run_linked = await self._active_run_linked(snapshot, envelope)
-                waiting_permission = (
+                waiting_permission_snapshot = (
                     snapshot.state == TeammateLifecycleState.WAITING_PERMISSION
                     and snapshot.current_message_id == envelope.message_id
                     and snapshot.current_claim_id == envelope.claim_id
                     and snapshot.waiting_permission_id is not None
                 )
+                waiting_permission = waiting_permission_snapshot and live_permission_wait
+                lost_permission_wait = (
+                    waiting_permission_snapshot and not live_permission_wait and not active_run_linked
+                )
+                if lost_permission_wait:
+                    archived, _ = self._mailbox.fail_or_retry(
+                        envelope,
+                        reason="lost_permission_wait",
+                        retry_max_attempts=self._resolve_registration(
+                            resolved_team_id,
+                            resolved_teammate_id,
+                        ).retry_max_attempts,
+                    )
+                    recovered.append(
+                        TeammateRecoveryResult(
+                            team_id=resolved_team_id,
+                            teammate_id=resolved_teammate_id,
+                            message_id=envelope.message_id,
+                            action=archived.terminal_state.value if archived.terminal_state is not None else "retry",
+                            reason="lost_permission_wait",
+                        )
+                    )
+                    if snapshot.current_message_id == envelope.message_id:
+                        snapshot = snapshot.idle()
+                        self._write_snapshot(snapshot)
+                    continue
                 if not self._mailbox.stale_claim(
                     envelope,
                     active_run_linked=active_run_linked,
@@ -349,7 +380,7 @@ class PersistentTeammateOrchestrator:
                     self._write_snapshot(snapshot)
             if snapshot.state == TeammateLifecycleState.IDLE:
                 self._set_projection(snapshot, task_id=None, task_status=None, progress_status="idle")
-        self._recovered = True
+            self._recovered_targets.add(key)
         return tuple(recovered)
 
     async def process_next_work_item(
@@ -360,172 +391,185 @@ class PersistentTeammateOrchestrator:
     ) -> Any | None:
         if self._execution_core is None:
             raise RuntimeError("Persistent teammate orchestration is not bound to an execution core")
-        if not self._recovered:
-            await self.recover(team_id=team_id, teammate_id=teammate_id)
+        key = (team_id, teammate_id)
+        async with self._processing_lock(team_id, teammate_id):
+            if key not in self._recovered_targets:
+                await self.recover(team_id=team_id, teammate_id=teammate_id)
 
-        registration = self._resolve_registration(team_id, teammate_id)
-        claimed = self._mailbox.claim_next(
-            team_id,
-            teammate_id,
-            claimer_identity=f"teammate:{teammate_id}",
-            claim_lease_ms=registration.claim_lease_ms,
-            now=datetime.now(timezone.utc),
-        )
-        if claimed is None:
-            snapshot = self.snapshot(team_id, teammate_id)
-            if snapshot is not None and snapshot.state != TeammateLifecycleState.IDLE:
-                snapshot = snapshot.idle()
-                self._write_snapshot(snapshot)
-            if snapshot is not None:
-                self._set_projection(snapshot, task_id=None, task_status=None, progress_status="idle")
-            return None
+            registration = self._resolve_registration(team_id, teammate_id)
+            claimed = self._mailbox.claim_next(
+                team_id,
+                teammate_id,
+                claimer_identity=f"teammate:{teammate_id}",
+                claim_lease_ms=registration.claim_lease_ms,
+                now=datetime.now(timezone.utc),
+            )
+            if claimed is None:
+                snapshot = self.snapshot(team_id, teammate_id)
+                active_claims = self._mailbox.list_claimed(team_id, teammate_id)
+                if snapshot is not None and not active_claims and snapshot.state != TeammateLifecycleState.IDLE:
+                    snapshot = snapshot.idle()
+                    self._write_snapshot(snapshot)
+                if snapshot is not None and snapshot.state == TeammateLifecycleState.IDLE:
+                    self._set_projection(snapshot, task_id=None, task_status=None, progress_status="idle")
+                return None
 
-        execution_request = self._build_execution_request(registration, claimed)
-        invocation = self._build_agent_invocation(execution_request)
-        agent, execution_spec = self._execution_core.prepare_execution(invocation)
-        claimed = self._mailbox.update_claim(claimed.with_run_linkage(execution_spec.run_id))
+            execution_request = self._build_execution_request(registration, claimed)
+            invocation = self._build_agent_invocation(execution_request)
+            agent, execution_spec = self._execution_core.prepare_execution(invocation)
+            claimed = self._mailbox.update_claim(claimed.with_run_linkage(execution_spec.run_id))
 
-        snapshot = self.snapshot(team_id, teammate_id) or TeammateStateSnapshot(
-            team_id=team_id,
-            teammate_id=teammate_id,
-            state=TeammateLifecycleState.STARTING,
-        )
-        snapshot = snapshot.activate(
-            message_id=claimed.message_id,
-            run_id=execution_spec.run_id,
-            claim_id=str(claimed.claim_id),
-        ).with_registration(
-            agent_name=registration.agent_name,
-            session_id=registration.session_id,
-            working_directory=registration.working_directory,
-            metadata=registration.metadata,
-        )
-        self._write_snapshot(snapshot)
-        task_id = self._task_manager().create(
-            uuid4().hex,
-            title=f"teammate:{teammate_id}",
-            description=f"{registration.agent_name}:{claimed.kind}",
-            metadata={
-                "team_id": team_id,
-                "teammate_id": teammate_id,
-                "run_id": execution_spec.run_id,
-                "message_id": claimed.message_id,
-                "claim_id": claimed.claim_id,
-                "projection_kind": "teammate",
-                "teammate_state": snapshot.state.value,
-            },
-        ).task_id
-        self._set_projection(
-            snapshot,
-            task_id=task_id,
-            task_status=TaskStatus.RUNNING,
-            progress_status="active",
-        )
-        heartbeat_task = asyncio.create_task(
-            self._heartbeat_loop(
+            snapshot = self.snapshot(team_id, teammate_id) or TeammateStateSnapshot(
                 team_id=team_id,
                 teammate_id=teammate_id,
+                state=TeammateLifecycleState.STARTING,
+            )
+            snapshot = snapshot.activate(
                 message_id=claimed.message_id,
+                run_id=execution_spec.run_id,
                 claim_id=str(claimed.claim_id),
+            ).with_registration(
+                agent_name=registration.agent_name,
+                session_id=registration.session_id,
+                working_directory=registration.working_directory,
+                metadata=registration.metadata,
             )
-        )
-        self._heartbeat_tasks[(team_id, teammate_id)] = heartbeat_task
-        try:
-            result = await self._execution_core.dispatch_prepared(
-                invocation,
-                agent=agent,
-                execution_spec=execution_spec,
-            )
-        except Exception as exc:
-            archived, _ = self._mailbox.fail_or_retry(
-                claimed,
-                reason=str(exc),
-                retry_max_attempts=registration.retry_max_attempts,
-            )
-            snapshot = snapshot.idle()
             self._write_snapshot(snapshot)
+            task_id = self._task_manager().create(
+                uuid4().hex,
+                title=f"teammate:{teammate_id}",
+                description=f"{registration.agent_name}:{claimed.kind}",
+                metadata={
+                    "team_id": team_id,
+                    "teammate_id": teammate_id,
+                    "run_id": execution_spec.run_id,
+                    "message_id": claimed.message_id,
+                    "claim_id": claimed.claim_id,
+                    "projection_kind": "teammate",
+                    "teammate_state": snapshot.state.value,
+                },
+            ).task_id
             self._task_manager().update(
                 task_id,
-                status=TaskStatus.FAILED,
-                error=str(exc),
+                status=TaskStatus.RUNNING,
                 metadata={
                     "teammate_state": snapshot.state.value,
-                    "mailbox_terminal_state": archived.terminal_state.value if archived.terminal_state else None,
+                    "run_id": execution_spec.run_id,
+                    "message_id": claimed.message_id,
+                    "claim_id": claimed.claim_id,
                 },
             )
             self._set_projection(
                 snapshot,
                 task_id=task_id,
-                task_status=TaskStatus.FAILED,
+                task_status=TaskStatus.RUNNING,
+                progress_status="active",
+            )
+            heartbeat_task = asyncio.create_task(
+                self._heartbeat_loop(
+                    team_id=team_id,
+                    teammate_id=teammate_id,
+                    message_id=claimed.message_id,
+                    claim_id=str(claimed.claim_id),
+                )
+            )
+            self._heartbeat_tasks[(team_id, teammate_id)] = heartbeat_task
+            try:
+                result = await self._execution_core.dispatch_prepared(
+                    invocation,
+                    agent=agent,
+                    execution_spec=execution_spec,
+                )
+            except Exception as exc:
+                archived, _ = self._mailbox.fail_or_retry(
+                    claimed,
+                    reason=str(exc),
+                    retry_max_attempts=registration.retry_max_attempts,
+                )
+                snapshot = snapshot.idle()
+                self._write_snapshot(snapshot)
+                self._task_manager().update(
+                    task_id,
+                    status=TaskStatus.FAILED,
+                    error=str(exc),
+                    metadata={
+                        "teammate_state": snapshot.state.value,
+                        "mailbox_terminal_state": archived.terminal_state.value if archived.terminal_state else None,
+                    },
+                )
+                self._set_projection(
+                    snapshot,
+                    task_id=task_id,
+                    task_status=TaskStatus.FAILED,
+                    progress_status="idle",
+                    latest_notification=f"Teammate '{teammate_id}' failed mailbox item",
+                )
+                await self._emit_notification(
+                    f"Teammate '{teammate_id}' failed mailbox item: {exc}",
+                    metadata={
+                        "team_id": team_id,
+                        "teammate_id": teammate_id,
+                        "message_id": claimed.message_id,
+                        "run_id": execution_spec.run_id,
+                    },
+                )
+                raise
+            finally:
+                await self._stop_heartbeat(team_id, teammate_id)
+
+            status = str(result.status)
+            if status == AgentRunStatus.COMPLETED.value:
+                archived = self._mailbox.complete_done(claimed)
+                terminal_task_status = TaskStatus.COMPLETED
+                notification_text = f"Teammate '{teammate_id}' completed mailbox item"
+            else:
+                archived, requeued = self._mailbox.fail_or_retry(
+                    claimed,
+                    reason=status,
+                    retry_max_attempts=registration.retry_max_attempts,
+                )
+                terminal_task_status = TaskStatus.FAILED
+                notification_text = (
+                    f"Teammate '{teammate_id}' scheduled mailbox retry"
+                    if requeued is not None
+                    else f"Teammate '{teammate_id}' failed mailbox item"
+                )
+
+            snapshot = snapshot.idle()
+            self._write_snapshot(snapshot)
+            self._task_manager().update(
+                task_id,
+                status=terminal_task_status,
+                result={
+                    "run_id": execution_spec.run_id,
+                    "status": status,
+                    "message_id": claimed.message_id,
+                },
+                error=None if terminal_task_status == TaskStatus.COMPLETED else archived.terminal_reason or status,
+                metadata={
+                    "teammate_state": snapshot.state.value,
+                    "mailbox_terminal_state": archived.terminal_state.value if archived.terminal_state is not None else None,
+                    "run_id": execution_spec.run_id,
+                },
+            )
+            self._set_projection(
+                snapshot,
+                task_id=task_id,
+                task_status=terminal_task_status,
                 progress_status="idle",
-                latest_notification=f"Teammate '{teammate_id}' failed mailbox item",
+                latest_notification=notification_text,
             )
             await self._emit_notification(
-                f"Teammate '{teammate_id}' failed mailbox item: {exc}",
+                notification_text,
                 metadata={
                     "team_id": team_id,
                     "teammate_id": teammate_id,
                     "message_id": claimed.message_id,
                     "run_id": execution_spec.run_id,
+                    "mailbox_terminal_state": archived.terminal_state.value if archived.terminal_state is not None else None,
                 },
             )
-            raise
-        finally:
-            await self._stop_heartbeat(team_id, teammate_id)
-
-        status = str(result.status)
-        if status == AgentRunStatus.COMPLETED.value:
-            archived = self._mailbox.complete_done(claimed)
-            terminal_task_status = TaskStatus.COMPLETED
-            notification_text = f"Teammate '{teammate_id}' completed mailbox item"
-        else:
-            archived, requeued = self._mailbox.fail_or_retry(
-                claimed,
-                reason=status,
-                retry_max_attempts=registration.retry_max_attempts,
-            )
-            terminal_task_status = TaskStatus.FAILED
-            notification_text = (
-                f"Teammate '{teammate_id}' scheduled mailbox retry"
-                if requeued is not None
-                else f"Teammate '{teammate_id}' failed mailbox item"
-            )
-
-        snapshot = snapshot.idle()
-        self._write_snapshot(snapshot)
-        self._task_manager().update(
-            task_id,
-            status=terminal_task_status,
-            result={
-                "run_id": execution_spec.run_id,
-                "status": status,
-                "message_id": claimed.message_id,
-            },
-            error=None if terminal_task_status == TaskStatus.COMPLETED else archived.terminal_reason or status,
-            metadata={
-                "teammate_state": snapshot.state.value,
-                "mailbox_terminal_state": archived.terminal_state.value if archived.terminal_state is not None else None,
-                "run_id": execution_spec.run_id,
-            },
-        )
-        self._set_projection(
-            snapshot,
-            task_id=task_id,
-            task_status=terminal_task_status,
-            progress_status="idle",
-            latest_notification=notification_text,
-        )
-        await self._emit_notification(
-            notification_text,
-            metadata={
-                "team_id": team_id,
-                "teammate_id": teammate_id,
-                "message_id": claimed.message_id,
-                "run_id": execution_spec.run_id,
-                "mailbox_terminal_state": archived.terminal_state.value if archived.terminal_state is not None else None,
-            },
-        )
-        return result
+            return result
 
     async def drain_teammate(
         self,
@@ -565,6 +609,7 @@ class PersistentTeammateOrchestrator:
         snapshot = self.snapshot(team_id, teammate_id)
         if snapshot is None:
             return
+        self._live_permission_waits.add((team_id, teammate_id, permission_id))
         snapshot = snapshot.waiting_permission(permission_id)
         self._write_snapshot(snapshot)
         projection = self._projections.get((team_id, teammate_id))
@@ -592,6 +637,7 @@ class PersistentTeammateOrchestrator:
         teammate_id: str,
         permission_id: str,
     ) -> None:
+        self._live_permission_waits.discard((team_id, teammate_id, permission_id))
         snapshot = self.snapshot(team_id, teammate_id)
         if snapshot is None or snapshot.waiting_permission_id != permission_id:
             return
@@ -731,6 +777,20 @@ class PersistentTeammateOrchestrator:
             await task
         except asyncio.CancelledError:
             return
+
+    def _processing_lock(self, team_id: str, teammate_id: str) -> asyncio.Lock:
+        key = (team_id, teammate_id)
+        lock = self._processing_locks.get(key)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._processing_locks[key] = lock
+        return lock
+
+    def _has_live_permission_wait(self, snapshot: TeammateStateSnapshot) -> bool:
+        permission_id = snapshot.waiting_permission_id
+        if permission_id is None:
+            return False
+        return (snapshot.team_id, snapshot.teammate_id, permission_id) in self._live_permission_waits
 
     def _restore_registration(self, snapshot: TeammateStateSnapshot) -> None:
         if snapshot.agent_name is None or snapshot.session_id is None or snapshot.working_directory is None:
