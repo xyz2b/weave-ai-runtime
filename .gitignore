@@ -3,6 +3,7 @@
 /.runtime/
 /.codex/
 /docs/cc/
+/.claude/
 
 # macOS / Windows
 .DS_Store
