@@ -111,6 +111,7 @@ class ModelRequest:
     agent: AgentDefinition | None = None
     model: str | None = None
     effort: EffortValue | None = None
+    max_output_tokens: int | None = None
     abort_signal: ModelAbortSignal | None = None
     query_source: str | None = None
     requested_model_route: str | None = None
@@ -159,9 +160,58 @@ class TranscriptSession:
     entries: tuple[TranscriptEntry, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class ArtifactManifestEntry:
+    artifact_ref: str
+    producing_turn: str | None
+    kind: str
+    digest: str
+    created_at: Any = field(default_factory=utc_now)
+    retention_class: str = "session_lifetime"
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "metadata", dict(self.metadata))
+
+
+@dataclass(frozen=True, slots=True)
+class TranscriptArtifact:
+    entry: ArtifactManifestEntry
+    payload: Any
+
+
 class TranscriptStore(Protocol):
     async def append(self, entry: TranscriptEntry) -> None: ...
 
     async def load(self, session_id: str) -> TranscriptSession: ...
 
     async def replace(self, session: TranscriptSession) -> None: ...
+
+    async def load_session_metadata(self, session_id: str) -> Mapping[str, Any] | None: ...
+
+    async def save_session_metadata(
+        self,
+        session_id: str,
+        metadata: Mapping[str, Any],
+    ) -> None: ...
+
+    async def persist_artifact(
+        self,
+        session_id: str,
+        *,
+        turn_id: str | None,
+        kind: str,
+        payload: Any,
+        metadata: Mapping[str, Any] | None = None,
+        retention_class: str = "session_lifetime",
+    ) -> ArtifactManifestEntry: ...
+
+    async def load_artifact(
+        self,
+        session_id: str,
+        artifact_ref: str,
+    ) -> TranscriptArtifact | None: ...
+
+    async def list_artifacts(self, session_id: str) -> tuple[ArtifactManifestEntry, ...]: ...
+
+    async def purge_unreferenced_artifacts(self, session_id: str) -> tuple[str, ...]: ...

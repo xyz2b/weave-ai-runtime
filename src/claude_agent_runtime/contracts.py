@@ -195,6 +195,53 @@ class RuntimePrivateContextView:
         object.__setattr__(self, "extensions", dict(self.extensions))
 
 
+REQUEST_OVERRIDE_EXTENSION_KEY = "request_override"
+RESUMABLE_REQUEST_OVERRIDE_METADATA_KEY = "resumable_request_override"
+RECOVERY_STATE_METADATA_KEY = "recovery_state"
+
+
+@dataclass(frozen=True, slots=True)
+class RequestOverrideState:
+    requested_model: str | None = None
+    requested_effort: Any = None
+    requested_model_route: str | None = None
+    invocation_mode_override: Any = None
+    max_output_tokens_override: int | None = None
+    source: str | None = None
+    field_sources: dict[str, str] = field(default_factory=dict)
+    resumable: bool = False
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "field_sources", dict(self.field_sources))
+        object.__setattr__(self, "metadata", dict(self.metadata))
+
+    def __bool__(self) -> bool:
+        return any(
+            value is not None
+            for value in (
+                self.requested_model,
+                self.requested_effort,
+                self.requested_model_route,
+                self.invocation_mode_override,
+                self.max_output_tokens_override,
+            )
+        )
+
+    def serialize(self) -> dict[str, Any]:
+        return {
+            "requested_model": self.requested_model,
+            "requested_effort": self.requested_effort,
+            "requested_model_route": self.requested_model_route,
+            "invocation_mode_override": self.invocation_mode_override,
+            "max_output_tokens_override": self.max_output_tokens_override,
+            "source": self.source,
+            "field_sources": dict(self.field_sources),
+            "resumable": self.resumable,
+            "metadata": dict(self.metadata),
+        }
+
+
 @dataclass(frozen=True, slots=True)
 class SkillRequestOverrideState:
     requested_model: str | None = None
@@ -285,7 +332,202 @@ def _coerce_optional_string(value: object) -> str | None:
     return None
 
 
+def _coerce_optional_int(value: object) -> int | None:
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def request_override_from_skill_request_override(
+    value: SkillRequestOverrideState | None,
+) -> RequestOverrideState | None:
+    if value is None or not value:
+        return None
+    source = value.source_skill or "skill"
+    field_sources: dict[str, str] = {}
+    if value.requested_model is not None:
+        field_sources["requested_model"] = source
+    if value.requested_effort is not None:
+        field_sources["requested_effort"] = source
+    state = RequestOverrideState(
+        requested_model=value.requested_model,
+        requested_effort=value.requested_effort,
+        source=source,
+        field_sources=field_sources,
+        metadata={"sources": [source], "source_kind": "skill"},
+    )
+    return state if state else None
+
+
+def skill_request_override_from_request_override(
+    value: RequestOverrideState | None,
+) -> SkillRequestOverrideState | None:
+    if value is None:
+        return None
+    state = SkillRequestOverrideState(
+        requested_model=value.requested_model,
+        requested_effort=value.requested_effort,
+        source_skill=_coerce_optional_string(value.metadata.get("source_skill"))
+        or value.source,
+    )
+    return state if state else None
+
+
+def coerce_request_override_state(value: object) -> RequestOverrideState | None:
+    if isinstance(value, RequestOverrideState):
+        return value if value else None
+    if isinstance(value, SkillRequestOverrideState):
+        return request_override_from_skill_request_override(value)
+    if not isinstance(value, Mapping):
+        return None
+    metadata = _coerce_mapping(value.get("metadata"))
+    field_sources = {
+        str(key): str(source)
+        for key, source in _coerce_mapping(value.get("field_sources")).items()
+        if source is not None
+    }
+    state = RequestOverrideState(
+        requested_model=_coerce_optional_string(
+            value.get("requested_model") or value.get("model")
+        ),
+        requested_effort=value.get("requested_effort", value.get("effort")),
+        requested_model_route=_coerce_optional_string(
+            value.get("requested_model_route") or value.get("model_route")
+        ),
+        invocation_mode_override=value.get(
+            "invocation_mode_override",
+            value.get("invocation_mode"),
+        ),
+        max_output_tokens_override=_coerce_optional_int(
+            value.get("max_output_tokens_override", value.get("max_output_tokens"))
+        ),
+        source=_coerce_optional_string(value.get("source"))
+        or _coerce_optional_string(value.get("source_skill")),
+        field_sources=field_sources,
+        resumable=bool(value.get("resumable", False)),
+        metadata=metadata,
+    )
+    if state.source and not state.metadata.get("sources"):
+        state = RequestOverrideState(
+            requested_model=state.requested_model,
+            requested_effort=state.requested_effort,
+            requested_model_route=state.requested_model_route,
+            invocation_mode_override=state.invocation_mode_override,
+            max_output_tokens_override=state.max_output_tokens_override,
+            source=state.source,
+            field_sources=state.field_sources,
+            resumable=state.resumable,
+            metadata={**state.metadata, "sources": [state.source]},
+        )
+    return state if state else None
+
+
+def merge_request_override_state(
+    current: RequestOverrideState | None,
+    incoming: RequestOverrideState | None,
+) -> RequestOverrideState | None:
+    if incoming is None:
+        return current
+    if current is None:
+        return incoming
+
+    def _resolved_field_source(field_name: str) -> str | None:
+        if getattr(incoming, field_name) is not None:
+            return incoming.field_sources.get(field_name) or incoming.source
+        return current.field_sources.get(field_name) or current.source
+
+    requested_model = (
+        incoming.requested_model
+        if incoming.requested_model is not None
+        else current.requested_model
+    )
+    requested_effort = (
+        incoming.requested_effort
+        if incoming.requested_effort is not None
+        else current.requested_effort
+    )
+    requested_model_route = (
+        incoming.requested_model_route
+        if incoming.requested_model_route is not None
+        else current.requested_model_route
+    )
+    invocation_mode_override = (
+        incoming.invocation_mode_override
+        if incoming.invocation_mode_override is not None
+        else current.invocation_mode_override
+    )
+    max_output_tokens_override = (
+        incoming.max_output_tokens_override
+        if incoming.max_output_tokens_override is not None
+        else current.max_output_tokens_override
+    )
+    sources: list[str] = []
+    for candidate in (
+        *tuple(current.metadata.get("sources", ())),
+        *tuple(incoming.metadata.get("sources", ())),
+        current.source,
+        incoming.source,
+    ):
+        normalized = _coerce_optional_string(candidate)
+        if normalized is None or normalized in sources:
+            continue
+        sources.append(normalized)
+    metadata = dict(current.metadata)
+    metadata.update(incoming.metadata)
+    if sources:
+        metadata["sources"] = sources
+    if incoming.source and incoming.source.startswith("skill:"):
+        metadata.setdefault("source_skill", incoming.source.partition(":")[2])
+    field_sources = {
+        field_name: source
+        for field_name in (
+            "requested_model",
+            "requested_effort",
+            "requested_model_route",
+            "invocation_mode_override",
+            "max_output_tokens_override",
+        )
+        if (source := _resolved_field_source(field_name)) is not None
+    }
+    merged = RequestOverrideState(
+        requested_model=requested_model,
+        requested_effort=requested_effort,
+        requested_model_route=requested_model_route,
+        invocation_mode_override=invocation_mode_override,
+        max_output_tokens_override=max_output_tokens_override,
+        source=incoming.source or current.source,
+        field_sources=field_sources,
+        resumable=incoming.resumable or current.resumable,
+        metadata=metadata,
+    )
+    return merged if merged else None
+
+
+def select_resumable_request_override(
+    value: object,
+) -> RequestOverrideState | None:
+    state = coerce_request_override_state(value)
+    if state is None or not state.resumable:
+        return None
+    return state
+
+
+def serialize_resumable_request_override(
+    value: RequestOverrideState | None,
+) -> dict[str, Any] | None:
+    if value is None or not value.resumable:
+        return None
+    return value.serialize()
+
+
 def coerce_skill_request_override_state(value: object) -> SkillRequestOverrideState | None:
+    if isinstance(value, RequestOverrideState):
+        return skill_request_override_from_request_override(value)
     if isinstance(value, SkillRequestOverrideState):
         return value if value else None
     if not isinstance(value, Mapping):
@@ -302,24 +544,11 @@ def merge_skill_request_override_state(
     current: SkillRequestOverrideState | None,
     incoming: SkillRequestOverrideState | None,
 ) -> SkillRequestOverrideState | None:
-    if incoming is None:
-        return current
-    if current is None:
-        return incoming
-    merged = SkillRequestOverrideState(
-        requested_model=(
-            incoming.requested_model
-            if incoming.requested_model is not None
-            else current.requested_model
-        ),
-        requested_effort=(
-            incoming.requested_effort
-            if incoming.requested_effort is not None
-            else current.requested_effort
-        ),
-        source_skill=incoming.source_skill or current.source_skill,
+    merged = merge_request_override_state(
+        request_override_from_skill_request_override(current),
+        request_override_from_skill_request_override(incoming),
     )
-    return merged if merged else None
+    return skill_request_override_from_request_override(merged)
 
 
 @dataclass(frozen=True, slots=True)

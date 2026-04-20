@@ -21,6 +21,13 @@ class RuntimeHookPhase(StrEnum):
     POST_COMPACT = "PostCompact"
 
 
+class HookStopDisposition(StrEnum):
+    HALT_FAILURE = "halt_failure"
+    BLOCK_SESSION = "block_session"
+    CONTINUE_SAME_TURN = "continue_same_turn"
+    ALLOW_TERMINAL = "allow_terminal"
+
+
 class HostLifecyclePhase(StrEnum):
     STARTUP = "startup"
     READY = "ready"
@@ -49,6 +56,10 @@ class HookEffect:
     continue_execution: bool = True
     notifications: tuple[str, ...] = ()
     elicitation_result: dict[str, Any] | None = None
+    stop_disposition: HookStopDisposition | str | None = None
+    injected_messages: tuple[Any, ...] = ()
+    request_override: dict[str, Any] | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)

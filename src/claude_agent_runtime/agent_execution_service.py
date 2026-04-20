@@ -563,6 +563,8 @@ def _supports_permission_requests(host: Any) -> bool:
 
 def _terminal_metadata_from_turn_result(turn_result: Any) -> dict[str, Any]:
     metadata: dict[str, Any] = {}
+    if getattr(turn_result, "metadata", None):
+        metadata.update(dict(turn_result.metadata))
     if turn_result.stop_reason is not None:
         metadata["stop_reason"] = turn_result.stop_reason
     if turn_result.request_id is not None:
@@ -577,13 +579,44 @@ def _terminal_metadata_from_turn_result(turn_result: Any) -> dict[str, Any]:
         metadata["usage"] = dict(turn_result.usage)
     terminal = getattr(turn_result, "terminal", None)
     if terminal is not None:
+        terminal_metadata = getattr(terminal, "metadata", None)
+        if isinstance(terminal_metadata, dict):
+            metadata.update(dict(terminal_metadata))
         provider_stop_reason = getattr(terminal, "provider_stop_reason", None)
         if provider_stop_reason is not None and provider_stop_reason != turn_result.stop_reason:
             metadata["provider_stop_reason"] = provider_stop_reason
+        post_effects = getattr(turn_result, "post_effects", None) or getattr(terminal, "post_effects", None)
+        if post_effects is not None:
+            session_status_hint = getattr(post_effects, "session_status_hint", None)
+            if session_status_hint is not None:
+                metadata["session_status_hint"] = str(session_status_hint)
+            matched_stop_hooks = getattr(post_effects, "matched_stop_hooks", ())
+            if matched_stop_hooks:
+                metadata["matched_stop_hooks"] = list(matched_stop_hooks)
+        transition = getattr(turn_result, "transition", None) or getattr(terminal, "transition", None)
+        if transition is not None:
+            metadata["transition_reason"] = transition.reason.value
+            metadata["next_phase"] = transition.next_phase.value
     return metadata
 
 
 def _agent_run_status_from_turn_result(turn_result: Any) -> AgentRunStatus:
+    terminal = getattr(turn_result, "terminal", None)
+    if terminal is not None:
+        if getattr(terminal, "stop_reason", None) == "max_turns":
+            return AgentRunStatus.MAX_TURNS
+        if getattr(terminal, "completed", False):
+            return AgentRunStatus.COMPLETED
+        terminal_metadata = getattr(terminal, "metadata", None)
+        if isinstance(terminal_metadata, dict):
+            failure_class = terminal_metadata.get("failure_class")
+            if failure_class not in {None, "", "none"}:
+                return AgentRunStatus.FAILED
+        post_effects = getattr(turn_result, "post_effects", None) or getattr(terminal, "post_effects", None)
+        if post_effects is not None:
+            session_status_hint = getattr(post_effects, "session_status_hint", None)
+            if session_status_hint == "interrupted":
+                return AgentRunStatus.FAILED
     stop_reason = getattr(turn_result, "stop_reason", None)
     if stop_reason in {"end_turn", "message_stop"}:
         return AgentRunStatus.COMPLETED

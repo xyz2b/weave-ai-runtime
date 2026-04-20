@@ -14,6 +14,7 @@ from ..contracts import (
     MessageAttachment,
     MessageRole,
     RuntimeMessage,
+    coerce_request_override_state,
     private_context_from_legacy_runtime_context,
     SessionCommand,
     SessionCommandType,
@@ -184,7 +185,9 @@ class SessionController:
     async def resume(self) -> None:
         transcript = await self._transcript_store.load(self.state.session_id)
         self._messages = [entry.message for entry in transcript.entries]
+        await self._load_persisted_session_metadata()
         self._sync_compaction_state()
+        self._restore_resumable_private_context()
         _sync_skill_runtime_metadata(self.state.metadata, self._messages, self._cwd)
         self.state.status = SessionStatus.READY
         self.state.active_turn_id = None
@@ -296,6 +299,9 @@ class SessionController:
             continuation = self.state.metadata.get("compaction_continuation")
             if isinstance(continuation, dict):
                 runtime_context["compaction_continuation"] = dict(continuation)
+            resumable_override = self.state.metadata.get("resumable_request_override")
+            if isinstance(resumable_override, dict):
+                runtime_context["request_override"] = dict(resumable_override)
             self._session_scope.private_context = self._session_scope_private_context()
             self._session_scope.agent_name = self._agent.name
             self._session_scope.cwd = Path(self._cwd)
@@ -315,6 +321,7 @@ class SessionController:
                     await self._apply_compaction(
                         event.compacted_messages,
                         turn_id=self.state.active_turn_id,
+                        event_metadata=event.metadata,
                     )
                 if event.event_type == TurnStreamEventType.MESSAGE and event.message is not None:
                     await self._record_message(
@@ -330,6 +337,8 @@ class SessionController:
                 await self._runtime_services.host.emit_turn_event(self.state.session_id, event)
                 if event.event_type == TurnStreamEventType.TERMINAL and event.terminal is not None:
                     last_terminal = event.terminal
+                    self._sync_terminal_control_plane_metadata(event.terminal)
+                    await self._persist_session_metadata()
                     status_hint = _terminal_session_status_hint(event.terminal)
                     if status_hint == "waiting":
                         self.state.status = SessionStatus.WAITING
@@ -384,6 +393,7 @@ class SessionController:
         )
         self._sync_compaction_state()
         _sync_skill_runtime_metadata(self.state.metadata, self._messages, self._cwd)
+        await self._persist_session_metadata()
 
     async def _record_ingress_messages(
         self,
@@ -437,6 +447,51 @@ class SessionController:
             }
         )
 
+    async def _load_persisted_session_metadata(self) -> None:
+        if not hasattr(self._transcript_store, "load_session_metadata"):
+            return
+        persisted = await self._transcript_store.load_session_metadata(self.state.session_id)
+        if not isinstance(persisted, dict):
+            return
+        for key, value in persisted.items():
+            self.state.metadata[str(key)] = _copy_ingress_private_value(value)
+
+    async def _persist_session_metadata(self) -> None:
+        if not hasattr(self._transcript_store, "save_session_metadata"):
+            return
+        await self._transcript_store.save_session_metadata(
+            self.state.session_id,
+            _session_control_plane_metadata_snapshot(self.state.metadata),
+        )
+
+    def _restore_resumable_private_context(self) -> None:
+        resumable_override = self.state.metadata.get("resumable_request_override")
+        if isinstance(resumable_override, dict):
+            self._session_private_context["request_override"] = _copy_ingress_private_value(
+                resumable_override
+            )
+        else:
+            self._session_private_context.pop("request_override", None)
+        self._session_scope.private_context = self._session_scope_private_context()
+
+    def _sync_terminal_control_plane_metadata(self, terminal: Any) -> None:
+        metadata = getattr(terminal, "metadata", None)
+        if not isinstance(metadata, dict):
+            return
+        control_plane = metadata.get("control_plane")
+        if isinstance(control_plane, dict):
+            self.state.metadata["control_plane"] = dict(control_plane)
+            generation = control_plane.get("context_generation")
+            if generation is not None:
+                self.state.metadata["context_generation"] = generation
+        resumable_override = metadata.get("resumable_request_override")
+        state = coerce_request_override_state(resumable_override)
+        if state is not None and state.resumable:
+            self.state.metadata["resumable_request_override"] = state.serialize()
+        else:
+            self.state.metadata.pop("resumable_request_override", None)
+        self._restore_resumable_private_context()
+
     def _ingress_snapshot(self) -> SessionIngressSnapshot:
         return SessionIngressSnapshot.from_state(
             self.state,
@@ -463,6 +518,7 @@ class SessionController:
         messages: tuple[RuntimeMessage, ...],
         *,
         turn_id: str | None,
+        event_metadata: Mapping[str, Any] | None = None,
     ) -> None:
         transcript = await self._transcript_store.load(self.state.session_id)
         existing_entries = {entry.message.message_id: entry for entry in transcript.entries}
@@ -494,7 +550,9 @@ class SessionController:
             )
         )
         self._sync_compaction_state()
-        self._record_session_compaction()
+        if _event_has_control_plane_effect(event_metadata, "compaction"):
+            self._record_session_compaction()
+        await self._persist_session_metadata()
 
     async def _persist_turn_memory(
         self,
@@ -977,6 +1035,41 @@ def _copy_ingress_private_value(value: object) -> object:
     if isinstance(value, list):
         return [_copy_ingress_private_value(item) for item in value]
     return value
+
+
+def _session_control_plane_metadata_snapshot(
+    metadata: Mapping[str, Any],
+) -> dict[str, Any]:
+    persisted: dict[str, Any] = {}
+    for key in (
+        "compaction",
+        "compaction_summary",
+        "compaction_boundary",
+        "compaction_continuation",
+        "control_plane",
+        "context_generation",
+        "resumable_request_override",
+    ):
+        value = metadata.get(key)
+        if value is None:
+            continue
+        persisted[key] = _copy_ingress_private_value(value)
+    return persisted
+
+
+def _event_has_control_plane_effect(
+    metadata: Mapping[str, Any] | None,
+    effect_kind: str,
+) -> bool:
+    if not isinstance(metadata, Mapping):
+        return False
+    control_plane = metadata.get("control_plane")
+    if not isinstance(control_plane, Mapping):
+        return False
+    effect_kinds = control_plane.get("effect_kinds")
+    if not isinstance(effect_kinds, list):
+        return False
+    return effect_kind in {str(value) for value in effect_kinds}
 
 
 async def _maybe_await(value: Any) -> Any:

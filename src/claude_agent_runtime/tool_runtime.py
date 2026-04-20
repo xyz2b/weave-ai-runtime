@@ -1108,6 +1108,17 @@ def map_tool_output(tool_name: str, call_id: str, raw_output: Any) -> ToolCallRe
     )
 
 
+def coerce_replay_payload(payload: Any) -> Any:
+    if isinstance(payload, Mapping):
+        normalized = {str(key): value for key, value in payload.items()}
+        artifact_ref = normalized.get("artifact_ref")
+        if artifact_ref is not None:
+            normalized["artifact_ref"] = str(artifact_ref)
+            normalized.setdefault("kind", "tool_result_spillover")
+        return normalized
+    return payload
+
+
 def assemble_main_thread_tool_pool(
     registry: ToolRegistry,
     *,

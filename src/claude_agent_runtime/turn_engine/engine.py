@@ -24,17 +24,23 @@ from ..contracts import (
     MessageRole,
     PromptContextEnvelope,
     RedactedThinkingBlock,
+    RequestOverrideState,
     RuntimeMessage,
     RuntimePrivateContext,
     SkillRequestOverrideState,
     TextBlock,
     ThinkingBlock,
     ToolUseBlock,
+    coerce_request_override_state,
     coerce_skill_request_override_state,
     deserialize_content_blocks,
+    merge_request_override_state,
     merge_skill_request_override_state,
     private_context_from_legacy_runtime_context,
     prompt_context_from_legacy_runtime_context,
+    request_override_from_skill_request_override,
+    serialize_resumable_request_override,
+    skill_request_override_from_request_override,
 )
 from ..definitions import AgentDefinition, PermissionMode, ResolvedInvocationCatalog
 from ..execution_policy import (
@@ -63,6 +69,23 @@ from ..tool_runtime import (
     maybe_await,
 )
 from .composer import ContextAssembler, PromptComposer
+from .control_plane import (
+    ContextPreparationEffectKind,
+    ContextControlPlaneConfig,
+    DefaultContextControlPlane,
+    DefaultRecoveryPolicy,
+    FailureClassification,
+    NormalizedRecoveryInput,
+    PreparedContext,
+    RecoveryAction,
+    RecoveryDecision,
+    RecoveryState,
+    StopDisposition,
+    StopPhaseOutcome,
+    build_prompt_envelope,
+    next_context_generation,
+    normalize_attempt_outcome,
+)
 from .message_protocol import normalize_messages_for_api
 from .models import (
     ModelAbortSignal,
@@ -196,6 +219,8 @@ class TurnLoopState:
     working_messages: tuple[RuntimeMessage, ...] = ()
     policy_state: ExecutionPolicyState | None = None
     sidecar_generation: int = 0
+    prepared_context: PreparedContext | None = None
+    recovery_state: RecoveryState = field(default_factory=RecoveryState)
     transition: TurnTransition | None = None
     terminal: TurnTerminal | None = None
     post_effects: TurnPostEffects = field(default_factory=TurnPostEffects)
@@ -236,6 +261,9 @@ class TurnResult:
     abort_reason: str | None = None
     error: str | None = None
     terminal: TurnTerminal | None = None
+    transition: TurnTransition | None = None
+    post_effects: TurnPostEffects | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -611,6 +639,8 @@ class TurnEngine:
         tool_refresh_callback: ToolRefreshCallback | None = None,
         task_manager: TaskManager | None = None,
         runtime_services: RuntimeServices | None = None,
+        context_control_plane: Any | None = None,
+        recovery_policy: Any | None = None,
     ) -> None:
         self._model_client = model_client
         self._tool_registry = tool_registry
@@ -653,6 +683,11 @@ class TurnEngine:
         self._active_tool_executor: Any = None
         self._active_abort_signal: ModelAbortSignal | None = None
         self._child_run_events: dict[tuple[str, str], list[AgentRunRecord]] = {}
+        self._context_control_plane = context_control_plane or DefaultContextControlPlane(
+            compaction_service=self._runtime_services.compaction,
+            default_config=self._runtime_services.metadata.get("context_control"),
+        )
+        self._recovery_policy = recovery_policy or DefaultRecoveryPolicy()
 
     @property
     def runtime_services(self) -> RuntimeServices:
@@ -868,6 +903,8 @@ class TurnEngine:
             elif event.event_type == TurnStreamEventType.TERMINAL and event.terminal is not None:
                 result.iterations = max(result.iterations, event.iteration)
                 result.terminal = event.terminal
+                result.transition = event.transition or event.terminal.transition
+                result.post_effects = event.post_effects or event.terminal.post_effects
                 result.stop_reason = event.terminal.stop_reason
                 result.usage = dict(event.terminal.usage)
                 result.request_id = event.terminal.request_id
@@ -875,6 +912,7 @@ class TurnEngine:
                 result.abort_reason = event.terminal.abort_reason
                 result.error = event.terminal.error
                 result.completed = event.terminal.completed
+                result.metadata = dict(event.terminal.metadata)
         return result
 
     async def _run_turn_stream_impl(
@@ -944,6 +982,11 @@ class TurnEngine:
         state.policy_state = policy_state
         last_request: ModelRequest | None = None
         last_attempt: AttemptFinished | None = None
+        resolved_context_control = ContextControlPlaneConfig.resolve(
+            runtime_default=_mapping_or_none(self._runtime_services.metadata.get("context_control")),
+            agent_config=_mapping_or_none(agent.metadata.get("context_control")),
+            turn_override=_mapping_or_none(runtime_context.get("context_control")),
+        )
 
         try:
             while True:
@@ -967,9 +1010,7 @@ class TurnEngine:
                 )
                 tool_pool = policy_state.effective.tool_pool
                 sanitized_runtime_context = serialize_runtime_metadata(runtime_metadata)
-                sidecar_prompt_context = _prompt_context_from_sidecar_metadata(
-                    runtime_metadata
-                )
+                sidecar_prompt_context = _prompt_context_from_sidecar_metadata(runtime_metadata)
                 state.sidecar_generation += 1
                 _set_turn_phase(state, TurnPhase.PREFETCH_SIDECARS)
                 sidecars.start(
@@ -986,36 +1027,41 @@ class TurnEngine:
                         token_count=sum(len(message.text) for message in working_messages),
                     ),
                 )
-                compaction_result = await self._prepare_compaction(
+                prepared_context = await self._context_control_plane.prepare(
                     session_id=session_id,
                     turn_id=turn_id,
+                    attempt_index=iteration_index,
                     agent=agent,
                     cwd=cwd,
                     messages=tuple(working_messages),
                     prompt_context=sidecar_prompt_context,
                     private_context=effective_private_context,
                     runtime_context=sanitized_runtime_context,
+                    prior_prepared=state.prepared_context,
+                    resolved_config=resolved_context_control,
+                    transcript_store=(
+                        self._runtime_services.transcript.store
+                        if self._runtime_services.transcript is not None
+                        else None
+                    ),
                 )
-                compaction_payload = (
-                    serialize_compaction_result(compaction_result)
-                    if compaction_result.applied or compaction_result.fragments
-                    else None
-                )
-                if compaction_result.applied:
-                    working_messages = list(compaction_result.messages)
+                compaction_payload = _prepared_compaction_payload(prepared_context)
+                if prepared_context.transcript_messages is not None:
+                    working_messages = list(prepared_context.transcript_messages)
                     state.working_messages = tuple(working_messages)
                     await sidecars.restart(
-                        messages=state.working_messages,
-                        prompt_context=sidecar_prompt_context,
+                        messages=prepared_context.active_messages,
+                        prompt_context=prepared_context.prompt_context,
                         private_context=effective_private_context,
                         runtime_context=sanitized_runtime_context,
                     )
-                    if compaction_result.summary is not None:
+                    summary_id = _prepared_compaction_summary_id(prepared_context)
+                    if summary_id is not None:
                         await self._dispatch_hook(
                             session_id,
                             PostCompactPayload(
                                 session_id=session_id,
-                                summary_id=compaction_result.summary.summary_id,
+                                summary_id=summary_id,
                             ),
                         )
                     yield TurnStreamEvent(
@@ -1023,8 +1069,20 @@ class TurnEngine:
                         iteration=iteration_index,
                         phase=state.phase,
                         compacted_messages=tuple(working_messages),
-                        metadata={"compaction": compaction_payload} if compaction_payload is not None else {},
+                        metadata=_prepared_context_event_metadata(
+                            prepared_context,
+                            extra={"compaction": compaction_payload} if compaction_payload is not None else None,
+                        ),
                     )
+                elif prepared_context.requires_sidecar_restart:
+                    await sidecars.restart(
+                        messages=prepared_context.active_messages,
+                        prompt_context=prepared_context.prompt_context,
+                        private_context=effective_private_context,
+                        runtime_context=sanitized_runtime_context,
+                    )
+                state.prepared_context = prepared_context
+                private_context = _clear_transient_recovery_flags(private_context)
                 (
                     shared_memory_fragments,
                     shared_hook_context,
@@ -1080,9 +1138,6 @@ class TurnEngine:
                 )
                 tool_pool = policy_state.effective.tool_pool
 
-                api_messages = normalize_messages_for_api(working_messages)
-                shared_compaction_fragments = tuple(compaction_result.fragments)
-
                 user_prompt_hook = await self._dispatch_hook(
                     session_id,
                     UserPromptSubmitPayload(
@@ -1094,18 +1149,46 @@ class TurnEngine:
                 )
 
                 _set_turn_phase(state, TurnPhase.BUILD_REQUEST)
-                prompt_context = prompt_context_from_legacy_runtime_context(
-                    sanitized_runtime_context,
-                    memory_fragments=shared_memory_fragments + tuple(memory_fragments or ()),
-                    hook_fragments=shared_hook_context
-                    + user_prompt_hook.additional_context
-                    + tuple(hook_context or ()),
-                    compaction_fragments=shared_compaction_fragments + tuple(compaction_fragments or ()),
-                    compaction_summary=serialize_compaction_summary(compaction_result.summary),
-                    compaction_boundary=serialize_compaction_boundary(compaction_result.boundary),
-                    compaction_continuation=serialize_compaction_continuation(compaction_result.continuation),
-                    attachments=attachments or (),
+                prompt_context = build_prompt_envelope(
+                    prompt_context_from_legacy_runtime_context(
+                        sanitized_runtime_context,
+                        memory_fragments=prepared_context.prompt_context.memory_fragments
+                        + shared_memory_fragments
+                        + tuple(memory_fragments or ()),
+                        hook_fragments=prepared_context.prompt_context.hook_fragments
+                        + shared_hook_context
+                        + user_prompt_hook.additional_context
+                        + tuple(hook_context or ()),
+                        compaction_fragments=prepared_context.prompt_context.compaction_fragments
+                        + tuple(compaction_fragments or ()),
+                        compaction_summary=prepared_context.prompt_context.compaction_summary,
+                        compaction_boundary=prepared_context.prompt_context.compaction_boundary,
+                        compaction_continuation=prepared_context.prompt_context.compaction_continuation,
+                        attachments=attachments or (),
+                    ),
+                    effects=prepared_context.effects,
+                    plan=None,
+                    diagnostics=tuple(prepared_context.metadata.get("diagnostics", ()) or ()),
                 )
+                prepared_context = replace(
+                    prepared_context,
+                    prompt_context=prompt_context,
+                    generation=next_context_generation(
+                        state.prepared_context,
+                        active_messages=prepared_context.active_messages,
+                        prompt_context=prompt_context,
+                    ),
+                    metadata={
+                        **prepared_context.metadata,
+                        "context_generation": next_context_generation(
+                            state.prepared_context,
+                            active_messages=prepared_context.active_messages,
+                            prompt_context=prompt_context,
+                        ),
+                    },
+                )
+                state.prepared_context = prepared_context
+                api_messages = normalize_messages_for_api(prepared_context.active_messages)
                 composition = self._compose_context(
                     session_id=session_id,
                     turn_id=turn_id,
@@ -1147,19 +1230,28 @@ class TurnEngine:
                 request_metadata = dict(sanitized_runtime_context)
                 if compaction_payload is not None:
                     request_metadata["compaction"] = compaction_payload
-                pending_request_override = _skill_request_override_from_private_context(
+                request_metadata.update(_prepared_context_event_metadata(prepared_context))
+                pending_request_override = _request_override_from_private_context(
                     effective_private_context
                 )
                 if pending_request_override is not None:
-                    request_metadata["skill_request_override"] = (
-                        pending_request_override.serialize()
+                    request_metadata["request_override"] = pending_request_override.serialize()
+                    compat_skill_override = skill_request_override_from_request_override(
+                        pending_request_override
                     )
+                    if compat_skill_override is not None:
+                        request_metadata["skill_request_override"] = compat_skill_override.serialize()
                 requested_capabilities = _coerce_model_capabilities(
                     runtime_metadata.get("resolved_capabilities")
                 )
                 resolved_capabilities = requested_capabilities or model_capabilities_for(model_client)
                 invocation_mode = (
-                    _coerce_invocation_mode(runtime_metadata.get("invocation_mode"))
+                    (
+                        _coerce_invocation_mode(pending_request_override.invocation_mode_override)
+                        if pending_request_override is not None
+                        else None
+                    )
+                    or _coerce_invocation_mode(runtime_metadata.get("invocation_mode"))
                     or _select_invocation_mode(resolved_capabilities)
                 )
                 request = ModelRequest(
@@ -1181,9 +1273,21 @@ class TurnEngine:
                         and pending_request_override.requested_effort is not None
                         else agent.effort
                     ),
+                    max_output_tokens=(
+                        pending_request_override.max_output_tokens_override
+                        if pending_request_override is not None
+                        and pending_request_override.max_output_tokens_override is not None
+                        else None
+                    ),
                     abort_signal=abort_signal,
                     query_source=_query_source(request_metadata),
-                    requested_model_route=_string_value(runtime_metadata.get("requested_model_route")),
+                    requested_model_route=(
+                        pending_request_override.requested_model_route
+                        if pending_request_override is not None
+                        and pending_request_override.requested_model_route is not None
+                        else _string_value(runtime_metadata.get("requested_model_route"))
+                        or agent.model_route
+                    ),
                     resolved_model_route=_string_value(runtime_metadata.get("resolved_model_route")),
                     provider_name=_string_value(runtime_metadata.get("provider_name")),
                     resolved_capabilities=resolved_capabilities,
@@ -1193,7 +1297,8 @@ class TurnEngine:
                 )
                 last_request = request
                 if pending_request_override is not None:
-                    private_context = _clear_skill_request_override(private_context)
+                    private_context = _clear_request_override(private_context)
+                    state.recovery_state = state.recovery_state.clear_pending_override()
                 tool_executor = select_tool_executor(
                     model_client,
                     context=tool_context,
@@ -1402,40 +1507,51 @@ class TurnEngine:
                             turn_id=turn_id,
                         ),
                     )
+                    stop_outcome = _stop_phase_outcome_from_hook_result(stop_hook)
                     _set_turn_phase(state, TurnPhase.RECOVERY_DECISION)
-                    terminal_reason = _terminal_reason_from_attempt(attempt)
-                    if (
-                        not stop_hook.continue_execution
-                        and not _terminal_reason_is_failure(terminal_reason)
-                    ):
-                        terminal_reason = TurnTerminalReason.BLOCKED
-                        transition = TurnTransition(
-                            reason=TurnTransitionReason.STOP_HOOK_BLOCKING,
-                            recovery_action=TurnRecoveryAction.HALT,
-                            next_phase=TurnPhase.TERMINAL,
-                            metadata={"matched_hooks": list(stop_hook.matched_owners)},
+                    recovery_input = normalize_attempt_outcome(attempt)
+                    decision = self._recovery_policy.evaluate(
+                        recovery_input,
+                        stop_outcome=stop_outcome,
+                        recovery_state=state.recovery_state,
+                        prepared_context=prepared_context,
+                    )
+                    state.recovery_state = state.recovery_state.after_decision(
+                        recovery_input,
+                        decision,
+                    )
+                    transition = _turn_transition_from_recovery(
+                        decision,
+                        recovery_input,
+                        stop_outcome=stop_outcome,
+                        prepared_context=prepared_context,
+                    )
+                    if decision.action != RecoveryAction.HALT:
+                        private_context = _apply_recovery_decision_to_private_context(
+                            private_context,
+                            decision,
                         )
-                    elif terminal_reason == TurnTerminalReason.INTERRUPTED:
-                        transition = TurnTransition(
-                            reason=TurnTransitionReason.ATTEMPT_INTERRUPTED,
-                            recovery_action=TurnRecoveryAction.HALT,
-                            next_phase=TurnPhase.TERMINAL,
-                        )
-                    elif _terminal_reason_is_failure(terminal_reason):
-                        transition = TurnTransition(
-                            reason=TurnTransitionReason.ATTEMPT_ERROR,
-                            recovery_action=TurnRecoveryAction.HALT,
-                            next_phase=TurnPhase.TERMINAL,
-                        )
-                    else:
-                        transition = TurnTransition(
-                            reason=TurnTransitionReason.ATTEMPT_COMPLETED,
-                            recovery_action=TurnRecoveryAction.HALT,
-                            next_phase=TurnPhase.TERMINAL,
-                        )
+                        for injected_message in decision.injected_messages:
+                            working_messages.append(injected_message)
+                            state.working_messages = tuple(working_messages)
+                            yield TurnStreamEvent(
+                                event_type=TurnStreamEventType.MESSAGE,
+                                iteration=iteration_index,
+                                phase=state.phase,
+                                request=request,
+                                message=injected_message,
+                                transition=transition,
+                                metadata=_prepared_context_event_metadata(prepared_context),
+                            )
+                        state.transition = transition
+                        _set_turn_phase(state, TurnPhase.ADVANCE_OR_FINISH)
+                        state.working_messages = tuple(working_messages)
+                        _set_turn_phase(state, TurnPhase.PREPARE)
+                        continue
+                    terminal_reason = _turn_terminal_reason_from_recovery(decision)
                     post_effects = _turn_post_effects_for_terminal(
                         terminal_reason,
-                        matched_stop_hooks=stop_hook.matched_owners,
+                        matched_stop_hooks=stop_outcome.matched_hook_owners,
                     )
                     terminal_event = _turn_terminal_from_attempt(
                         attempt,
@@ -1443,12 +1559,27 @@ class TurnEngine:
                         transition=transition,
                         post_effects=post_effects,
                         metadata={
+                            **decision.metadata,
+                            **_prepared_context_event_metadata(prepared_context),
                             **(
                                 {
                                     "continuation_blocked": True,
-                                    "matched_hooks": list(stop_hook.matched_owners),
+                                    "matched_hooks": list(stop_outcome.matched_hook_owners),
                                 }
                                 if terminal_reason == TurnTerminalReason.BLOCKED
+                                else {}
+                            ),
+                            **(
+                                {
+                                    "resumable_request_override": resumable_override,
+                                }
+                                if (
+                                    resumable_override := _resumable_request_override_metadata(
+                                        decision,
+                                        private_context,
+                                    )
+                                )
+                                is not None
                                 else {}
                             ),
                         },
@@ -1476,17 +1607,46 @@ class TurnEngine:
                     _abort_reason_allows_tool_finalize(abort_signal.reason) and tool_calls
                 ):
                     _set_turn_phase(state, TurnPhase.RECOVERY_DECISION)
-                    transition = TurnTransition(
-                        reason=TurnTransitionReason.ATTEMPT_INTERRUPTED,
-                        recovery_action=TurnRecoveryAction.HALT,
-                        next_phase=TurnPhase.TERMINAL,
+                    recovery_input = normalize_attempt_outcome(attempt)
+                    decision = self._recovery_policy.evaluate(
+                        recovery_input,
+                        recovery_state=state.recovery_state,
+                        prepared_context=prepared_context,
                     )
-                    post_effects = _turn_post_effects_for_terminal(TurnTerminalReason.INTERRUPTED)
+                    state.recovery_state = state.recovery_state.after_decision(
+                        recovery_input,
+                        decision,
+                    )
+                    transition = _turn_transition_from_recovery(
+                        decision,
+                        recovery_input,
+                        prepared_context=prepared_context,
+                    )
+                    post_effects = _turn_post_effects_for_terminal(
+                        _turn_terminal_reason_from_recovery(decision)
+                    )
                     terminal_event = _turn_terminal_from_attempt(
                         attempt,
-                        reason=TurnTerminalReason.INTERRUPTED,
+                        reason=_turn_terminal_reason_from_recovery(decision),
                         transition=transition,
                         post_effects=post_effects,
+                        metadata={
+                            **decision.metadata,
+                            **_prepared_context_event_metadata(prepared_context),
+                            **(
+                                {
+                                    "resumable_request_override": resumable_override,
+                                }
+                                if (
+                                    resumable_override := _resumable_request_override_metadata(
+                                        decision,
+                                        private_context,
+                                    )
+                                )
+                                is not None
+                                else {}
+                            ),
+                        },
                     )
                     state.transition = transition
                     state.post_effects = post_effects
@@ -1508,21 +1668,50 @@ class TurnEngine:
 
                 if tool_executor is None:
                     _set_turn_phase(state, TurnPhase.RECOVERY_DECISION)
-                    transition = TurnTransition(
-                        reason=TurnTransitionReason.TOOL_EXECUTOR_UNAVAILABLE,
-                        recovery_action=TurnRecoveryAction.HALT,
-                        next_phase=TurnPhase.TERMINAL,
-                        metadata={"tool_call_count": len(tool_calls)},
+                    recovery_input = normalize_attempt_outcome(
+                        attempt,
+                        tool_executor_unavailable=True,
                     )
-                    post_effects = _turn_post_effects_for_terminal(TurnTerminalReason.BLOCKED)
+                    decision = self._recovery_policy.evaluate(
+                        recovery_input,
+                        recovery_state=state.recovery_state,
+                        prepared_context=prepared_context,
+                    )
+                    state.recovery_state = state.recovery_state.after_decision(
+                        recovery_input,
+                        decision,
+                    )
+                    transition = _turn_transition_from_recovery(
+                        decision,
+                        recovery_input,
+                        prepared_context=prepared_context,
+                    )
+                    post_effects = _turn_post_effects_for_terminal(
+                        _turn_terminal_reason_from_recovery(decision)
+                    )
                     terminal_event = _turn_terminal_from_attempt(
                         attempt,
-                        reason=TurnTerminalReason.BLOCKED,
+                        reason=_turn_terminal_reason_from_recovery(decision),
                         transition=transition,
                         post_effects=post_effects,
                         metadata={
+                            **decision.metadata,
+                            **_prepared_context_event_metadata(prepared_context),
                             "continuation_blocked": True,
                             "tool_executor_unavailable": True,
+                            **(
+                                {
+                                    "resumable_request_override": resumable_override,
+                                }
+                                if (
+                                    resumable_override := _resumable_request_override_metadata(
+                                        decision,
+                                        private_context,
+                                    )
+                                )
+                                is not None
+                                else {}
+                            ),
                         },
                     )
                     state.transition = transition
@@ -1564,32 +1753,34 @@ class TurnEngine:
                     yield child_event
 
                 _set_turn_phase(state, TurnPhase.RECOVERY_DECISION)
-                if iteration_index >= max_iterations:
-                    transition = TurnTransition(
-                        reason=TurnTransitionReason.MAX_TURNS_EXHAUSTED,
-                        recovery_action=TurnRecoveryAction.HALT,
-                        next_phase=TurnPhase.TERMINAL,
-                        metadata={"tool_call_count": len(tool_calls)},
-                    )
-                    terminal_event = _turn_terminal_from_attempt(
-                        attempt,
-                        reason=TurnTerminalReason.MAX_TURNS,
-                        transition=transition,
-                        post_effects=_turn_post_effects_for_terminal(TurnTerminalReason.MAX_TURNS),
-                    )
-                else:
-                    transition = TurnTransition(
-                        reason=TurnTransitionReason.NEXT_TURN,
-                        recovery_action=TurnRecoveryAction.CONTINUE_SAME_TURN,
-                        next_phase=TurnPhase.PREPARE,
-                        metadata={
-                            "tool_call_count": len(tool_calls),
-                            "tool_executor": _tool_executor_metadata(tool_executor),
-                        },
-                    )
-                    terminal_event = None
-
                 tool_message = tool_executor.orchestrator.tool_result_message(outcomes)
+                injected_skill_messages, pending_request_override = _skill_runtime_updates_from_outcomes(
+                    outcomes
+                )
+                if pending_request_override is not None:
+                    private_context = _apply_request_override(
+                        private_context,
+                        request_override_from_skill_request_override(pending_request_override)
+                        or RequestOverrideState(),
+                    )
+                recovery_input = normalize_attempt_outcome(
+                    attempt,
+                    max_turns_exhausted=iteration_index >= max_iterations,
+                )
+                decision = self._recovery_policy.evaluate(
+                    recovery_input,
+                    recovery_state=state.recovery_state,
+                    prepared_context=prepared_context,
+                )
+                state.recovery_state = state.recovery_state.after_decision(
+                    recovery_input,
+                    decision,
+                )
+                transition = _turn_transition_from_recovery(
+                    decision,
+                    recovery_input,
+                    prepared_context=prepared_context,
+                )
                 if tool_message is not None:
                     working_messages.append(tool_message)
                     state.working_messages = tuple(working_messages)
@@ -1600,14 +1791,7 @@ class TurnEngine:
                         request=request,
                         message=tool_message,
                         transition=transition,
-                    )
-                injected_skill_messages, pending_request_override = _skill_runtime_updates_from_outcomes(
-                    outcomes
-                )
-                if pending_request_override is not None:
-                    private_context = _apply_skill_request_override(
-                        private_context,
-                        pending_request_override,
+                        metadata=_prepared_context_event_metadata(prepared_context),
                     )
                 for injected_message in injected_skill_messages:
                     working_messages.append(injected_message)
@@ -1619,6 +1803,7 @@ class TurnEngine:
                         request=request,
                         message=injected_message,
                         transition=transition,
+                        metadata=_prepared_context_event_metadata(prepared_context),
                     )
                 for child_event in self._drain_child_run_events(
                     session_id=session_id,
@@ -1629,7 +1814,31 @@ class TurnEngine:
                     yield child_event
 
                 state.transition = transition
-                if terminal_event is not None:
+                if decision.action == RecoveryAction.HALT:
+                    terminal_reason = _turn_terminal_reason_from_recovery(decision)
+                    terminal_event = _turn_terminal_from_attempt(
+                        attempt,
+                        reason=terminal_reason,
+                        transition=transition,
+                        post_effects=_turn_post_effects_for_terminal(terminal_reason),
+                        metadata={
+                            **decision.metadata,
+                            **_prepared_context_event_metadata(prepared_context),
+                            **(
+                                {
+                                    "resumable_request_override": resumable_override,
+                                }
+                                if (
+                                    resumable_override := _resumable_request_override_metadata(
+                                        decision,
+                                        private_context,
+                                    )
+                                )
+                                is not None
+                                else {}
+                            ),
+                        },
+                    )
                     state.post_effects = terminal_event.post_effects
                     _set_turn_phase(state, TurnPhase.ADVANCE_OR_FINISH)
                     state.terminal = terminal_event
@@ -1645,6 +1854,22 @@ class TurnEngine:
                     )
                     return
 
+                private_context = _apply_recovery_decision_to_private_context(
+                    private_context,
+                    decision,
+                )
+                for injected_message in decision.injected_messages:
+                    working_messages.append(injected_message)
+                    state.working_messages = tuple(working_messages)
+                    yield TurnStreamEvent(
+                        event_type=TurnStreamEventType.MESSAGE,
+                        iteration=iteration_index,
+                        phase=state.phase,
+                        request=request,
+                        message=injected_message,
+                        transition=transition,
+                        metadata=_prepared_context_event_metadata(prepared_context),
+                    )
                 _set_turn_phase(state, TurnPhase.ADVANCE_OR_FINISH)
                 state.working_messages = tuple(working_messages)
                 _set_turn_phase(state, TurnPhase.PREPARE)
@@ -2058,6 +2283,170 @@ def _turn_post_effects_for_terminal(
     )
 
 
+def _stop_phase_outcome_from_hook_result(value: Any) -> StopPhaseOutcome:
+    disposition = StopDisposition.ALLOW_TERMINAL
+    raw_disposition = getattr(value, "stop_disposition", None)
+    if raw_disposition is not None:
+        try:
+            disposition = StopDisposition(str(raw_disposition))
+        except ValueError:
+            disposition = StopDisposition.ALLOW_TERMINAL
+    return StopPhaseOutcome(
+        disposition=disposition,
+        matched_hook_owners=tuple(getattr(value, "matched_owners", ()) or ()),
+        additional_context=tuple(getattr(value, "additional_context", ()) or ()),
+        notifications=tuple(getattr(value, "notifications", ()) or ()),
+        injected_messages=tuple(getattr(value, "injected_messages", ()) or ()),
+        request_override=coerce_request_override_state(getattr(value, "request_override", None)),
+        metadata=dict(getattr(value, "metadata", {}) or {}),
+    )
+
+
+def _turn_terminal_reason_from_recovery(
+    decision: RecoveryDecision,
+) -> TurnTerminalReason:
+    if decision.terminal_reason is None:
+        return TurnTerminalReason.END_TURN
+    try:
+        return TurnTerminalReason(decision.terminal_reason)
+    except ValueError:
+        return TurnTerminalReason.ERROR
+
+
+def _turn_transition_reason_from_recovery(
+    decision: RecoveryDecision,
+    recovery_input: NormalizedRecoveryInput,
+) -> TurnTransitionReason:
+    if decision.reason == "stop_hook_blocking":
+        return TurnTransitionReason.STOP_HOOK_BLOCKING
+    if recovery_input.max_turns_exhausted:
+        return TurnTransitionReason.MAX_TURNS_EXHAUSTED
+    if recovery_input.tool_executor_unavailable:
+        return TurnTransitionReason.TOOL_EXECUTOR_UNAVAILABLE
+    if recovery_input.interrupted:
+        return TurnTransitionReason.ATTEMPT_INTERRUPTED
+    if recovery_input.terminal_failure:
+        return TurnTransitionReason.ATTEMPT_ERROR
+    if decision.action == RecoveryAction.CONTINUE_SAME_TURN:
+        return TurnTransitionReason.NEXT_TURN
+    return TurnTransitionReason.ATTEMPT_COMPLETED
+
+
+def _turn_transition_from_recovery(
+    decision: RecoveryDecision,
+    recovery_input: NormalizedRecoveryInput,
+    *,
+    stop_outcome: StopPhaseOutcome | None = None,
+    prepared_context: PreparedContext | None = None,
+) -> TurnTransition:
+    metadata = dict(decision.metadata)
+    if stop_outcome is not None and stop_outcome.matched_hook_owners:
+        metadata.setdefault("matched_hooks", list(stop_outcome.matched_hook_owners))
+    if prepared_context is not None:
+        metadata.setdefault("context_generation", prepared_context.generation)
+        metadata.setdefault("context_effect_kinds", list(prepared_context.effect_kinds()))
+    next_phase = TurnPhase.TERMINAL if decision.action == RecoveryAction.HALT else TurnPhase.PREPARE
+    return TurnTransition(
+        reason=_turn_transition_reason_from_recovery(decision, recovery_input),
+        recovery_action=TurnRecoveryAction(decision.action.value),
+        next_phase=next_phase,
+        metadata=metadata,
+    )
+
+
+def _apply_recovery_decision_to_private_context(
+    private_context: RuntimePrivateContext,
+    decision: RecoveryDecision,
+) -> RuntimePrivateContext:
+    updated = private_context
+    if decision.request_override is not None:
+        updated = _apply_request_override(updated, decision.request_override)
+    if decision.action == RecoveryAction.COMPACT_AND_RETRY:
+        extensions = dict(updated.extensions)
+        extensions["force_compaction"] = True
+        updated = replace(updated, extensions=extensions)
+    return updated
+
+
+def _clear_transient_recovery_flags(
+    private_context: RuntimePrivateContext,
+) -> RuntimePrivateContext:
+    if "force_compaction" not in private_context.extensions:
+        return private_context
+    extensions = dict(private_context.extensions)
+    extensions.pop("force_compaction", None)
+    return replace(private_context, extensions=extensions)
+
+
+def _prepared_compaction_payload(
+    prepared_context: PreparedContext | None,
+) -> dict[str, Any] | None:
+    if prepared_context is None:
+        return None
+    for effect in prepared_context.effects:
+        if effect.kind != ContextPreparationEffectKind.COMPACTION:
+            continue
+        payload = effect.metadata.get("compaction")
+        if isinstance(payload, Mapping):
+            return dict(payload)
+    return None
+
+
+def _prepared_compaction_summary_id(
+    prepared_context: PreparedContext | None,
+) -> str | None:
+    payload = _prepared_compaction_payload(prepared_context)
+    if not isinstance(payload, Mapping):
+        return None
+    summary = payload.get("summary")
+    if not isinstance(summary, Mapping):
+        return None
+    summary_id = summary.get("summary_id")
+    return str(summary_id) if summary_id is not None else None
+
+
+def _prepared_context_event_metadata(
+    prepared_context: PreparedContext | None,
+    *,
+    extra: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    metadata: dict[str, Any] = {}
+    if prepared_context is not None:
+        metadata["control_plane"] = {
+            "context_generation": prepared_context.generation,
+            "effect_kinds": list(prepared_context.effect_kinds()),
+            "effect_summaries": list(prepared_context.metadata.get("effect_summaries", ()) or ()),
+            "effects": [
+                {
+                    "kind": effect.kind.value,
+                    "summary": effect.summary,
+                    "metadata": dict(effect.metadata),
+                }
+                for effect in prepared_context.effects
+            ],
+            "requires_sidecar_restart": prepared_context.requires_sidecar_restart,
+            "diagnostics": list(prepared_context.metadata.get("diagnostics", ()) or ()),
+            "budget_policy_tag": prepared_context.metadata.get("budget_policy_tag"),
+            "spillover_artifact_refs": list(
+                prepared_context.metadata.get("spillover_artifact_refs", ()) or ()
+            ),
+        }
+    if extra:
+        metadata.update({str(key): value for key, value in extra.items()})
+    return metadata
+
+
+def _resumable_request_override_metadata(
+    decision: RecoveryDecision | None,
+    private_context: RuntimePrivateContext,
+) -> dict[str, Any] | None:
+    if decision is not None:
+        serialized = serialize_resumable_request_override(decision.request_override)
+        if serialized is not None:
+            return serialized
+    return serialize_resumable_request_override(_request_override_from_private_context(private_context))
+
+
 def _terminal_reason_is_failure(reason: TurnTerminalReason) -> bool:
     return reason in {
         TurnTerminalReason.ERROR,
@@ -2085,6 +2474,8 @@ def _assistant_message_metadata(terminal: ModelTerminalMetadata) -> dict[str, An
         metadata["abort_reason"] = terminal.abort_reason
     if terminal.error is not None:
         metadata["error"] = terminal.error
+    if terminal.metadata:
+        metadata.update(dict(terminal.metadata))
     return metadata
 
 
@@ -2226,11 +2617,55 @@ def _merge_private_context_updates(
     return private_context_from_legacy_runtime_context(merged)
 
 
+def _request_override_from_private_context(
+    private_context: RuntimePrivateContext,
+) -> RequestOverrideState | None:
+    return coerce_request_override_state(private_context.extensions.get("request_override")) or (
+        request_override_from_skill_request_override(
+            coerce_skill_request_override_state(private_context.extensions.get("skill_request_override"))
+        )
+    )
+
+
+def _apply_request_override(
+    private_context: RuntimePrivateContext,
+    pending: RequestOverrideState,
+) -> RuntimePrivateContext:
+    extensions = dict(private_context.extensions)
+    current = _request_override_from_private_context(private_context)
+    merged = merge_request_override_state(current, pending)
+    if merged is None:
+        extensions.pop("request_override", None)
+        extensions.pop("skill_request_override", None)
+    else:
+        extensions["request_override"] = merged.serialize()
+        compat_skill_override = skill_request_override_from_request_override(merged)
+        if compat_skill_override is not None:
+            extensions["skill_request_override"] = compat_skill_override.serialize()
+        else:
+            extensions.pop("skill_request_override", None)
+    return replace(private_context, extensions=extensions)
+
+
+def _clear_request_override(
+    private_context: RuntimePrivateContext,
+) -> RuntimePrivateContext:
+    if (
+        "skill_request_override" not in private_context.extensions
+        and "request_override" not in private_context.extensions
+    ):
+        return private_context
+    extensions = dict(private_context.extensions)
+    extensions.pop("request_override", None)
+    extensions.pop("skill_request_override", None)
+    return replace(private_context, extensions=extensions)
+
+
 def _skill_request_override_from_private_context(
     private_context: RuntimePrivateContext,
 ) -> SkillRequestOverrideState | None:
-    return coerce_skill_request_override_state(
-        private_context.extensions.get("skill_request_override")
+    return skill_request_override_from_request_override(
+        _request_override_from_private_context(private_context)
     )
 
 
@@ -2238,24 +2673,16 @@ def _apply_skill_request_override(
     private_context: RuntimePrivateContext,
     pending: SkillRequestOverrideState,
 ) -> RuntimePrivateContext:
-    extensions = dict(private_context.extensions)
-    current = _skill_request_override_from_private_context(private_context)
-    merged = merge_skill_request_override_state(current, pending)
-    if merged is None:
-        extensions.pop("skill_request_override", None)
-    else:
-        extensions["skill_request_override"] = merged.serialize()
-    return replace(private_context, extensions=extensions)
+    request_override = request_override_from_skill_request_override(pending)
+    if request_override is None:
+        return private_context
+    return _apply_request_override(private_context, request_override)
 
 
 def _clear_skill_request_override(
     private_context: RuntimePrivateContext,
 ) -> RuntimePrivateContext:
-    if "skill_request_override" not in private_context.extensions:
-        return private_context
-    extensions = dict(private_context.extensions)
-    extensions.pop("skill_request_override", None)
-    return replace(private_context, extensions=extensions)
+    return _clear_request_override(private_context)
 
 
 def _skill_runtime_updates_from_outcomes(

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import replace
-from typing import Any, Callable, Sequence
+from typing import Any, Callable, Mapping, Sequence
 from uuid import uuid4
 
 from .contracts import MessageRole, RuntimeMessage, ToolResultBlock, utc_now
@@ -45,6 +45,7 @@ from .tool_runtime import (
     ToolContext,
     _build_tool_execution_classifications,
     _tool_catalog_view,
+    coerce_replay_payload,
     execute_resolved_tool_call,
     maybe_await,
 )
@@ -202,9 +203,10 @@ class StreamingToolOrchestrator:
                 task.cancel()
 
     def tool_result_message(self, outcomes: Sequence[ToolOutcome]) -> RuntimeMessage | None:
+        ordered_outcomes = tuple(sorted(outcomes, key=lambda outcome: outcome.replay_index))
         result_blocks = tuple(
             outcome.result_block
-            for outcome in outcomes
+            for outcome in ordered_outcomes
             if outcome.result_block is not None
         )
         if not result_blocks:
@@ -212,7 +214,7 @@ class StreamingToolOrchestrator:
         metadata: dict[str, Any] = {
             "tool_results": [
                 _tool_result_metadata_entry(outcome)
-                for outcome in outcomes
+                for outcome in ordered_outcomes
             ]
         }
         observed_paths = list(self._context.file_state.observed_paths())
@@ -602,7 +604,11 @@ def _empty_result(resolved_call: ResolvedToolCall):
 
 
 def _tool_result_block(result: Any) -> ToolResultBlock:
-    content = result.output if result.status == ToolCallStatus.SUCCESS else (result.error or "")
+    content = (
+        coerce_replay_payload(result.output)
+        if result.status == ToolCallStatus.SUCCESS
+        else (result.error or "")
+    )
     return ToolResultBlock(
         tool_use_id=result.call_id,
         content=content,
@@ -636,4 +642,12 @@ def _tool_result_metadata_entry(outcome: ToolOutcome) -> dict[str, Any]:
             "status": outcome.result_summary.status.value,
             "detail_lines": list(outcome.result_summary.detail_lines),
         }
+    if outcome.result_block is not None and isinstance(outcome.result_block.content, Mapping):
+        artifact_ref = outcome.result_block.content.get("artifact_ref")
+        if artifact_ref is not None:
+            entry["artifact_ref"] = str(artifact_ref)
+            entry["externalized"] = bool(outcome.result_block.content.get("externalized", True))
+        summary = outcome.result_block.content.get("summary")
+        if summary is not None:
+            entry["summary_text"] = str(summary)
     return entry

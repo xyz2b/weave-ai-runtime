@@ -16,6 +16,7 @@ from .contracts import (
     MessageRole,
     PromptContextEnvelope,
     RedactedThinkingBlock,
+    RequestOverrideState,
     RuntimeMessage,
     RuntimePrivateContext,
     SessionCommand,
@@ -71,7 +72,14 @@ from .definitions import (
     ValidationOutcome,
 )
 from .elicitation import ElicitationRequest, ElicitationResponse, SharedElicitationService
-from .hooks import HookBus, HookDispatchResult, HookEffect, HookRegistration, RuntimeHookPhase
+from .hooks import (
+    HookBus,
+    HookDispatchResult,
+    HookEffect,
+    HookRegistration,
+    HookStopDisposition,
+    RuntimeHookPhase,
+)
 from .hosts import CliHostRuntime, SdkHostRuntime
 from .invocation_catalog import (
     McpPromptInvocationProvider,
@@ -158,6 +166,7 @@ from .teammate_orchestration import (
     TeammateStateSnapshot,
 )
 from .turn_engine import (
+    ArtifactManifestEntry,
     ContextAssembler,
     ContextAssembly,
     ModelCapabilityProvider,
@@ -169,6 +178,7 @@ from .turn_engine import (
     ModelStreamEventType,
     ModelTerminalMetadata,
     NormalizedModelCapabilities,
+    TranscriptArtifact,
     TranscriptEntry,
     TranscriptSession,
     TranscriptStore,
@@ -183,6 +193,7 @@ __all__ = [
     "AgentRunLinkage",
     "AgentRunRecord",
     "AgentRunStatus",
+    "ArtifactManifestEntry",
     "BuiltinPackConfig",
     "ChildRunStore",
     "ContextAssembler",
@@ -201,6 +212,7 @@ __all__ = [
     "HookDispatchResult",
     "HookEffect",
     "HookRegistration",
+    "HookStopDisposition",
     "InterruptBehavior",
     "InMemoryChildRunStore",
     "InvocationCapabilityView",
@@ -235,6 +247,7 @@ __all__ = [
     "PermissionRule",
     "PermissionTarget",
     "PromptContextEnvelope",
+    "RequestOverrideState",
     "RedactedThinkingBlock",
     "ResolvedInvocation",
     "ResolvedInvocationCatalog",
@@ -301,6 +314,7 @@ __all__ = [
     "ToolUsePresentation",
     "ToolUseBlock",
     "TranscriptEntry",
+    "TranscriptArtifact",
     "TranscriptSession",
     "TranscriptStore",
     "ThinkingBlock",

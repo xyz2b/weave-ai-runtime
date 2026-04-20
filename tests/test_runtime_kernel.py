@@ -273,6 +273,53 @@ def test_runtime_stream_prompt_closes_helper_owned_session_on_success(tmp_path: 
     assert closed == ["completed"]
 
 
+def test_runtime_stream_prompt_closes_helper_owned_session_on_blocked(tmp_path: Path) -> None:
+    model_client = FakeModelClient(
+        [
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-stream-blocked"}),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "needs approval"}),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+            ]
+        ]
+    )
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            model_client=model_client,
+        )
+    )
+    closed: list[str] = []
+    runtime.services.hook_bus.register(
+        session_id="helper-stream-blocked",
+        owner="test",
+        phase=RuntimeHookPhase.STOP,
+        handler=lambda _payload: {"stop_disposition": "block_session"},
+    )
+    runtime.services.hook_bus.register(
+        session_id="helper-stream-blocked",
+        owner="close-observer",
+        phase=RuntimeHookPhase.SESSION_END,
+        handler=lambda payload: closed.append(payload.final_status),
+    )
+
+    async def scenario():
+        return [
+            event
+            async for event in runtime.stream_prompt(
+                "Hello runtime",
+                session_id="helper-stream-blocked",
+            )
+        ]
+
+    events = asyncio.run(scenario())
+
+    terminal = next(event for event in events if event.event_type.value == "terminal")
+    assert terminal.terminal is not None
+    assert terminal.terminal.stop_reason == "blocked"
+    assert closed == ["stopped"]
+
+
 def test_runtime_stream_prompt_closes_helper_owned_session_on_error(tmp_path: Path) -> None:
     model_client = FakeModelClient(
         [

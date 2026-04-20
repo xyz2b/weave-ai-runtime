@@ -887,8 +887,24 @@ def _helper_session_close_status(
             return "failed"
         if getattr(terminal, "abort_reason", None):
             return "interrupted"
+        post_effects = getattr(terminal, "post_effects", None)
+        if post_effects is not None:
+            session_status_hint = getattr(post_effects, "session_status_hint", None)
+            if session_status_hint == "waiting":
+                return "stopped"
+            if session_status_hint == "interrupted":
+                return "interrupted"
+        terminal_metadata = getattr(terminal, "metadata", None)
+        if isinstance(terminal_metadata, dict):
+            failure_class = terminal_metadata.get("failure_class")
+            if failure_class not in {None, "", "none"}:
+                return "failed"
+            if terminal_metadata.get("continuation_blocked"):
+                return "stopped"
         if getattr(terminal, "stop_reason", None) == "interrupted":
             return "interrupted"
+        if getattr(terminal, "stop_reason", None) == "blocked":
+            return "stopped"
     if session.state.status == SessionStatus.INTERRUPTED:
         return "interrupted"
     if session.state.status == SessionStatus.FAILED:
