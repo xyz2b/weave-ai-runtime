@@ -605,6 +605,73 @@ nested review
     assert effective_skill.content == "nested review"
 
 
+def test_runtime_reloads_dynamic_skill_root_after_skill_edit(tmp_path: Path) -> None:
+    nested_skill_dir = tmp_path / "packages" / "app" / ".claude" / "skills" / "review"
+    observed = tmp_path / "packages" / "app" / "src" / "main.py"
+    nested_skill_dir.mkdir(parents=True)
+    observed.parent.mkdir(parents=True)
+    observed.write_text("print('ok')", encoding="utf-8")
+    skill_path = nested_skill_dir / "SKILL.md"
+    skill_path.write_text(
+        """
+---
+description: api review
+---
+version one
+""".strip(),
+        encoding="utf-8",
+    )
+
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            model_client=FakeModelClient([]),
+            discovery_sources=(
+                DefinitionSourcePaths(DefinitionSource.PROJECT, tmp_path / ".claude"),
+            ),
+            builtins=BuiltinPackConfig(skills_enabled=False),
+        )
+    )
+    observed_message = RuntimeMessage(
+        message_id="observed",
+        role=MessageRole.USER,
+        content="{}",
+        metadata={"observed_paths": [str(observed)]},
+    )
+
+    first = runtime.resolve_invocations(
+        session_id="session-dynamic-reload",
+        cwd=tmp_path,
+        messages=(observed_message,),
+    )
+    first_entry = first.entry_for("review")
+    assert first_entry is not None
+    first_skill = first_entry.definition.metadata["skill_definition"]
+    assert isinstance(first_skill, SkillDefinition)
+    assert first_skill.content == "version one"
+
+    skill_path.write_text(
+        """
+---
+description: api review
+---
+version two
+""".strip(),
+        encoding="utf-8",
+    )
+
+    second = runtime.resolve_invocations(
+        session_id="session-dynamic-reload",
+        cwd=tmp_path,
+        messages=(observed_message,),
+    )
+    second_entry = second.entry_for("review")
+    assert second_entry is not None
+    second_skill = second_entry.definition.metadata["skill_definition"]
+    assert isinstance(second_skill, SkillDefinition)
+    assert second_skill.content == "version two"
+
+
 def test_session_resume_restores_dynamic_skill_roots_from_observed_paths(tmp_path: Path) -> None:
     nested_skill_dir = tmp_path / "services" / "api" / ".claude" / "skills" / "api-review"
     observed = tmp_path / "services" / "api" / "src" / "handler.py"

@@ -415,17 +415,21 @@ def validate_agent_registry_entry(tool_input: dict[str, Any], context: ToolConte
 
 
 def validate_skill_registry_entry(tool_input: dict[str, Any], context: ToolContext) -> ValidationOutcome:
+    requested_skill = tool_input["skill"]
+    if any(skill.name == requested_skill for skill in context.skill_pool):
+        return ValidationOutcome(True)
     registry = context.skill_registry
-    if registry is not None and registry.get(tool_input["skill"]) is None:
-        return ValidationOutcome(False, f"Unknown skill: {tool_input['skill']}")
-    if context.skill_pool and not any(skill.name == tool_input["skill"] for skill in context.skill_pool):
+    registry_skill = registry.get(requested_skill) if registry is not None else None
+    if context.skill_pool and registry_skill is not None:
         return ValidationOutcome(
             False,
-            f"Skill '{tool_input['skill']}' is not available in the current execution policy",
+            f"Skill '{requested_skill}' is not available in the current execution policy",
         )
-    if registry is None or registry.get(tool_input["skill"]) is not None:
+    if context.skill_pool:
+        return ValidationOutcome(False, f"Unknown skill: {requested_skill}")
+    if registry is None or registry_skill is not None:
         return ValidationOutcome(True)
-    return ValidationOutcome(False, f"Unknown skill: {tool_input['skill']}")
+    return ValidationOutcome(False, f"Unknown skill: {requested_skill}")
 
 
 def _resolve_path(cwd: Path, file_path: str, *, context: Any | None = None) -> Path:

@@ -25,6 +25,7 @@ from claude_agent_runtime.permissions import PermissionTarget
 from claude_agent_runtime.registries import AgentRegistry, SkillRegistry, ToolRegistry
 from claude_agent_runtime.runtime_kernel import (
     BuiltinPackConfig,
+    DefinitionSourcePaths,
     ModelRouteBinding,
     RuntimeConfig,
     assemble_runtime,
@@ -327,6 +328,75 @@ def test_agent_tool_rejects_unknown_model_route(tmp_path: Path) -> None:
     assert result.status == ToolCallStatus.ERROR
     assert result.error == "Unknown model route: missing-route"
     assert model_client.requests == []
+
+
+def test_skill_tool_executes_dynamic_overlay_skill_from_session_view(tmp_path: Path) -> None:
+    nested_skill_dir = tmp_path / "packages" / "app" / ".claude" / "skills" / "review"
+    observed = tmp_path / "packages" / "app" / "src" / "main.py"
+    nested_skill_dir.mkdir(parents=True)
+    observed.parent.mkdir(parents=True)
+    observed.write_text("print('ok')", encoding="utf-8")
+    (nested_skill_dir / "SKILL.md").write_text(
+        """
+---
+description: nested review
+---
+review body
+""".strip(),
+        encoding="utf-8",
+    )
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            model_client=FakeModelClient([]),
+            discovery_sources=(
+                DefinitionSourcePaths(DefinitionSource.PROJECT, tmp_path / ".claude"),
+            ),
+            builtins=BuiltinPackConfig(
+                skills_enabled=False,
+                extra_agents=[
+                    AgentDefinition(name="main-router", description="router", prompt="route", tools=("*",))
+                ],
+            ),
+        )
+    )
+    runtime.services.permissions = AllowingPermissionService()
+    catalog = runtime.resolve_invocations(
+        session_id="session-overlay-skill",
+        cwd=tmp_path,
+        messages=(
+            RuntimeMessage(
+                message_id="observed",
+                role=MessageRole.USER,
+                content="{}",
+                metadata={"observed_paths": [str(observed)]},
+            ),
+        ),
+    )
+    assert runtime.kernel.skill_registry.get("review") is None
+    context = ToolContext(
+        session_id="session-overlay-skill",
+        turn_id="turn-overlay-skill",
+        agent_name="main-router",
+        cwd=tmp_path,
+        tool_registry=runtime.kernel.tool_registry,
+        skill_registry=runtime.kernel.skill_registry,
+        skill_pool=catalog.visible_skill_definitions(user_invocable=True),
+        skill_runner=runtime.run_skill_tool,
+        runtime_services=runtime.services,
+    )
+
+    result = asyncio.run(
+        ToolScheduler(runtime.kernel.tool_registry).run(
+            [ToolCall("call-overlay-skill", "skill", {"skill": "review"})],
+            context,
+        )
+    )[0]
+
+    assert result.status == ToolCallStatus.SUCCESS
+    assert result.output["skill"] == "review"
+    assert result.output["mode"] == SkillExecutionContext.INLINE.value
+    assert result.output["injected_messages"][0]["content"][0]["text"] == "review body"
 
 
 def test_session_stream_surfaces_child_run_events(tmp_path: Path) -> None:

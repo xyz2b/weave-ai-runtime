@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, AsyncIterator
@@ -68,6 +69,12 @@ class RuntimeKernel:
     skill_view_resolver: Any = None
 
 
+@dataclass(frozen=True, slots=True)
+class _CachedSkillRoot:
+    fingerprint: tuple[tuple[str, str], ...] = ()
+    skills: tuple[SkillDefinition, ...] = ()
+
+
 class _SessionSkillViewResolver:
     def __init__(
         self,
@@ -77,7 +84,7 @@ class _SessionSkillViewResolver:
     ) -> None:
         self._session_cwd = session_cwd.resolve()
         self._base_registry = base_registry
-        self._skill_cache: dict[str, tuple[SkillDefinition, ...]] = {}
+        self._skill_cache: dict[str, _CachedSkillRoot] = {}
 
     def resolve(self, context: InvocationResolutionContext) -> tuple[SkillDefinition, ...]:
         merged: tuple[SkillDefinition, ...] = self._base_registry.definitions()
@@ -116,9 +123,10 @@ class _SessionSkillViewResolver:
     ) -> tuple[SkillDefinition, ...]:
         resolved_root = root.resolve()
         cache_key = str(resolved_root)
+        fingerprint = _skill_root_fingerprint(resolved_root)
         cached = self._skill_cache.get(cache_key)
-        if cached is not None:
-            return cached
+        if cached is not None and cached.fingerprint == fingerprint:
+            return cached.skills
 
         report = DefinitionDiscovery(
             (
@@ -144,8 +152,28 @@ class _SessionSkillViewResolver:
                     ),
                 )
             )
-        self._skill_cache[cache_key] = tuple(loaded)
-        return self._skill_cache[cache_key]
+        cached_entry = _CachedSkillRoot(
+            fingerprint=fingerprint,
+            skills=tuple(loaded),
+        )
+        self._skill_cache[cache_key] = cached_entry
+        return cached_entry.skills
+
+
+def _skill_root_fingerprint(root: Path) -> tuple[tuple[str, str], ...]:
+    if not root.exists():
+        return (("__missing__", ""),)
+    if not root.is_dir():
+        return (("__not_a_directory__", ""),)
+    fingerprint: list[tuple[str, str]] = []
+    for skill_path in sorted(root.rglob("SKILL.md")):
+        relative = str(skill_path.relative_to(root))
+        try:
+            digest = hashlib.sha1(skill_path.read_bytes()).hexdigest()
+        except OSError:
+            digest = "__unreadable__"
+        fingerprint.append((relative, digest))
+    return tuple(fingerprint)
 
 
 class _UnconfiguredModelClient:
