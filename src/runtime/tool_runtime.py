@@ -442,6 +442,7 @@ class ToolContext:
                         message=message.text,
                         level=str(message.metadata.get("level", "info")),
                     ),
+                    dispatch_context=self.metadata,
                 )
             )
             await _emit_hook_notifications(self, hook_result.notifications)
@@ -1283,7 +1284,13 @@ async def maybe_await(value: Any) -> Any:
 async def _dispatch_hook(context: ToolContext, payload: Any) -> Any:
     if context.runtime_services is None or context.runtime_services.hook_bus is None:
         return _EmptyHookResult()
-    hook_result = await maybe_await(context.runtime_services.hook_bus.dispatch(context.session_id, payload))
+    hook_result = await maybe_await(
+        context.runtime_services.hook_bus.dispatch(
+            context.session_id,
+            payload,
+            dispatch_context=context.metadata,
+        )
+    )
     await _emit_hook_notifications(context, hook_result.notifications)
     return hook_result
 

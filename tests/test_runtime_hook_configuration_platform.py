@@ -46,11 +46,150 @@ def test_public_phase_registry_rejects_internal_phase() -> None:
         session_id="session-a",
     )
 
-    inventory = bus.list_hooks(HookInventoryQuery(session_id="session-a"))
+    inventory = bus.list_hooks(
+        HookInventoryQuery(
+            session_id="session-a",
+            activation_state=HookActivationState.REJECTED,
+        )
+    )
 
     assert handle.activation_state == HookActivationState.REJECTED
     assert inventory[0].activation_state == HookActivationState.REJECTED
     assert inventory[0].phase == "InternalOnlyPhase"
+
+
+def test_invalid_effect_contracts_and_unresolved_callbacks_are_rejected_before_activation() -> None:
+    bus = HookBus()
+
+    invalid_effect_handle = bus.register_request(
+        HookRegistrationRequest(
+            phase="SessionEnd",
+            scope=HookRegistrationScope(
+                lifetime=HookScopeLifetime.SESSION,
+                session_id="session-a",
+            ),
+            handler=HookHandlerManifest(
+                kind=HookHandlerKind.CALLBACK,
+                callback=lambda _payload: {"continue_execution": False},
+            ),
+            contract={
+                "effect_classes": ["decide"],
+                "effect_fields": ["metadata"],
+            },
+        ),
+        source_kind=HookSourceKind.RUNTIME_CONFIG,
+        owner="runtime:invalid-effect",
+        source_ref="runtime:invalid-effect",
+        session_id="session-a",
+    )
+    missing_binding_handle = bus.register_request(
+        HookRegistrationRequest(
+            phase="PreModelRequest",
+            scope=HookRegistrationScope(
+                lifetime=HookScopeLifetime.SESSION,
+                session_id="session-a",
+            ),
+            handler=HookHandlerManifest(
+                kind=HookHandlerKind.CALLBACK,
+                binding="missing-binding",
+            ),
+        ),
+        source_kind=HookSourceKind.SESSION_API,
+        owner="session:missing-binding",
+        source_ref="session:missing-binding",
+        session_id="session-a",
+    )
+
+    inventory = bus.list_hooks(
+        HookInventoryQuery(
+            session_id="session-a",
+            activation_state=HookActivationState.REJECTED,
+        )
+    )
+
+    assert invalid_effect_handle.activation_state == HookActivationState.REJECTED
+    assert missing_binding_handle.activation_state == HookActivationState.REJECTED
+    assert {entry.phase for entry in inventory} == {"SessionEnd", "PreModelRequest"}
+
+
+def test_non_inheritable_parent_hooks_do_not_apply_inside_child_execution() -> None:
+    bus = HookBus()
+    bus.register_request(
+        HookRegistrationRequest(
+            phase="PreModelRequest",
+            scope=HookRegistrationScope(
+                lifetime=HookScopeLifetime.SESSION,
+                session_id="session-a",
+                inherit_to_children=False,
+            ),
+            handler=HookHandlerManifest(
+                kind=HookHandlerKind.CALLBACK,
+                callback=lambda _payload: {"metadata": {"parent_seen": True}},
+            ),
+        ),
+        source_kind=HookSourceKind.SESSION_API,
+        owner="parent:session",
+        source_ref="parent:session",
+        session_id="session-a",
+    )
+    bus.register_request(
+        HookRegistrationRequest(
+            phase="PreModelRequest",
+            scope=HookRegistrationScope(
+                lifetime=HookScopeLifetime.SESSION,
+                session_id="session-a",
+                inherit_to_children=True,
+            ),
+            handler=HookHandlerManifest(
+                kind=HookHandlerKind.CALLBACK,
+                callback=lambda _payload: {"metadata": {"inherited_seen": True}},
+            ),
+        ),
+        source_kind=HookSourceKind.RUNTIME_CONFIG,
+        owner="parent:inherited",
+        source_ref="parent:inherited",
+        session_id="session-a",
+    )
+    bus.register_request(
+        HookRegistrationRequest(
+            phase="PreModelRequest",
+            scope=HookRegistrationScope(
+                lifetime=HookScopeLifetime.SESSION,
+                session_id="session-a",
+            ),
+            handler=HookHandlerManifest(
+                kind=HookHandlerKind.CALLBACK,
+                callback=lambda _payload: {"metadata": {"child_seen": True}},
+            ),
+        ),
+        source_kind=HookSourceKind.SESSION_API,
+        owner="child:session",
+        source_ref="child:session",
+        session_id="session-a",
+        turn_id="child-turn",
+    )
+
+    result = asyncio.run(
+        bus.dispatch(
+            "session-a",
+            {
+                "phase": "PreModelRequest",
+                "session_id": "session-a",
+                "turn_id": "child-turn",
+                "context_generation": 1,
+                "request_envelope": {},
+                "request_metadata": {},
+            },
+            dispatch_context={
+                "turn_id": "child-turn",
+                "parent_turn_id": "parent-turn",
+                "parent_run_id": "parent-run",
+            },
+        )
+    )
+
+    assert result.matched_owners == ("parent:inherited", "child:session")
+    assert result.metadata == {"inherited_seen": True, "child_seen": True}
 
 
 def test_turn_api_precedence_wins_for_replace_style_fields() -> None:
@@ -358,6 +497,116 @@ def test_policy_blocked_external_handlers_are_visible_in_dispatch_trace() -> Non
     )[0]
     assert trace.blocked_registrations[0].reason == "policy_denied"
     assert trace.blocked_registrations[0].handler_kind == HookHandlerKind.HTTP
+
+
+def test_inventory_defaults_to_active_snapshot_and_can_include_inactive() -> None:
+    bus = HookBus()
+    active_handle = bus.register_request(
+        HookRegistrationRequest(
+            phase="PreToolUse",
+            scope=HookRegistrationScope(
+                lifetime=HookScopeLifetime.SESSION,
+                session_id="session-a",
+            ),
+            handler=HookHandlerManifest(
+                kind=HookHandlerKind.CALLBACK,
+                callback=lambda _payload: None,
+            ),
+        ),
+        source_kind=HookSourceKind.SESSION_API,
+        owner="session:active",
+        source_ref="session:active",
+        session_id="session-a",
+    )
+    released_handle = bus.register_request(
+        HookRegistrationRequest(
+            phase="PostToolUse",
+            scope=HookRegistrationScope(
+                lifetime=HookScopeLifetime.SESSION,
+                session_id="session-a",
+            ),
+            handler=HookHandlerManifest(
+                kind=HookHandlerKind.CALLBACK,
+                callback=lambda _payload: None,
+            ),
+        ),
+        source_kind=HookSourceKind.SESSION_API,
+        owner="session:released",
+        source_ref="session:released",
+        session_id="session-a",
+    )
+    rejected_handle = bus.register_request(
+        HookRegistrationRequest(
+            phase="InternalOnlyPhase",
+            scope=HookRegistrationScope(
+                lifetime=HookScopeLifetime.SESSION,
+                session_id="session-a",
+            ),
+            handler=HookHandlerManifest(
+                kind=HookHandlerKind.CALLBACK,
+                callback=lambda _payload: None,
+            ),
+        ),
+        source_kind=HookSourceKind.RUNTIME_CONFIG,
+        owner="runtime:rejected",
+        source_ref="runtime:rejected",
+        session_id="session-a",
+    )
+    released_handle.release()
+
+    active_inventory = bus.list_hooks(HookInventoryQuery(session_id="session-a"))
+    all_inventory = bus.list_hooks(
+        HookInventoryQuery(
+            session_id="session-a",
+            include_inactive=True,
+        )
+    )
+
+    assert [entry.registration_id for entry in active_inventory] == [active_handle.registration_id]
+    assert {
+        entry.registration_id: entry.activation_state
+        for entry in all_inventory
+    } == {
+        active_handle.registration_id: HookActivationState.ACTIVE,
+        released_handle.registration_id: HookActivationState.RELEASED,
+        rejected_handle.registration_id: HookActivationState.REJECTED,
+    }
+
+
+def test_dispatch_trace_query_uses_numeric_dispatch_order() -> None:
+    bus = HookBus()
+
+    for index in range(12):
+        asyncio.run(
+            bus.dispatch(
+                "session-a",
+                {
+                    "phase": "PreModelRequest",
+                    "session_id": "session-a",
+                    "turn_id": f"turn-{index}",
+                    "context_generation": 1,
+                    "request_envelope": {},
+                    "request_metadata": {},
+                },
+            )
+        )
+
+    traces = bus.list_hook_dispatch_traces(HookDispatchTraceQuery(session_id="session-a"))
+
+    assert [trace.dispatch_id for trace in traces] == [
+        "hookdisp_1",
+        "hookdisp_2",
+        "hookdisp_3",
+        "hookdisp_4",
+        "hookdisp_5",
+        "hookdisp_6",
+        "hookdisp_7",
+        "hookdisp_8",
+        "hookdisp_9",
+        "hookdisp_10",
+        "hookdisp_11",
+        "hookdisp_12",
+    ]
 
 
 def test_stop_and_recovery_hooks_resume_with_persisted_override(tmp_path: Path) -> None:

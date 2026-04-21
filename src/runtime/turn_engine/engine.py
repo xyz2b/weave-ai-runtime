@@ -1038,6 +1038,7 @@ class TurnEngine:
                         session_id=session_id,
                         token_count=sum(len(message.text) for message in working_messages),
                     ),
+                    dispatch_context=sanitized_runtime_context,
                 )
                 prepared_context = await self._context_control_plane.prepare(
                     session_id=session_id,
@@ -1075,6 +1076,7 @@ class TurnEngine:
                                 session_id=session_id,
                                 summary_id=summary_id,
                             ),
+                            dispatch_context=sanitized_runtime_context,
                         )
                     yield TurnStreamEvent(
                         event_type=TurnStreamEventType.COMPACTION,
@@ -1158,6 +1160,7 @@ class TurnEngine:
                         turn_id=turn_id,
                         attachments=tuple(attachment.name for attachment in attachments or ()),
                     ),
+                    dispatch_context=sanitized_runtime_context,
                 )
                 pre_context_hook = await self._dispatch_hook(
                     session_id,
@@ -1176,6 +1179,7 @@ class TurnEngine:
                         ),
                         runtime_metadata_view=dict(sanitized_runtime_context),
                     ),
+                    dispatch_context=sanitized_runtime_context,
                 )
 
                 _set_turn_phase(state, TurnPhase.BUILD_REQUEST)
@@ -1232,6 +1236,7 @@ class TurnEngine:
                             "message_count": len(prepared_context.active_messages),
                         },
                     ),
+                    dispatch_context=sanitized_runtime_context,
                 )
                 if post_context_hook.additional_context:
                     prompt_context = build_prompt_envelope(
@@ -1379,6 +1384,7 @@ class TurnEngine:
                         request_envelope=_serialize_model_request_envelope(request),
                         request_metadata=request_metadata,
                     ),
+                    dispatch_context=sanitized_runtime_context,
                 )
                 pending_request_override = merge_request_override_state(
                     pending_request_override,
@@ -1638,6 +1644,7 @@ class TurnEngine:
                             attempt=attempt,
                         ),
                     ),
+                    dispatch_context=sanitized_runtime_context,
                 )
                 if post_model_hook.request_override is not None:
                     private_context = _apply_request_override(
@@ -1666,6 +1673,7 @@ class TurnEngine:
                             reason=attempt.attempt_stop_reason or "completed",
                             turn_id=turn_id,
                         ),
+                        dispatch_context=sanitized_runtime_context,
                     )
                     stop_outcome = _stop_phase_outcome_from_hook_result(stop_hook)
                     _set_turn_phase(state, TurnPhase.RECOVERY_DECISION)
@@ -1686,6 +1694,7 @@ class TurnEngine:
                             candidate_action=decision.action.value,
                             failure_class=recovery_input.failure_class.value,
                         ),
+                        dispatch_context=sanitized_runtime_context,
                     )
                     decision = _apply_recovery_hook_result(
                         decision,
@@ -2256,10 +2265,22 @@ class TurnEngine:
                 return scope
         return agent.memory
 
-    async def _dispatch_hook(self, session_id: str, payload: Any) -> Any:
+    async def _dispatch_hook(
+        self,
+        session_id: str,
+        payload: Any,
+        *,
+        dispatch_context: Mapping[str, Any] | None = None,
+    ) -> Any:
         if self._runtime_services.hook_bus is None:
             return _EmptyHookResult()
-        result = await maybe_await(self._runtime_services.hook_bus.dispatch(session_id, payload))
+        result = await maybe_await(
+            self._runtime_services.hook_bus.dispatch(
+                session_id,
+                payload,
+                dispatch_context=dispatch_context,
+            )
+        )
         await self._emit_hook_notifications(session_id, result.notifications)
         return result
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
 from ..control_plane import resolve_hook_bus, resolve_host_runtime
 from ..hooks import ElicitationPayload, ElicitationResultPayload
@@ -31,6 +31,7 @@ class SharedElicitationService:
                         prompt=request.prompt,
                         kind=request.kind,
                     ),
+                    dispatch_context=_hook_dispatch_context(runtime_context),
                 )
             )
             if getattr(hook_result, "elicitation_result", None) is not None:
@@ -61,6 +62,7 @@ class SharedElicitationService:
                         prompt=request.prompt,
                         response={"response": response.response, **response.metadata},
                     ),
+                    dispatch_context=_hook_dispatch_context(runtime_context),
                 )
             )
         return response
@@ -95,3 +97,12 @@ async def _maybe_await(value: Any) -> Any:
     if asyncio.iscoroutine(value):
         return await value
     return value
+
+
+def _hook_dispatch_context(runtime_context: Any) -> Mapping[str, Any] | None:
+    if isinstance(runtime_context, Mapping):
+        return runtime_context
+    metadata = getattr(runtime_context, "metadata", None)
+    if isinstance(metadata, Mapping):
+        return metadata
+    return None

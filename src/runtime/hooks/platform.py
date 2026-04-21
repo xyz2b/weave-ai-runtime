@@ -187,12 +187,23 @@ class HookInventoryQuery:
     phase: str | None = None
     owner: str | None = None
     source_kind: HookSourceKind | str | None = None
+    activation_state: HookActivationState | str | None = None
+    include_inactive: bool = False
     limit: int | None = None
     cursor: str | None = None
 
     def __post_init__(self) -> None:
         if self.source_kind is not None and not isinstance(self.source_kind, HookSourceKind):
             object.__setattr__(self, "source_kind", HookSourceKind(str(self.source_kind)))
+        if self.activation_state is not None and not isinstance(
+            self.activation_state,
+            HookActivationState,
+        ):
+            object.__setattr__(
+                self,
+                "activation_state",
+                HookActivationState(str(self.activation_state)),
+            )
 
 
 @dataclass(frozen=True, slots=True)

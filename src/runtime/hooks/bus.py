@@ -111,6 +111,7 @@ class _RegistrationRecord:
     precedence: tuple[int, int, int, int]
     precedence_key: str
     local_order: int
+    activation_turn_id: str | None = None
     parent_registration_id: str | None = None
     rejection_reason: str | None = None
     descendant_ids: set[str] = field(default_factory=set)
@@ -200,6 +201,8 @@ class HookBus:
             source_kind=normalized_source_kind,
             scope=scope,
             phase_name=phase_name,
+            callback_bindings=self._callback_bindings,
+            require_bound_callbacks=scope.lifetime != HookScopeLifetime.SESSION_TEMPLATE,
         )
         if rejection_reason is not None:
             self._records[handle.registration_id] = _RegistrationRecord(
@@ -220,6 +223,7 @@ class HookBus:
                 precedence=(SOURCE_PRECEDENCE[normalized_source_kind], creation_index, local_order, creation_index),
                 precedence_key=f"{normalized_source_kind.value}/{creation_index}/{local_order}",
                 local_order=local_order,
+                activation_turn_id=turn_id,
                 rejection_reason=rejection_reason,
             )
             handle._activation_state = HookActivationState.REJECTED
@@ -270,6 +274,7 @@ class HookBus:
             precedence=precedence,
             precedence_key=precedence_key,
             local_order=local_order,
+            activation_turn_id=turn_id,
         )
         handle._activation_state = activation_state
         return handle
@@ -406,6 +411,12 @@ class HookBus:
             template = self._records.get(template_id)
             if template is None or template.activation_state != HookActivationState.PENDING_ACTIVATION:
                 continue
+            if _callback_handler_rejection_reason(
+                template.handler_manifest,
+                callback_bindings=self._callback_bindings,
+                require_bound_callbacks=True,
+            ) is not None:
+                continue
             descendant_id = uuid4().hex
             creation_index = self._next_creation_index()
             precedence_epoch = self._next_session_precedence_epoch(session_id)
@@ -437,6 +448,7 @@ class HookBus:
                 ),
                 precedence_key=f"{template.source_kind.value}/{precedence_epoch}/{template.local_order}",
                 local_order=template.local_order,
+                activation_turn_id=None,
                 parent_registration_id=template.registration_id,
             )
             self._records[descendant_id] = descendant
@@ -519,13 +531,15 @@ class HookBus:
             for trace in trace_list:
                 if _trace_matches_query(trace, normalized_query):
                     traces.append(trace)
-        traces.sort(key=lambda item: item.dispatch_id)
+        traces.sort(key=_dispatch_trace_sort_key)
         return tuple(_slice_with_cursor(traces, normalized_query.cursor, normalized_query.limit))
 
     async def dispatch(
         self,
         session_id: str,
         payload: Any,
+        *,
+        dispatch_context: Mapping[str, Any] | Any | None = None,
     ) -> HookDispatchResult:
         self.materialize_session(session_id)
         phase_name = str(_payload_field(payload, "phase"))
@@ -534,6 +548,11 @@ class HookBus:
         except ValueError:
             phase = phase_name
         payload_turn_id = _payload_field(payload, "turn_id")
+        normalized_dispatch_context = _coerce_dispatch_context(dispatch_context)
+        effective_turn_id = (
+            _coerce_optional_string(payload_turn_id)
+            or _coerce_optional_string(normalized_dispatch_context.get("turn_id"))
+        )
         target = _match_target(payload)
         candidate_records = [
             self._records[record_id]
@@ -545,7 +564,12 @@ class HookBus:
             for record in candidate_records
             if record.activation_state == HookActivationState.ACTIVE
             and record.phase == phase_name
-            and _turn_scope_matches(record, payload_turn_id)
+            and _turn_scope_matches(record, effective_turn_id)
+            and _dispatch_visibility_matches(
+                record,
+                turn_id=effective_turn_id,
+                dispatch_context=normalized_dispatch_context,
+            )
         ]
         active_records.sort(key=lambda item: item.precedence)
         phase_contract = phase_contract_for(phase_name)
@@ -608,7 +632,7 @@ class HookBus:
         dispatch_trace = HookDispatchTrace(
             dispatch_id=dispatch_id,
             session_id=session_id,
-            turn_id=payload_turn_id,
+            turn_id=effective_turn_id,
             phase=phase_name,
             matched_registrations=matched_entries,
             blocked_registrations=tuple(blocked_entries),
@@ -618,6 +642,7 @@ class HookBus:
             metadata={
                 "tier": phase_contract.tier.value,
                 "main_loop_layer": phase_contract.main_loop_layer,
+                "child_execution": _dispatch_context_is_child_execution(normalized_dispatch_context),
             },
         )
         self._dispatch_traces.setdefault(session_id, []).append(dispatch_trace)
@@ -1131,20 +1156,52 @@ def _validate_request(
     source_kind: HookSourceKind,
     scope: HookRegistrationScope,
     phase_name: str,
+    callback_bindings: Mapping[str, HookHandler] | None = None,
+    require_bound_callbacks: bool,
 ) -> str | None:
+    phase_contract = phase_contract_for(phase_name)
     if not is_public_phase(phase_name):
         return "phase_not_public"
     if scope.lifetime == HookScopeLifetime.TURN and scope.turn_id is None:
         return "invalid_turn_scope"
-    if request.handler.kind.external and not phase_contract_for(phase_name).external_handler_allowed:
+    if request.handler.kind.external and not phase_contract.external_handler_allowed:
         return "external_handler_not_allowed_for_phase"
+    callback_rejection = _callback_handler_rejection_reason(
+        request.handler,
+        callback_bindings=callback_bindings,
+        require_bound_callbacks=require_bound_callbacks,
+    )
+    if callback_rejection is not None:
+        return callback_rejection
+    if request.contract.effect_classes:
+        allowed_classes = set(phase_contract.effect_classes)
+        unsupported_classes = sorted(set(request.contract.effect_classes) - allowed_classes)
+        if unsupported_classes:
+            return "unsupported_effect_classes:" + ",".join(item.value for item in unsupported_classes)
     if request.contract.effect_fields:
-        allowed_fields = set(phase_contract_for(phase_name).effect_fields)
+        allowed_fields = set(phase_contract.effect_fields)
         unsupported = sorted(set(request.contract.effect_fields) - allowed_fields)
         if unsupported:
             return "unsupported_effect_fields:" + ",".join(unsupported)
     if source_kind in {HookSourceKind.RUNTIME_CONFIG, HookSourceKind.HOST_API} and scope.lifetime == HookScopeLifetime.TURN:
         return "template_scope_cannot_be_turn"
+    return None
+
+
+def _callback_handler_rejection_reason(
+    manifest: HookHandlerManifest,
+    *,
+    callback_bindings: Mapping[str, HookHandler] | None,
+    require_bound_callbacks: bool,
+) -> str | None:
+    if manifest.kind != HookHandlerKind.CALLBACK:
+        return None
+    if manifest.static_effect is not None or manifest.callback is not None:
+        return None
+    if manifest.binding is None:
+        return "callback_handler_missing_target"
+    if require_bound_callbacks and (callback_bindings is None or manifest.binding not in callback_bindings):
+        return "unresolved_callback_binding"
     return None
 
 
@@ -1436,6 +1493,10 @@ def _record_matches_inventory_query(record: _RegistrationRecord, query: HookInve
         return False
     if query.source_kind is not None and record.source_kind != query.source_kind:
         return False
+    if query.activation_state is not None:
+        return record.activation_state == query.activation_state
+    if not query.include_inactive and record.activation_state != HookActivationState.ACTIVE:
+        return False
     return True
 
 
@@ -1463,6 +1524,42 @@ def _turn_scope_matches(record: _RegistrationRecord, payload_turn_id: str | None
     return record.turn_id == payload_turn_id
 
 
+def _dispatch_visibility_matches(
+    record: _RegistrationRecord,
+    *,
+    turn_id: str | None,
+    dispatch_context: Mapping[str, Any],
+) -> bool:
+    if not _dispatch_context_is_child_execution(dispatch_context):
+        return True
+    if record.scope.inherit_to_children:
+        return True
+    return record.activation_turn_id is not None and record.activation_turn_id == turn_id
+
+
+def _dispatch_context_is_child_execution(dispatch_context: Mapping[str, Any]) -> bool:
+    return (
+        _coerce_optional_string(dispatch_context.get("parent_turn_id")) is not None
+        or _coerce_optional_string(dispatch_context.get("parent_run_id")) is not None
+    )
+
+
+def _coerce_dispatch_context(value: Mapping[str, Any] | Any | None) -> dict[str, Any]:
+    if isinstance(value, Mapping):
+        return dict(value)
+    metadata = getattr(value, "metadata", None)
+    if isinstance(metadata, Mapping):
+        return dict(metadata)
+    return {}
+
+
+def _dispatch_trace_sort_key(trace: HookDispatchTrace) -> tuple[int, str]:
+    prefix, _, suffix = trace.dispatch_id.partition("_")
+    if prefix == "hookdisp" and suffix.isdigit():
+        return int(suffix), trace.dispatch_id
+    return 0, trace.dispatch_id
+
+
 def _coerce_inventory_query(value: HookInventoryQuery | Mapping[str, Any] | None) -> HookInventoryQuery:
     if isinstance(value, HookInventoryQuery):
         return value
@@ -1474,6 +1571,8 @@ def _coerce_inventory_query(value: HookInventoryQuery | Mapping[str, Any] | None
         phase=_coerce_optional_string(value.get("phase")),
         owner=_coerce_optional_string(value.get("owner")),
         source_kind=value.get("source_kind"),
+        activation_state=value.get("activation_state"),
+        include_inactive=bool(value.get("include_inactive", False)),
         limit=_coerce_optional_int(value.get("limit")),
         cursor=_coerce_optional_string(value.get("cursor")),
     )
