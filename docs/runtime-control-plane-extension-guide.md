@@ -456,6 +456,11 @@ sidecar 接入时必须遵守：
 - private execution state 只能进 `RuntimePrivateContext`
 - diagnostics 只能走 private/non-prompt 通道
 
+对于仍存在的 legacy compat path：
+
+- `runtime_context` 只应被当作 bridge 或只读 snapshot
+- 不要再通过共享 `runtime_context` mutation 写入 authoritative private state
+
 也就是说：
 
 - 不能把 host-private state 直接拼到 prompt
@@ -553,6 +558,12 @@ Runtime 会在后续 request 装配时调用 refresh callback。
 - 共享 `runtime_context` 作为 authoritative private state carrier
 - 用户自声明 `privileged` tool execution class
 
+### 10.3 Compat 收敛要求
+
+- 新扩展优先写 `PromptContextEnvelope` / `RuntimePrivateContext`
+- legacy compat path 只保留单向 bridge，不再作为共享真相来源
+- 新增 shared `runtime_context` write 应视为 rollout blocker
+
 ## 11. 推荐实践
 
 ```text
@@ -578,6 +589,5 @@ definition-level 可复用流程：
   - 总接入视角
 - `docs/runtime-definition-authoring-guide.md`
   - tool / agent / skill authoring 规范
-- `docs/runtime-contract-appendix.md`
-  - prompt/private carrier、ingress、lifecycle contract
-
+- `docs/current-system-architecture.md`
+  - prompt/private carrier、ingress、lifecycle ownership 的系统总览

@@ -53,6 +53,15 @@
 - 是否携带 private context 更新
 - 是否真正 admit 一个 turn
 
+当前 `SessionIngressResult` 至少会把结果拆成：
+
+- `normalized_messages`
+- `replay_outputs`
+- `prompt_updates`
+- `private_updates`
+
+其中 `replay_outputs` 不是 transcript append 的别名，`prompt_updates` 只应出现在真正 `admit_turn` 的输入上。
+
 这保证了 session 层对输入归一化有唯一准入面。
 
 ### 3.2 Prompt-safe context 与 runtime-private context 必须分离
@@ -117,6 +126,11 @@
 - child execution owner：`AgentExecutionService`
 
 这避免了 shutdown、close、interrupt 和 background cleanup 在多个层次之间交叉。
+
+helper 语义也已经固定：
+
+- `run_prompt()` 和 `stream_prompt()` 保证 helper-owned session close
+- outer host shutdown 仍由 `BoundHostRuntime` 负责，不是 helper 的隐式职责
 
 ## 4. 分层架构视图
 
@@ -594,6 +608,14 @@ host 不是外围包装层，而是 runtime 的正式集成边界。
 - provider route contract 已完整，但具体 provider 仍依赖外部注入
 - teammate orchestration 是正式外壳，但不等于独立 execution engine
 
+### 14.1 边界收敛 gate
+
+当前仍保留少量 compat bridge，但收敛原则已经稳定：
+
+- 新代码优先写 `PromptContextEnvelope` / `RuntimePrivateContext`
+- 共享 `runtime_context` 只应作为 legacy 输入桥接或只读 compat snapshot
+- 任何新增 shared `runtime_context` authoritative write 都应视为 rollout blocker
+
 ## 15. 历史演化主线
 
 将 archived changes 收敛后，当前系统大致经历了 6 次架构跃迁：
@@ -618,11 +640,22 @@ host 不是外围包装层，而是 runtime 的正式集成边界。
 本文基于以下材料整理：
 
 - `src/runtime/` 当前实现
-- `docs/runtime-contract-appendix.md`
+- `docs/runtime-control-plane-extension-guide.md`
 - `docs/layered-memory-runtime-v2.md`
+- `openspec/specs/` 中关于 ingress、prompt/private boundary、lifecycle ownership、memory 的规格
 - `openspec/changes/archive/` 中的 proposal/design/spec 轨迹
 
-仓库中已有大规模测试覆盖 session、turn stream、tool runtime、skill runtime、memory、interactive control plane 和 teammate orchestration 等关键表面。  
+关键 conformance harness 当前集中在：
+
+- `tests/test_session_ingress.py`
+- `tests/test_session_runtime.py`
+- `tests/test_query_turn_stream.py`
+- `tests/test_query_runtime_protocol_golden.py`
+- `tests/test_invocation_catalog.py`
+- `tests/test_runtime_control_plane.py`
+- `tests/test_interactive_control_plane.py`
+
+这些测试共同锁住 ingress、prompt/private carrier、turn stream、invocation visibility 和 host/control-plane ordering 等关键契约。  
 但当前 shell 的 `python3` 环境未安装 `pytest`，因此本文结论主要基于源码、历史 change 和测试分布，而不是一次实际回归执行结果。
 
 ## 17. Mermaid 图示

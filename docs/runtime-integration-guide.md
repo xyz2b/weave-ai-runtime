@@ -23,7 +23,7 @@ Runtime 核心流转本身由框架收口，用户通常不应该改 `TurnEngine
   - sidecar context contribution
   - tool capability refresh
 
-本文基于截至 `2026-04-21` 的仓库实现、`openspec/changes/archive/` 的演化轨迹，以及 `docs/current-system-architecture.md`、`docs/runtime-contract-appendix.md`、`docs/layered-memory-runtime-v2.md` 中已经收敛的契约整理。
+本文基于截至 `2026-04-21` 的仓库实现、`openspec/changes/archive/` 的演化轨迹，以及 `docs/current-system-architecture.md`、`docs/runtime-control-plane-extension-guide.md`、`docs/layered-memory-runtime-v2.md` 和对应 OpenSpec 规格中已经收敛的契约整理。
 
 ## 1. 先用一句话理解这套系统
 
@@ -589,6 +589,7 @@ Runtime 当前明确区分：
 - runtime-private 走 `RuntimePrivateContext`
 
 `runtime_context` 当前更多是 compat bridge，而不是建议新增依赖的正式扩展面。
+如果必须兼容 legacy caller 或 sidecar，也应把它当作单向 bridge 或只读 snapshot，而不是新的 authoritative private state carrier。
 
 ## 10. 一张接入路线图
 
@@ -639,7 +640,5 @@ Runtime 当前明确区分：
   - 讲 host、permission、elicitation、hook、sidecar 等控制面接入
 - `docs/current-system-architecture.md`
   - 讲“系统是什么”
-- `docs/runtime-contract-appendix.md`
-  - 讲 ingress、prompt/private carrier 和 lifecycle contract
 - `docs/layered-memory-runtime-v2.md`
   - 讲 memory v2 的分层模型和配置面
