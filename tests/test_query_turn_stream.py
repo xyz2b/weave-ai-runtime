@@ -1,5 +1,6 @@
 import asyncio
 
+from runtime.compaction import CompactionPolicy, CompactionResult, evaluate_context_pressure
 from runtime.contracts import MessageRole, TextBlock, ToolResultBlock
 from runtime.definitions import AgentDefinition, ToolDefinition, ToolTraits
 from runtime.registries import ToolRegistry
@@ -357,6 +358,22 @@ def test_runtime_services_contribute_context_during_request_assembly() -> None:
             _ = kwargs
             return self._lines
 
+    class StaticCompactionService(StaticContributionService):
+        def __init__(self, *lines: str) -> None:
+            super().__init__(*lines)
+            self.calls: list[tuple[object, ...]] = []
+
+        async def prepare_turn(self, **kwargs):
+            messages = tuple(kwargs["messages"])
+            self.calls.append(messages)
+            policy = CompactionPolicy(enabled=False)
+            return CompactionResult(
+                messages=messages,
+                policy=policy,
+                pressure=evaluate_context_pressure(messages, policy),
+                fragments=self._lines,
+            )
+
     model_client = BatchedModelClient(
         [
             [
@@ -366,10 +383,11 @@ def test_runtime_services_contribute_context_during_request_assembly() -> None:
             ]
         ]
     )
+    compaction_service = StaticCompactionService("Compaction line")
     services = RuntimeServices(
         memory=StaticContributionService("Memory line"),
         hooks=StaticContributionService("Hook line"),
-        compaction=StaticContributionService("Compaction line"),
+        compaction=compaction_service,
         context_assembler=ContextAssembler(),
         metadata={"runtime_id": "unit-test"},
     )
@@ -394,14 +412,15 @@ def test_runtime_services_contribute_context_during_request_assembly() -> None:
     request = model_client.requests[0]
     assert request.turn_context.memory_fragments == ("Memory line",)
     assert request.turn_context.hook_context == ("Hook line",)
-    assert request.turn_context.compaction_fragments == ("Compaction line",)
+    assert request.turn_context.compaction_fragments == ()
     assert request.turn_context.prompt_context.memory_fragments == ("Memory line",)
     assert request.metadata["runtime_id"] == "unit-test"
+    assert request.metadata["control_plane"]["effect_kinds"] == []
     assert request.private_context.extensions["runtime_id"] == "unit-test"
+    assert compaction_service.calls == [()]
     assert "runtime_id" not in request.system_prompt
     assert "Memory line" in request.system_prompt
     assert "Hook line" in request.system_prompt
-    assert "Compaction line" in request.system_prompt
 
 
 def test_sidecar_private_updates_cannot_reintroduce_prompt_updates() -> None:

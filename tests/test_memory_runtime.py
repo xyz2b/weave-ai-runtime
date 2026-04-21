@@ -1710,6 +1710,23 @@ def test_session_memory_survives_compaction_after_refresh(tmp_path: Path) -> Non
     )
     asyncio.run(controller.run_until_idle())
     asyncio.run(controller._apply_compaction(tuple(controller.messages), turn_id="turn-compaction"))
+    metadata_path = (
+        project_root
+        / ".runtime"
+        / "memory"
+        / "sessions"
+        / "session-compaction-memory"
+        / "metadata.json"
+    )
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert metadata["last_compaction_at"] is None
+    asyncio.run(
+        controller._apply_compaction(
+            tuple(controller.messages),
+            turn_id="turn-compaction-material",
+            event_metadata={"control_plane": {"effect_kinds": ["compaction"]}},
+        )
+    )
 
     controller._messages = [
         replace(
@@ -1738,16 +1755,7 @@ def test_session_memory_survives_compaction_after_refresh(tmp_path: Path) -> Non
         "metadata": {"mutated": True},
     }
 
-    metadata = json.loads(
-        (
-            project_root
-            / ".runtime"
-            / "memory"
-            / "sessions"
-            / "session-compaction-memory"
-            / "metadata.json"
-        ).read_text(encoding="utf-8")
-    )
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
     assert metadata["last_compaction_at"] is not None
 
     controller.enqueue_event(

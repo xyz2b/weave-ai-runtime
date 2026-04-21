@@ -24,6 +24,7 @@ from .runtime_protocol_harness import (
     messages_fixture,
     request_fixture,
     request_messages_fixture,
+    terminal_stable_fields,
     turn_event_fixture,
 )
 
@@ -251,11 +252,14 @@ def test_interrupt_golden_discards_partial_tool_use_before_transcript_persistenc
         }
     ]
     terminal_event = next(event for event in events if event.event_type == TurnStreamEventType.TERMINAL)
-    assert turn_event_fixture(terminal_event)["terminal"] == {
+    terminal_fixture = turn_event_fixture(terminal_event)["terminal"]
+    assert terminal_stable_fields(terminal_fixture) == {
         "stop_reason": "interrupted",
         "request_id": "req-interrupt",
         "abort_reason": "user_cancel",
     }
+    assert isinstance(terminal_fixture.get("metadata"), dict)
+    assert terminal_fixture["metadata"]
 
     loaded = asyncio.run(transcript_store.load("session-interrupt"))
     assert [message_fixture(entry.message) for entry in loaded.entries] == [
@@ -532,21 +536,18 @@ def test_headless_host_can_consume_runtime_turn_event_stream_without_reimplement
     assert tool_result["content"]["background"] is False
     assert tool_result["content"]["run_id"]
     assert tool_result["content"]["turn_id"]
-    assert tool_result["content"]["messages"] == [
-        {
-            "role": "assistant",
-            "content": [{"type": "text", "text": "subagent answer"}],
-            "metadata": {
-                "stop_reason": "end_turn",
-                "request_id": "req-host-sub",
-            },
-        }
-    ]
+    assert len(tool_result["content"]["messages"]) == 1
+    child_message = tool_result["content"]["messages"][0]
+    assert child_message["role"] == "assistant"
+    assert child_message["content"] == [{"type": "text", "text": "subagent answer"}]
     assert tool_result["content"]["isolation_mode"] == "worktree"
-    assert tool_result["content"]["terminal_metadata"] == {
+    stable_terminal_metadata = terminal_stable_fields(tool_result["content"]["terminal_metadata"])
+    assert stable_terminal_metadata == {
         "stop_reason": "end_turn",
         "request_id": "req-host-sub",
     }
+    assert terminal_stable_fields(child_message["metadata"]) == stable_terminal_metadata
+    assert set(tool_result["content"]["terminal_metadata"]) - set(stable_terminal_metadata)
     assert host_view[3] == {
         "role": "assistant",
         "content": [{"type": "text", "text": "agent delegation done"}],

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
 from runtime.contracts import (
     PromptContextEnvelope,
@@ -204,6 +204,14 @@ def ingress_result_fixture(result: SessionIngressResult) -> dict[str, Any]:
 
 def request_messages_fixture(request: ModelRequest) -> list[dict[str, Any]]:
     return request_fixture(request)["messages"]
+
+
+def terminal_stable_fields(terminal: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        key: terminal[key]
+        for key in ("stop_reason", "request_id", "abort_reason", "error")
+        if terminal.get(key) is not None
+    }
 
 
 def turn_event_fixture(event: TurnStreamEvent) -> dict[str, Any]:

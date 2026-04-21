@@ -43,6 +43,8 @@ from runtime.turn_engine import (
     TurnStreamEventType,
 )
 
+from .runtime_protocol_harness import terminal_stable_fields
+
 
 class FakeModelClient:
     def __init__(self, event_batches: list[list[ModelStreamEvent]]) -> None:
@@ -222,10 +224,13 @@ def test_agent_tool_v1_contract_normalizes_and_returns_structured_payload(tmp_pa
     assert payload["requested_model_route"] == "reviewer-route"
     assert payload["resolved_model_route"] == "reviewer-route"
     assert payload["isolation_mode"] == "worktree"
-    assert payload["terminal_metadata"] == {
+    stable_terminal_metadata = terminal_stable_fields(payload["terminal_metadata"])
+    assert stable_terminal_metadata == {
         "stop_reason": "end_turn",
         "request_id": "req-agent-structured",
     }
+    assert terminal_stable_fields(payload["messages"][-1]["metadata"]) == stable_terminal_metadata
+    assert set(payload["terminal_metadata"]) - set(stable_terminal_metadata)
     assert payload["messages"][-1]["content"][0]["text"] == "subagent answer"
 
     request = model_client.requests[0]
