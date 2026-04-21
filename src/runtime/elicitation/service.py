@@ -37,7 +37,12 @@ class SharedElicitationService:
                 return ElicitationResponse(
                     response=hook_result.elicitation_result,
                     source="hook",
-                    metadata={"matched_hooks": list(getattr(hook_result, "matched_owners", ()))},
+                    metadata={
+                        "matched_hooks": list(getattr(hook_result, "matched_owners", ())),
+                        "hook_dispatch_id": getattr(hook_result, "dispatch_id", None),
+                        "satisfied_by_hook": True,
+                        "winner_summary": dict(getattr(hook_result, "winner_summary", {}) or {}),
+                    },
                 )
 
         if host_runtime is None or not hasattr(host_runtime, "request_elicitation"):

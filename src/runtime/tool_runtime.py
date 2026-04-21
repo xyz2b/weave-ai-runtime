@@ -833,7 +833,12 @@ async def execute_tool_call(
                 tool_name=definition.name,
                 status=ToolCallStatus.DENIED,
                 error="Tool use blocked by runtime hook",
-                metadata={"matched_hooks": list(pre_tool_hook.matched_owners)},
+                metadata={
+                    "matched_hooks": list(pre_tool_hook.matched_owners),
+                    "hook_dispatch_id": getattr(pre_tool_hook, "dispatch_id", None),
+                    "continuation_blocked": True,
+                    "winner_summary": dict(getattr(pre_tool_hook, "winner_summary", {}) or {}),
+                },
             )
 
         permission_decision = PermissionDecision(PermissionBehavior.ALLOW)
@@ -902,7 +907,12 @@ async def execute_tool_call(
                 tool_name=definition.name,
                 status=ToolCallStatus.DENIED,
                 error="Tool result blocked by runtime hook",
-                metadata={"matched_hooks": list(post_tool_hook.matched_owners)},
+                metadata={
+                    "matched_hooks": list(post_tool_hook.matched_owners),
+                    "hook_dispatch_id": getattr(post_tool_hook, "dispatch_id", None),
+                    "continuation_blocked": True,
+                    "winner_summary": dict(getattr(post_tool_hook, "winner_summary", {}) or {}),
+                },
             )
         return map_tool_output(definition.name, call.call_id, raw_output)
     except Exception as exc:  # pragma: no cover - defensive boundary
@@ -996,7 +1006,12 @@ async def execute_resolved_tool_call(
                     tool_name=definition.name,
                     status=ToolCallStatus.DENIED,
                     error="Tool result blocked by runtime hook",
-                    metadata={"matched_hooks": list(post_tool_hook.matched_owners)},
+                    metadata={
+                        "matched_hooks": list(post_tool_hook.matched_owners),
+                        "hook_dispatch_id": getattr(post_tool_hook, "dispatch_id", None),
+                        "continuation_blocked": True,
+                        "winner_summary": dict(getattr(post_tool_hook, "winner_summary", {}) or {}),
+                    },
                 ),
                 context_updates=tuple(call_context.call_updates),
             )

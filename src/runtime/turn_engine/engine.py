@@ -39,6 +39,7 @@ from ..contracts import (
     private_context_from_legacy_runtime_context,
     prompt_context_from_legacy_runtime_context,
     request_override_from_skill_request_override,
+    serialize_content_blocks,
     serialize_resumable_request_override,
     skill_request_override_from_request_override,
 )
@@ -51,7 +52,17 @@ from ..execution_policy import (
     resolve_skill_pool,
     serialize_runtime_metadata,
 )
-from ..hooks import PostCompactPayload, PreCompactPayload, StopPayload, UserPromptSubmitPayload
+from ..hooks import (
+    PostCompactPayload,
+    PostContextAssemblePayload,
+    PostModelResponsePayload,
+    PreCompactPayload,
+    PreContextAssemblePayload,
+    PreModelRequestPayload,
+    RecoveryDecisionPayload,
+    StopPayload,
+    UserPromptSubmitPayload,
+)
 from ..invocation_catalog import SkillInvocationProvider, build_invocation_resolution_context
 from ..permissions import PermissionContext
 from ..registries import AgentRegistry, InvocationRegistry, SkillRegistry, ToolRegistry
@@ -1148,6 +1159,24 @@ class TurnEngine:
                         attachments=tuple(attachment.name for attachment in attachments or ()),
                     ),
                 )
+                pre_context_hook = await self._dispatch_hook(
+                    session_id,
+                    PreContextAssemblePayload(
+                        session_id=session_id,
+                        turn_id=turn_id,
+                        active_messages=tuple(prepared_context.active_messages),
+                        attachment_descriptors=tuple(
+                            {
+                                "name": attachment.name,
+                                "path": attachment.path,
+                                "mime_type": attachment.mime_type,
+                                "metadata": dict(attachment.metadata),
+                            }
+                            for attachment in attachments or ()
+                        ),
+                        runtime_metadata_view=dict(sanitized_runtime_context),
+                    ),
+                )
 
                 _set_turn_phase(state, TurnPhase.BUILD_REQUEST)
                 prompt_context = build_prompt_envelope(
@@ -1158,6 +1187,7 @@ class TurnEngine:
                         + tuple(memory_fragments or ()),
                         hook_fragments=prepared_context.prompt_context.hook_fragments
                         + shared_hook_context
+                        + pre_context_hook.additional_context
                         + user_prompt_hook.additional_context
                         + tuple(hook_context or ()),
                         compaction_fragments=prepared_context.prompt_context.compaction_fragments
@@ -1189,6 +1219,49 @@ class TurnEngine:
                     },
                 )
                 state.prepared_context = prepared_context
+                post_context_hook = await self._dispatch_hook(
+                    session_id,
+                    PostContextAssemblePayload(
+                        session_id=session_id,
+                        turn_id=turn_id,
+                        prompt_context_envelope=prompt_context,
+                        context_generation=prepared_context.generation,
+                        request_input_view={
+                            "tool_count": len(tool_pool),
+                            "skill_count": len(active_skills),
+                            "message_count": len(prepared_context.active_messages),
+                        },
+                    ),
+                )
+                if post_context_hook.additional_context:
+                    prompt_context = build_prompt_envelope(
+                        replace(
+                            prompt_context,
+                            hook_fragments=prompt_context.hook_fragments
+                            + post_context_hook.additional_context,
+                        ),
+                        effects=prepared_context.effects,
+                        plan=None,
+                        diagnostics=tuple(prepared_context.metadata.get("diagnostics", ()) or ()),
+                    )
+                    prepared_context = replace(
+                        prepared_context,
+                        prompt_context=prompt_context,
+                        generation=next_context_generation(
+                            state.prepared_context,
+                            active_messages=prepared_context.active_messages,
+                            prompt_context=prompt_context,
+                        ),
+                        metadata={
+                            **prepared_context.metadata,
+                            "context_generation": next_context_generation(
+                                state.prepared_context,
+                                active_messages=prepared_context.active_messages,
+                                prompt_context=prompt_context,
+                            ),
+                        },
+                    )
+                    state.prepared_context = prepared_context
                 api_messages = normalize_messages_for_api(prepared_context.active_messages)
                 composition = self._compose_context(
                     session_id=session_id,
@@ -1232,8 +1305,9 @@ class TurnEngine:
                 if compaction_payload is not None:
                     request_metadata["compaction"] = compaction_payload
                 request_metadata.update(_prepared_context_event_metadata(prepared_context))
-                pending_request_override = _request_override_from_private_context(
-                    effective_private_context
+                pending_request_override = merge_request_override_state(
+                    _request_override_from_private_context(effective_private_context),
+                    coerce_request_override_state(post_context_hook.request_override),
                 )
                 if pending_request_override is not None:
                     request_metadata["request_override"] = pending_request_override.serialize()
@@ -1296,6 +1370,58 @@ class TurnEngine:
                     private_context=effective_private_context,
                     metadata=request_metadata,
                 )
+                pre_model_hook = await self._dispatch_hook(
+                    session_id,
+                    PreModelRequestPayload(
+                        session_id=session_id,
+                        turn_id=turn_id,
+                        context_generation=prepared_context.generation,
+                        request_envelope=_serialize_model_request_envelope(request),
+                        request_metadata=request_metadata,
+                    ),
+                )
+                pending_request_override = merge_request_override_state(
+                    pending_request_override,
+                    pre_model_hook.request_override,
+                )
+                if pending_request_override is not None:
+                    request_metadata["request_override"] = pending_request_override.serialize()
+                    compat_skill_override = skill_request_override_from_request_override(
+                        pending_request_override
+                    )
+                    if compat_skill_override is not None:
+                        request_metadata["skill_request_override"] = compat_skill_override.serialize()
+                    else:
+                        request_metadata.pop("skill_request_override", None)
+                    request = replace(
+                        request,
+                        model=(
+                            pending_request_override.requested_model
+                            if pending_request_override.requested_model is not None
+                            else request.model
+                        ),
+                        effort=(
+                            pending_request_override.requested_effort
+                            if pending_request_override.requested_effort is not None
+                            else request.effort
+                        ),
+                        max_output_tokens=(
+                            pending_request_override.max_output_tokens_override
+                            if pending_request_override.max_output_tokens_override is not None
+                            else request.max_output_tokens
+                        ),
+                        requested_model_route=(
+                            pending_request_override.requested_model_route
+                            if pending_request_override.requested_model_route is not None
+                            else request.requested_model_route
+                        ),
+                        invocation_mode=(
+                            _coerce_invocation_mode(pending_request_override.invocation_mode_override)
+                            if pending_request_override.invocation_mode_override is not None
+                            else request.invocation_mode
+                        ),
+                        metadata=request_metadata,
+                    )
                 last_request = request
                 state.consumed_request_override = pending_request_override
                 tool_executor = select_tool_executor(
@@ -1498,6 +1624,38 @@ class TurnEngine:
                     request=request,
                     attempt=attempt,
                 )
+                post_model_hook = await self._dispatch_hook(
+                    session_id,
+                    PostModelResponsePayload(
+                        session_id=session_id,
+                        turn_id=turn_id,
+                        request_id=attempt.request_id,
+                        provider_stop_reason=attempt.attempt_stop_reason,
+                        usage=dict(attempt.usage),
+                        response_envelope=_serialize_attempt_response_envelope(
+                            assistant_blocks=assistant_blocks,
+                            tool_calls=tool_calls,
+                            attempt=attempt,
+                        ),
+                    ),
+                )
+                if post_model_hook.request_override is not None:
+                    private_context = _apply_request_override(
+                        private_context,
+                        post_model_hook.request_override,
+                    )
+                if post_model_hook.injected_messages:
+                    for injected_message in post_model_hook.injected_messages:
+                        working_messages.append(injected_message)
+                        state.working_messages = tuple(working_messages)
+                        yield TurnStreamEvent(
+                            event_type=TurnStreamEventType.MESSAGE,
+                            iteration=iteration_index,
+                            phase=state.phase,
+                            request=request,
+                            message=injected_message,
+                            metadata={"source": "post_model_response_hook"},
+                        )
 
                 if not tool_calls:
                     _set_turn_phase(state, TurnPhase.STOP_PHASE)
@@ -1517,6 +1675,22 @@ class TurnEngine:
                         stop_outcome=stop_outcome,
                         recovery_state=state.recovery_state,
                         prepared_context=prepared_context,
+                    )
+                    recovery_hook = await self._dispatch_hook(
+                        session_id,
+                        RecoveryDecisionPayload(
+                            session_id=session_id,
+                            turn_id=turn_id,
+                            attempt_index=iteration_index,
+                            recovery_input=_serialize_recovery_input(recovery_input),
+                            candidate_action=decision.action.value,
+                            failure_class=recovery_input.failure_class.value,
+                        ),
+                    )
+                    decision = _apply_recovery_hook_result(
+                        decision,
+                        recovery_hook,
+                        recovery_input=recovery_input,
                     )
                     state.recovery_state = state.recovery_state.after_decision(
                         recovery_input,
@@ -2304,7 +2478,129 @@ def _stop_phase_outcome_from_hook_result(value: Any) -> StopPhaseOutcome:
         notifications=tuple(getattr(value, "notifications", ()) or ()),
         injected_messages=tuple(getattr(value, "injected_messages", ()) or ()),
         request_override=coerce_request_override_state(getattr(value, "request_override", None)),
-        metadata=dict(getattr(value, "metadata", {}) or {}),
+        metadata={
+            **dict(getattr(value, "metadata", {}) or {}),
+            "hook_dispatch_id": getattr(value, "dispatch_id", None),
+            "winner_summary": dict(getattr(value, "winner_summary", {}) or {}),
+        },
+    )
+
+
+def _serialize_model_request_envelope(request: ModelRequest) -> dict[str, Any]:
+    return {
+        "model": request.model,
+        "effort": request.effort,
+        "requested_model_route": request.requested_model_route,
+        "resolved_model_route": request.resolved_model_route,
+        "provider_name": request.provider_name,
+        "invocation_mode": request.invocation_mode.value if request.invocation_mode is not None else None,
+        "max_output_tokens": request.max_output_tokens,
+        "query_source": request.query_source,
+        "message_count": len(request.messages),
+        "tool_names": [tool.name for tool in request.tools],
+        "skill_names": [skill.name for skill in request.skills],
+        "agent_name": request.agent.name if request.agent is not None else None,
+        "turn_context": {
+            "session_id": request.turn_context.session_id,
+            "turn_id": request.turn_context.turn_id,
+            "cwd": request.turn_context.cwd,
+            "hook_context": list(request.turn_context.hook_context),
+            "memory_fragments": list(request.turn_context.memory_fragments),
+        },
+    }
+
+
+def _serialize_attempt_response_envelope(
+    *,
+    assistant_blocks: Sequence[ContentBlock],
+    tool_calls: Sequence[ToolCall],
+    attempt: AttemptFinished,
+) -> dict[str, Any]:
+    return {
+        "request_id": attempt.request_id,
+        "provider_stop_reason": attempt.attempt_stop_reason,
+        "usage": dict(attempt.usage),
+        "tool_calls": [
+            {
+                "call_id": call.call_id,
+                "tool_name": call.tool_name,
+                "tool_input": dict(call.tool_input),
+            }
+            for call in tool_calls
+        ],
+        "assistant_content": serialize_content_blocks(tuple(assistant_blocks)),
+        "error": attempt.error,
+    }
+
+
+def _serialize_recovery_input(value: NormalizedRecoveryInput) -> dict[str, Any]:
+    return {
+        "terminal_reason": value.terminal_reason,
+        "failure_class": value.failure_class.value,
+        "retryable": value.retryable,
+        "provider_error_code": value.provider_error_code,
+        "error": value.error,
+        "abort_reason": value.abort_reason,
+        "produced_tool_calls": value.produced_tool_calls,
+        "tool_call_count": value.tool_call_count,
+        "max_turns_exhausted": value.max_turns_exhausted,
+        "tool_executor_unavailable": value.tool_executor_unavailable,
+        "metadata": dict(value.metadata),
+    }
+
+
+def _apply_recovery_hook_result(
+    decision: RecoveryDecision,
+    hook_result: Any,
+    *,
+    recovery_input: NormalizedRecoveryInput,
+) -> RecoveryDecision:
+    request_override = merge_request_override_state(
+        decision.request_override,
+        coerce_request_override_state(getattr(hook_result, "request_override", None)),
+    )
+    injected_messages = tuple(decision.injected_messages) + tuple(
+        getattr(hook_result, "injected_messages", ()) or ()
+    )
+    metadata = dict(decision.metadata)
+    dispatch_id = getattr(hook_result, "dispatch_id", None)
+    if dispatch_id:
+        metadata["recovery_hook_dispatch_id"] = dispatch_id
+    matched_hooks = tuple(getattr(hook_result, "matched_owners", ()) or ())
+    if matched_hooks:
+        metadata["recovery_hook_matched"] = list(matched_hooks)
+    should_continue = bool(getattr(hook_result, "continue_execution", True))
+    if not should_continue:
+        return RecoveryDecision(
+            action=RecoveryAction.HALT,
+            reason="recovery_hook_blocked",
+            request_override=request_override,
+            injected_messages=injected_messages,
+            terminal_reason="blocked",
+            metadata=metadata,
+        )
+    if decision.action == RecoveryAction.HALT and matched_hooks:
+        resumed_action = (
+            RecoveryAction.RETRY_WITH_OVERRIDE
+            if request_override is not None
+            else (
+                RecoveryAction.CONTINUE_SAME_TURN
+                if recovery_input.produced_tool_calls
+                else RecoveryAction.REBUILD_REQUEST
+            )
+        )
+        return RecoveryDecision(
+            action=resumed_action,
+            reason="recovery_hook_continue",
+            request_override=request_override,
+            injected_messages=injected_messages,
+            metadata=metadata,
+        )
+    return replace(
+        decision,
+        request_override=request_override,
+        injected_messages=injected_messages,
+        metadata=metadata,
     )
 
 

@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any, Callable, Mapping, Protocol, Sequence
 
 from ..definitions import PermissionBehavior
 from ..elicitation import ElicitationRequest, ElicitationResponse
+from ..hooks import HookDispatchTraceQuery, HookInventoryQuery, HookRegistrationRequest, HookSourceKind
 from ..permissions import PermissionOutcome, PermissionRequest, coerce_permission_outcome
 
 if TYPE_CHECKING:
@@ -225,6 +226,36 @@ class BoundHostRuntime:
     def invocation_diagnostics(self, *args: Any, **kwargs: Any) -> Any:
         self._bind_host()
         return self.runtime.invocation_diagnostics(*args, **kwargs)
+
+    def bind_hook_callback(self, name: str, handler: Any) -> None:
+        self._bind_host()
+        self.services.hook_bus.bind_callback(name, handler)
+
+    def register_hook(
+        self,
+        request: HookRegistrationRequest | Mapping[str, Any],
+    ) -> Any:
+        self._bind_host()
+        return self.services.hook_bus.register_request(
+            request,
+            source_kind=HookSourceKind.HOST_API,
+            owner=f"host:{self.host.name}",
+            source_ref=self.host.name,
+        )
+
+    def list_hooks(
+        self,
+        query: HookInventoryQuery | Mapping[str, Any] | None = None,
+    ) -> tuple[Any, ...]:
+        self._bind_host()
+        return self.services.hook_bus.list_hooks(query)
+
+    def list_hook_dispatch_traces(
+        self,
+        query: HookDispatchTraceQuery | Mapping[str, Any] | None = None,
+    ) -> tuple[Any, ...]:
+        self._bind_host()
+        return self.services.hook_bus.list_hook_dispatch_traces(query)
 
     async def run_prompt(
         self,

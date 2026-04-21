@@ -26,7 +26,16 @@ from ..contracts import (
 )
 from ..definitions import AgentDefinition, PermissionMode
 from ..memory.models import MemoryTurnResult, MemoryWriteReceipt, normalize_memory_segment
-from ..hooks import SessionEndPayload, SessionStartPayload
+from ..hooks import (
+    HookDispatchTraceQuery,
+    HookInventoryQuery,
+    HookRegistrationRequest,
+    HookRegistrationScope,
+    HookScopeLifetime,
+    HookSourceKind,
+    SessionEndPayload,
+    SessionStartPayload,
+)
 from ..memory.schema import SESSION_MANIFEST_KIND, build_manifest_envelope
 from ..permissions import PermissionContext
 from ..runtime_services import DefaultTranscriptService, RuntimeServices
@@ -133,6 +142,110 @@ class SessionController:
     def invocation_diagnostics(self):
         return self.resolve_invocations().diagnostics
 
+    def bind_hook_callback(self, name: str, handler: Any) -> None:
+        self._runtime_services.hook_bus.bind_callback(name, handler)
+
+    def register_hook(
+        self,
+        request: HookRegistrationRequest | Mapping[str, Any],
+    ) -> Any:
+        source_kind = HookSourceKind.SESSION_API
+        if isinstance(request, HookRegistrationRequest):
+            if request.scope.lifetime == HookScopeLifetime.TURN:
+                source_kind = HookSourceKind.TURN_API
+        elif isinstance(request, Mapping):
+            raw_scope = request.get("scope")
+            if isinstance(raw_scope, Mapping) and str(raw_scope.get("lifetime", "")).strip() == HookScopeLifetime.TURN.value:
+                source_kind = HookSourceKind.TURN_API
+        return self._runtime_services.hook_bus.register_request(
+            request,
+            source_kind=source_kind,
+            owner=f"session:{self.state.session_id}",
+            source_ref=self.state.session_id,
+            session_id=self.state.session_id,
+            turn_id=self.state.active_turn_id,
+            default_scope_lifetime=HookScopeLifetime.SESSION,
+        )
+
+    def list_hooks(
+        self,
+        query: HookInventoryQuery | Mapping[str, Any] | None = None,
+    ) -> tuple[Any, ...]:
+        if query is None:
+            query = HookInventoryQuery(session_id=self.state.session_id)
+        elif isinstance(query, HookInventoryQuery) and query.session_id is None:
+            query = HookInventoryQuery(
+                session_id=self.state.session_id,
+                turn_id=query.turn_id,
+                phase=query.phase,
+                owner=query.owner,
+                source_kind=query.source_kind,
+                limit=query.limit,
+                cursor=query.cursor,
+            )
+        elif isinstance(query, Mapping):
+            query = {"session_id": self.state.session_id, **dict(query)}
+        return self._runtime_services.hook_bus.list_hooks(query)
+
+    def list_hook_dispatch_traces(
+        self,
+        query: HookDispatchTraceQuery | Mapping[str, Any] | None = None,
+    ) -> tuple[Any, ...]:
+        if query is None:
+            query = HookDispatchTraceQuery(session_id=self.state.session_id)
+        elif isinstance(query, HookDispatchTraceQuery) and query.session_id is None:
+            query = HookDispatchTraceQuery(
+                session_id=self.state.session_id,
+                turn_id=query.turn_id,
+                phase=query.phase,
+                owner=query.owner,
+                source_kind=query.source_kind,
+                limit=query.limit,
+                cursor=query.cursor,
+            )
+        elif isinstance(query, Mapping):
+            query = {"session_id": self.state.session_id, **dict(query)}
+        return self._runtime_services.hook_bus.list_hook_dispatch_traces(query)
+
+    def register_turn_hook(
+        self,
+        request: HookRegistrationRequest | Mapping[str, Any],
+    ) -> Any:
+        if isinstance(request, HookRegistrationRequest):
+            request = HookRegistrationRequest(
+                phase=request.phase,
+                match=request.match,
+                scope=HookRegistrationScope(
+                    lifetime=HookScopeLifetime.TURN,
+                    inherit_to_children=request.scope.inherit_to_children,
+                    turn_id=request.scope.turn_id or self.state.active_turn_id,
+                    session_id=self.state.session_id,
+                    cleanup_boundary=request.scope.cleanup_boundary,
+                ),
+                handler=request.handler,
+                contract=request.contract,
+                owner_hint=request.owner_hint,
+                source_ref=request.source_ref,
+                once=request.once,
+                metadata=request.metadata,
+            )
+        else:
+            existing_scope = (
+                dict(request.get("scope", {}))
+                if isinstance(request.get("scope"), Mapping)
+                else {}
+            )
+            request = {
+                **dict(request),
+                "scope": {
+                    **existing_scope,
+                    "lifetime": HookScopeLifetime.TURN.value,
+                    "turn_id": self.state.active_turn_id,
+                    "session_id": self.state.session_id,
+                },
+            }
+        return self.register_hook(request)
+
     async def start(self) -> None:
         if not self._started:
             memory_service = self._runtime_services.memory
@@ -146,9 +259,16 @@ class SessionController:
                     )
                 )
             self._ensure_session_memory_artifacts(status="active")
+            self._runtime_services.hook_bus.materialize_session(self.state.session_id)
             await self._runtime_services.hook_bus.dispatch(
                 self.state.session_id,
-                SessionStartPayload(session_id=self.state.session_id),
+                SessionStartPayload(
+                    session_id=self.state.session_id,
+                    config_snapshot={
+                        "agent_name": self._agent.name,
+                        "cwd": self._cwd,
+                    },
+                ),
             )
             self._started = True
         self.state.status = SessionStatus.READY

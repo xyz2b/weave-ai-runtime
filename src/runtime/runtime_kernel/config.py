@@ -88,6 +88,7 @@ class RuntimeConfig:
     working_directory: Path = field(default_factory=Path.cwd)
     discovery_sources: tuple[DefinitionSourcePaths, ...] = ()
     builtins: BuiltinPackConfig = field(default_factory=BuiltinPackConfig)
+    hooks: Mapping[str, Any] = field(default_factory=dict)
     host_bindings: tuple[HostBinding, ...] = ()
     model_client: ModelClient | None = None
     model_routes: dict[str, ModelRouteBinding] = field(default_factory=dict)

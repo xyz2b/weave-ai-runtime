@@ -31,6 +31,13 @@ from ..definitions import (
 from ..diagnostics import Diagnostic, DiagnosticSeverity
 from ..errors import RegistryConflictError
 from ..hosts.base import BoundHostRuntime, HostAdapter, NullHostAdapter
+from ..hooks import (
+    HookDispatchTraceQuery,
+    HookInventoryQuery,
+    HookRegistrationRequest,
+    HookScopeLifetime,
+    HookSourceKind,
+)
 from ..invocation_catalog import SkillInvocationProvider
 from ..memory import MemoryManagerService
 from ..registries import AgentRegistry, DefinitionDiscovery, InvocationRegistry, SkillRegistry, ToolRegistry
@@ -213,6 +220,33 @@ class RuntimeAssembly:
             runtime=self,
             services=self.services,
         )
+
+    def bind_hook_callback(self, name: str, handler: Any) -> None:
+        self.services.hook_bus.bind_callback(name, handler)
+
+    def register_hook(
+        self,
+        request: HookRegistrationRequest | dict[str, Any],
+    ) -> Any:
+        return self.services.hook_bus.register_request(
+            request,
+            source_kind=HookSourceKind.RUNTIME_CONFIG,
+            owner=f"runtime:{self.kernel.config.runtime_id}",
+            source_ref=self.kernel.config.runtime_id,
+            default_scope_lifetime=HookScopeLifetime.SESSION_TEMPLATE,
+        )
+
+    def list_hooks(
+        self,
+        query: HookInventoryQuery | dict[str, Any] | None = None,
+    ) -> tuple[Any, ...]:
+        return self.services.hook_bus.list_hooks(query)
+
+    def list_hook_dispatch_traces(
+        self,
+        query: HookDispatchTraceQuery | dict[str, Any] | None = None,
+    ) -> tuple[Any, ...]:
+        return self.services.hook_bus.list_hook_dispatch_traces(query)
 
     def resolve_invocations(
         self,
@@ -772,6 +806,14 @@ def _build_runtime_services(kernel: RuntimeKernel) -> RuntimeServices:
         ask_user_handler=kernel.config.ask_user_handler,
         tool_refresh_callback=kernel.config.tool_refresh_callback,
     )
+    if kernel.config.hooks:
+        services.hook_bus.register_document(
+            hooks=kernel.config.hooks,
+            source_kind=HookSourceKind.RUNTIME_CONFIG,
+            owner=f"runtime:{kernel.config.runtime_id}",
+            source_ref=kernel.config.runtime_id,
+            default_scope_lifetime=HookScopeLifetime.SESSION_TEMPLATE,
+        )
     return services
 
 
