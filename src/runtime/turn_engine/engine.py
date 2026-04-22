@@ -17,7 +17,11 @@ from ..compaction import (
     serialize_compaction_result,
     serialize_compaction_summary,
 )
-from ..context_window import serialize_resolved_context_window_snapshot
+from ..context_window import (
+    serialize_model_context_window_profile,
+    serialize_resolved_context_window_snapshot,
+    serialize_route_context_window_policy,
+)
 from ..contracts import (
     ContentBlock,
     ContentBlockType,
@@ -68,6 +72,12 @@ from ..invocation_catalog import SkillInvocationProvider, build_invocation_resol
 from ..permissions import PermissionContext
 from ..registries import AgentRegistry, InvocationRegistry, SkillRegistry, ToolRegistry
 from ..runtime_services import DefaultTaskService, RuntimeServices, SidecarContributionResult
+from ..runtime_kernel.config import (
+    ModelProviderBinding,
+    ModelRouteBinding,
+    ResolvedModelRouteBinding,
+    resolve_model_route_binding,
+)
 from ..tool_executors import model_capabilities_for, select_tool_executor
 from ..tool_lifecycle import ToolLifecycleEvent
 from ..tasking import TaskManager
@@ -654,8 +664,14 @@ class TurnEngine:
         runtime_services: RuntimeServices | None = None,
         context_control_plane: Any | None = None,
         recovery_policy: Any | None = None,
+        model_providers: Mapping[str, ModelProviderBinding] | None = None,
+        model_routes: Mapping[str, ModelRouteBinding] | None = None,
+        default_model_route: str | None = None,
     ) -> None:
         self._model_client = model_client
+        self._model_providers = dict(model_providers or {})
+        self._model_routes = dict(model_routes or {})
+        self._default_model_route = default_model_route
         self._tool_registry = tool_registry
         self._agent_registry = agent_registry
         self._skill_registry = skill_registry
@@ -705,6 +721,98 @@ class TurnEngine:
     @property
     def runtime_services(self) -> RuntimeServices:
         return self._runtime_services
+
+    def _resolve_route_runtime_metadata(
+        self,
+        *,
+        agent: AgentDefinition,
+        runtime_metadata: Mapping[str, object] | None,
+    ) -> tuple[ResolvedModelRouteBinding | None, dict[str, object]]:
+        if not self._model_routes and self._default_model_route is None:
+            return None, {}
+        resolved_route_name, binding = resolve_model_route_binding(
+            requested_model_route=_string_value(runtime_metadata.get("requested_model_route"))
+            if isinstance(runtime_metadata, Mapping)
+            else None,
+            agent_model_route=agent.model_route,
+            inherited_route=_string_value(runtime_metadata.get("resolved_model_route"))
+            if isinstance(runtime_metadata, Mapping)
+            else None,
+            default_model_route=self._default_model_route,
+            model_providers=self._model_providers,
+            model_routes=self._model_routes,
+        )
+        if binding is None:
+            return None, {}
+        return binding, {
+            "resolved_model_route": resolved_route_name,
+            "provider_name": binding.provider_name,
+            "resolved_capabilities": _serialize_model_capabilities(binding.capabilities),
+            "provider_context_window_profiles": [
+                serialize_model_context_window_profile(profile)
+                for profile in binding.context_window_profiles
+            ],
+            "route_context_window_policy": serialize_route_context_window_policy(
+                binding.context_window_policy
+            ),
+            "route_default_model": binding.default_model,
+        }
+
+    def _apply_route_runtime_metadata(
+        self,
+        *,
+        agent: AgentDefinition,
+        runtime_context: Mapping[str, object] | None,
+        prompt_updates: Mapping[str, Any] | None,
+        private_context: RuntimePrivateContext,
+        effective_private_context: RuntimePrivateContext,
+        runtime_metadata: dict[str, object],
+    ) -> tuple[
+        RuntimePrivateContext,
+        RuntimePrivateContext,
+        dict[str, object],
+        ResolvedModelRouteBinding | None,
+    ]:
+        resolved_route_binding, route_runtime_updates = self._resolve_route_runtime_metadata(
+            agent=agent,
+            runtime_metadata=runtime_metadata,
+        )
+        if not route_runtime_updates:
+            return private_context, effective_private_context, runtime_metadata, resolved_route_binding
+        requested_model_route = (
+            effective_private_context.requested_model_route
+            or _string_value(runtime_metadata.get("requested_model_route"))
+            or agent.model_route
+        )
+        resolved_model_route = _string_value(route_runtime_updates.get("resolved_model_route"))
+        provider_name = (
+            _string_value(route_runtime_updates.get("provider_name"))
+            or effective_private_context.provider_name
+        )
+        private_context = replace(
+            private_context,
+            requested_model_route=requested_model_route,
+            resolved_model_route=resolved_model_route,
+            provider_name=provider_name,
+        )
+        effective_private_context = replace(
+            effective_private_context,
+            requested_model_route=requested_model_route,
+            resolved_model_route=resolved_model_route,
+            provider_name=provider_name,
+        )
+        merged_runtime_metadata = self._merge_runtime_context(
+            runtime_context,
+            private_context=effective_private_context,
+            prompt_updates=prompt_updates,
+        )
+        merged_runtime_metadata.update(route_runtime_updates)
+        return (
+            private_context,
+            effective_private_context,
+            merged_runtime_metadata,
+            resolved_route_binding,
+        )
 
     def configure_runtime(
         self,
@@ -1004,7 +1112,6 @@ class TurnEngine:
         try:
             while True:
                 working_messages = list(state.working_messages)
-                model_client = model_client_override or self._model_client
                 iteration_index = state.iteration + 1
                 state.iteration = iteration_index
                 private_context = replace(
@@ -1020,6 +1127,24 @@ class TurnEngine:
                     runtime_context,
                     private_context=effective_private_context,
                     prompt_updates=prompt_updates,
+                )
+                (
+                    private_context,
+                    effective_private_context,
+                    runtime_metadata,
+                    resolved_route_binding,
+                ) = self._apply_route_runtime_metadata(
+                    agent=agent,
+                    runtime_context=runtime_context,
+                    prompt_updates=prompt_updates,
+                    private_context=private_context,
+                    effective_private_context=effective_private_context,
+                    runtime_metadata=runtime_metadata,
+                )
+                model_client = (
+                    model_client_override
+                    or (resolved_route_binding.client if resolved_route_binding is not None else None)
+                    or self._model_client
                 )
                 tool_pool = policy_state.effective.tool_pool
                 sanitized_runtime_context = serialize_runtime_metadata(runtime_metadata)
@@ -1119,7 +1244,25 @@ class TurnEngine:
                         private_context=effective_private_context,
                         prompt_updates=prompt_updates,
                     )
-                    sanitized_runtime_context = serialize_runtime_metadata(runtime_metadata)
+                (
+                    private_context,
+                    effective_private_context,
+                    runtime_metadata,
+                    resolved_route_binding,
+                ) = self._apply_route_runtime_metadata(
+                    agent=agent,
+                    runtime_context=runtime_context,
+                    prompt_updates=prompt_updates,
+                    private_context=private_context,
+                    effective_private_context=effective_private_context,
+                    runtime_metadata=runtime_metadata,
+                )
+                model_client = (
+                    model_client_override
+                    or (resolved_route_binding.client if resolved_route_binding is not None else None)
+                    or self._model_client
+                )
+                sanitized_runtime_context = serialize_runtime_metadata(runtime_metadata)
 
                 resolved_invocations = self.resolve_invocation_catalog(
                     session_id=session_id,
@@ -1351,12 +1494,13 @@ class TurnEngine:
                     tools=tool_pool,
                     skills=active_skills,
                     agent=agent,
-                    model=(
-                        pending_request_override.requested_model
-                        if pending_request_override is not None
-                        and pending_request_override.requested_model is not None
-                        else agent.model
-                    ),
+                        model=(
+                            pending_request_override.requested_model
+                            if pending_request_override is not None
+                            and pending_request_override.requested_model is not None
+                            else agent.model
+                            or _string_value(runtime_metadata.get("route_default_model"))
+                        ),
                     effort=(
                         pending_request_override.requested_effort
                         if pending_request_override is not None

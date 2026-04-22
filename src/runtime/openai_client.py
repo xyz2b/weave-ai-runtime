@@ -227,7 +227,7 @@ def bundled_openai_route_binding() -> ModelRouteBinding:
             fallback_mode="proactive_and_reactive",
             policy_tag=OPENAI_ROUTE_NAME,
         ),
-        metadata={"bundled": True},
+        metadata={"bundled": True, "default_model_env": "OPENAI_MODEL"},
     )
 
 
@@ -297,6 +297,9 @@ def _http_error_response(exc: urllib_error.HTTPError) -> ModelResponse:
     elif error_code in {"context_length_exceeded", "prompt_too_long"} or exc.code == 413:
         failure_class = "context_limit"
         stop_reason = "context_limit"
+    elif error_code in {"max_output_tokens", "output_limit"}:
+        failure_class = "output_limit"
+        stop_reason = "output_limit"
     return _error_response(
         message=error_message,
         stop_reason=stop_reason,
@@ -355,14 +358,15 @@ def _error_response(
     failure_class: str,
     metadata: Mapping[str, Any] | None = None,
 ) -> ModelResponse:
+    metadata_dict = dict(metadata or {})
     terminal = ModelTerminalMetadata(
         stop_reason=stop_reason,
         error=message,
         metadata={
             "error": message,
-            **dict(metadata or {}),
+            **metadata_dict,
             "failure_class": failure_class,
-            "retryable": False,
+            "retryable": bool(metadata_dict.get("retryable", False)),
         },
     )
     return ModelResponse(

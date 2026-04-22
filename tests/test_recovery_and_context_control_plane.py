@@ -802,6 +802,40 @@ def test_normalize_attempt_outcome_uses_context_window_recovery_hints() -> None:
     assert normalized.retryable is True
 
 
+def test_context_window_hints_refine_generic_internal_error_metadata() -> None:
+    prepared = PreparedContext(
+        active_messages=(),
+        prompt_context=PromptContextEnvelope(),
+        context_window=ResolvedContextWindowSnapshot(
+            provider_name="provider-a",
+            model_name="model-a",
+            recovery_classification_hints=MinimalRecoveryClassificationHints(
+                context_limit=RecoveryClassificationRule(
+                    provider_error_codes=("context_length_exceeded",),
+                    retryable=True,
+                )
+            ),
+        ),
+    )
+
+    normalized = normalize_attempt_outcome(
+        AttemptFinished(
+            iteration=1,
+            attempt_stop_reason="error",
+            error="context length exceeded",
+            metadata={
+                "failure_class": "internal_error",
+                "retryable": False,
+                "provider_error_code": "context_length_exceeded",
+            },
+        ),
+        prepared_context=prepared,
+    )
+
+    assert normalized.failure_class == FailureClassification.CONTEXT_LIMIT
+    assert normalized.retryable is True
+
+
 def test_canonical_context_window_config_key_wins_over_legacy_alias() -> None:
     class CapturingHook:
         def __init__(self, label: str) -> None:

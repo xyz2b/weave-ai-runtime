@@ -745,6 +745,9 @@ def _assemble_runtime_stack(kernel: RuntimeKernel) -> RuntimeAssembly:
         skill_registry=kernel.skill_registry,
         invocation_registry=kernel.invocation_registry,
         runtime_services=services,
+        model_providers=kernel.config.model_providers,
+        model_routes=kernel.config.model_routes,
+        default_model_route=kernel.config.default_model_route,
     )
     agent_runtime = AgentRuntime(
         turn_engine=turn_engine,

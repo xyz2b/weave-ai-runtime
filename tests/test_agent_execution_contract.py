@@ -18,7 +18,7 @@ from runtime.definitions import (
 )
 from runtime.hooks import RuntimeHookPhase
 from runtime.registries import AgentRegistry, SkillRegistry, ToolRegistry
-from runtime.runtime_kernel import ModelRouteBinding
+from runtime.runtime_kernel import ModelProviderBinding, ModelRouteBinding
 from runtime.runtime_services import RuntimeServices
 from runtime.tasking import TaskManager, TaskStatus
 from runtime.turn_engine import (
@@ -325,6 +325,26 @@ def test_model_route_binding_rejects_duplicate_exact_context_window_profiles() -
                 ModelContextWindowProfile(
                     provider_name="provider-reviewer",
                     model_selector="gpt-4.1-mini",
+                    max_input_tokens=240,
+                ),
+            ),
+        )
+
+
+def test_model_provider_binding_rejects_overlapping_pattern_context_window_profiles() -> None:
+    with pytest.raises(ValueError, match="ambiguous_pattern_profile"):
+        ModelProviderBinding(
+            client=FakeModelClient([]),
+            provider_name="provider-reviewer",
+            context_window_profiles=(
+                ModelContextWindowProfile(
+                    provider_name="provider-reviewer",
+                    model_selector="gpt-*",
+                    max_input_tokens=120,
+                ),
+                ModelContextWindowProfile(
+                    provider_name="provider-reviewer",
+                    model_selector="gpt-4.*",
                     max_input_tokens=240,
                 ),
             ),

@@ -921,13 +921,21 @@ def normalize_attempt_outcome(
         error=getattr(attempt, "error", None),
         prepared_context=prepared_context,
     )
-    if failure_class is None:
+    if hinted_classification is not None and failure_class in {
+        None,
+        FailureClassification.NONE,
+        FailureClassification.INTERNAL_ERROR,
+    }:
+        failure_class = hinted_classification[0]
+    elif failure_class is None:
         failure_class = (
             hinted_classification[0]
             if hinted_classification is not None
             else _failure_class_from_terminal_reason(stop_reason, error=getattr(attempt, "error", None))
         )
     retryable = _coerce_optional_bool(metadata.get("retryable"))
+    if hinted_classification is not None and failure_class == hinted_classification[0]:
+        retryable = hinted_classification[1] if hinted_classification[1] is not None else retryable
     if retryable is None:
         retryable = (
             hinted_classification[1]
@@ -980,7 +988,11 @@ def _resolve_context_window_for_prepare(
     ) or private_context.provider_name
     model_name = (
         _coerce_optional_string(runtime_context, "requested_model") if isinstance(runtime_context, Mapping) else None
-    ) or agent.model
+    ) or agent.model or (
+        _coerce_optional_string(runtime_context, "route_default_model")
+        if isinstance(runtime_context, Mapping)
+        else None
+    )
     route_name = (
         _coerce_optional_string(runtime_context, "resolved_model_route")
         if isinstance(runtime_context, Mapping)

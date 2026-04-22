@@ -1,9 +1,12 @@
 import asyncio
+from io import BytesIO
 from pathlib import Path
+from urllib.error import HTTPError
 
+from runtime.context_window import ModelContextWindowProfile, RouteContextWindowPolicy
 from runtime.contracts import MessageRole
 from runtime.hooks import RuntimeHookPhase
-from runtime.openai_client import OPENAI_PROVIDER_NAME, OPENAI_ROUTE_NAME
+from runtime.openai_client import OPENAI_PROVIDER_NAME, OPENAI_ROUTE_NAME, _http_error_response
 from runtime.definitions import (
     AgentDefinition,
     DefinitionOrigin,
@@ -14,12 +17,19 @@ from runtime.runtime_kernel import (
     BuiltinPackConfig,
     DefinitionSourcePaths,
     HostBinding,
+    ModelProviderBinding,
+    ModelRouteBinding,
     RuntimeConfig,
     assemble_host_runtime,
     assemble_runtime,
     build_runtime_kernel,
 )
-from runtime.turn_engine import ModelRequest, ModelStreamEvent, ModelStreamEventType
+from runtime.turn_engine import (
+    ModelRequest,
+    ModelStreamEvent,
+    ModelStreamEventType,
+    NormalizedModelCapabilities,
+)
 
 
 class FakeModelClient:
@@ -164,6 +174,71 @@ def test_runtime_assembly_provides_runnable_session_surface(tmp_path: Path) -> N
     assert runtime.transcript_store is runtime.kernel.transcript_store
     assert len(model_client.requests) == 1
     assert model_client.requests[0].query_source == "user_prompt"
+
+
+def test_runtime_root_session_resolves_default_model_route_and_context_window(tmp_path: Path) -> None:
+    model_client = FakeModelClient(
+        [
+            [
+                ModelStreamEvent(
+                    ModelStreamEventType.MESSAGE_START,
+                    {"request_id": "req-route"},
+                ),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "routed reply"}),
+                ModelStreamEvent(
+                    ModelStreamEventType.MESSAGE_STOP,
+                    {"stop_reason": "end_turn"},
+                ),
+            ]
+        ]
+    )
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            model_providers={
+                "provider-a": ModelProviderBinding(
+                    client=model_client,
+                    provider_name="provider-a",
+                    capabilities=NormalizedModelCapabilities(),
+                    context_window_profiles=(
+                        ModelContextWindowProfile(
+                            provider_name="provider-a",
+                            model_selector="model-a",
+                            max_input_tokens=64,
+                            reserved_output_tokens=8,
+                        ),
+                    ),
+                )
+            },
+            model_routes={
+                "route-a": ModelRouteBinding(
+                    provider_binding="provider-a",
+                    provider_name="provider-a",
+                    default_model="model-a",
+                    context_window_policy=RouteContextWindowPolicy(
+                        trigger_buffer_tokens=4,
+                        policy_tag="route-a-policy",
+                    ),
+                )
+            },
+            default_model_route="route-a",
+        )
+    )
+
+    produced = asyncio.run(runtime.run_prompt("Hello route", session_id="session-route"))
+
+    assert produced[-1].text == "routed reply"
+    assert len(model_client.requests) == 1
+    request = model_client.requests[0]
+    assert request.model == "model-a"
+    assert request.requested_model_route is None
+    assert request.resolved_model_route == "route-a"
+    assert request.provider_name == "provider-a"
+    assert request.context_window is not None
+    assert request.context_window.max_input_tokens == 64
+    assert request.context_window.policy_tag == "route-a-policy"
+    assert request.metadata["context_window_policy_tag"] == "route-a-policy"
+    assert request.metadata["resolved_model_route"] == "route-a"
 
 
 def test_runtime_run_prompt_closes_helper_owned_session(tmp_path: Path) -> None:
@@ -377,3 +452,63 @@ def test_runtime_bundles_openai_route_and_surfaces_missing_credentials_at_invoca
     assert terminal.terminal is not None
     assert terminal.terminal.metadata["failure_class"] == "auth_error"
     assert "OPENAI_API_KEY" in terminal.terminal.metadata["error"]
+
+
+def test_runtime_bundled_openai_route_honors_openai_model_override(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_post_json(url: str, payload: dict[str, object], *, api_key: str) -> dict[str, object]:
+        captured["url"] = url
+        captured["payload"] = dict(payload)
+        captured["api_key"] = api_key
+        return {
+            "id": "req-openai-env",
+            "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+            "usage": {},
+        }
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("OPENAI_MODEL", "gpt-env-override")
+    monkeypatch.setattr("runtime.openai_client._post_json", fake_post_json)
+
+    runtime = assemble_runtime(RuntimeConfig(working_directory=tmp_path))
+    produced = asyncio.run(runtime.run_prompt("Hello runtime", session_id="openai-env"))
+
+    assert produced[-1].text == "ok"
+    assert captured["api_key"] == "test-key"
+    assert captured["payload"]["model"] == "gpt-env-override"
+
+
+def test_openai_http_error_response_preserves_retryable_context_and_output_limits() -> None:
+    context_limit = _http_error_response(
+        HTTPError(
+            url="https://example.test",
+            code=400,
+            msg="Bad Request",
+            hdrs=None,
+            fp=BytesIO(
+                b'{"error":{"message":"maximum context length exceeded","code":"context_length_exceeded"}}'
+            ),
+        )
+    )
+    output_limit = _http_error_response(
+        HTTPError(
+            url="https://example.test",
+            code=400,
+            msg="Bad Request",
+            hdrs=None,
+            fp=BytesIO(
+                b'{"error":{"message":"maximum output tokens exceeded","code":"output_limit"}}'
+            ),
+        )
+    )
+
+    assert context_limit.terminal is not None
+    assert context_limit.terminal.metadata["failure_class"] == "context_limit"
+    assert context_limit.terminal.metadata["retryable"] is True
+    assert output_limit.terminal is not None
+    assert output_limit.terminal.metadata["failure_class"] == "output_limit"
+    assert output_limit.terminal.metadata["retryable"] is True

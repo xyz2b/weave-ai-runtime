@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass, field, replace
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Mapping, Sequence
 from uuid import uuid4
 
@@ -31,7 +31,12 @@ from .hosts.base import CallbackHostAdapter, NullHostAdapter
 from .isolation import IsolationLease, serialize_isolation_lease
 from .permissions import PermissionContext, PermissionRequest, PermissionTarget
 from .registries import AgentRegistry, SkillRegistry, ToolRegistry
-from .runtime_kernel.config import ModelProviderBinding, ModelRouteBinding
+from .runtime_kernel.config import (
+    ModelProviderBinding,
+    ModelRouteBinding,
+    ResolvedModelRouteBinding,
+    resolve_model_route_binding,
+)
 from .runtime_services import RuntimeServices
 from .turn_engine.engine import TurnEngine
 from .turn_engine.models import ModelInvocationMode, NormalizedModelCapabilities
@@ -548,51 +553,18 @@ class AgentExecutionService:
         self,
         agent: AgentDefinition,
         execution_spec: AgentExecutionSpec,
-    ) -> tuple[str | None, "_ResolvedModelRouteBinding | None"]:
-        inherited_route = (
-            _coerce_optional_string(execution_spec.metadata.get("resolved_model_route"))
-            or _coerce_optional_string(execution_spec.metadata.get("requested_model_route"))
-        )
-        resolved_route = (
-            execution_spec.requested_model_route
-            or agent.model_route
-            or inherited_route
-            or self._default_model_route
-        )
-        if resolved_route is None:
-            return None, None
-        binding = self._model_routes.get(resolved_route)
-        if binding is None:
-            raise ValueError(f"Unknown model route: {resolved_route}")
-        provider_binding = (
-            self._model_providers.get(binding.provider_binding)
-            if binding.provider_binding is not None
-            else None
-        )
-        client = binding.client or (provider_binding.client if provider_binding is not None else None)
-        if client is None:
-            raise ValueError(f"Model route '{resolved_route}' does not resolve a model client")
-        profiles = (
-            tuple(provider_binding.context_window_profiles) if provider_binding is not None else ()
-        ) + tuple(binding.context_window_profiles)
-        resolved_binding = _ResolvedModelRouteBinding(
-            client=client,
-            default_model=binding.default_model,
-            provider_name=(
-                binding.provider_name
-                or (provider_binding.provider_name if provider_binding is not None else None)
+    ) -> tuple[str | None, ResolvedModelRouteBinding | None]:
+        return resolve_model_route_binding(
+            requested_model_route=execution_spec.requested_model_route,
+            agent_model_route=agent.model_route,
+            inherited_route=(
+                _coerce_optional_string(execution_spec.metadata.get("resolved_model_route"))
+                or _coerce_optional_string(execution_spec.metadata.get("requested_model_route"))
             ),
-            capabilities=binding.capabilities
-            or (provider_binding.capabilities if provider_binding is not None else None),
-            context_window_policy=binding.context_window_policy,
-            context_window_profiles=profiles,
-            metadata={
-                **(dict(provider_binding.metadata) if provider_binding is not None else {}),
-                **dict(binding.metadata),
-                "provider_binding": binding.provider_binding,
-            },
+            default_model_route=self._default_model_route,
+            model_providers=self._model_providers,
+            model_routes=self._model_routes,
         )
-        return resolved_route, resolved_binding
 
     async def _dispatch_subagent_stop(
         self,
@@ -619,17 +591,6 @@ def _supports_permission_requests(host: Any) -> bool:
     if type(host) is NullHostAdapter:
         return False
     return True
-
-
-@dataclass(frozen=True, slots=True)
-class _ResolvedModelRouteBinding:
-    client: Any
-    default_model: str | None = None
-    provider_name: str | None = None
-    capabilities: NormalizedModelCapabilities | None = None
-    context_window_policy: Any = None
-    context_window_profiles: tuple[Any, ...] = ()
-    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 def _terminal_metadata_from_turn_result(turn_result: Any) -> dict[str, Any]:

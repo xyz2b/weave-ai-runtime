@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from functools import lru_cache
+import string
 from dataclasses import dataclass, field
 from fnmatch import fnmatch
 from math import ceil
@@ -49,6 +51,109 @@ def _coerce_sequence(value: object) -> tuple[Any, ...]:
 
 def _selector_has_pattern(selector: str) -> bool:
     return any(char in selector for char in "*?[]")
+
+
+_MODEL_SELECTOR_ALPHABET = frozenset(char for char in string.printable if char not in string.whitespace)
+
+
+@dataclass(frozen=True, slots=True)
+class _PatternToken:
+    kind: str
+    chars: frozenset[str] = frozenset()
+
+
+def _provider_scopes_overlap(left: str | None, right: str | None) -> bool:
+    return left is None or right is None or left == right
+
+
+def _provider_overlap_label(left: str | None, right: str | None) -> str:
+    if left == right:
+        return left or "<any>"
+    return left or right or "<any>"
+
+
+def _tokenize_selector_pattern(pattern: str) -> tuple[_PatternToken, ...]:
+    tokens: list[_PatternToken] = []
+    index = 0
+    while index < len(pattern):
+        char = pattern[index]
+        if char == "*":
+            tokens.append(_PatternToken("star"))
+            index += 1
+            continue
+        if char == "?":
+            tokens.append(_PatternToken("chars", _MODEL_SELECTOR_ALPHABET))
+            index += 1
+            continue
+        if char == "[":
+            closing = pattern.find("]", index + 1)
+            if closing == -1:
+                tokens.append(_PatternToken("chars", frozenset({char})))
+                index += 1
+                continue
+            body = pattern[index + 1 : closing]
+            negated = body.startswith(("!", "^"))
+            if negated:
+                body = body[1:]
+            allowed: set[str] = set()
+            body_index = 0
+            while body_index < len(body):
+                current = body[body_index]
+                if (
+                    body_index + 2 < len(body)
+                    and body[body_index + 1] == "-"
+                    and body[body_index + 2] != "-"
+                ):
+                    start = ord(current)
+                    end = ord(body[body_index + 2])
+                    if start <= end:
+                        allowed.update(chr(code) for code in range(start, end + 1))
+                    else:
+                        allowed.update(chr(code) for code in range(end, start + 1))
+                    body_index += 3
+                    continue
+                allowed.add(current)
+                body_index += 1
+            token_chars = (
+                _MODEL_SELECTOR_ALPHABET.difference(allowed)
+                if negated
+                else _MODEL_SELECTOR_ALPHABET.intersection(allowed)
+            )
+            tokens.append(_PatternToken("chars", frozenset(token_chars)))
+            index = closing + 1
+            continue
+        tokens.append(_PatternToken("chars", frozenset({char})))
+        index += 1
+    return tuple(tokens)
+
+
+def _selector_patterns_overlap(left: str, right: str) -> bool:
+    left_tokens = _tokenize_selector_pattern(left)
+    right_tokens = _tokenize_selector_pattern(right)
+
+    @lru_cache(maxsize=None)
+    def intersects(left_index: int, right_index: int) -> bool:
+        if left_index == len(left_tokens):
+            return all(token.kind == "star" for token in right_tokens[right_index:])
+        if right_index == len(right_tokens):
+            return all(token.kind == "star" for token in left_tokens[left_index:])
+
+        left_token = left_tokens[left_index]
+        right_token = right_tokens[right_index]
+
+        if left_token.kind == "star" and intersects(left_index + 1, right_index):
+            return True
+        if right_token.kind == "star" and intersects(left_index, right_index + 1):
+            return True
+        if left_token.kind == "star" and right_token.kind != "star":
+            return intersects(left_index, right_index + 1)
+        if right_token.kind == "star" and left_token.kind != "star":
+            return intersects(left_index + 1, right_index)
+        if left_token.chars.intersection(right_token.chars):
+            return intersects(left_index + 1, right_index + 1)
+        return False
+
+    return intersects(0, 0)
 
 
 @dataclass(frozen=True, slots=True)
@@ -442,37 +547,40 @@ def validate_model_context_window_profiles(
     profiles: Sequence[ModelContextWindowProfile],
 ) -> tuple[str, ...]:
     diagnostics: list[str] = []
-    seen_exact: set[tuple[str | None, str]] = set()
-    seen_default: set[str | None] = set()
-    seen_pattern: set[tuple[str | None, str]] = set()
-    seen_profile_refs: set[tuple[str | None, str]] = set()
-    for profile in profiles:
-        if profile.profile_name is not None:
-            key = (profile.provider_name, profile.profile_name)
-            if key in seen_profile_refs:
+    for index, profile in enumerate(profiles):
+        for other in profiles[:index]:
+            if not _provider_scopes_overlap(profile.provider_name, other.provider_name):
+                continue
+            overlap_label = _provider_overlap_label(profile.provider_name, other.provider_name)
+            if (
+                profile.profile_name is not None
+                and profile.profile_name == other.profile_name
+                and other.profile_name is not None
+            ):
+                diagnostics.append(f"duplicate_profile_ref:{overlap_label}:{profile.profile_name}")
+            if profile.selector_kind != other.selector_kind:
+                continue
+            if profile.selector_kind == "provider_default":
+                diagnostics.append(f"duplicate_provider_default:{overlap_label}")
+                continue
+            if profile.selector_kind == "exact":
+                if profile.model_selector == other.model_selector:
+                    diagnostics.append(
+                        f"duplicate_exact_profile:{overlap_label}:{profile.model_selector}"
+                    )
+                continue
+            if profile.model_selector is None or other.model_selector is None:
+                continue
+            if profile.model_selector == other.model_selector:
                 diagnostics.append(
-                    f"duplicate_profile_ref:{profile.provider_name or '<any>'}:{profile.profile_name}"
+                    f"duplicate_pattern_profile:{overlap_label}:{profile.model_selector}"
                 )
-            seen_profile_refs.add(key)
-        if profile.model_selector is None:
-            if profile.provider_name in seen_default:
-                diagnostics.append(f"duplicate_provider_default:{profile.provider_name or '<any>'}")
-            seen_default.add(profile.provider_name)
-            continue
-        if _selector_has_pattern(profile.model_selector):
-            key = (profile.provider_name, profile.model_selector)
-            if key in seen_pattern:
+                continue
+            if _selector_patterns_overlap(profile.model_selector, other.model_selector):
                 diagnostics.append(
-                    f"duplicate_pattern_profile:{profile.provider_name or '<any>'}:{profile.model_selector}"
+                    "ambiguous_pattern_profile:"
+                    f"{overlap_label}:{other.model_selector}:{profile.model_selector}"
                 )
-            seen_pattern.add(key)
-            continue
-        key = (profile.provider_name, profile.model_selector)
-        if key in seen_exact:
-            diagnostics.append(
-                f"duplicate_exact_profile:{profile.provider_name or '<any>'}:{profile.model_selector}"
-            )
-        seen_exact.add(key)
     return tuple(diagnostics)
 
 

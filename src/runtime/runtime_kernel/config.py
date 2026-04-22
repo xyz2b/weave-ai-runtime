@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Mapping
@@ -128,6 +129,90 @@ class ModelRouteBinding:
         diagnostics = validate_model_context_window_profiles(self.context_window_profiles)
         if diagnostics:
             raise ValueError(", ".join(diagnostics))
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedModelRouteBinding:
+    client: ModelClient
+    default_model: str | None = None
+    provider_name: str | None = None
+    capabilities: NormalizedModelCapabilities | None = None
+    context_window_policy: RouteContextWindowPolicy | None = None
+    context_window_profiles: tuple[ModelContextWindowProfile, ...] = ()
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "context_window_profiles",
+            coerce_model_context_window_profiles(self.context_window_profiles),
+        )
+        object.__setattr__(self, "metadata", dict(self.metadata))
+
+
+def _coerce_optional_string(value: object) -> str | None:
+    if isinstance(value, str):
+        stripped = value.strip()
+        return stripped or None
+    return None
+
+
+def _resolve_route_default_model(
+    default_model: str | None,
+    metadata: Mapping[str, Any] | None = None,
+) -> str | None:
+    env_name = _coerce_optional_string((metadata or {}).get("default_model_env"))
+    if env_name is not None:
+        override = os.environ.get(env_name, "").strip()
+        if override:
+            return override
+    return default_model
+
+
+def resolve_model_route_binding(
+    *,
+    requested_model_route: str | None,
+    agent_model_route: str | None,
+    inherited_route: str | None,
+    default_model_route: str | None,
+    model_providers: Mapping[str, ModelProviderBinding] | None = None,
+    model_routes: Mapping[str, ModelRouteBinding] | None = None,
+) -> tuple[str | None, ResolvedModelRouteBinding | None]:
+    resolved_route = requested_model_route or agent_model_route or inherited_route or default_model_route
+    if resolved_route is None:
+        return None, None
+    binding = (model_routes or {}).get(resolved_route)
+    if binding is None:
+        raise ValueError(f"Unknown model route: {resolved_route}")
+    provider_binding = (
+        (model_providers or {}).get(binding.provider_binding)
+        if binding.provider_binding is not None
+        else None
+    )
+    client = binding.client or (provider_binding.client if provider_binding is not None else None)
+    if client is None:
+        raise ValueError(f"Model route '{resolved_route}' does not resolve a model client")
+    metadata = {
+        **(dict(provider_binding.metadata) if provider_binding is not None else {}),
+        **dict(binding.metadata),
+        "provider_binding": binding.provider_binding,
+    }
+    profiles = (
+        tuple(provider_binding.context_window_profiles) if provider_binding is not None else ()
+    ) + tuple(binding.context_window_profiles)
+    return resolved_route, ResolvedModelRouteBinding(
+        client=client,
+        default_model=_resolve_route_default_model(binding.default_model, metadata),
+        provider_name=(
+            binding.provider_name
+            or (provider_binding.provider_name if provider_binding is not None else None)
+        ),
+        capabilities=binding.capabilities
+        or (provider_binding.capabilities if provider_binding is not None else None),
+        context_window_policy=binding.context_window_policy,
+        context_window_profiles=profiles,
+        metadata=metadata,
+    )
 
 
 @dataclass(slots=True)
