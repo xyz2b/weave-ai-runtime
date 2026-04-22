@@ -14,7 +14,7 @@ from .definitions import IsolationMode, PermissionMode, SkillDefinition, ToolDef
 from .execution_policy import policy_state_from_metadata
 from .registries import AgentRegistry, SkillRegistry, ToolRegistry
 from .runtime_services import DefaultTaskService, RuntimeServices
-from .runtime_kernel.config import ModelRouteBinding
+from .runtime_kernel.config import ModelProviderBinding, ModelRouteBinding
 from .tasking import TaskManager
 from .tool_runtime import ToolCall, ToolCallStatus, ToolScheduler
 from .turn_engine.engine import TurnEngine
@@ -70,6 +70,7 @@ class AgentRuntime:
         task_manager: TaskManager | None = None,
         runtime_services: RuntimeServices | None = None,
         run_store: ChildRunStore | None = None,
+        model_providers: dict[str, ModelProviderBinding] | None = None,
         model_routes: dict[str, ModelRouteBinding] | None = None,
         default_model_route: str | None = None,
     ) -> None:
@@ -90,6 +91,7 @@ class AgentRuntime:
             skill_registry=skill_registry,
             runtime_services=self._runtime_services,
             run_store=self._run_store,
+            model_providers=model_providers,
             model_routes=model_routes,
             default_model_route=default_model_route,
         )

@@ -5,6 +5,13 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Mapping
 
 from ..agent_execution import ChildRunStore
+from ..context_window import (
+    ModelContextWindowProfile,
+    RouteContextWindowPolicy,
+    coerce_model_context_window_profiles,
+    coerce_route_context_window_policy,
+    validate_model_context_window_profiles,
+)
 from ..definitions import (
     AgentDefinition,
     DefinitionSource,
@@ -75,11 +82,52 @@ class HostBinding:
 
 
 @dataclass(frozen=True, slots=True)
-class ModelRouteBinding:
+class ModelProviderBinding:
     client: ModelClient
+    provider_name: str
+    capabilities: NormalizedModelCapabilities | None = None
+    context_window_profiles: tuple[ModelContextWindowProfile, ...] = ()
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "context_window_profiles",
+            coerce_model_context_window_profiles(self.context_window_profiles),
+        )
+        object.__setattr__(self, "metadata", dict(self.metadata))
+        diagnostics = validate_model_context_window_profiles(self.context_window_profiles)
+        if diagnostics:
+            raise ValueError(", ".join(diagnostics))
+
+
+@dataclass(frozen=True, slots=True)
+class ModelRouteBinding:
+    client: ModelClient | None = None
     default_model: str | None = None
     provider_name: str | None = None
+    provider_binding: str | None = None
+    context_window_policy: RouteContextWindowPolicy | None = None
+    context_window_profiles: tuple[ModelContextWindowProfile, ...] = ()
+    metadata: dict[str, Any] = field(default_factory=dict)
     capabilities: NormalizedModelCapabilities | None = None
+
+    def __post_init__(self) -> None:
+        if self.context_window_policy is not None and not isinstance(
+            self.context_window_policy,
+            RouteContextWindowPolicy,
+        ):
+            policy = coerce_route_context_window_policy(self.context_window_policy)
+            object.__setattr__(self, "context_window_policy", policy)
+        object.__setattr__(
+            self,
+            "context_window_profiles",
+            coerce_model_context_window_profiles(self.context_window_profiles),
+        )
+        object.__setattr__(self, "metadata", dict(self.metadata))
+        diagnostics = validate_model_context_window_profiles(self.context_window_profiles)
+        if diagnostics:
+            raise ValueError(", ".join(diagnostics))
 
 
 @dataclass(slots=True)
@@ -91,6 +139,7 @@ class RuntimeConfig:
     hooks: Mapping[str, Any] = field(default_factory=dict)
     host_bindings: tuple[HostBinding, ...] = ()
     model_client: ModelClient | None = None
+    model_providers: dict[str, ModelProviderBinding] = field(default_factory=dict)
     model_routes: dict[str, ModelRouteBinding] = field(default_factory=dict)
     default_model_route: str | None = None
     transcript_store: TranscriptStore | None = None

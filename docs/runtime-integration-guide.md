@@ -513,6 +513,62 @@ Runtime 当前明确区分：
 - 不同能力走不同模型
 - 在统一 Runtime 里同时承载主模型和子模型
 
+一个更完整的 v1 例子现在可以直接把 context window ownership 放在 route / provider 层，而不是 agent 自己维护：
+
+```python
+from runtime import (
+    ModelContextWindowProfile,
+    ModelProviderBinding,
+    ModelRouteBinding,
+    RouteContextWindowPolicy,
+    RuntimeConfig,
+    TokenEstimationHint,
+)
+
+config = RuntimeConfig.for_project(project_root)
+
+config.model_providers["research-openai"] = ModelProviderBinding(
+    client=my_openai_client,
+    provider_name="openai-prod",
+    context_window_profiles=(
+        ModelContextWindowProfile(
+            provider_name="openai-prod",
+            model_selector="gpt-4.1-mini",
+            max_input_tokens=128000,
+            reserved_output_tokens=8192,
+            token_estimation_hint=TokenEstimationHint(chars_per_token=4.0),
+        ),
+    ),
+)
+
+config.model_routes["research"] = ModelRouteBinding(
+    provider_binding="research-openai",
+    default_model="gpt-4.1-mini",
+    context_window_policy=RouteContextWindowPolicy(
+        trigger_buffer_tokens=4096,
+        reserved_output_tokens_override=12000,
+        policy_tag="research-safe-headroom",
+    ),
+)
+
+config.default_model_route = "research"
+```
+
+这个模式下：
+
+- agent 继续只声明 `model_route`
+- provider / integration 负责注册 exact / pattern / provider-default 的 context window profile
+- route 只做 narrowing / override / fallback policy
+- runtime 在已知 context window 时做 proactive compaction，在未知 context window 时退化到 reactive-only
+
+另外，Runtime 现在随附一个可发现但可覆盖的 bundled OpenAI baseline：
+
+- provider binding: `openai-prod`
+- named route: `openai_default`
+- host override env: `OPENAI_API_KEY`、`OPENAI_BASE_URL`、`OPENAI_MODEL`
+
+如果宿主没有提供 `OPENAI_API_KEY`，内置 route 不会从 discovery 里消失，但首次调用会返回结构化的配置/凭证错误。
+
 ### 8.2 Memory Policy
 
 如果你要调记忆召回和抽取，不需要改内核。  

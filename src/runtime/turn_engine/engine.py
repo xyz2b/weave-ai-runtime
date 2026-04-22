@@ -17,6 +17,7 @@ from ..compaction import (
     serialize_compaction_result,
     serialize_compaction_summary,
 )
+from ..context_window import serialize_resolved_context_window_snapshot
 from ..contracts import (
     ContentBlock,
     ContentBlockType,
@@ -1310,6 +1311,15 @@ class TurnEngine:
                 if compaction_payload is not None:
                     request_metadata["compaction"] = compaction_payload
                 request_metadata.update(_prepared_context_event_metadata(prepared_context))
+                if prepared_context.context_window is not None:
+                    request_metadata["context_window"] = serialize_resolved_context_window_snapshot(
+                        prepared_context.context_window
+                    )
+                if prepared_context.context_window_policy_tag is not None:
+                    request_metadata["context_window_policy_tag"] = (
+                        prepared_context.context_window_policy_tag
+                    )
+                    request_metadata["budget_policy_tag"] = prepared_context.context_window_policy_tag
                 pending_request_override = merge_request_override_state(
                     _request_override_from_private_context(effective_private_context),
                     coerce_request_override_state(post_context_hook.request_override),
@@ -1372,6 +1382,8 @@ class TurnEngine:
                     provider_name=_string_value(runtime_metadata.get("provider_name")),
                     resolved_capabilities=resolved_capabilities,
                     invocation_mode=invocation_mode,
+                    context_window=prepared_context.context_window,
+                    context_window_policy_tag=prepared_context.context_window_policy_tag,
                     private_context=effective_private_context,
                     metadata=request_metadata,
                 )
@@ -1677,7 +1689,10 @@ class TurnEngine:
                     )
                     stop_outcome = _stop_phase_outcome_from_hook_result(stop_hook)
                     _set_turn_phase(state, TurnPhase.RECOVERY_DECISION)
-                    recovery_input = normalize_attempt_outcome(attempt)
+                    recovery_input = normalize_attempt_outcome(
+                        attempt,
+                        prepared_context=prepared_context,
+                    )
                     decision = self._recovery_policy.evaluate(
                         recovery_input,
                         stop_outcome=stop_outcome,
@@ -1793,7 +1808,10 @@ class TurnEngine:
                     _abort_reason_allows_tool_finalize(abort_signal.reason) and tool_calls
                 ):
                     _set_turn_phase(state, TurnPhase.RECOVERY_DECISION)
-                    recovery_input = normalize_attempt_outcome(attempt)
+                    recovery_input = normalize_attempt_outcome(
+                        attempt,
+                        prepared_context=prepared_context,
+                    )
                     decision = self._recovery_policy.evaluate(
                         recovery_input,
                         recovery_state=state.recovery_state,
@@ -1857,6 +1875,7 @@ class TurnEngine:
                     _set_turn_phase(state, TurnPhase.RECOVERY_DECISION)
                     recovery_input = normalize_attempt_outcome(
                         attempt,
+                        prepared_context=prepared_context,
                         tool_executor_unavailable=True,
                     )
                     decision = self._recovery_policy.evaluate(
@@ -1953,6 +1972,7 @@ class TurnEngine:
                     )
                 recovery_input = normalize_attempt_outcome(
                     attempt,
+                    prepared_context=prepared_context,
                     max_turns_exhausted=iteration_index >= max_iterations,
                 )
                 decision = self._recovery_policy.evaluate(
@@ -2514,6 +2534,8 @@ def _serialize_model_request_envelope(request: ModelRequest) -> dict[str, Any]:
         "requested_model_route": request.requested_model_route,
         "resolved_model_route": request.resolved_model_route,
         "provider_name": request.provider_name,
+        "context_window": serialize_resolved_context_window_snapshot(request.context_window),
+        "context_window_policy_tag": request.context_window_policy_tag,
         "invocation_mode": request.invocation_mode.value if request.invocation_mode is not None else None,
         "max_output_tokens": request.max_output_tokens,
         "query_source": request.query_source,
@@ -2749,6 +2771,8 @@ def _prepared_context_event_metadata(
             ],
             "requires_sidecar_restart": prepared_context.requires_sidecar_restart,
             "diagnostics": list(prepared_context.metadata.get("diagnostics", ()) or ()),
+            "context_window": serialize_resolved_context_window_snapshot(prepared_context.context_window),
+            "context_window_policy_tag": prepared_context.context_window_policy_tag,
             "budget_policy_tag": prepared_context.metadata.get("budget_policy_tag"),
             "spillover_artifact_refs": list(
                 prepared_context.metadata.get("spillover_artifact_refs", ()) or ()

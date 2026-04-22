@@ -40,6 +40,12 @@ from ..hooks import (
 )
 from ..invocation_catalog import SkillInvocationProvider
 from ..memory import MemoryManagerService
+from ..openai_client import (
+    OPENAI_PROVIDER_NAME,
+    OPENAI_ROUTE_NAME,
+    bundled_openai_provider_binding,
+    bundled_openai_route_binding,
+)
 from ..registries import AgentRegistry, DefinitionDiscovery, InvocationRegistry, SkillRegistry, ToolRegistry
 from ..runtime_services import DefaultTranscriptService, RuntimeServices
 from ..session_runtime import (
@@ -656,6 +662,7 @@ def _coerce_definition_source(value: Any) -> DefinitionSource:
 
 
 def build_runtime_kernel(config: RuntimeConfig) -> RuntimeKernel:
+    config = _with_bundled_openai_baseline(config)
     tool_registry = ToolRegistry()
     agent_registry = AgentRegistry()
     skill_registry = SkillRegistry()
@@ -746,6 +753,7 @@ def _assemble_runtime_stack(kernel: RuntimeKernel) -> RuntimeAssembly:
         skill_registry=kernel.skill_registry,
         runtime_services=services,
         run_store=kernel.config.child_run_store,
+        model_providers=kernel.config.model_providers,
         model_routes=kernel.config.model_routes,
         default_model_route=kernel.config.default_model_route,
     )
@@ -914,8 +922,34 @@ def _default_model_client(config: RuntimeConfig) -> Any:
     if config.default_model_route is not None:
         binding = config.model_routes.get(config.default_model_route)
         if binding is not None:
-            return binding.client
+            if binding.client is not None:
+                return binding.client
+            if binding.provider_binding is not None:
+                provider = config.model_providers.get(binding.provider_binding)
+                if provider is not None:
+                    return provider.client
     return None
+
+
+def _with_bundled_openai_baseline(config: RuntimeConfig) -> RuntimeConfig:
+    model_providers = dict(config.model_providers)
+    if OPENAI_PROVIDER_NAME not in model_providers:
+        model_providers[OPENAI_PROVIDER_NAME] = bundled_openai_provider_binding()
+
+    model_routes = dict(config.model_routes)
+    if OPENAI_ROUTE_NAME not in model_routes:
+        model_routes[OPENAI_ROUTE_NAME] = bundled_openai_route_binding()
+
+    default_model_route = config.default_model_route
+    if default_model_route is None and config.model_client is None and not config.model_routes:
+        default_model_route = OPENAI_ROUTE_NAME
+
+    return replace(
+        config,
+        model_providers=model_providers,
+        model_routes=model_routes,
+        default_model_route=default_model_route,
+    )
 
 
 def _helper_session_close_status(

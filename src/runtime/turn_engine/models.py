@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, AsyncIterator, Protocol, Sequence
 
+from ..context_window import ResolvedContextWindowSnapshot
 from ..contracts import (
     ContentBlockType,
     RuntimeMessage,
@@ -119,6 +120,8 @@ class ModelRequest:
     provider_name: str | None = None
     resolved_capabilities: NormalizedModelCapabilities | None = None
     invocation_mode: ModelInvocationMode | None = None
+    context_window: ResolvedContextWindowSnapshot | None = None
+    context_window_policy_tag: str | None = None
     private_context: RuntimePrivateContext = field(default_factory=RuntimePrivateContext)
     metadata: dict[str, Any] = field(default_factory=dict)
 

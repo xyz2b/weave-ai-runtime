@@ -2,9 +2,12 @@ import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from runtime.agent_execution import AgentRunStatus, SpawnMode
 from runtime.agent_execution_service import _agent_run_status_from_turn_result
 from runtime.agent_runtime import AgentInvocation, AgentRuntime
+from runtime.context_window import ModelContextWindowProfile, RouteContextWindowPolicy, TokenEstimationHint
 from runtime.contracts import MessageRole
 from runtime.definitions import (
     AgentDefinition,
@@ -203,6 +206,129 @@ def test_agent_default_model_does_not_overwrite_requested_model_metadata(tmp_pat
     assert record is not None
     assert record.requested_model is None
     assert record.request_metadata["requested_model"] is None
+
+
+def test_route_owned_context_window_snapshot_is_threaded_with_precedence_and_narrowing(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> tuple[FakeModelClient, object]:
+        model_client = FakeModelClient(
+            [
+                [
+                    ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-context-window"}),
+                    ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "context aware answer"}),
+                    ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+                ]
+            ]
+        )
+        agent_registry = AgentRegistry()
+        agent_registry.register(
+            AgentDefinition(
+                name="verification",
+                description="verify",
+                prompt="verify",
+            )
+        )
+        runtime = AgentRuntime(
+            turn_engine=TurnEngine(
+                model_client=model_client,
+                tool_registry=ToolRegistry(),
+                agent_registry=agent_registry,
+                skill_registry=SkillRegistry(),
+                task_manager=TaskManager(),
+            ),
+            agent_registry=agent_registry,
+            tool_registry=ToolRegistry(),
+            skill_registry=SkillRegistry(),
+            task_manager=TaskManager(),
+            model_routes={
+                "reviewer-route": ModelRouteBinding(
+                    client=model_client,
+                    default_model="gpt-4.1-mini",
+                    provider_name="provider-reviewer",
+                    capabilities=NormalizedModelCapabilities(),
+                    context_window_profiles=(
+                        ModelContextWindowProfile(
+                            provider_name="provider-reviewer",
+                            model_selector=None,
+                            max_input_tokens=50,
+                            reserved_output_tokens=8,
+                            token_estimation_hint=TokenEstimationHint(chars_per_token=1.0),
+                            source="integration",
+                            confidence="medium",
+                        ),
+                        ModelContextWindowProfile(
+                            provider_name="provider-reviewer",
+                            model_selector="gpt-4.1-*",
+                            max_input_tokens=80,
+                            reserved_output_tokens=10,
+                            token_estimation_hint=TokenEstimationHint(chars_per_token=1.0),
+                            source="integration",
+                            confidence="medium",
+                        ),
+                        ModelContextWindowProfile(
+                            provider_name="provider-reviewer",
+                            model_selector="gpt-4.1-mini",
+                            max_input_tokens=120,
+                            reserved_output_tokens=12,
+                            token_estimation_hint=TokenEstimationHint(chars_per_token=1.0),
+                            source="integration",
+                            confidence="high",
+                        ),
+                    ),
+                    context_window_policy=RouteContextWindowPolicy(
+                        narrow_to_max_input_tokens=90,
+                        reserved_output_tokens_override=16,
+                        trigger_buffer_tokens=8,
+                        policy_tag="reviewer-policy",
+                    ),
+                )
+            },
+        )
+        result = await runtime.invoke(
+            AgentInvocation(
+                agent_name="verification",
+                prompt="abcdefghij",
+                session_id="session-context-window",
+                cwd=tmp_path,
+                requested_model_route="reviewer-route",
+            )
+        )
+        return model_client, result
+
+    model_client, result = asyncio.run(scenario())
+
+    request = model_client.requests[0]
+    assert request.context_window is not None
+    assert request.context_window.max_input_tokens == 90
+    assert request.context_window.reserved_output_tokens == 16
+    assert request.context_window.source == "route_override"
+    assert request.context_window.fallback_mode == "proactive_and_reactive"
+    assert request.metadata["context_window"]["max_input_tokens"] == 90
+    assert request.metadata["context_window_policy_tag"] == "reviewer-policy"
+    assert request.metadata["control_plane"]["context_window_policy_tag"] == "reviewer-policy"
+    assert result.execution_spec is not None
+    assert result.execution_spec.metadata["provider_context_window_profiles"][2]["model_selector"] == "gpt-4.1-mini"
+
+
+def test_model_route_binding_rejects_duplicate_exact_context_window_profiles() -> None:
+    with pytest.raises(ValueError, match="duplicate_exact_profile"):
+        ModelRouteBinding(
+            client=FakeModelClient([]),
+            provider_name="provider-reviewer",
+            context_window_profiles=(
+                ModelContextWindowProfile(
+                    provider_name="provider-reviewer",
+                    model_selector="gpt-4.1-mini",
+                    max_input_tokens=120,
+                ),
+                ModelContextWindowProfile(
+                    provider_name="provider-reviewer",
+                    model_selector="gpt-4.1-mini",
+                    max_input_tokens=240,
+                ),
+            ),
+        )
 
 
 def test_background_agent_writes_running_and_terminal_run_records(tmp_path: Path) -> None:

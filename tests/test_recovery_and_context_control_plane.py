@@ -2,6 +2,11 @@ import asyncio
 import time
 from pathlib import Path
 
+from runtime.context_window import (
+    MinimalRecoveryClassificationHints,
+    RecoveryClassificationRule,
+    ResolvedContextWindowSnapshot,
+)
 from runtime.contracts import (
     MessageAttachment,
     MessageRole,
@@ -36,6 +41,8 @@ from runtime.turn_engine.control_plane import (
     BudgetAction,
     BudgetDecision,
     BudgetPlan,
+    ContextWindowHookFailureMode,
+    ContextWindowRequest,
     ContextBudgetHookFailureMode,
     ContextBudgetRequest,
     DefaultContextControlPlane,
@@ -49,6 +56,7 @@ from runtime.turn_engine.control_plane import (
     apply_projection_pass,
     check_projection_invariants,
     collect_budget_candidates,
+    invoke_context_window_hook,
     invoke_budget_hook,
     normalize_attempt_outcome,
 )
@@ -68,6 +76,36 @@ class SequencedModelClient:
         batch = self._event_batches.pop(0)
         for event in batch:
             yield event
+
+
+class CaptureCompactionService:
+    def __init__(self) -> None:
+        self.private_contexts = []
+
+    async def prepare_turn(
+        self,
+        *,
+        session_id: str,
+        turn_id: str,
+        agent,
+        cwd: str,
+        messages,
+        prompt_context=None,
+        private_context=None,
+        runtime_context=None,
+    ):
+        _ = session_id, turn_id, agent, cwd, messages, prompt_context, runtime_context
+        self.private_contexts.append(private_context)
+        return await NoopCompactionService().prepare_turn(
+            session_id=session_id,
+            turn_id=turn_id,
+            agent=agent,
+            cwd=cwd,
+            messages=messages,
+            prompt_context=prompt_context,
+            private_context=private_context,
+            runtime_context=runtime_context,
+        )
 
 
 def test_normalize_attempt_outcome_prefers_provider_neutral_failure_metadata() -> None:
@@ -622,6 +660,248 @@ def test_context_budget_hook_receives_structured_request() -> None:
     assert request.provider_hints.model_name == "model-a"
     assert request.provider_hints.requested_model_route == "route-a"
     assert request.private_context.extensions["marker"] == "private"
+
+
+def test_context_window_hook_emits_canonical_diagnostics() -> None:
+    class RaisingHook:
+        def plan(self, request):  # pragma: no cover - exercised via invoke_context_window_hook
+            _ = request
+            raise RuntimeError("boom")
+
+    request = ContextWindowRequest(turn_id="turn", attempt_index=1)
+    plan, diagnostics = asyncio.run(
+        invoke_context_window_hook(
+            RaisingHook(),
+            request,
+            failure_mode=ContextWindowHookFailureMode.PASS_THROUGH,
+            timeout_seconds=None,
+        )
+    )
+
+    assert plan is None
+    assert diagnostics == ["context_window_hook_error:RuntimeError"]
+
+
+def test_context_window_prepare_derives_proactive_snapshot_and_policy() -> None:
+    compaction = CaptureCompactionService()
+    plane = DefaultContextControlPlane(compaction_service=compaction)
+    agent = AgentDefinition(
+        name="main-router",
+        description="router",
+        prompt="route",
+        model="model-a",
+    )
+    messages = (
+        RuntimeMessage(message_id="u1", role=MessageRole.USER, content="012345678901234567890123456789"),
+    )
+
+    prepared = asyncio.run(
+        plane.prepare(
+            session_id="session",
+            turn_id="turn",
+            attempt_index=1,
+            agent=agent,
+            cwd=".",
+            messages=messages,
+            prompt_context=PromptContextEnvelope(),
+            private_context=RuntimePrivateContext(provider_name="provider-a"),
+            runtime_context={
+                "provider_name": "provider-a",
+                "resolved_model_route": "route-a",
+                "provider_context_window_profiles": [
+                    {
+                        "provider_name": "provider-a",
+                        "model_selector": "model-a",
+                        "max_input_tokens": 40,
+                        "reserved_output_tokens": 10,
+                        "token_estimation_hint": {"chars_per_token": 1.0},
+                    }
+                ],
+                "route_context_window_policy": {
+                    "trigger_buffer_tokens": 5,
+                    "policy_tag": "route-a-policy",
+                },
+            },
+        )
+    )
+
+    assert prepared.context_window is not None
+    assert prepared.context_window.max_input_tokens == 40
+    assert prepared.context_window.remaining_input_tokens == 0
+    assert prepared.context_window.fallback_mode == "proactive_and_reactive"
+    assert prepared.metadata["context_window_policy_tag"] == "route-a-policy"
+    applied_private_context = compaction.private_contexts[0]
+    assert applied_private_context.extensions["compaction_policy"]["max_characters"] == 25
+    assert applied_private_context.extensions["compaction_policy"]["force"] is True
+
+
+def test_unknown_context_window_stays_reactive_only() -> None:
+    compaction = CaptureCompactionService()
+    plane = DefaultContextControlPlane(compaction_service=compaction)
+    agent = AgentDefinition(
+        name="main-router",
+        description="router",
+        prompt="route",
+        model="model-a",
+    )
+
+    prepared = asyncio.run(
+        plane.prepare(
+            session_id="session",
+            turn_id="turn",
+            attempt_index=1,
+            agent=agent,
+            cwd=".",
+            messages=(RuntimeMessage(message_id="u1", role=MessageRole.USER, content="hello"),),
+            prompt_context=PromptContextEnvelope(),
+            private_context=RuntimePrivateContext(provider_name="provider-a"),
+            runtime_context={
+                "provider_name": "provider-a",
+                "resolved_model_route": "route-a",
+            },
+        )
+    )
+
+    assert prepared.context_window is not None
+    assert prepared.context_window.known is False
+    assert prepared.context_window.fallback_mode == "reactive_only"
+    assert "compaction_policy" not in compaction.private_contexts[0].extensions
+
+
+def test_normalize_attempt_outcome_uses_context_window_recovery_hints() -> None:
+    prepared = PreparedContext(
+        active_messages=(),
+        prompt_context=PromptContextEnvelope(),
+        context_window=ResolvedContextWindowSnapshot(
+            provider_name="provider-a",
+            model_name="model-a",
+            max_input_tokens=128000,
+            reserved_output_tokens=4096,
+            fallback_mode="proactive_and_reactive",
+            recovery_classification_hints=MinimalRecoveryClassificationHints(
+                context_limit=RecoveryClassificationRule(
+                    provider_error_codes=("context_length_exceeded",),
+                    message_substrings=("maximum context length",),
+                    retryable=True,
+                )
+            ),
+        ),
+    )
+
+    normalized = normalize_attempt_outcome(
+        AttemptFinished(
+            iteration=1,
+            attempt_stop_reason="provider_error",
+            error="maximum context length reached",
+            metadata={"provider_error_code": "context_length_exceeded"},
+        ),
+        prepared_context=prepared,
+    )
+
+    assert normalized.failure_class == FailureClassification.CONTEXT_LIMIT
+    assert normalized.retryable is True
+
+
+def test_canonical_context_window_config_key_wins_over_legacy_alias() -> None:
+    class CapturingHook:
+        def __init__(self, label: str) -> None:
+            self.label = label
+            self.calls = 0
+
+        def plan(self, request):
+            _ = request
+            self.calls += 1
+            return None
+
+    canonical = CapturingHook("canonical")
+    legacy = CapturingHook("legacy")
+    plane = DefaultContextControlPlane(
+        compaction_service=NoopCompactionService(),
+        default_config={
+            "budget_hook": legacy,
+            "context_window_hook": canonical,
+        },
+    )
+    agent = AgentDefinition(name="main-router", description="router", prompt="route")
+    messages = (
+        RuntimeMessage(
+            message_id="assistant-msg",
+            role=MessageRole.ASSISTANT,
+            content=(ToolUseBlock(tool_use_id="tool-1", name="echo", input={"value": "x"}),),
+        ),
+        RuntimeMessage(
+            message_id="tool-msg",
+            role=MessageRole.USER,
+            content=(ToolResultBlock(tool_use_id="tool-1", content={"value": "payload"}),),
+            metadata={"tool_results": [{"tool_use_id": "tool-1", "tool_name": "echo"}]},
+        ),
+    )
+
+    prepared = asyncio.run(
+        plane.prepare(
+            session_id="session",
+            turn_id="turn",
+            attempt_index=1,
+            agent=agent,
+            cwd=".",
+            messages=messages,
+            prompt_context=PromptContextEnvelope(),
+            private_context=RuntimePrivateContext(),
+            runtime_context={},
+        )
+    )
+
+    assert canonical.calls == 1
+    assert legacy.calls == 0
+    assert "deprecated_config_key:budget_hook" not in prepared.metadata["diagnostics"]
+
+
+def test_legacy_context_window_config_key_emits_deprecation_diagnostic() -> None:
+    class CapturingHook:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def plan(self, request):
+            _ = request
+            self.calls += 1
+            return None
+
+    hook = CapturingHook()
+    plane = DefaultContextControlPlane(
+        compaction_service=NoopCompactionService(),
+        default_config={"budget_hook": hook},
+    )
+    agent = AgentDefinition(name="main-router", description="router", prompt="route")
+    messages = (
+        RuntimeMessage(
+            message_id="assistant-msg",
+            role=MessageRole.ASSISTANT,
+            content=(ToolUseBlock(tool_use_id="tool-1", name="echo", input={"value": "x"}),),
+        ),
+        RuntimeMessage(
+            message_id="tool-msg",
+            role=MessageRole.USER,
+            content=(ToolResultBlock(tool_use_id="tool-1", content={"value": "payload"}),),
+            metadata={"tool_results": [{"tool_use_id": "tool-1", "tool_name": "echo"}]},
+        ),
+    )
+
+    prepared = asyncio.run(
+        plane.prepare(
+            session_id="session",
+            turn_id="turn",
+            attempt_index=1,
+            agent=agent,
+            cwd=".",
+            messages=messages,
+            prompt_context=PromptContextEnvelope(),
+            private_context=RuntimePrivateContext(),
+            runtime_context={},
+        )
+    )
+
+    assert hook.calls == 1
+    assert "deprecated_config_key:budget_hook" in prepared.metadata["diagnostics"]
 
 
 def test_context_control_plane_reuses_and_bumps_generation() -> None:

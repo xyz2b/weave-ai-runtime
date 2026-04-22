@@ -3,6 +3,7 @@ from pathlib import Path
 
 from runtime.contracts import MessageRole
 from runtime.hooks import RuntimeHookPhase
+from runtime.openai_client import OPENAI_PROVIDER_NAME, OPENAI_ROUTE_NAME
 from runtime.definitions import (
     AgentDefinition,
     DefinitionOrigin,
@@ -356,3 +357,23 @@ def test_runtime_stream_prompt_closes_helper_owned_session_on_error(tmp_path: Pa
 
     assert any(event.event_type.value == "terminal" for event in events)
     assert closed == ["failed"]
+
+
+def test_runtime_bundles_openai_route_and_surfaces_missing_credentials_at_invocation(
+    tmp_path: Path,
+) -> None:
+    runtime = assemble_runtime(RuntimeConfig(working_directory=tmp_path))
+
+    assert OPENAI_PROVIDER_NAME in runtime.kernel.config.model_providers
+    assert OPENAI_ROUTE_NAME in runtime.kernel.config.model_routes
+    assert runtime.kernel.config.default_model_route == OPENAI_ROUTE_NAME
+
+    async def scenario():
+        return [event async for event in runtime.stream_prompt("Hello runtime", session_id="openai-default")]
+
+    events = asyncio.run(scenario())
+    terminal = next(event for event in events if event.event_type.value == "terminal")
+
+    assert terminal.terminal is not None
+    assert terminal.terminal.metadata["failure_class"] == "auth_error"
+    assert "OPENAI_API_KEY" in terminal.terminal.metadata["error"]

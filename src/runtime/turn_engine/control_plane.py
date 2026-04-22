@@ -17,6 +17,16 @@ from ..compaction import (
     serialize_compaction_result,
     serialize_compaction_summary,
 )
+from ..context_window import (
+    MinimalRecoveryClassificationHints,
+    ResolvedContextWindowSnapshot,
+    coerce_model_context_window_profiles,
+    coerce_resolved_context_window_snapshot,
+    coerce_route_context_window_policy,
+    estimate_tokens_from_fragments,
+    resolve_context_window_snapshot,
+    serialize_resolved_context_window_snapshot,
+)
 from ..contracts import (
     MessageRole,
     PromptContextEnvelope,
@@ -59,7 +69,8 @@ class StopDisposition(StrEnum):
 
 
 class ContextPreparationEffectKind(StrEnum):
-    BUDGET_DECISION = "budget_decision"
+    CONTEXT_WINDOW_DECISION = "context_window_decision"
+    BUDGET_DECISION = "context_window_decision"
     PROJECTION = "projection"
     COMPACTION = "compaction"
     SPILLOVER = "spillover"
@@ -73,9 +84,12 @@ class BudgetAction(StrEnum):
     EXTERNALIZE = "externalize"
 
 
-class ContextBudgetHookFailureMode(StrEnum):
+class ContextWindowHookFailureMode(StrEnum):
     PASS_THROUGH = "pass_through"
     FAIL_PREPARE = "fail_prepare"
+
+
+ContextBudgetHookFailureMode = ContextWindowHookFailureMode
 
 
 @dataclass(frozen=True, slots=True)
@@ -262,6 +276,8 @@ class PreparedContext:
     effects: tuple[ContextPreparationEffect, ...] = ()
     requires_sidecar_restart: bool = False
     transcript_messages: tuple[RuntimeMessage, ...] | None = None
+    context_window: ResolvedContextWindowSnapshot | None = None
+    context_window_policy_tag: str | None = None
     pressure: dict[str, Any] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -282,7 +298,7 @@ class PreparedContext:
 
 
 @dataclass(frozen=True, slots=True)
-class BudgetCandidate:
+class ContextWindowCandidate:
     candidate_id: str
     tool_use_id: str
     tool_name: str | None = None
@@ -300,7 +316,7 @@ class BudgetCandidate:
 
 
 @dataclass(frozen=True, slots=True)
-class ProviderBudgetHints:
+class ProviderContextWindowHints:
     provider_name: str | None = None
     model_name: str | None = None
     requested_model_route: str | None = None
@@ -308,6 +324,10 @@ class ProviderBudgetHints:
     max_input_tokens: int | None = None
     reserved_output_tokens: int | None = None
     remaining_input_tokens: int | None = None
+    fallback_mode: str | None = None
+    source: str | None = None
+    confidence: str | None = None
+    context_window_policy_tag: str | None = None
     extensions: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -315,7 +335,7 @@ class ProviderBudgetHints:
 
 
 @dataclass(frozen=True, slots=True)
-class BudgetDecision:
+class ContextWindowDecision:
     candidate_id: str
     action: BudgetAction
     summary_text: str | None = None
@@ -324,8 +344,8 @@ class BudgetDecision:
 
 
 @dataclass(frozen=True, slots=True)
-class BudgetPlan:
-    decisions: tuple[BudgetDecision, ...] = ()
+class ContextWindowPlan:
+    decisions: tuple[ContextWindowDecision, ...] = ()
     policy_tag: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
     diagnostics: tuple[str, ...] = ()
@@ -337,62 +357,100 @@ class BudgetPlan:
 
 
 @dataclass(frozen=True, slots=True)
-class ContextBudgetRequest:
+class ContextWindowRequest:
     turn_id: str
     attempt_index: int
-    candidates: tuple[BudgetCandidate, ...] = ()
+    candidates: tuple[ContextWindowCandidate, ...] = ()
     transcript_messages: tuple[RuntimeMessage, ...] = ()
     prompt_context: PromptContextEnvelope = field(default_factory=PromptContextEnvelope)
     private_context: RuntimePrivateContextView = field(default_factory=RuntimePrivateContextView)
-    provider_hints: ProviderBudgetHints | None = None
-    prior_plan: BudgetPlan | None = None
+    provider_hints: ProviderContextWindowHints | None = None
+    prior_plan: ContextWindowPlan | None = None
 
 
-class ContextBudgetHook(Protocol):
-    def plan(self, request: ContextBudgetRequest) -> BudgetPlan | None: ...
+class ContextWindowHook(Protocol):
+    def plan(self, request: ContextWindowRequest) -> ContextWindowPlan | None: ...
+
+
+BudgetCandidate = ContextWindowCandidate
+ProviderBudgetHints = ProviderContextWindowHints
+BudgetDecision = ContextWindowDecision
+BudgetPlan = ContextWindowPlan
+ContextBudgetRequest = ContextWindowRequest
+ContextBudgetHook = ContextWindowHook
 
 
 @dataclass(frozen=True, slots=True)
 class ContextControlPlaneConfig:
     projection_max_messages: int | None = None
-    budget_hook: ContextBudgetHook | Any = None
-    budget_hook_failure_mode: ContextBudgetHookFailureMode = (
-        ContextBudgetHookFailureMode.PASS_THROUGH
+    context_window_hook: ContextWindowHook | Any = None
+    context_window_hook_failure_mode: ContextWindowHookFailureMode = (
+        ContextWindowHookFailureMode.PASS_THROUGH
     )
-    budget_hook_timeout_seconds: float | None = None
+    context_window_hook_timeout_seconds: float | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "metadata", dict(self.metadata))
 
+    @property
+    def budget_hook(self) -> ContextWindowHook | Any:
+        return self.context_window_hook
+
+    @property
+    def budget_hook_failure_mode(self) -> ContextWindowHookFailureMode:
+        return self.context_window_hook_failure_mode
+
+    @property
+    def budget_hook_timeout_seconds(self) -> float | None:
+        return self.context_window_hook_timeout_seconds
+
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any] | None) -> "ContextControlPlaneConfig":
         if not isinstance(value, Mapping):
             return cls()
-        failure_mode = value.get("budget_hook_failure_mode")
-        resolved_failure_mode = ContextBudgetHookFailureMode.PASS_THROUGH
+        deprecation_diagnostics: list[str] = []
+        for legacy_key, canonical_key in (
+            ("budget_hook", "context_window_hook"),
+            ("budget_hook_failure_mode", "context_window_hook_failure_mode"),
+            ("budget_hook_timeout_seconds", "context_window_hook_timeout_seconds"),
+        ):
+            if legacy_key in value and canonical_key not in value:
+                deprecation_diagnostics.append(f"deprecated_config_key:{legacy_key}")
+        failure_mode = value.get("context_window_hook_failure_mode", value.get("budget_hook_failure_mode"))
+        resolved_failure_mode = ContextWindowHookFailureMode.PASS_THROUGH
         if failure_mode is not None:
             try:
-                resolved_failure_mode = ContextBudgetHookFailureMode(str(failure_mode))
+                resolved_failure_mode = ContextWindowHookFailureMode(str(failure_mode))
             except ValueError:
-                resolved_failure_mode = ContextBudgetHookFailureMode.PASS_THROUGH
+                resolved_failure_mode = ContextWindowHookFailureMode.PASS_THROUGH
         return cls(
             projection_max_messages=_coerce_optional_int(value.get("projection_max_messages")),
-            budget_hook=value.get("budget_hook"),
-            budget_hook_failure_mode=resolved_failure_mode,
-            budget_hook_timeout_seconds=_coerce_optional_float(
-                value.get("budget_hook_timeout_seconds")
+            context_window_hook=value.get("context_window_hook", value.get("budget_hook")),
+            context_window_hook_failure_mode=resolved_failure_mode,
+            context_window_hook_timeout_seconds=_coerce_optional_float(
+                value.get("context_window_hook_timeout_seconds", value.get("budget_hook_timeout_seconds"))
             ),
             metadata={
-                str(key): item
-                for key, item in value.items()
-                if str(key)
-                not in {
-                    "projection_max_messages",
-                    "budget_hook",
-                    "budget_hook_failure_mode",
-                    "budget_hook_timeout_seconds",
-                }
+                **(
+                    {"deprecation_diagnostics": tuple(deprecation_diagnostics)}
+                    if deprecation_diagnostics
+                    else {}
+                ),
+                **{
+                    str(key): item
+                    for key, item in value.items()
+                    if str(key)
+                    not in {
+                        "projection_max_messages",
+                        "context_window_hook",
+                        "context_window_hook_failure_mode",
+                        "context_window_hook_timeout_seconds",
+                        "budget_hook",
+                        "budget_hook_failure_mode",
+                        "budget_hook_timeout_seconds",
+                    }
+                },
             },
         )
 
@@ -505,7 +563,29 @@ class DefaultContextControlPlane:
         active_messages = tuple(messages)
         transcript_messages: tuple[RuntimeMessage, ...] | None = None
         effects: list[ContextPreparationEffect] = []
-        diagnostics: list[str] = []
+        diagnostics: list[str] = list(config.metadata.get("deprecation_diagnostics", ()) or ())
+        effective_runtime_context = dict(runtime_context or {})
+        context_window = _resolve_context_window_for_prepare(
+            agent=agent,
+            messages=active_messages,
+            prompt_context=prompt_context,
+            private_context=private_context,
+            runtime_context=effective_runtime_context,
+        )
+        if context_window is not None:
+            effective_runtime_context["context_window"] = serialize_resolved_context_window_snapshot(
+                context_window
+            )
+            if context_window.policy_tag is not None:
+                effective_runtime_context["context_window_policy_tag"] = context_window.policy_tag
+        effective_private_context = _with_context_window_private_context(
+            private_context,
+            context_window,
+        )
+        effective_private_context = _apply_context_window_compaction_policy(
+            effective_private_context,
+            context_window,
+        )
 
         active_messages, resolved_effects, resolved_diagnostics = await resolve_spillover_references(
             active_messages,
@@ -517,31 +597,50 @@ class DefaultContextControlPlane:
             effects.extend(resolved_effects)
             diagnostics.extend(resolved_diagnostics)
 
-        budget_candidates = collect_budget_candidates(active_messages)
-        plan: BudgetPlan | None = None
-        if config.budget_hook is not None and budget_candidates:
-            plan, budget_diagnostics = await invoke_budget_hook(
-                config.budget_hook,
-                ContextBudgetRequest(
+        budget_candidates = collect_context_window_candidates(active_messages)
+        plan: ContextWindowPlan | None = None
+        if config.context_window_hook is not None and budget_candidates:
+            plan, budget_diagnostics = await invoke_context_window_hook(
+                config.context_window_hook,
+                ContextWindowRequest(
                     turn_id=turn_id,
                     attempt_index=attempt_index,
                     candidates=budget_candidates,
                     transcript_messages=active_messages,
                     prompt_context=prompt_context,
-                    private_context=private_context.readonly_view(),
-                    provider_hints=ProviderBudgetHints(
-                        provider_name=private_context.provider_name,
-                        model_name=_coerce_optional_string(runtime_context, "requested_model"),
-                        requested_model_route=private_context.requested_model_route,
-                        invocation_mode=private_context.invocation_mode,
+                    private_context=effective_private_context.readonly_view(),
+                    provider_hints=ProviderContextWindowHints(
+                        provider_name=effective_private_context.provider_name,
+                        model_name=(
+                            context_window.model_name
+                            if context_window is not None
+                            else _coerce_optional_string(runtime_context, "requested_model") or agent.model
+                        ),
+                        requested_model_route=effective_private_context.requested_model_route,
+                        invocation_mode=effective_private_context.invocation_mode,
+                        max_input_tokens=(
+                            context_window.max_input_tokens if context_window is not None else None
+                        ),
+                        reserved_output_tokens=(
+                            context_window.reserved_output_tokens if context_window is not None else None
+                        ),
+                        remaining_input_tokens=(
+                            context_window.remaining_input_tokens if context_window is not None else None
+                        ),
+                        fallback_mode=context_window.fallback_mode if context_window is not None else None,
+                        source=context_window.source if context_window is not None else None,
+                        confidence=context_window.confidence if context_window is not None else None,
+                        context_window_policy_tag=(
+                            context_window.policy_tag if context_window is not None else None
+                        ),
                     ),
                 ),
-                failure_mode=config.budget_hook_failure_mode,
-                timeout_seconds=config.budget_hook_timeout_seconds,
+                failure_mode=config.context_window_hook_failure_mode,
+                timeout_seconds=config.context_window_hook_timeout_seconds,
             )
             diagnostics.extend(budget_diagnostics)
             if plan is not None:
-                active_messages, budget_effects, apply_diagnostics = await apply_budget_plan(
+                active_messages, budget_effects, apply_diagnostics = await apply_context_window_plan(
                     active_messages,
                     plan,
                     session_id=session_id,
@@ -574,8 +673,8 @@ class DefaultContextControlPlane:
             cwd=cwd,
             messages=active_messages,
             prompt_context=prompt_context,
-            private_context=private_context,
-            runtime_context=dict(runtime_context or {}),
+            private_context=effective_private_context,
+            runtime_context=effective_runtime_context,
         )
         if isinstance(compaction_result, CompactionResult) and compaction_result.applied:
             active_messages = tuple(compaction_result.messages)
@@ -615,10 +714,14 @@ class DefaultContextControlPlane:
         pressure = evaluate_context_pressure(
             active_messages,
             CompactionPolicy.from_private_context(
-                private_context,
-                legacy_runtime_context=dict(runtime_context or {}),
+                effective_private_context,
+                legacy_runtime_context=effective_runtime_context,
                 default=CompactionPolicy(enabled=True),
             ),
+        )
+        context_window_policy_tag = (
+            (context_window.policy_tag if context_window is not None else None)
+            or (plan.policy_tag if plan is not None else None)
         )
         return PreparedContext(
             active_messages=active_messages,
@@ -627,6 +730,8 @@ class DefaultContextControlPlane:
             effects=tuple(effects),
             requires_sidecar_restart=requires_sidecar_restart,
             transcript_messages=transcript_messages,
+            context_window=context_window,
+            context_window_policy_tag=context_window_policy_tag,
             pressure={
                 "message_count": pressure.message_count,
                 "character_count": pressure.character_count,
@@ -636,7 +741,9 @@ class DefaultContextControlPlane:
                 "effect_kinds": [effect.kind.value for effect in effects],
                 "effect_summaries": [effect.summary for effect in effects if effect.summary],
                 "diagnostics": diagnostics,
-                "budget_policy_tag": plan.policy_tag if plan is not None else None,
+                "context_window": serialize_resolved_context_window_snapshot(context_window),
+                "context_window_policy_tag": context_window_policy_tag,
+                "budget_policy_tag": context_window_policy_tag,
                 "spillover_artifact_refs": [
                     str(effect.metadata.get("artifact_ref"))
                     for effect in effects
@@ -644,7 +751,8 @@ class DefaultContextControlPlane:
                 ],
                 "resolved_config": {
                     "projection_max_messages": config.projection_max_messages,
-                    "budget_hook_failure_mode": config.budget_hook_failure_mode.value,
+                    "context_window_hook_failure_mode": config.context_window_hook_failure_mode.value,
+                    "budget_hook_failure_mode": config.context_window_hook_failure_mode.value,
                 },
             },
         )
@@ -798,6 +906,7 @@ class DefaultRecoveryPolicy:
 def normalize_attempt_outcome(
     attempt: Any,
     *,
+    prepared_context: PreparedContext | None = None,
     max_turns_exhausted: bool = False,
     tool_executor_unavailable: bool = False,
 ) -> NormalizedRecoveryInput:
@@ -806,16 +915,31 @@ def normalize_attempt_outcome(
     stop_reason = _coerce_optional_string(metadata, "stop_reason") or getattr(
         attempt, "attempt_stop_reason", None
     )
+    hinted_classification = _classify_recovery_with_context_window_hints(
+        metadata=metadata,
+        stop_reason=stop_reason,
+        error=getattr(attempt, "error", None),
+        prepared_context=prepared_context,
+    )
     if failure_class is None:
-        failure_class = _failure_class_from_terminal_reason(stop_reason, error=getattr(attempt, "error", None))
+        failure_class = (
+            hinted_classification[0]
+            if hinted_classification is not None
+            else _failure_class_from_terminal_reason(stop_reason, error=getattr(attempt, "error", None))
+        )
     retryable = _coerce_optional_bool(metadata.get("retryable"))
     if retryable is None:
-        retryable = failure_class in {
-            FailureClassification.CONTEXT_LIMIT,
-            FailureClassification.OUTPUT_LIMIT,
-            FailureClassification.MEDIA_LIMIT,
-            FailureClassification.PROVIDER_OVERLOAD,
-        }
+        retryable = (
+            hinted_classification[1]
+            if hinted_classification is not None and hinted_classification[1] is not None
+            else failure_class
+            in {
+                FailureClassification.CONTEXT_LIMIT,
+                FailureClassification.OUTPUT_LIMIT,
+                FailureClassification.MEDIA_LIMIT,
+                FailureClassification.PROVIDER_OVERLOAD,
+            }
+        )
     return NormalizedRecoveryInput(
         terminal_reason=stop_reason,
         failure_class=failure_class,
@@ -829,6 +953,204 @@ def normalize_attempt_outcome(
         tool_executor_unavailable=tool_executor_unavailable,
         metadata=metadata,
     )
+
+
+def _resolve_context_window_for_prepare(
+    *,
+    agent: AgentDefinition,
+    messages: Sequence[RuntimeMessage],
+    prompt_context: PromptContextEnvelope,
+    private_context: RuntimePrivateContext,
+    runtime_context: Mapping[str, Any] | None,
+) -> ResolvedContextWindowSnapshot | None:
+    existing_snapshot = coerce_resolved_context_window_snapshot(
+        runtime_context.get("context_window") if isinstance(runtime_context, Mapping) else None
+    )
+    profiles = coerce_model_context_window_profiles(
+        runtime_context.get("provider_context_window_profiles") if isinstance(runtime_context, Mapping) else None
+    )
+    route_policy = coerce_route_context_window_policy(
+        runtime_context.get("route_context_window_policy") if isinstance(runtime_context, Mapping) else None
+    )
+    if not profiles and existing_snapshot is not None:
+        return existing_snapshot
+
+    provider_name = (
+        _coerce_optional_string(runtime_context, "provider_name") if isinstance(runtime_context, Mapping) else None
+    ) or private_context.provider_name
+    model_name = (
+        _coerce_optional_string(runtime_context, "requested_model") if isinstance(runtime_context, Mapping) else None
+    ) or agent.model
+    route_name = (
+        _coerce_optional_string(runtime_context, "resolved_model_route")
+        if isinstance(runtime_context, Mapping)
+        else None
+    ) or private_context.resolved_model_route or private_context.requested_model_route
+
+    provisional = resolve_context_window_snapshot(
+        provider_name=provider_name,
+        model_name=model_name,
+        route_name=route_name,
+        profiles=profiles,
+        route_policy=route_policy,
+        estimated_input_tokens=None,
+    )
+    estimated_input_tokens = _estimate_context_window_input_tokens(
+        messages,
+        prompt_context=prompt_context,
+        snapshot=provisional,
+    )
+    return resolve_context_window_snapshot(
+        provider_name=provider_name,
+        model_name=model_name,
+        route_name=route_name,
+        profiles=profiles,
+        route_policy=route_policy,
+        estimated_input_tokens=estimated_input_tokens,
+    )
+
+
+def _estimate_context_window_input_tokens(
+    messages: Sequence[RuntimeMessage],
+    *,
+    prompt_context: PromptContextEnvelope,
+    snapshot: ResolvedContextWindowSnapshot | None,
+) -> int:
+    fragments = [message.text for message in messages]
+    fragments.extend(prompt_context.memory_fragments)
+    fragments.extend(prompt_context.hook_fragments)
+    fragments.extend(prompt_context.compaction_fragments)
+    if prompt_context.compaction_summary:
+        fragments.append(json.dumps(prompt_context.compaction_summary, ensure_ascii=True, sort_keys=True))
+    if prompt_context.compaction_boundary:
+        fragments.append(json.dumps(prompt_context.compaction_boundary, ensure_ascii=True, sort_keys=True))
+    if prompt_context.compaction_continuation:
+        fragments.append(
+            json.dumps(prompt_context.compaction_continuation, ensure_ascii=True, sort_keys=True)
+        )
+    return estimate_tokens_from_fragments(
+        fragments,
+        hint=snapshot.token_estimation_hint if snapshot is not None else None,
+    )
+
+
+def _with_context_window_private_context(
+    private_context: RuntimePrivateContext,
+    context_window: ResolvedContextWindowSnapshot | None,
+) -> RuntimePrivateContext:
+    if context_window is None:
+        return private_context
+    extensions = dict(private_context.extensions)
+    extensions["context_window"] = serialize_resolved_context_window_snapshot(context_window)
+    if context_window.policy_tag is not None:
+        extensions["context_window_policy_tag"] = context_window.policy_tag
+        extensions["budget_policy_tag"] = context_window.policy_tag
+    return replace(private_context, extensions=extensions)
+
+
+def _apply_context_window_compaction_policy(
+    private_context: RuntimePrivateContext,
+    context_window: ResolvedContextWindowSnapshot | None,
+) -> RuntimePrivateContext:
+    if context_window is None or not context_window.known:
+        return private_context
+    if context_window.fallback_mode != "proactive_and_reactive":
+        return private_context
+    extensions = dict(private_context.extensions)
+    raw_policy = extensions.get("compaction_policy")
+    if raw_policy is False:
+        return private_context
+    policy = dict(raw_policy) if isinstance(raw_policy, Mapping) else {}
+    chars_per_token = (
+        context_window.token_estimation_hint.chars_per_token
+        if context_window.token_estimation_hint is not None
+        and context_window.token_estimation_hint.chars_per_token is not None
+        and context_window.token_estimation_hint.chars_per_token > 0
+        else 4.0
+    )
+    trigger_buffer = max(0, context_window.trigger_buffer_tokens or 0)
+    safe_token_limit = context_window.max_input_tokens - (context_window.reserved_output_tokens or 0) - trigger_buffer
+    if safe_token_limit > 0:
+        derived_max_characters = int(safe_token_limit * chars_per_token)
+        existing_max_characters = _coerce_optional_int(policy.get("max_characters"))
+        if existing_max_characters is None or existing_max_characters > derived_max_characters:
+            policy["max_characters"] = derived_max_characters
+    if (
+        context_window.remaining_input_tokens is not None
+        and context_window.remaining_input_tokens <= trigger_buffer
+    ):
+        policy["force"] = True
+    extensions["compaction_policy"] = policy
+    return replace(private_context, extensions=extensions)
+
+
+def _classify_recovery_with_context_window_hints(
+    *,
+    metadata: Mapping[str, Any],
+    stop_reason: str | None,
+    error: str | None,
+    prepared_context: PreparedContext | None,
+) -> tuple[FailureClassification, bool | None] | None:
+    snapshot = (
+        prepared_context.context_window
+        if prepared_context is not None and prepared_context.context_window is not None
+        else coerce_resolved_context_window_snapshot(metadata.get("context_window"))
+    )
+    hints = snapshot.recovery_classification_hints if snapshot is not None else None
+    if hints is None:
+        return None
+    provider_error_code = _coerce_optional_string(metadata, "provider_error_code")
+    http_status = _coerce_optional_int(metadata.get("http_status"))
+    error_message = " ".join(
+        piece
+        for piece in (
+            error,
+            _coerce_optional_string(metadata, "error"),
+            _coerce_optional_string(metadata, "message"),
+            _coerce_optional_string(metadata, "provider_message"),
+        )
+        if piece
+    )
+    if _matches_recovery_rule(
+        hints.context_limit,
+        stop_reason=stop_reason,
+        provider_error_code=provider_error_code,
+        http_status=http_status,
+        error_message=error_message,
+    ):
+        return FailureClassification.CONTEXT_LIMIT, hints.context_limit.retryable
+    if hints.output_limit is not None and _matches_recovery_rule(
+        hints.output_limit,
+        stop_reason=stop_reason,
+        provider_error_code=provider_error_code,
+        http_status=http_status,
+        error_message=error_message,
+    ):
+        return FailureClassification.OUTPUT_LIMIT, hints.output_limit.retryable
+    return None
+
+
+def _matches_recovery_rule(
+    rule: Any,
+    *,
+    stop_reason: str | None,
+    provider_error_code: str | None,
+    http_status: int | None,
+    error_message: str,
+) -> bool:
+    if rule is None:
+        return False
+    matched = False
+    if stop_reason is not None and stop_reason in getattr(rule, "stop_reasons", ()):
+        matched = True
+    if provider_error_code is not None and provider_error_code in getattr(rule, "provider_error_codes", ()):
+        matched = True
+    if http_status is not None and http_status in getattr(rule, "http_statuses", ()):
+        matched = True
+    lowered = error_message.lower()
+    if lowered and any(fragment.lower() in lowered for fragment in getattr(rule, "message_substrings", ())):
+        matched = True
+    return matched
 
 
 def collect_budget_candidates(
@@ -859,6 +1181,12 @@ def collect_budget_candidates(
     return tuple(candidates)
 
 
+def collect_context_window_candidates(
+    messages: Sequence[RuntimeMessage],
+) -> tuple[ContextWindowCandidate, ...]:
+    return tuple(collect_budget_candidates(messages))
+
+
 async def invoke_budget_hook(
     hook: ContextBudgetHook | Any,
     request: ContextBudgetRequest,
@@ -887,6 +1215,38 @@ async def invoke_budget_hook(
         diagnostics.append("context_budget_hook_unparseable")
         if failure_mode == ContextBudgetHookFailureMode.FAIL_PREPARE:
             raise ValueError("Context budget hook returned an unparsable plan")
+        return None, diagnostics
+    return plan, diagnostics
+
+
+async def invoke_context_window_hook(
+    hook: ContextWindowHook | Any,
+    request: ContextWindowRequest,
+    *,
+    failure_mode: ContextWindowHookFailureMode,
+    timeout_seconds: float | None,
+) -> tuple[ContextWindowPlan | None, list[str]]:
+    diagnostics: list[str] = []
+    started_at = asyncio.get_running_loop().time()
+    try:
+        raw = await _invoke_budget_hook_callable(
+            hook.plan if hasattr(hook, "plan") else hook,
+            request,
+            timeout_seconds=timeout_seconds,
+            started_at=started_at,
+        )
+    except Exception as exc:
+        diagnostics.append(f"context_window_hook_error:{type(exc).__name__}")
+        if failure_mode == ContextWindowHookFailureMode.FAIL_PREPARE:
+            raise
+        return None, diagnostics
+    if raw is None:
+        return None, diagnostics
+    plan = coerce_context_window_plan(raw)
+    if plan is None:
+        diagnostics.append("context_window_hook_unparseable")
+        if failure_mode == ContextWindowHookFailureMode.FAIL_PREPARE:
+            raise ValueError("Context window hook returned an unparsable plan")
         return None, diagnostics
     return plan, diagnostics
 
@@ -929,6 +1289,10 @@ def coerce_budget_plan(value: object) -> BudgetPlan | None:
         metadata=_coerce_mapping(value.get("metadata")),
         diagnostics=tuple(str(item) for item in value.get("diagnostics", ()) or ()),
     )
+
+
+def coerce_context_window_plan(value: object) -> ContextWindowPlan | None:
+    return coerce_budget_plan(value)
 
 
 async def resolve_spillover_references(
@@ -1174,6 +1538,23 @@ async def apply_budget_plan(
     return ensure_tool_result_pairing(tuple(updated_messages)), tuple(effects), diagnostics
 
 
+async def apply_context_window_plan(
+    messages: Sequence[RuntimeMessage],
+    plan: ContextWindowPlan,
+    *,
+    session_id: str,
+    turn_id: str,
+    transcript_store: Any | None = None,
+) -> tuple[tuple[RuntimeMessage, ...], tuple[ContextPreparationEffect, ...], list[str]]:
+    return await apply_budget_plan(
+        messages,
+        plan,
+        session_id=session_id,
+        turn_id=turn_id,
+        transcript_store=transcript_store,
+    )
+
+
 def apply_projection_pass(
     messages: Sequence[RuntimeMessage],
     *,
@@ -1270,7 +1651,7 @@ def build_prompt_envelope(
     prompt_context: PromptContextEnvelope,
     *,
     effects: Sequence[ContextPreparationEffect],
-    plan: BudgetPlan | None,
+    plan: ContextWindowPlan | None,
     diagnostics: Sequence[str],
 ) -> PromptContextEnvelope:
     extensions = dict(prompt_context.extensions)
@@ -1285,6 +1666,7 @@ def build_prompt_envelope(
         for effect in effects
     ]
     if plan is not None:
+        control_plane["context_window_policy_tag"] = plan.policy_tag
         control_plane["budget_policy_tag"] = plan.policy_tag
     if diagnostics:
         control_plane["diagnostics"] = list(diagnostics)
@@ -1720,9 +2102,15 @@ __all__ = [
     "BudgetCandidate",
     "BudgetDecision",
     "BudgetPlan",
+    "ContextWindowCandidate",
     "ContextBudgetHook",
     "ContextBudgetHookFailureMode",
     "ContextBudgetRequest",
+    "ContextWindowDecision",
+    "ContextWindowHook",
+    "ContextWindowHookFailureMode",
+    "ContextWindowPlan",
+    "ContextWindowRequest",
     "ContextControlPlane",
     "ContextControlPlaneConfig",
     "ContextPreparationEffect",
@@ -1734,6 +2122,7 @@ __all__ = [
     "NormalizedRecoveryInput",
     "PreparedContext",
     "ProviderBudgetHints",
+    "ProviderContextWindowHints",
     "RecoveryAction",
     "RecoveryDecision",
     "RecoveryPolicy",
@@ -1741,12 +2130,16 @@ __all__ = [
     "StopDisposition",
     "StopPhaseOutcome",
     "apply_budget_plan",
+    "apply_context_window_plan",
     "apply_projection_pass",
     "build_prompt_envelope",
     "check_projection_invariants",
     "collect_budget_candidates",
+    "collect_context_window_candidates",
     "coerce_budget_plan",
+    "coerce_context_window_plan",
     "invoke_budget_hook",
+    "invoke_context_window_hook",
     "maybe_resume_private_context",
     "next_context_generation",
     "normalize_attempt_outcome",

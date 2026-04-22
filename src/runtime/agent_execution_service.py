@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import replace
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Mapping, Sequence
 from uuid import uuid4
 
@@ -12,6 +12,10 @@ from .agent_execution import (
     ChildRunStore,
 )
 from .control_plane import RuntimeControlPlaneContext
+from .context_window import (
+    serialize_model_context_window_profile,
+    serialize_route_context_window_policy,
+)
 from .contracts import MessageRole, RuntimeMessage
 from .definitions import AgentDefinition, IsolationMode, PermissionBehavior, PermissionDecision
 from .execution_policy import (
@@ -27,7 +31,7 @@ from .hosts.base import CallbackHostAdapter, NullHostAdapter
 from .isolation import IsolationLease, serialize_isolation_lease
 from .permissions import PermissionContext, PermissionRequest, PermissionTarget
 from .registries import AgentRegistry, SkillRegistry, ToolRegistry
-from .runtime_kernel.config import ModelRouteBinding
+from .runtime_kernel.config import ModelProviderBinding, ModelRouteBinding
 from .runtime_services import RuntimeServices
 from .turn_engine.engine import TurnEngine
 from .turn_engine.models import ModelInvocationMode, NormalizedModelCapabilities
@@ -46,6 +50,7 @@ class AgentExecutionService:
         skill_registry: SkillRegistry,
         runtime_services: RuntimeServices,
         run_store: ChildRunStore,
+        model_providers: Mapping[str, ModelProviderBinding] | None = None,
         model_routes: Mapping[str, ModelRouteBinding] | None = None,
         default_model_route: str | None = None,
     ) -> None:
@@ -55,6 +60,7 @@ class AgentExecutionService:
         self._skill_registry = skill_registry
         self._runtime_services = runtime_services
         self._run_store = run_store
+        self._model_providers = dict(model_providers or {})
         self._model_routes = dict(model_routes or {})
         self._default_model_route = default_model_route
 
@@ -133,12 +139,26 @@ class AgentExecutionService:
         resolved_capabilities = (
             route_binding.capabilities if route_binding is not None else execution_spec.resolved_capabilities
         )
+        resolved_metadata = dict(execution_spec.metadata)
+        if route_binding is not None:
+            resolved_metadata.setdefault(
+                "provider_context_window_profiles",
+                [
+                    serialize_model_context_window_profile(profile)
+                    for profile in route_binding.context_window_profiles
+                ],
+            )
+            resolved_metadata.setdefault(
+                "route_context_window_policy",
+                serialize_route_context_window_policy(route_binding.context_window_policy),
+            )
         execution_spec = replace(
             execution_spec,
             resolved_model_route=resolved_route_name,
             provider_name=route_binding.provider_name if route_binding is not None else None,
             resolved_capabilities=resolved_capabilities,
             invocation_mode=_select_invocation_mode(resolved_capabilities),
+            metadata=resolved_metadata,
         )
         requested_agent = self._apply_execution_overrides(agent, execution_spec)
         policy = self.resolve_execution_policy(
@@ -412,6 +432,12 @@ class AgentExecutionService:
             "resolved_model_route": execution_spec.resolved_model_route,
             "provider_name": execution_spec.provider_name,
             "resolved_capabilities": _serialize_capabilities(execution_spec.resolved_capabilities),
+            "provider_context_window_profiles": dict(execution_spec.metadata).get(
+                "provider_context_window_profiles"
+            ),
+            "route_context_window_policy": dict(execution_spec.metadata).get(
+                "route_context_window_policy"
+            ),
             "invocation_mode": execution_spec.invocation_mode,
             "requested_permission_mode": execution_spec.requested_permission_mode,
             "requested_isolation": execution_spec.requested_isolation,
@@ -444,6 +470,12 @@ class AgentExecutionService:
                 "resolved_model_route": execution_spec.resolved_model_route,
                 "provider_name": execution_spec.provider_name,
                 "resolved_capabilities": _serialize_capabilities(execution_spec.resolved_capabilities),
+                "provider_context_window_profiles": dict(execution_spec.metadata).get(
+                    "provider_context_window_profiles"
+                ),
+                "route_context_window_policy": dict(execution_spec.metadata).get(
+                    "route_context_window_policy"
+                ),
                 "invocation_mode": execution_spec.invocation_mode,
                 "requested_permission_mode": (
                     execution_spec.requested_permission_mode.value
@@ -516,7 +548,7 @@ class AgentExecutionService:
         self,
         agent: AgentDefinition,
         execution_spec: AgentExecutionSpec,
-    ) -> tuple[str | None, ModelRouteBinding | None]:
+    ) -> tuple[str | None, "_ResolvedModelRouteBinding | None"]:
         inherited_route = (
             _coerce_optional_string(execution_spec.metadata.get("resolved_model_route"))
             or _coerce_optional_string(execution_spec.metadata.get("requested_model_route"))
@@ -532,7 +564,35 @@ class AgentExecutionService:
         binding = self._model_routes.get(resolved_route)
         if binding is None:
             raise ValueError(f"Unknown model route: {resolved_route}")
-        return resolved_route, binding
+        provider_binding = (
+            self._model_providers.get(binding.provider_binding)
+            if binding.provider_binding is not None
+            else None
+        )
+        client = binding.client or (provider_binding.client if provider_binding is not None else None)
+        if client is None:
+            raise ValueError(f"Model route '{resolved_route}' does not resolve a model client")
+        profiles = (
+            tuple(provider_binding.context_window_profiles) if provider_binding is not None else ()
+        ) + tuple(binding.context_window_profiles)
+        resolved_binding = _ResolvedModelRouteBinding(
+            client=client,
+            default_model=binding.default_model,
+            provider_name=(
+                binding.provider_name
+                or (provider_binding.provider_name if provider_binding is not None else None)
+            ),
+            capabilities=binding.capabilities
+            or (provider_binding.capabilities if provider_binding is not None else None),
+            context_window_policy=binding.context_window_policy,
+            context_window_profiles=profiles,
+            metadata={
+                **(dict(provider_binding.metadata) if provider_binding is not None else {}),
+                **dict(binding.metadata),
+                "provider_binding": binding.provider_binding,
+            },
+        )
+        return resolved_route, resolved_binding
 
     async def _dispatch_subagent_stop(
         self,
@@ -559,6 +619,17 @@ def _supports_permission_requests(host: Any) -> bool:
     if type(host) is NullHostAdapter:
         return False
     return True
+
+
+@dataclass(frozen=True, slots=True)
+class _ResolvedModelRouteBinding:
+    client: Any
+    default_model: str | None = None
+    provider_name: str | None = None
+    capabilities: NormalizedModelCapabilities | None = None
+    context_window_policy: Any = None
+    context_window_profiles: tuple[Any, ...] = ()
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 def _terminal_metadata_from_turn_result(turn_result: Any) -> dict[str, Any]:

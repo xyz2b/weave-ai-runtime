@@ -2,6 +2,7 @@ from .config import (
     BuiltinPackConfig,
     DefinitionSourcePaths,
     HostBinding,
+    ModelProviderBinding,
     ModelRouteBinding,
     RuntimeConfig,
 )
@@ -11,6 +12,7 @@ __all__ = [
     "BuiltinPackConfig",
     "DefinitionSourcePaths",
     "HostBinding",
+    "ModelProviderBinding",
     "ModelRouteBinding",
     "RuntimeConfig",
     "RuntimeAssembly",
