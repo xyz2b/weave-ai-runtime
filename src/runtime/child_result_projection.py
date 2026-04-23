@@ -63,6 +63,13 @@ def summarize_child_run_record(
     policy: DelegationPolicy | None = None,
 ) -> str:
     resolved_policy = policy or DelegationPolicy()
+    if record.status.value != "completed":
+        return _fallback_summary(
+            agent_name=record.agent_name,
+            status=record.status.value,
+            terminal_metadata=record.terminal_metadata,
+            max_chars=resolved_policy.summary_max_chars,
+        )
     for message in reversed(record.messages):
         if message.role != MessageRole.ASSISTANT:
             continue

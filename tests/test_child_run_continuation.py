@@ -130,6 +130,65 @@ def test_terminal_child_run_queues_ready_session_by_default(tmp_path: Path) -> N
     assert controller.state.status == SessionStatus.READY
 
 
+def test_terminal_child_run_completing_during_parent_turn_is_queued_for_later_drain(tmp_path: Path) -> None:
+    services = RuntimeServices()
+    model_client = FakeModelClient(
+        [
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-child-running-parent"}),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "Queued after parent turn"}),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+            ]
+        ]
+    )
+    turn_engine, execution_service = _build_execution_service(tmp_path, services=services, model_client=model_client)
+    controller = _build_controller(
+        tmp_path,
+        services=services,
+        turn_engine=turn_engine,
+        session_id="session-child-running-parent",
+    )
+
+    asyncio.run(controller.start())
+
+    invocation, spec = _child_invocation(
+        tmp_path,
+        session_id=controller.state.session_id,
+        run_id="child-run-running-parent",
+        parent_turn_id="parent-turn-active",
+    )
+    controller.state.status = SessionStatus.RUNNING
+    controller.state.active_turn_id = spec.parent_turn_id
+
+    asyncio.run(
+        execution_service.write_terminal_record(
+            invocation,
+            spec,
+            status=AgentRunStatus.COMPLETED,
+        )
+    )
+
+    assert controller.state.status == SessionStatus.RUNNING
+    assert controller.state.active_turn_id == "parent-turn-active"
+    assert model_client.requests == []
+    assert len(controller.state.queued_commands) == 1
+    assert (
+        controller.state.queued_commands[0].payload["metadata"]["private_updates"]["child_run_continuation"][
+            "summary"
+        ]
+        == "Child run 'verification' completed without a textual assistant summary."
+    )
+
+    controller.state.status = SessionStatus.READY
+    controller.state.active_turn_id = None
+
+    produced = asyncio.run(controller.run_until_idle())
+
+    assert model_client.requests[0].query_source == "task_notification"
+    assert produced[-1].text == "Queued after parent turn"
+    assert controller.state.status == SessionStatus.READY
+
+
 def test_child_run_continuation_dedupes_session_delivery_but_not_child_run_observability(tmp_path: Path) -> None:
     observed_events: list[tuple[str, object]] = []
     services = RuntimeServices()
@@ -232,6 +291,7 @@ def _child_invocation(
     *,
     session_id: str,
     run_id: str = "child-run-1",
+    parent_turn_id: str = "parent-turn",
 ) -> tuple[AgentInvocation, AgentExecutionSpec]:
     invocation = AgentInvocation(
         agent_name="verification",
@@ -241,13 +301,13 @@ def _child_invocation(
         background=True,
         query_source="background_agent",
         parent_run_id="parent-run",
-        parent_turn_id="parent-turn",
+        parent_turn_id=parent_turn_id,
     )
     spec = AgentExecutionSpec(
         run_id=run_id,
         parent_run_id="parent-run",
         session_id=session_id,
-        parent_turn_id="parent-turn",
+        parent_turn_id=parent_turn_id,
         turn_id=f"{run_id}-turn",
         agent_name="verification",
         spawn_mode=SpawnMode.BACKGROUND,

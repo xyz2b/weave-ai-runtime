@@ -4,11 +4,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from runtime.agent_execution import AgentRunStatus, SpawnMode
+from runtime.agent_execution import AgentRunRecord, AgentRunStatus, SpawnMode
+from runtime.child_result_projection import summarize_child_run_record
 from runtime.agent_execution_service import _agent_run_status_from_turn_result
 from runtime.agent_runtime import AgentInvocation, AgentRuntime
 from runtime.context_window import ModelContextWindowProfile, RouteContextWindowPolicy, TokenEstimationHint
-from runtime.contracts import MessageRole
+from runtime.contracts import MessageRole, RuntimeMessage
 from runtime.definitions import (
     AgentDefinition,
     PermissionBehavior,
@@ -84,6 +85,31 @@ def test_delegation_policy_parsing_defaults_and_overrides() -> None:
     assert overridden.max_depth == 3
     assert overridden.child_result_projection == ChildResultProjectionMode.DETAILED
     assert overridden.summary_max_chars == 120
+
+
+def test_failed_child_summary_uses_runtime_fallback_even_with_assistant_output() -> None:
+    record = AgentRunRecord(
+        run_id="child-run-failed",
+        parent_run_id="parent-run",
+        session_id="session-failed-summary",
+        parent_turn_id="parent-turn",
+        turn_id="child-turn",
+        agent_name="verification",
+        spawn_mode=SpawnMode.SYNC,
+        status=AgentRunStatus.FAILED,
+        terminal_metadata={"error": "approval required"},
+        messages=(
+            RuntimeMessage(
+                message_id="assistant-before-failure",
+                role=MessageRole.ASSISTANT,
+                content="partial success before failure",
+            ),
+        ),
+    )
+
+    assert summarize_child_run_record(record) == (
+        "Child run 'verification' ended with status 'failed': approval required"
+    )
 
 
 def test_child_delegation_depth_is_threaded_into_spec_request_and_record(tmp_path: Path) -> None:

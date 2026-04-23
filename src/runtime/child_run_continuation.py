@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Mapping
 
-from .agent_execution import AgentRunRecord
+from .agent_execution import AgentRunRecord, SpawnMode
 from .child_result_projection import project_child_run_record
 from .runtime_services import LiveSessionRegistry
 from .session_runtime import InboundEvent, InboundEventType, SessionStatus
@@ -28,11 +28,12 @@ class ChildRunContinuationBridge:
             return False
         if session.state.status in {SessionStatus.INTERRUPTED, SessionStatus.COMPLETED, SessionStatus.FAILED, SessionStatus.STOPPED}:
             return False
-        if (
+        parent_turn_active = (
             record.parent_turn_id is not None
             and session.state.active_turn_id is not None
             and session.state.active_turn_id == record.parent_turn_id
-        ):
+        )
+        if parent_turn_active and record.spawn_mode is not SpawnMode.BACKGROUND:
             return False
 
         drain = False
