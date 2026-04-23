@@ -21,6 +21,7 @@ from runtime.task_lists import (
     FileTaskListStore,
     TaskListBlockedError,
     TaskListDependencyCycleError,
+    TaskListInvalidRequestError,
     TaskListOwnerBusyError,
     TaskReadinessState,
 )
@@ -157,6 +158,41 @@ def test_task_list_service_enforces_blockers_owner_busy_and_release() -> None:
     assert released.status.value == "pending"
     assert claimed_second.owner == "planner"
     assert claimed_second.status.value == "in_progress"
+
+
+def test_task_list_service_same_owner_reclaim_respects_blockers_and_completed_guard() -> None:
+    service = DefaultTaskListService()
+
+    async def scenario():
+        list_id = "session:claim-guardrails"
+        blocker = await service.create(list_id, subject="Blocker task")
+        blocked = await service.create(
+            list_id,
+            subject="Blocked task",
+            owner="planner",
+            blocked_by=(blocker.task_id,),
+        )
+        with pytest.raises(TaskListBlockedError):
+            await service.claim(list_id, blocked.task_id, "planner")
+
+        completed = await service.create(list_id, subject="Completed task", owner="planner")
+        await service.update(list_id, completed.task_id, patch={"status": "completed"})
+        with pytest.raises(TaskListInvalidRequestError):
+            await service.claim(list_id, completed.task_id, "planner")
+
+        blocked_after = await service.get(list_id, blocked.task_id)
+        completed_after = await service.get(list_id, completed.task_id)
+        return blocked, blocked_after, completed_after
+
+    blocked, blocked_after, completed_after = asyncio.run(scenario())
+
+    assert blocked_after is not None
+    assert blocked_after.task_id == blocked.task_id
+    assert blocked_after.owner == "planner"
+    assert blocked_after.status.value == "pending"
+    assert completed_after is not None
+    assert completed_after.owner == "planner"
+    assert completed_after.status.value == "completed"
 
 
 def test_task_list_service_rejects_dependency_cycles_and_cleans_dangling_edges() -> None:
@@ -305,6 +341,69 @@ def test_task_orchestration_tools_surface_readiness_and_dependency_controls(tmp_
     assert claimed.status == ToolCallStatus.SUCCESS
     assert claimed.output["task"]["task_id"] == blocked_task_id
     assert claimed.output["task"]["owner"] == "reviewer"
+
+
+def test_task_claim_tool_rejects_same_owner_blocked_and_completed_tasks(tmp_path: Path) -> None:
+    scheduler, context = _build_tool_runtime(tmp_path)
+
+    created = asyncio.run(
+        scheduler.run(
+            [
+                ToolCall("1", "task_create", {"subject": "Blocker"}),
+                ToolCall(
+                    "2",
+                    "task_create",
+                    {"subject": "Blocked", "owner": "planner"},
+                ),
+                ToolCall(
+                    "3",
+                    "task_create",
+                    {"subject": "Completed", "owner": "planner"},
+                ),
+            ],
+            context,
+        )
+    )
+    blocker_task_id = created[0].output["task"]["task_id"]
+    blocked_task_id = created[1].output["task"]["task_id"]
+    completed_task_id = created[2].output["task"]["task_id"]
+
+    asyncio.run(
+        scheduler.run(
+            [
+                ToolCall(
+                    "4",
+                    "task_block",
+                    {"blocker_task_id": blocker_task_id, "blocked_task_id": blocked_task_id},
+                ),
+                ToolCall("5", "task_update", {"task_id": completed_task_id, "status": "completed"}),
+            ],
+            context,
+        )
+    )
+
+    blocked_claim = asyncio.run(
+        scheduler.run([ToolCall("6", "task_claim", {"task_id": blocked_task_id, "owner": "planner"})], context)
+    )[0]
+    completed_claim = asyncio.run(
+        scheduler.run([ToolCall("7", "task_claim", {"task_id": completed_task_id, "owner": "planner"})], context)
+    )[0]
+    listed = asyncio.run(
+        scheduler.run([ToolCall("8", "task_list", {})], context)
+    )[0]
+
+    blocked_snapshot = next(task for task in listed.output["tasks"] if task["task_id"] == blocked_task_id)
+    completed_snapshot = next(task for task in listed.output["tasks"] if task["task_id"] == completed_task_id)
+
+    assert blocked_claim.status == ToolCallStatus.ERROR
+    assert blocked_claim.output["error"]["code"] == "blocked"
+    assert completed_claim.status == ToolCallStatus.ERROR
+    assert completed_claim.output["error"]["code"] == "invalid_request"
+    assert blocked_snapshot["owner"] == "planner"
+    assert blocked_snapshot["status"] == "pending"
+    assert blocked_snapshot["unresolved_blockers"] == [blocker_task_id]
+    assert completed_snapshot["owner"] == "planner"
+    assert completed_snapshot["status"] == "completed"
 
 
 def test_job_stop_does_not_mutate_task_lists_and_task_update_does_not_mutate_jobs(tmp_path: Path) -> None:

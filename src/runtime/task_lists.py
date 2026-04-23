@@ -882,24 +882,32 @@ def _claim_task(
         )
     index = _find_task_index(tasks, list_id=list_id, task_id=task_id)
     existing = tasks[index]
-    desired_status = existing.status
-    if set_in_progress and existing.status is not TaskListStatus.COMPLETED:
-        desired_status = TaskListStatus.IN_PROGRESS
-
-    if existing.owner == normalized_owner:
-        if desired_status is existing.status:
-            return existing, False
-        if strict_single_in_progress and desired_status is TaskListStatus.IN_PROGRESS:
-            _validate_single_in_progress(tasks, list_id=list_id, task_id=task_id)
-        updated = replace(existing, status=desired_status, updated_at=utc_now())
-        tasks[index] = updated
-        return updated, True
-
     if existing.status is TaskListStatus.COMPLETED:
         raise TaskListInvalidRequestError(
             "task_claim does not support completed tasks",
             details={"task_list_id": list_id, "task_id": task_id},
         )
+
+    desired_status = existing.status
+    if set_in_progress:
+        desired_status = TaskListStatus.IN_PROGRESS
+
+    unresolved_blockers = _unresolved_blockers(tasks, task_id)
+
+    if existing.owner == normalized_owner:
+        if desired_status is existing.status:
+            return existing, False
+        if unresolved_blockers:
+            raise TaskListBlockedError(
+                list_id=list_id,
+                task_id=task_id,
+                unresolved_blockers=unresolved_blockers,
+            )
+        if strict_single_in_progress and desired_status is TaskListStatus.IN_PROGRESS:
+            _validate_single_in_progress(tasks, list_id=list_id, task_id=task_id)
+        updated = replace(existing, status=desired_status, updated_at=utc_now())
+        tasks[index] = updated
+        return updated, True
 
     if existing.owner is not None:
         raise TaskListAlreadyClaimedError(
@@ -908,7 +916,6 @@ def _claim_task(
             owner=existing.owner,
         )
 
-    unresolved_blockers = _unresolved_blockers(tasks, task_id)
     if unresolved_blockers:
         raise TaskListBlockedError(
             list_id=list_id,
