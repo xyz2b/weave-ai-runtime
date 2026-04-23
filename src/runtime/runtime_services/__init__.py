@@ -207,6 +207,27 @@ class DefaultTranscriptService:
 
 
 @dataclass(slots=True)
+class LiveSessionRegistry:
+    _sessions: dict[str, Any] = field(default_factory=dict)
+
+    def register(self, session: Any) -> None:
+        session_id = getattr(getattr(session, "state", None), "session_id", None)
+        if session_id is None:
+            return
+        self._sessions[str(session_id)] = session
+
+    def unregister(self, session_id: str, *, session: Any | None = None) -> None:
+        key = str(session_id)
+        current = self._sessions.get(key)
+        if session is not None and current is not session:
+            return
+        self._sessions.pop(key, None)
+
+    def get(self, session_id: str) -> Any | None:
+        return self._sessions.get(str(session_id))
+
+
+@dataclass(slots=True)
 class RuntimeServices:
     hooks: ContextContributionService = field(default_factory=NoopHookService)
     hook_bus: HookBus = field(default_factory=HookBus)
@@ -219,6 +240,7 @@ class RuntimeServices:
     tasks: DefaultTaskService = field(default_factory=DefaultTaskService)
     task_lists: DefaultTaskListService = field(default_factory=DefaultTaskListService)
     task_discipline: ContextContributionService = field(default_factory=NoopHookService)
+    sessions: LiveSessionRegistry = field(default_factory=LiveSessionRegistry)
     transcript: DefaultTranscriptService | None = None
     tool_catalog: ToolCatalogService = field(default_factory=CallbackToolCatalogService)
     context_assembler: Any = None
@@ -234,6 +256,10 @@ class RuntimeServices:
     @property
     def task_list_service(self) -> DefaultTaskListService:
         return self.task_lists
+
+    @property
+    def session_registry(self) -> LiveSessionRegistry:
+        return self.sessions
 
     @property
     def transcript_store(self) -> Any:

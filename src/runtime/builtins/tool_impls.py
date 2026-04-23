@@ -24,8 +24,8 @@ from ..task_lists import (
     DefaultTaskListService,
     TaskDisciplinePolicy,
     TaskListError,
-    TaskListInvalidRequestError,
     task_list_entry_to_dict,
+    task_list_snapshot_to_dict,
 )
 from ..tool_runtime import ToolCallResult, ToolCallStatus, ToolContext
 
@@ -343,10 +343,7 @@ async def skill_tool(tool_input: dict[str, Any], context: ToolContext) -> Any:
 
 async def task_create_tool(tool_input: dict[str, Any], context: ToolContext) -> dict[str, Any]:
     service = _task_list_service(context)
-    task_list_id = await service.resolve_list_id(
-        session_id=context.session_id,
-        private_context=context.private_context,
-    )
+    task_list_id = await _resolved_task_list_id(service, context)
     task = await service.create(
         task_list_id,
         subject=tool_input["subject"],
@@ -358,16 +355,16 @@ async def task_create_tool(tool_input: dict[str, Any], context: ToolContext) -> 
         metadata=tool_input.get("metadata"),
     )
     _record_task_touch(context, task_list_id=task_list_id)
-    return {"task_list_id": task_list_id, "task": task_list_entry_to_dict(task)}
+    return {
+        "task_list_id": task_list_id,
+        "task": await _task_payload(service, task_list_id=task_list_id, task_id=task.task_id),
+    }
 
 
 async def task_get_tool(tool_input: dict[str, Any], context: ToolContext) -> dict[str, Any] | ExecutionResult[dict[str, Any]]:
     service = _task_list_service(context)
-    task_list_id = await service.resolve_list_id(
-        session_id=context.session_id,
-        private_context=context.private_context,
-    )
-    task = await service.get(task_list_id, tool_input["task_id"])
+    task_list_id = await _resolved_task_list_id(service, context)
+    task = await service.get_orchestration_task(task_list_id, tool_input["task_id"])
     if task is None:
         return _structured_error(
             "not_found",
@@ -384,10 +381,7 @@ async def task_update_tool(
     context: ToolContext,
 ) -> dict[str, Any] | ExecutionResult[dict[str, Any]]:
     service = _task_list_service(context)
-    task_list_id = await service.resolve_list_id(
-        session_id=context.session_id,
-        private_context=context.private_context,
-    )
+    task_list_id = await _resolved_task_list_id(service, context)
     patch = {
         key: tool_input[key]
         for key in ("status", "subject", "description", "active_form", "owner", "blocks", "blocked_by", "metadata")
@@ -410,18 +404,153 @@ async def task_update_tool(
     except TaskListError as exc:
         return _task_list_error_result(exc)
     _record_task_touch(context, task_list_id=task_list_id)
-    return {"task_list_id": task_list_id, "task": task_list_entry_to_dict(task)}
+    return {
+        "task_list_id": task_list_id,
+        "task": await _task_payload(service, task_list_id=task_list_id, task_id=task.task_id),
+    }
+
+
+async def task_claim_tool(
+    tool_input: dict[str, Any],
+    context: ToolContext,
+) -> dict[str, Any] | ExecutionResult[dict[str, Any]]:
+    service = _task_list_service(context)
+    task_list_id = await _resolved_task_list_id(service, context)
+    owner = _default_task_owner(context, tool_input.get("owner"))
+    try:
+        task = await service.claim(
+            task_list_id,
+            tool_input["task_id"],
+            owner,
+            set_in_progress=tool_input.get("set_in_progress", True),
+            enforce_owner_busy=tool_input.get("enforce_owner_busy", False),
+            strict_single_in_progress=_task_discipline_policy(context).strict_single_in_progress,
+        )
+    except TaskListError as exc:
+        return _task_list_error_result(exc)
+    _record_task_touch(context, task_list_id=task_list_id)
+    return {
+        "task_list_id": task_list_id,
+        "task": await _task_payload(service, task_list_id=task_list_id, task_id=task.task_id),
+    }
+
+
+async def task_release_tool(
+    tool_input: dict[str, Any],
+    context: ToolContext,
+) -> dict[str, Any] | ExecutionResult[dict[str, Any]]:
+    service = _task_list_service(context)
+    task_list_id = await _resolved_task_list_id(service, context)
+    try:
+        task = await service.release(
+            task_list_id,
+            tool_input["task_id"],
+        )
+    except TaskListError as exc:
+        return _task_list_error_result(exc)
+    _record_task_touch(context, task_list_id=task_list_id)
+    return {
+        "task_list_id": task_list_id,
+        "task": await _task_payload(service, task_list_id=task_list_id, task_id=task.task_id),
+    }
+
+
+async def task_assign_next_tool(
+    tool_input: dict[str, Any],
+    context: ToolContext,
+) -> dict[str, Any] | ExecutionResult[dict[str, Any]]:
+    service = _task_list_service(context)
+    task_list_id = await _resolved_task_list_id(service, context)
+    owner = _default_task_owner(context, tool_input.get("owner"))
+    try:
+        task = await service.assign_next(
+            task_list_id,
+            owner,
+            set_in_progress=tool_input.get("set_in_progress", True),
+            enforce_owner_busy=tool_input.get("enforce_owner_busy", False),
+            strict_single_in_progress=_task_discipline_policy(context).strict_single_in_progress,
+        )
+    except TaskListError as exc:
+        return _task_list_error_result(exc)
+    _record_task_touch(context, task_list_id=task_list_id)
+    return {
+        "task_list_id": task_list_id,
+        "task": (
+            await _task_payload(service, task_list_id=task_list_id, task_id=task.task_id)
+            if task is not None
+            else None
+        ),
+    }
+
+
+async def task_block_tool(
+    tool_input: dict[str, Any],
+    context: ToolContext,
+) -> dict[str, Any] | ExecutionResult[dict[str, Any]]:
+    service = _task_list_service(context)
+    task_list_id = await _resolved_task_list_id(service, context)
+    try:
+        blocker_task, blocked_task = await service.add_dependency(
+            task_list_id,
+            tool_input["blocker_task_id"],
+            tool_input["blocked_task_id"],
+        )
+    except TaskListError as exc:
+        return _task_list_error_result(exc)
+    _record_task_touch(context, task_list_id=task_list_id)
+    return {
+        "task_list_id": task_list_id,
+        "blocker_task": await _task_payload(
+            service,
+            task_list_id=task_list_id,
+            task_id=blocker_task.task_id,
+        ),
+        "blocked_task": await _task_payload(
+            service,
+            task_list_id=task_list_id,
+            task_id=blocked_task.task_id,
+        ),
+    }
+
+
+async def task_unblock_tool(
+    tool_input: dict[str, Any],
+    context: ToolContext,
+) -> dict[str, Any] | ExecutionResult[dict[str, Any]]:
+    service = _task_list_service(context)
+    task_list_id = await _resolved_task_list_id(service, context)
+    try:
+        blocker_task, blocked_task = await service.remove_dependency(
+            task_list_id,
+            tool_input["blocker_task_id"],
+            tool_input["blocked_task_id"],
+        )
+    except TaskListError as exc:
+        return _task_list_error_result(exc)
+    _record_task_touch(context, task_list_id=task_list_id)
+    return {
+        "task_list_id": task_list_id,
+        "blocker_task": await _task_payload(
+            service,
+            task_list_id=task_list_id,
+            task_id=blocker_task.task_id,
+        ),
+        "blocked_task": await _task_payload(
+            service,
+            task_list_id=task_list_id,
+            task_id=blocked_task.task_id,
+        ),
+    }
 
 
 async def task_list_tool(_: dict[str, Any], context: ToolContext) -> dict[str, Any]:
     service = _task_list_service(context)
-    task_list_id = await service.resolve_list_id(
-        session_id=context.session_id,
-        private_context=context.private_context,
-    )
-    tasks = await service.list(task_list_id)
+    task_list_id = await _resolved_task_list_id(service, context)
+    tasks = await service.get_orchestration_snapshot(task_list_id)
     _record_task_touch(context, task_list_id=task_list_id)
-    return {"task_list_id": task_list_id, "tasks": [task_list_entry_to_dict(task) for task in tasks]}
+    payload = task_list_snapshot_to_dict(tasks)
+    payload["task_list_id"] = task_list_id
+    return payload
 
 
 async def job_get_tool(
@@ -588,6 +717,33 @@ def _task_discipline_policy(context: ToolContext) -> TaskDisciplinePolicy:
         private_context=context.private_context,
         runtime_metadata=runtime_metadata,
     )
+
+
+async def _resolved_task_list_id(
+    service: DefaultTaskListService,
+    context: ToolContext,
+) -> str:
+    return await service.resolve_list_id(
+        session_id=context.session_id,
+        private_context=context.private_context,
+    )
+
+
+async def _task_payload(
+    service: DefaultTaskListService,
+    *,
+    task_list_id: str,
+    task_id: str,
+) -> dict[str, Any]:
+    task = await service.get_orchestration_task(task_list_id, task_id)
+    if task is None:
+        raise ValueError(f"Task '{task_id}' was not found in task list '{task_list_id}'")
+    return task_list_entry_to_dict(task)
+
+
+def _default_task_owner(context: ToolContext, explicit_owner: Any) -> str:
+    owner = _normalize_optional_string(explicit_owner)
+    return owner or context.agent_name
 
 
 def _task_list_error_result(exc: TaskListError) -> ExecutionResult[dict[str, Any]]:

@@ -367,10 +367,16 @@ class RuntimeAssembly:
                 private_context=private_context,
                 runtime_context=runtime_context,
             )
-            snapshot = await self.services.task_list_service.get_snapshot(resolved_list_id)
+            snapshot = await self.services.task_list_service.get_orchestration_snapshot(resolved_list_id)
             return (task_list_snapshot_to_dict(snapshot),)
         snapshots = await self.services.task_list_service.list_snapshots()
-        return tuple(task_list_snapshot_to_dict(snapshot) for snapshot in snapshots)
+        results: list[dict[str, Any]] = []
+        for snapshot in snapshots:
+            orchestration = await self.services.task_list_service.get_orchestration_snapshot(
+                snapshot.list_id
+            )
+            results.append(task_list_snapshot_to_dict(orchestration))
+        return tuple(results)
 
     async def get_task_list(
         self,
@@ -387,7 +393,7 @@ class RuntimeAssembly:
             private_context=private_context,
             runtime_context=runtime_context,
         )
-        snapshot = await self.services.task_list_service.get_snapshot(resolved_list_id)
+        snapshot = await self.services.task_list_service.get_orchestration_snapshot(resolved_list_id)
         return task_list_snapshot_to_dict(snapshot)
 
     async def watch_task_list(
@@ -408,7 +414,10 @@ class RuntimeAssembly:
         )
 
         async def emit(snapshot: Any) -> Any:
-            return callback(task_list_snapshot_to_dict(snapshot))
+            orchestration = await self.services.task_list_service.get_orchestration_snapshot(
+                snapshot.list_id
+            )
+            return callback(task_list_snapshot_to_dict(orchestration))
 
         return await self.services.task_list_service.watch(resolved_list_id, emit)
 

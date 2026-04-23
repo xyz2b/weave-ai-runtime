@@ -106,6 +106,8 @@ class SessionController:
             private_context=self._session_scope_private_context(),
             task_manager=self._runtime_services.task_manager,
         )
+        if hasattr(self._runtime_services, "session_registry"):
+            self._runtime_services.session_registry.register(self)
 
     @property
     def messages(self) -> tuple[RuntimeMessage, ...]:
@@ -298,6 +300,20 @@ class SessionController:
         self.state.queued_commands.append(command)
         self.state.queued_commands.sort(key=lambda item: (-item.priority, item.created_at))
 
+    async def submit_runtime_event(
+        self,
+        event: InboundEvent,
+        *,
+        drain: bool = False,
+    ) -> bool:
+        self.enqueue_event(event)
+        if self.state.status == SessionStatus.IDLE:
+            await self.start()
+        if not drain or self.state.status in {SessionStatus.RUNNING, SessionStatus.INTERRUPTED}:
+            return False
+        await self.run_until_idle()
+        return True
+
     def interrupt(self, reason: str = "interrupt") -> None:
         self.state.status = SessionStatus.INTERRUPTED
         self._turn_engine.interrupt(reason)
@@ -347,6 +363,11 @@ class SessionController:
             self._closed = True
             self.state.active_turn_id = None
             self.state.status = _session_status_for_close(final_status)
+            if hasattr(self._runtime_services, "session_registry"):
+                self._runtime_services.session_registry.unregister(
+                    self.state.session_id,
+                    session=self,
+                )
             try:
                 if self._runtime_services.hook_bus is not None:
                     self._runtime_services.hook_bus.clear_session(self.state.session_id)

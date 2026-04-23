@@ -394,7 +394,11 @@ builtins
 - `task_*`
   - 面向模型规划语义
   - 由 runtime-owned `TaskListService` 提供
-  - 当前 builtin surface 为 `task_create`、`task_get`、`task_update`、`task_list`
+  - 当前 builtin surface 为 `task_create`、`task_get`、`task_update`、`task_claim`、`task_release`、`task_assign_next`、`task_block`、`task_unblock`、`task_list`
+  - `task_list` / host task-list snapshot 现在同时返回持久化 task 字段与 derived readiness：
+    - per-task `readiness_state` / `unresolved_blockers`
+    - list-level `available_task_ids` / `blocked_task_ids`
+  - `task_update` 现在只保留非 orchestration 字段；owner 与 dependency edge 不再允许走 raw patch
 - `job_*`
   - 面向后台执行记录与停止控制
   - 继续基于内部 `TaskManager` / child run tracking
@@ -433,6 +437,7 @@ builtins
 - host task panel
   - 读 `get_task_list()` / `watch_task_list()`
   - 展示共享 plan、负责人、依赖、完成状态
+  - 直接消费 runtime 给出的 `readiness_state`、`unresolved_blockers`、`available_task_ids`、`blocked_task_ids`
 - host job monitor
   - 读 `list_jobs()` / `get_job()`
   - 展示后台 agent、memory job、teammate projection 等执行状态
@@ -442,6 +447,21 @@ builtins
 - planning UI 应展示 `task_*` 语义。
 - operational UI 应展示 `job_*` 语义。
 - 两边如果要做联动，应该靠 metadata 或显式 linkage，而不是假设 task id 等于 job id。
+
+### 5.2.3 Child run continuation
+
+terminal child run 现在保留两层正式契约：
+
+- observability truth
+  - 继续由 typed `CHILD_RUN` turn event 与 `AgentRunRecord` 提供
+- runtime continuation
+  - runtime 可以把 terminal child run 转成 admitted session ingress
+  - 默认策略是：
+    - `WAITING` session 自动续跑
+    - `READY` session 只排队，不主动开新 turn
+    - `RUNNING` session 只排队，等当前 turn 结束后再处理
+
+这意味着 host 不需要靠 transcript scraping 来判断 child run 结束，也不需要重复提交同一个“子任务已完成”的 user prompt。
 
 ### 5.3 动态 skill roots
 

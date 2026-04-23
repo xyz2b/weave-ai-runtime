@@ -12,11 +12,23 @@ from .task_lists import (
     TASK_LIST_RESOLVED_ID_EXTENSION_KEY,
     DefaultTaskListService,
     TaskDisciplinePolicy,
-    TaskListStatus,
+    TaskReadinessState,
     coerce_private_context,
 )
 
-_TASK_TOOL_NAMES = frozenset({"task_create", "task_get", "task_update", "task_list"})
+_TASK_TOOL_NAMES = frozenset(
+    {
+        "task_create",
+        "task_get",
+        "task_update",
+        "task_claim",
+        "task_release",
+        "task_assign_next",
+        "task_block",
+        "task_unblock",
+        "task_list",
+    }
+)
 
 
 @dataclass(slots=True)
@@ -73,8 +85,12 @@ class TaskDisciplineSidecar:
         if not policy.enabled or not _task_tools_available(resolved_private, runtime_context):
             return SidecarContributionResult(private_updates=private_updates)
 
-        snapshot = await self.task_lists.get_snapshot(task_list_id)
-        remaining = [task for task in snapshot.tasks if task.status is not TaskListStatus.COMPLETED]
+        snapshot = await self.task_lists.get_orchestration_snapshot(task_list_id)
+        remaining = [
+            task
+            for task in snapshot.tasks
+            if task.readiness_state is not TaskReadinessState.COMPLETED
+        ]
         if not remaining:
             return SidecarContributionResult(private_updates=private_updates)
 
@@ -93,6 +109,8 @@ class TaskDisciplineSidecar:
                 _render_hidden_task_reminder(
                     task_list_id=task_list_id,
                     turns_since_touch=turns_since_touch,
+                    available_task_ids=snapshot.available_task_ids,
+                    blocked_task_ids=snapshot.blocked_task_ids,
                     remaining=remaining[: policy.reminder_task_limit],
                 ),
             ),
@@ -122,17 +140,28 @@ def _render_hidden_task_reminder(
     *,
     task_list_id: str,
     turns_since_touch: int,
+    available_task_ids: Sequence[str],
+    blocked_task_ids: Sequence[str],
     remaining: Sequence[Any],
 ) -> str:
     lines = [
         "Hidden runtime reminder: keep the shared planning task list current when it changes.",
         f"Resolved task_list_id: {task_list_id}",
         f"Task list has not been updated for {turns_since_touch} turn(s).",
-        "Current unfinished tasks:",
+        (
+            f"Derived readiness: {len(available_task_ids)} available, "
+            f"{len(blocked_task_ids)} blocked."
+        ),
+        "Current unresolved tasks:",
     ]
     for task in remaining:
-        owner = f" owner={task.owner}" if getattr(task, "owner", None) else ""
-        lines.append(f"- [{task.status.value}] {task.subject}{owner}")
+        owner = f" owner={task.task.owner}" if getattr(task.task, "owner", None) else ""
+        blockers = ""
+        if getattr(task, "unresolved_blockers", ()):
+            blockers = f" blockers={','.join(task.unresolved_blockers)}"
+        lines.append(
+            f"- [{task.readiness_state.value}] {task.task.subject}{owner}{blockers}"
+        )
     return "\n".join(lines)
 
 

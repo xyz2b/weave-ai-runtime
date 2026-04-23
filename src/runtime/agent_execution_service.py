@@ -11,6 +11,7 @@ from .agent_execution import (
     AgentRunStatus,
     ChildRunStore,
 )
+from .child_run_continuation import ChildRunContinuationBridge
 from .control_plane import RuntimeControlPlaneContext
 from .context_window import (
     serialize_model_context_window_profile,
@@ -68,6 +69,10 @@ class AgentExecutionService:
         self._model_providers = dict(model_providers or {})
         self._model_routes = dict(model_routes or {})
         self._default_model_route = default_model_route
+        self._continuation_bridge = ChildRunContinuationBridge(
+            session_registry=runtime_services.session_registry,
+            runtime_metadata=runtime_services.metadata,
+        )
 
     @property
     def run_store(self) -> ChildRunStore:
@@ -238,6 +243,7 @@ class AgentExecutionService:
             )
             await self._run_store.upsert(run_record)
             await self._turn_engine.emit_child_run(run_record)
+            await self._deliver_child_run_continuation(run_record)
             result = AgentRunResult(
                 agent_name=agent.name,
                 status=run_status.value,
@@ -268,6 +274,7 @@ class AgentExecutionService:
             )
             await self._run_store.upsert(failed_record)
             await self._turn_engine.emit_child_run(failed_record)
+            await self._deliver_child_run_continuation(failed_record)
             await self._dispatch_subagent_stop(
                 execution_spec.session_id,
                 execution_spec.turn_id,
@@ -327,6 +334,7 @@ class AgentExecutionService:
         )
         await self._run_store.upsert(record)
         await self._turn_engine.emit_child_run(record)
+        await self._deliver_child_run_continuation(record)
         return record
 
     async def _prepare_isolation(
@@ -412,6 +420,7 @@ class AgentExecutionService:
         )
         await self._run_store.upsert(denied_record)
         await self._turn_engine.emit_child_run(denied_record)
+        await self._deliver_child_run_continuation(denied_record)
         return AgentRunResult(
             agent_name=agent.name,
             status=AgentRunStatus.DENIED.value,
@@ -524,6 +533,11 @@ class AgentExecutionService:
                 EXECUTION_POLICY_STATE_KEY: ExecutionPolicyState(policy),
             }
         )
+
+    async def _deliver_child_run_continuation(self, record: AgentRunRecord) -> None:
+        if not record.terminal:
+            return
+        await self._continuation_bridge.deliver(record)
 
     def _apply_execution_overrides(
         self,

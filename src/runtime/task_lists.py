@@ -9,7 +9,7 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime
 from enum import Enum, StrEnum
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Mapping, Protocol, Sequence
+from typing import Any, Callable, Mapping, Protocol, Sequence
 from uuid import uuid4
 
 from .contracts import RuntimePrivateContext, private_context_from_legacy_runtime_context, utc_now
@@ -22,6 +22,14 @@ _SAFE_FILENAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
 class TaskListStatus(StrEnum):
     PENDING = "pending"
+    IN_PROGRESS = "in_progress"
+    COMPLETED = "completed"
+
+
+class TaskReadinessState(StrEnum):
+    AVAILABLE = "available"
+    BLOCKED = "blocked"
+    CLAIMED = "claimed"
     IN_PROGRESS = "in_progress"
     COMPLETED = "completed"
 
@@ -108,6 +116,62 @@ class TaskListSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class TaskOrchestrationEntry:
+    task: TaskListEntry
+    readiness_state: TaskReadinessState
+    unresolved_blockers: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "unresolved_blockers", tuple(str(item) for item in self.unresolved_blockers))
+
+    def serialize(self) -> dict[str, Any]:
+        payload = self.task.serialize()
+        payload["readiness_state"] = self.readiness_state.value
+        payload["unresolved_blockers"] = list(self.unresolved_blockers)
+        return payload
+
+
+@dataclass(frozen=True, slots=True)
+class TaskOrchestrationSnapshot:
+    list_id: str
+    tasks: tuple[TaskOrchestrationEntry, ...] = ()
+    available_task_ids: tuple[str, ...] = ()
+    blocked_task_ids: tuple[str, ...] = ()
+    claimed_task_ids: tuple[str, ...] = ()
+    in_progress_task_ids: tuple[str, ...] = ()
+    completed_task_ids: tuple[str, ...] = ()
+    unresolved_blocker_ids: tuple[str, ...] = ()
+    updated_at: datetime = field(default_factory=utc_now)
+
+    def __post_init__(self) -> None:
+        ordered = tuple(sorted(self.tasks, key=lambda item: (item.task.created_at, item.task.task_id)))
+        object.__setattr__(self, "tasks", ordered)
+        object.__setattr__(self, "available_task_ids", tuple(str(item) for item in self.available_task_ids))
+        object.__setattr__(self, "blocked_task_ids", tuple(str(item) for item in self.blocked_task_ids))
+        object.__setattr__(self, "claimed_task_ids", tuple(str(item) for item in self.claimed_task_ids))
+        object.__setattr__(self, "in_progress_task_ids", tuple(str(item) for item in self.in_progress_task_ids))
+        object.__setattr__(self, "completed_task_ids", tuple(str(item) for item in self.completed_task_ids))
+        object.__setattr__(
+            self,
+            "unresolved_blocker_ids",
+            tuple(str(item) for item in self.unresolved_blocker_ids),
+        )
+
+    def serialize(self) -> dict[str, Any]:
+        return {
+            "list_id": self.list_id,
+            "updated_at": self.updated_at.isoformat(),
+            "tasks": [task.serialize() for task in self.tasks],
+            "available_task_ids": list(self.available_task_ids),
+            "blocked_task_ids": list(self.blocked_task_ids),
+            "claimed_task_ids": list(self.claimed_task_ids),
+            "in_progress_task_ids": list(self.in_progress_task_ids),
+            "completed_task_ids": list(self.completed_task_ids),
+            "unresolved_blocker_ids": list(self.unresolved_blocker_ids),
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class TaskDisciplinePolicy:
     enabled: bool = True
     reminder_turn_threshold: int = 3
@@ -184,6 +248,67 @@ class TaskListMultipleInProgressError(TaskListError):
                 "task_list_id": list_id,
                 "task_id": task_id,
                 "existing_task_id": existing_task_id,
+            },
+        )
+
+
+class TaskListBlockedError(TaskListError):
+    def __init__(self, *, list_id: str, task_id: str, unresolved_blockers: Sequence[str]) -> None:
+        blockers = tuple(str(item) for item in unresolved_blockers)
+        super().__init__(
+            "blocked",
+            f"Task '{task_id}' is blocked by unresolved tasks: {', '.join(blockers)}",
+            details={
+                "task_list_id": list_id,
+                "task_id": task_id,
+                "unresolved_blockers": list(blockers),
+            },
+        )
+
+
+class TaskListAlreadyClaimedError(TaskListError):
+    def __init__(self, *, list_id: str, task_id: str, owner: str | None) -> None:
+        super().__init__(
+            "already_claimed",
+            f"Task '{task_id}' in task list '{list_id}' is already claimed"
+            + (f" by '{owner}'" if owner else ""),
+            details={
+                "task_list_id": list_id,
+                "task_id": task_id,
+                "owner": owner,
+            },
+        )
+
+
+class TaskListOwnerBusyError(TaskListError):
+    def __init__(self, *, list_id: str, task_id: str, owner: str, existing_task_id: str) -> None:
+        super().__init__(
+            "owner_busy",
+            (
+                f"Owner '{owner}' already holds unresolved task '{existing_task_id}' "
+                f"in task list '{list_id}'"
+            ),
+            details={
+                "task_list_id": list_id,
+                "task_id": task_id,
+                "owner": owner,
+                "existing_task_id": existing_task_id,
+            },
+        )
+
+
+class TaskListDependencyCycleError(TaskListError):
+    def __init__(self, *, list_id: str, blocker_task_id: str, blocked_task_id: str) -> None:
+        super().__init__(
+            "dependency_cycle",
+            (
+                f"Adding dependency '{blocker_task_id}' -> '{blocked_task_id}' "
+                f"would create a cycle in task list '{list_id}'"
+            ),
+            details={
+                "task_list_id": list_id,
+                "blocker_task_id": blocker_task_id,
+                "blocked_task_id": blocked_task_id,
             },
         )
 
@@ -287,6 +412,17 @@ class DefaultTaskListService:
             return TaskListSnapshot(list_id=list_id)
         return snapshot
 
+    async def get_orchestration_snapshot(self, list_id: str) -> TaskOrchestrationSnapshot:
+        snapshot = await self.get_snapshot(list_id)
+        return _derive_orchestration_snapshot(snapshot)
+
+    async def get_orchestration_task(self, list_id: str, task_id: str) -> TaskOrchestrationEntry | None:
+        snapshot = await self.get_orchestration_snapshot(list_id)
+        for task in snapshot.tasks:
+            if task.task.task_id == task_id:
+                return task
+        return None
+
     async def create(
         self,
         list_id: str,
@@ -304,23 +440,35 @@ class DefaultTaskListService:
             raise TaskListInvalidRequestError("task_create requires a non-empty subject")
         async with self._lock_for(list_id):
             snapshot = await self.get_snapshot(list_id)
+            mutation_time = utc_now()
             task = TaskListEntry(
                 task_id=uuid4().hex,
                 subject=normalized_subject,
                 description=_coerce_optional_string(description),
                 active_form=_coerce_optional_string(active_form),
                 owner=_coerce_optional_string(owner),
-                blocks=_coerce_string_sequence(blocks),
-                blocked_by=_coerce_string_sequence(blocked_by),
                 metadata=_coerce_mapping(metadata),
+                created_at=mutation_time,
+                updated_at=mutation_time,
             )
-            updated = replace(
+            tasks = list(snapshot.tasks) + [task]
+            if blocks or blocked_by:
+                tasks, _ = _apply_dependency_overrides(
+                    tasks,
+                    list_id=list_id,
+                    task_id=task.task_id,
+                    blocks=blocks,
+                    blocked_by=blocked_by,
+                    mutation_time=mutation_time,
+                )
+                task = next(item for item in tasks if item.task_id == task.task_id)
+            next_snapshot = replace(
                 snapshot,
-                tasks=tuple(snapshot.tasks) + (task,),
-                updated_at=utc_now(),
+                tasks=tuple(tasks),
+                updated_at=mutation_time,
             )
-            await self.store.save(updated)
-        await self._notify_watchers(updated)
+            await self.store.save(next_snapshot)
+        await self._notify_watchers(next_snapshot)
         return task
 
     async def get(self, list_id: str, task_id: str) -> TaskListEntry | None:
@@ -349,31 +497,16 @@ class DefaultTaskListService:
         async with self._lock_for(list_id):
             snapshot = await self.get_snapshot(list_id)
             tasks = list(snapshot.tasks)
-            index = next((offset for offset, task in enumerate(tasks) if task.task_id == task_id), None)
-            if index is None:
-                raise TaskListNotFoundError(list_id=list_id, task_id=task_id)
+            index = _find_task_index(tasks, list_id=list_id, task_id=task_id)
             existing = tasks[index]
             updated = self._apply_patch(existing, patch)
             if strict_single_in_progress and updated.status is TaskListStatus.IN_PROGRESS:
-                current = next(
-                    (
-                        task.task_id
-                        for task in tasks
-                        if task.task_id != task_id and task.status is TaskListStatus.IN_PROGRESS
-                    ),
-                    None,
-                )
-                if current is not None:
-                    raise TaskListMultipleInProgressError(
-                        list_id=list_id,
-                        task_id=task_id,
-                        existing_task_id=current,
-                    )
+                _validate_single_in_progress(tasks, list_id=list_id, task_id=task_id)
             tasks[index] = updated
             next_snapshot = replace(
                 snapshot,
                 tasks=tuple(tasks),
-                updated_at=utc_now(),
+                updated_at=updated.updated_at,
             )
             await self.store.save(next_snapshot)
         await self._notify_watchers(next_snapshot)
@@ -382,19 +515,189 @@ class DefaultTaskListService:
     async def delete(self, list_id: str, task_id: str) -> None:
         async with self._lock_for(list_id):
             snapshot = await self.get_snapshot(list_id)
-            remaining = tuple(task for task in snapshot.tasks if task.task_id != task_id)
+            remaining = [task for task in snapshot.tasks if task.task_id != task_id]
             if len(remaining) == len(snapshot.tasks):
                 raise TaskListNotFoundError(list_id=list_id, task_id=task_id)
-            next_snapshot = replace(snapshot, tasks=remaining, updated_at=utc_now())
+            mutation_time = utc_now()
+            edges, _ = _normalized_dependency_graph(remaining)
+            normalized_remaining, _ = _tasks_from_graph(remaining, edges, mutation_time)
+            next_snapshot = replace(
+                snapshot,
+                tasks=tuple(normalized_remaining),
+                updated_at=mutation_time,
+            )
             await self.store.save(next_snapshot)
         await self._notify_watchers(next_snapshot)
 
-    async def claim(self, list_id: str, task_id: str, owner: str | None) -> TaskListEntry:
-        return await self.update(
-            list_id,
-            task_id,
-            patch={"owner": _coerce_optional_string(owner)},
-        )
+    async def claim(
+        self,
+        list_id: str,
+        task_id: str,
+        owner: str | None,
+        *,
+        set_in_progress: bool = True,
+        enforce_owner_busy: bool = False,
+        strict_single_in_progress: bool = False,
+    ) -> TaskListEntry:
+        next_snapshot: TaskListSnapshot | None = None
+        async with self._lock_for(list_id):
+            snapshot = await self.get_snapshot(list_id)
+            tasks = list(snapshot.tasks)
+            updated, changed = _claim_task(
+                tasks,
+                list_id=list_id,
+                task_id=task_id,
+                owner=owner,
+                set_in_progress=set_in_progress,
+                enforce_owner_busy=enforce_owner_busy,
+                strict_single_in_progress=strict_single_in_progress,
+            )
+            if changed:
+                next_snapshot = replace(
+                    snapshot,
+                    tasks=tuple(tasks),
+                    updated_at=updated.updated_at,
+                )
+                await self.store.save(next_snapshot)
+        if next_snapshot is not None:
+            await self._notify_watchers(next_snapshot)
+        return updated
+
+    async def release(self, list_id: str, task_id: str) -> TaskListEntry:
+        next_snapshot: TaskListSnapshot | None = None
+        async with self._lock_for(list_id):
+            snapshot = await self.get_snapshot(list_id)
+            tasks = list(snapshot.tasks)
+            updated, changed = _release_task(
+                tasks,
+                list_id=list_id,
+                task_id=task_id,
+            )
+            if changed:
+                next_snapshot = replace(
+                    snapshot,
+                    tasks=tuple(tasks),
+                    updated_at=updated.updated_at,
+                )
+                await self.store.save(next_snapshot)
+        if next_snapshot is not None:
+            await self._notify_watchers(next_snapshot)
+        return updated
+
+    async def assign_next(
+        self,
+        list_id: str,
+        owner: str | None,
+        *,
+        set_in_progress: bool = True,
+        enforce_owner_busy: bool = False,
+        strict_single_in_progress: bool = False,
+    ) -> TaskListEntry | None:
+        normalized_owner = _coerce_optional_string(owner)
+        if normalized_owner is None:
+            raise TaskListInvalidRequestError(
+                "task_assign_next requires a non-empty owner",
+                details={"task_list_id": list_id},
+            )
+        next_snapshot: TaskListSnapshot | None = None
+        assigned: TaskListEntry | None = None
+        async with self._lock_for(list_id):
+            snapshot = await self.get_snapshot(list_id)
+            tasks = list(snapshot.tasks)
+            view = _derive_orchestration_snapshot(snapshot)
+            next_task_id = next(
+                (
+                    task.task.task_id
+                    for task in view.tasks
+                    if task.readiness_state is TaskReadinessState.AVAILABLE
+                ),
+                None,
+            )
+            if next_task_id is None:
+                return None
+            assigned, changed = _claim_task(
+                tasks,
+                list_id=list_id,
+                task_id=next_task_id,
+                owner=normalized_owner,
+                set_in_progress=set_in_progress,
+                enforce_owner_busy=enforce_owner_busy,
+                strict_single_in_progress=strict_single_in_progress,
+            )
+            if changed:
+                next_snapshot = replace(
+                    snapshot,
+                    tasks=tuple(tasks),
+                    updated_at=assigned.updated_at,
+                )
+                await self.store.save(next_snapshot)
+        if next_snapshot is not None:
+            await self._notify_watchers(next_snapshot)
+        return assigned
+
+    async def add_dependency(
+        self,
+        list_id: str,
+        blocker_task_id: str,
+        blocked_task_id: str,
+    ) -> tuple[TaskListEntry, TaskListEntry]:
+        next_snapshot: TaskListSnapshot | None = None
+        async with self._lock_for(list_id):
+            snapshot = await self.get_snapshot(list_id)
+            tasks = list(snapshot.tasks)
+            mutation_time = utc_now()
+            tasks, changed = _mutate_dependency_graph(
+                tasks,
+                list_id=list_id,
+                blocker_task_id=blocker_task_id,
+                blocked_task_id=blocked_task_id,
+                remove=False,
+                mutation_time=mutation_time,
+            )
+            blocker_task = next(task for task in tasks if task.task_id == blocker_task_id)
+            blocked_task = next(task for task in tasks if task.task_id == blocked_task_id)
+            if changed:
+                next_snapshot = replace(
+                    snapshot,
+                    tasks=tuple(tasks),
+                    updated_at=mutation_time,
+                )
+                await self.store.save(next_snapshot)
+        if next_snapshot is not None:
+            await self._notify_watchers(next_snapshot)
+        return blocker_task, blocked_task
+
+    async def remove_dependency(
+        self,
+        list_id: str,
+        blocker_task_id: str,
+        blocked_task_id: str,
+    ) -> tuple[TaskListEntry, TaskListEntry]:
+        next_snapshot: TaskListSnapshot | None = None
+        async with self._lock_for(list_id):
+            snapshot = await self.get_snapshot(list_id)
+            tasks = list(snapshot.tasks)
+            mutation_time = utc_now()
+            tasks, changed = _mutate_dependency_graph(
+                tasks,
+                list_id=list_id,
+                blocker_task_id=blocker_task_id,
+                blocked_task_id=blocked_task_id,
+                remove=True,
+                mutation_time=mutation_time,
+            )
+            blocker_task = next(task for task in tasks if task.task_id == blocker_task_id)
+            blocked_task = next(task for task in tasks if task.task_id == blocked_task_id)
+            if changed:
+                next_snapshot = replace(
+                    snapshot,
+                    tasks=tuple(tasks),
+                    updated_at=mutation_time,
+                )
+                await self.store.save(next_snapshot)
+        if next_snapshot is not None:
+            await self._notify_watchers(next_snapshot)
+        return blocker_task, blocked_task
 
     async def watch(
         self,
@@ -444,15 +747,12 @@ class DefaultTaskListService:
             "subject",
             "description",
             "active_form",
-            "owner",
-            "blocks",
-            "blocked_by",
             "metadata",
         }
         unsupported = sorted(str(key) for key in patch if key not in allowed)
         if unsupported:
             raise TaskListInvalidRequestError(
-                f"task_update does not support fields: {', '.join(unsupported)}",
+                _task_update_unsupported_message(unsupported),
                 details={"unsupported_fields": unsupported, "task_id": task.task_id},
             )
 
@@ -490,13 +790,6 @@ class DefaultTaskListService:
                 else task.active_form
             ),
             status=_coerce_task_status(patch.get("status")) if "status" in patch else task.status,
-            owner=_coerce_optional_string(patch.get("owner")) if "owner" in patch else task.owner,
-            blocks=_coerce_string_sequence(patch.get("blocks")) if "blocks" in patch else task.blocks,
-            blocked_by=(
-                _coerce_string_sequence(patch.get("blocked_by"))
-                if "blocked_by" in patch
-                else task.blocked_by
-            ),
             metadata=updated_metadata,
             updated_at=utc_now(),
         )
@@ -536,11 +829,25 @@ def resolve_task_list_id(
     return f"session:{session_id}"
 
 
-def task_list_entry_to_dict(entry: TaskListEntry) -> dict[str, Any]:
+def task_list_entry_to_dict(entry: TaskListEntry | TaskOrchestrationEntry) -> dict[str, Any]:
     return entry.serialize()
 
 
-def task_list_snapshot_to_dict(snapshot: TaskListSnapshot) -> dict[str, Any]:
+def task_orchestration_entry_to_dict(entry: TaskOrchestrationEntry) -> dict[str, Any]:
+    return entry.serialize()
+
+
+def task_list_snapshot_to_dict(
+    snapshot: TaskListSnapshot | TaskOrchestrationSnapshot,
+    *,
+    orchestration: TaskOrchestrationSnapshot | None = None,
+) -> dict[str, Any]:
+    if orchestration is not None:
+        return orchestration.serialize()
+    return snapshot.serialize()
+
+
+def task_orchestration_snapshot_to_dict(snapshot: TaskOrchestrationSnapshot) -> dict[str, Any]:
     return snapshot.serialize()
 
 
@@ -548,6 +855,410 @@ async def _maybe_await(value: Any) -> Any:
     if inspect.isawaitable(value):
         return await value
     return value
+
+
+def _find_task_index(tasks: Sequence[TaskListEntry], *, list_id: str, task_id: str) -> int:
+    for index, task in enumerate(tasks):
+        if task.task_id == task_id:
+            return index
+    raise TaskListNotFoundError(list_id=list_id, task_id=task_id)
+
+
+def _claim_task(
+    tasks: list[TaskListEntry],
+    *,
+    list_id: str,
+    task_id: str,
+    owner: str | None,
+    set_in_progress: bool,
+    enforce_owner_busy: bool,
+    strict_single_in_progress: bool,
+) -> tuple[TaskListEntry, bool]:
+    normalized_owner = _coerce_optional_string(owner)
+    if normalized_owner is None:
+        raise TaskListInvalidRequestError(
+            "task_claim requires a non-empty owner",
+            details={"task_list_id": list_id, "task_id": task_id},
+        )
+    index = _find_task_index(tasks, list_id=list_id, task_id=task_id)
+    existing = tasks[index]
+    desired_status = existing.status
+    if set_in_progress and existing.status is not TaskListStatus.COMPLETED:
+        desired_status = TaskListStatus.IN_PROGRESS
+
+    if existing.owner == normalized_owner:
+        if desired_status is existing.status:
+            return existing, False
+        if strict_single_in_progress and desired_status is TaskListStatus.IN_PROGRESS:
+            _validate_single_in_progress(tasks, list_id=list_id, task_id=task_id)
+        updated = replace(existing, status=desired_status, updated_at=utc_now())
+        tasks[index] = updated
+        return updated, True
+
+    if existing.status is TaskListStatus.COMPLETED:
+        raise TaskListInvalidRequestError(
+            "task_claim does not support completed tasks",
+            details={"task_list_id": list_id, "task_id": task_id},
+        )
+
+    if existing.owner is not None:
+        raise TaskListAlreadyClaimedError(
+            list_id=list_id,
+            task_id=task_id,
+            owner=existing.owner,
+        )
+
+    unresolved_blockers = _unresolved_blockers(tasks, task_id)
+    if unresolved_blockers:
+        raise TaskListBlockedError(
+            list_id=list_id,
+            task_id=task_id,
+            unresolved_blockers=unresolved_blockers,
+        )
+
+    if enforce_owner_busy:
+        _assert_owner_available(
+            tasks,
+            list_id=list_id,
+            task_id=task_id,
+            owner=normalized_owner,
+        )
+
+    if strict_single_in_progress and desired_status is TaskListStatus.IN_PROGRESS:
+        _validate_single_in_progress(tasks, list_id=list_id, task_id=task_id)
+
+    updated = replace(
+        existing,
+        owner=normalized_owner,
+        status=desired_status,
+        updated_at=utc_now(),
+    )
+    tasks[index] = updated
+    return updated, True
+
+
+def _release_task(
+    tasks: list[TaskListEntry],
+    *,
+    list_id: str,
+    task_id: str,
+) -> tuple[TaskListEntry, bool]:
+    index = _find_task_index(tasks, list_id=list_id, task_id=task_id)
+    existing = tasks[index]
+    desired_status = existing.status if existing.status is TaskListStatus.COMPLETED else TaskListStatus.PENDING
+    if existing.owner is None and existing.status is desired_status:
+        return existing, False
+    updated = replace(
+        existing,
+        owner=None,
+        status=desired_status,
+        updated_at=utc_now(),
+    )
+    tasks[index] = updated
+    return updated, True
+
+
+def _validate_single_in_progress(
+    tasks: Sequence[TaskListEntry],
+    *,
+    list_id: str,
+    task_id: str,
+) -> None:
+    current = next(
+        (
+            task.task_id
+            for task in tasks
+            if task.task_id != task_id and task.status is TaskListStatus.IN_PROGRESS
+        ),
+        None,
+    )
+    if current is not None:
+        raise TaskListMultipleInProgressError(
+            list_id=list_id,
+            task_id=task_id,
+            existing_task_id=current,
+        )
+
+
+def _assert_owner_available(
+    tasks: Sequence[TaskListEntry],
+    *,
+    list_id: str,
+    task_id: str,
+    owner: str,
+) -> None:
+    current = next(
+        (
+            task.task_id
+            for task in tasks
+            if task.task_id != task_id
+            and task.owner == owner
+            and task.status is not TaskListStatus.COMPLETED
+        ),
+        None,
+    )
+    if current is not None:
+        raise TaskListOwnerBusyError(
+            list_id=list_id,
+            task_id=task_id,
+            owner=owner,
+            existing_task_id=current,
+        )
+
+
+def _mutate_dependency_graph(
+    tasks: list[TaskListEntry],
+    *,
+    list_id: str,
+    blocker_task_id: str,
+    blocked_task_id: str,
+    remove: bool,
+    mutation_time: datetime,
+) -> tuple[list[TaskListEntry], bool]:
+    _find_task_index(tasks, list_id=list_id, task_id=blocker_task_id)
+    _find_task_index(tasks, list_id=list_id, task_id=blocked_task_id)
+    if not remove and blocker_task_id == blocked_task_id:
+        raise TaskListDependencyCycleError(
+            list_id=list_id,
+            blocker_task_id=blocker_task_id,
+            blocked_task_id=blocked_task_id,
+        )
+    edges, _ = _normalized_dependency_graph(tasks)
+    if remove:
+        if blocked_task_id in edges[blocker_task_id]:
+            edges[blocker_task_id].remove(blocked_task_id)
+        return _tasks_from_graph(tasks, edges, mutation_time)
+    if blocked_task_id not in edges[blocker_task_id]:
+        if _path_exists(edges, start=blocked_task_id, target=blocker_task_id):
+            raise TaskListDependencyCycleError(
+                list_id=list_id,
+                blocker_task_id=blocker_task_id,
+                blocked_task_id=blocked_task_id,
+            )
+        edges[blocker_task_id].add(blocked_task_id)
+    return _tasks_from_graph(tasks, edges, mutation_time)
+
+
+def _apply_dependency_overrides(
+    tasks: list[TaskListEntry],
+    *,
+    list_id: str,
+    task_id: str,
+    blocks: Sequence[str],
+    blocked_by: Sequence[str],
+    mutation_time: datetime,
+) -> tuple[list[TaskListEntry], bool]:
+    _find_task_index(tasks, list_id=list_id, task_id=task_id)
+    task_ids = {task.task_id for task in tasks}
+    edges, _ = _normalized_dependency_graph(tasks)
+
+    for blocked_task_id in _coerce_string_sequence(blocks):
+        if blocked_task_id not in task_ids:
+            raise TaskListNotFoundError(list_id=list_id, task_id=blocked_task_id)
+        if task_id == blocked_task_id or _path_exists(edges, start=blocked_task_id, target=task_id):
+            raise TaskListDependencyCycleError(
+                list_id=list_id,
+                blocker_task_id=task_id,
+                blocked_task_id=blocked_task_id,
+            )
+        edges[task_id].add(blocked_task_id)
+
+    for blocker_task_id in _coerce_string_sequence(blocked_by):
+        if blocker_task_id not in task_ids:
+            raise TaskListNotFoundError(list_id=list_id, task_id=blocker_task_id)
+        if blocker_task_id == task_id or _path_exists(edges, start=task_id, target=blocker_task_id):
+            raise TaskListDependencyCycleError(
+                list_id=list_id,
+                blocker_task_id=blocker_task_id,
+                blocked_task_id=task_id,
+            )
+        edges[blocker_task_id].add(task_id)
+
+    return _tasks_from_graph(tasks, edges, mutation_time)
+
+
+def _derive_orchestration_snapshot(snapshot: TaskListSnapshot) -> TaskOrchestrationSnapshot:
+    order = {task.task_id: index for index, task in enumerate(snapshot.tasks)}
+    _, blocked_by = _normalized_dependency_graph(snapshot.tasks)
+    available_task_ids: list[str] = []
+    blocked_task_ids: list[str] = []
+    claimed_task_ids: list[str] = []
+    in_progress_task_ids: list[str] = []
+    completed_task_ids: list[str] = []
+    unresolved_blocker_ids: set[str] = set()
+    tasks: list[TaskOrchestrationEntry] = []
+    task_map = {task.task_id: task for task in snapshot.tasks}
+
+    for task in snapshot.tasks:
+        blockers = tuple(
+            blocker_id
+            for blocker_id in sorted(
+                blocked_by.get(task.task_id, set()),
+                key=lambda item: (order.get(item, len(order)), item),
+            )
+            if task_map[blocker_id].status is not TaskListStatus.COMPLETED
+        )
+        state = _readiness_state(task, blockers)
+        tasks.append(
+            TaskOrchestrationEntry(
+                task=task,
+                readiness_state=state,
+                unresolved_blockers=blockers,
+            )
+        )
+        if state is TaskReadinessState.AVAILABLE:
+            available_task_ids.append(task.task_id)
+        elif state is TaskReadinessState.BLOCKED:
+            blocked_task_ids.append(task.task_id)
+        elif state is TaskReadinessState.CLAIMED:
+            claimed_task_ids.append(task.task_id)
+        elif state is TaskReadinessState.IN_PROGRESS:
+            in_progress_task_ids.append(task.task_id)
+        elif state is TaskReadinessState.COMPLETED:
+            completed_task_ids.append(task.task_id)
+        unresolved_blocker_ids.update(blockers)
+
+    ordered_unresolved = tuple(
+        blocker_id
+        for blocker_id, _ in sorted(
+            ((item, order.get(item, len(order))) for item in unresolved_blocker_ids),
+            key=lambda item: (item[1], item[0]),
+        )
+    )
+    return TaskOrchestrationSnapshot(
+        list_id=snapshot.list_id,
+        tasks=tuple(tasks),
+        available_task_ids=tuple(available_task_ids),
+        blocked_task_ids=tuple(blocked_task_ids),
+        claimed_task_ids=tuple(claimed_task_ids),
+        in_progress_task_ids=tuple(in_progress_task_ids),
+        completed_task_ids=tuple(completed_task_ids),
+        unresolved_blocker_ids=ordered_unresolved,
+        updated_at=snapshot.updated_at,
+    )
+
+
+def _readiness_state(
+    task: TaskListEntry,
+    unresolved_blockers: Sequence[str],
+) -> TaskReadinessState:
+    if task.status is TaskListStatus.COMPLETED:
+        return TaskReadinessState.COMPLETED
+    if task.status is TaskListStatus.IN_PROGRESS:
+        return TaskReadinessState.IN_PROGRESS
+    if task.owner is not None:
+        return TaskReadinessState.CLAIMED
+    if unresolved_blockers:
+        return TaskReadinessState.BLOCKED
+    return TaskReadinessState.AVAILABLE
+
+
+def _unresolved_blockers(tasks: Sequence[TaskListEntry], task_id: str) -> tuple[str, ...]:
+    order = {task.task_id: index for index, task in enumerate(tasks)}
+    task_map = {task.task_id: task for task in tasks}
+    _, blocked_by = _normalized_dependency_graph(tasks)
+    return tuple(
+        blocker_id
+        for blocker_id in sorted(
+            blocked_by.get(task_id, set()),
+            key=lambda item: (order.get(item, len(order)), item),
+        )
+        if task_map[blocker_id].status is not TaskListStatus.COMPLETED
+    )
+
+
+def _normalized_dependency_graph(
+    tasks: Sequence[TaskListEntry],
+) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
+    task_ids = {task.task_id for task in tasks}
+    edges = {task.task_id: set() for task in tasks}
+    for task in tasks:
+        for blocked_task_id in task.blocks:
+            if blocked_task_id in task_ids and blocked_task_id != task.task_id:
+                edges[task.task_id].add(blocked_task_id)
+        for blocker_task_id in task.blocked_by:
+            if blocker_task_id in task_ids and blocker_task_id != task.task_id:
+                edges[blocker_task_id].add(task.task_id)
+    reverse = {task_id: set() for task_id in task_ids}
+    for blocker_task_id, blocked_task_ids in edges.items():
+        for blocked_task_id in blocked_task_ids:
+            reverse[blocked_task_id].add(blocker_task_id)
+    return edges, reverse
+
+
+def _tasks_from_graph(
+    tasks: Sequence[TaskListEntry],
+    edges: Mapping[str, set[str]],
+    mutation_time: datetime,
+) -> tuple[list[TaskListEntry], bool]:
+    order = {task.task_id: index for index, task in enumerate(tasks)}
+    reverse: dict[str, set[str]] = {task.task_id: set() for task in tasks}
+    for blocker_task_id, blocked_task_ids in edges.items():
+        for blocked_task_id in blocked_task_ids:
+            if blocked_task_id in reverse:
+                reverse[blocked_task_id].add(blocker_task_id)
+    updated_tasks: list[TaskListEntry] = []
+    changed = False
+    for task in tasks:
+        new_blocks = tuple(
+            sorted(
+                edges.get(task.task_id, set()),
+                key=lambda item: (order.get(item, len(order)), item),
+            )
+        )
+        new_blocked_by = tuple(
+            sorted(
+                reverse.get(task.task_id, set()),
+                key=lambda item: (order.get(item, len(order)), item),
+            )
+        )
+        if new_blocks != task.blocks or new_blocked_by != task.blocked_by:
+            updated_tasks.append(
+                replace(
+                    task,
+                    blocks=new_blocks,
+                    blocked_by=new_blocked_by,
+                    updated_at=mutation_time,
+                )
+            )
+            changed = True
+            continue
+        updated_tasks.append(task)
+    return updated_tasks, changed
+
+
+def _path_exists(
+    edges: Mapping[str, set[str]],
+    *,
+    start: str,
+    target: str,
+) -> bool:
+    if start == target:
+        return True
+    seen: set[str] = set()
+    stack = [start]
+    while stack:
+        current = stack.pop()
+        if current in seen:
+            continue
+        seen.add(current)
+        for candidate in edges.get(current, set()):
+            if candidate == target:
+                return True
+            stack.append(candidate)
+    return False
+
+
+def _task_update_unsupported_message(unsupported: Sequence[str]) -> str:
+    fields = ", ".join(unsupported)
+    guidance: list[str] = []
+    if any(field == "owner" for field in unsupported):
+        guidance.append("Use task_claim or task_release for ownership changes.")
+    if any(field in {"blocks", "blocked_by"} for field in unsupported):
+        guidance.append("Use task_block or task_unblock for dependency changes.")
+    if guidance:
+        return f"task_update does not support fields: {fields}. {' '.join(guidance)}"
+    return f"task_update does not support fields: {fields}"
 
 
 def _coerce_optional_string(value: object) -> str | None:
@@ -567,7 +1278,8 @@ def _coerce_string_sequence(value: object) -> tuple[str, ...]:
     if value is None:
         return ()
     if isinstance(value, str):
-        return (_coerce_optional_string(value) or "",)
+        normalized = _coerce_optional_string(value)
+        return (normalized,) if normalized is not None else ()
     if not isinstance(value, Sequence):
         return ()
     normalized = [
@@ -648,15 +1360,24 @@ __all__ = [
     "TASK_LIST_ID_EXTENSION_KEY",
     "TASK_LIST_RESOLVED_ID_EXTENSION_KEY",
     "TaskDisciplinePolicy",
+    "TaskListAlreadyClaimedError",
+    "TaskListBlockedError",
+    "TaskListDependencyCycleError",
     "TaskListEntry",
     "TaskListError",
     "TaskListInvalidRequestError",
     "TaskListMultipleInProgressError",
     "TaskListNotFoundError",
+    "TaskListOwnerBusyError",
     "TaskListSnapshot",
     "TaskListStatus",
+    "TaskOrchestrationEntry",
+    "TaskOrchestrationSnapshot",
+    "TaskReadinessState",
     "coerce_private_context",
     "resolve_task_list_id",
     "task_list_entry_to_dict",
     "task_list_snapshot_to_dict",
+    "task_orchestration_entry_to_dict",
+    "task_orchestration_snapshot_to_dict",
 ]

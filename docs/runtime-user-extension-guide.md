@@ -223,7 +223,15 @@ bundled > user > project
   - `task_create`
   - `task_get`
   - `task_update`
+  - `task_claim`
+  - `task_release`
+  - `task_assign_next`
+  - `task_block`
+  - `task_unblock`
   - `task_list`
+
+如果你已经给了 `task_update`，要明确它现在只适合改非 orchestration 字段。
+owner 与 dependency edge 维护应走专门的 orchestration tools，而不是继续发 raw patch。
 
 运维型 agent：
 
@@ -478,6 +486,9 @@ Invocation catalog 不只接 skill。
 
 1. 不关心 child run durable history 时，可以不管。
 2. 想保留 background/fork run 历史时，实现自己的 `ChildRunStore`。
+
+要注意：`ChildRunStore` 解决的是 durable history，不是 wake-up policy。
+waiting parent session 被 terminal child run 唤醒，是 runtime continuation bridge 的职责；typed `CHILD_RUN` event 仍然是观测真相。
 
 ### 4.3 MemoryConfig：声明式调整记忆行为
 

@@ -34,9 +34,14 @@ from .tool_impls import (
     read_file_tool,
     skill_tool,
     sleep_tool,
+    task_assign_next_tool,
+    task_block_tool,
+    task_claim_tool,
     task_create_tool,
     task_get_tool,
     task_list_tool,
+    task_release_tool,
+    task_unblock_tool,
     task_update_tool,
     validate_agent_tool,
     validate_bash_tool,
@@ -592,7 +597,7 @@ def builtin_tools() -> tuple[ToolDefinition, ...]:
         ),
         ToolDefinition(
             name="task_update",
-            description="Update fields on a planning task in the resolved shared task list.",
+            description="Update non-orchestration fields on a planning task in the resolved shared task list.",
             input_schema={
                 "type": "object",
                 "properties": {
@@ -628,8 +633,150 @@ def builtin_tools() -> tuple[ToolDefinition, ...]:
             origin=origin,
         ),
         ToolDefinition(
+            name="task_claim",
+            description="Atomically claim a planning task through the runtime orchestration control plane.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "task_id": {"type": "string"},
+                    "owner": {"type": "string"},
+                    "set_in_progress": {"type": "boolean"},
+                    "enforce_owner_busy": {"type": "boolean"},
+                },
+                "required": ["task_id"],
+                "additionalProperties": False,
+            },
+            semantics=_static_semantics(
+                read_only=False,
+                concurrency_safe=False,
+                classifier_input=lambda tool_input, _context: ToolClassifierInput(
+                    operation="task_claim",
+                    summary=f"Claim task: {tool_input['task_id']}",
+                    risk_level=ToolRiskLevel.WRITE,
+                    side_effects=True,
+                    tags=("task", "write", "orchestration"),
+                ),
+            ),
+            execute=task_claim_tool,
+            runtime_execution_class="privileged",
+            origin=origin,
+        ),
+        ToolDefinition(
+            name="task_release",
+            description="Release a planning task claim through the runtime orchestration control plane.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "task_id": {"type": "string"},
+                },
+                "required": ["task_id"],
+                "additionalProperties": False,
+            },
+            semantics=_static_semantics(
+                read_only=False,
+                concurrency_safe=False,
+                classifier_input=lambda tool_input, _context: ToolClassifierInput(
+                    operation="task_release",
+                    summary=f"Release task: {tool_input['task_id']}",
+                    risk_level=ToolRiskLevel.WRITE,
+                    side_effects=True,
+                    tags=("task", "write", "orchestration"),
+                ),
+            ),
+            execute=task_release_tool,
+            runtime_execution_class="privileged",
+            origin=origin,
+        ),
+        ToolDefinition(
+            name="task_assign_next",
+            description="Atomically claim the next available planning task from the resolved shared task list.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "owner": {"type": "string"},
+                    "set_in_progress": {"type": "boolean"},
+                    "enforce_owner_busy": {"type": "boolean"},
+                },
+                "additionalProperties": False,
+            },
+            semantics=_static_semantics(
+                read_only=False,
+                concurrency_safe=False,
+                classifier_input=lambda _tool_input, _context: ToolClassifierInput(
+                    operation="task_assign_next",
+                    summary="Assign next available task",
+                    risk_level=ToolRiskLevel.WRITE,
+                    side_effects=True,
+                    tags=("task", "write", "orchestration"),
+                ),
+            ),
+            execute=task_assign_next_tool,
+            runtime_execution_class="privileged",
+            origin=origin,
+        ),
+        ToolDefinition(
+            name="task_block",
+            description="Add a validated dependency edge where one planning task blocks another.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "blocker_task_id": {"type": "string"},
+                    "blocked_task_id": {"type": "string"},
+                },
+                "required": ["blocker_task_id", "blocked_task_id"],
+                "additionalProperties": False,
+            },
+            semantics=_static_semantics(
+                read_only=False,
+                concurrency_safe=False,
+                classifier_input=lambda tool_input, _context: ToolClassifierInput(
+                    operation="task_block",
+                    summary=(
+                        f"Add dependency: {tool_input['blocker_task_id']} -> "
+                        f"{tool_input['blocked_task_id']}"
+                    ),
+                    risk_level=ToolRiskLevel.WRITE,
+                    side_effects=True,
+                    tags=("task", "write", "orchestration"),
+                ),
+            ),
+            execute=task_block_tool,
+            runtime_execution_class="privileged",
+            origin=origin,
+        ),
+        ToolDefinition(
+            name="task_unblock",
+            description="Remove a validated dependency edge between planning tasks.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "blocker_task_id": {"type": "string"},
+                    "blocked_task_id": {"type": "string"},
+                },
+                "required": ["blocker_task_id", "blocked_task_id"],
+                "additionalProperties": False,
+            },
+            semantics=_static_semantics(
+                read_only=False,
+                concurrency_safe=False,
+                classifier_input=lambda tool_input, _context: ToolClassifierInput(
+                    operation="task_unblock",
+                    summary=(
+                        f"Remove dependency: {tool_input['blocker_task_id']} -> "
+                        f"{tool_input['blocked_task_id']}"
+                    ),
+                    risk_level=ToolRiskLevel.WRITE,
+                    side_effects=True,
+                    tags=("task", "write", "orchestration"),
+                ),
+            ),
+            execute=task_unblock_tool,
+            runtime_execution_class="privileged",
+            origin=origin,
+        ),
+        ToolDefinition(
             name="task_list",
-            description="List planning tasks from the resolved shared task list.",
+            description="List planning tasks and derived readiness state from the resolved shared task list.",
             input_schema={
                 "type": "object",
                 "properties": {},

@@ -1,6 +1,8 @@
 import asyncio
 from pathlib import Path
 
+import pytest
+
 from runtime.builtins.tools import builtin_tools
 from runtime.contracts import MessageRole, RuntimeMessage, RuntimePrivateContext
 from runtime.definitions import AgentDefinition, PermissionBehavior, PermissionDecision
@@ -17,6 +19,10 @@ from runtime.task_lists import (
     TASK_LIST_RESOLVED_ID_EXTENSION_KEY,
     DefaultTaskListService,
     FileTaskListStore,
+    TaskListBlockedError,
+    TaskListDependencyCycleError,
+    TaskListOwnerBusyError,
+    TaskReadinessState,
 )
 from runtime.tasking import TaskManager, TaskStatus
 from runtime.tool_runtime import ToolCall, ToolCallStatus, ToolContext, ToolScheduler
@@ -74,6 +80,112 @@ def test_task_list_service_persists_and_resolves_scope(tmp_path: Path) -> None:
     assert team_tasks[0].subject == "Coordinate deploy"
 
 
+def test_task_list_service_derives_orchestration_views() -> None:
+    service = DefaultTaskListService()
+
+    async def scenario():
+        list_id = "session:orchestration-view"
+        available = await service.create(list_id, subject="Available task")
+        blocker = await service.create(list_id, subject="Blocker task")
+        blocked = await service.create(list_id, subject="Blocked task", blocked_by=(blocker.task_id,))
+        claimed = await service.create(list_id, subject="Claimed task", owner="planner")
+        started = await service.create(list_id, subject="Started task")
+        await service.update(list_id, started.task_id, patch={"status": "in_progress"})
+        completed = await service.create(list_id, subject="Completed task")
+        await service.update(list_id, completed.task_id, patch={"status": "completed"})
+        view = await service.get_orchestration_snapshot(list_id)
+        return available, blocker, blocked, claimed, started, completed, view
+
+    available, blocker, blocked, claimed, started, completed, view = asyncio.run(scenario())
+    states = {task.task.task_id: task for task in view.tasks}
+
+    assert states[available.task_id].readiness_state == TaskReadinessState.AVAILABLE
+    assert states[blocker.task_id].readiness_state == TaskReadinessState.AVAILABLE
+    assert states[blocked.task_id].readiness_state == TaskReadinessState.BLOCKED
+    assert states[blocked.task_id].unresolved_blockers == (blocker.task_id,)
+    assert states[claimed.task_id].readiness_state == TaskReadinessState.CLAIMED
+    assert states[started.task_id].readiness_state == TaskReadinessState.IN_PROGRESS
+    assert states[completed.task_id].readiness_state == TaskReadinessState.COMPLETED
+    assert blocker.task_id in view.available_task_ids
+    assert blocked.task_id in view.blocked_task_ids
+    assert claimed.task_id in view.claimed_task_ids
+    assert started.task_id in view.in_progress_task_ids
+    assert completed.task_id in view.completed_task_ids
+    assert view.unresolved_blocker_ids == (blocker.task_id,)
+
+
+def test_task_list_service_enforces_blockers_owner_busy_and_release() -> None:
+    service = DefaultTaskListService()
+
+    async def scenario():
+        list_id = "session:claim-rules"
+        blocker = await service.create(list_id, subject="Blocker task")
+        blocked = await service.create(list_id, subject="Blocked task", blocked_by=(blocker.task_id,))
+        first = await service.create(list_id, subject="First task")
+        second = await service.create(list_id, subject="Second task")
+
+        with pytest.raises(TaskListBlockedError):
+            await service.claim(list_id, blocked.task_id, "planner")
+
+        claimed = await service.claim(
+            list_id,
+            first.task_id,
+            "planner",
+            enforce_owner_busy=True,
+        )
+        with pytest.raises(TaskListOwnerBusyError):
+            await service.claim(
+                list_id,
+                second.task_id,
+                "planner",
+                enforce_owner_busy=True,
+            )
+        released = await service.release(list_id, first.task_id)
+        claimed_second = await service.claim(
+            list_id,
+            second.task_id,
+            "planner",
+            enforce_owner_busy=True,
+        )
+        return claimed, released, claimed_second
+
+    claimed, released, claimed_second = asyncio.run(scenario())
+
+    assert claimed.owner == "planner"
+    assert claimed.status.value == "in_progress"
+    assert released.owner is None
+    assert released.status.value == "pending"
+    assert claimed_second.owner == "planner"
+    assert claimed_second.status.value == "in_progress"
+
+
+def test_task_list_service_rejects_dependency_cycles_and_cleans_dangling_edges() -> None:
+    service = DefaultTaskListService()
+
+    async def scenario():
+        list_id = "session:dependency-rules"
+        first = await service.create(list_id, subject="First")
+        second = await service.create(list_id, subject="Second")
+        third = await service.create(list_id, subject="Third")
+        await service.add_dependency(list_id, first.task_id, second.task_id)
+        await service.add_dependency(list_id, second.task_id, third.task_id)
+        with pytest.raises(TaskListDependencyCycleError):
+            await service.add_dependency(list_id, third.task_id, first.task_id)
+        await service.remove_dependency(list_id, first.task_id, second.task_id)
+        await service.add_dependency(list_id, first.task_id, second.task_id)
+        await service.delete(list_id, second.task_id)
+        first_after = await service.get(list_id, first.task_id)
+        third_after = await service.get(list_id, third.task_id)
+        return first_after, third_after
+
+    first_after, third_after = asyncio.run(scenario())
+
+    assert first_after is not None
+    assert third_after is not None
+    assert first_after.blocks == ()
+    assert third_after.blocked_by == ()
+
+
 def test_task_tools_surface_structured_errors_and_strict_validation(tmp_path: Path) -> None:
     task_lists = DefaultTaskListService(store=FileTaskListStore(tmp_path / ".runtime" / "task_lists"))
     task_discipline = TaskDisciplineSidecar(task_lists=task_lists)
@@ -114,6 +226,9 @@ def test_task_tools_surface_structured_errors_and_strict_validation(tmp_path: Pa
     missing_task = asyncio.run(
         scheduler.run([ToolCall("6", "task_get", {"task_id": "missing-task"})], context)
     )[0]
+    invalid_owner_update = asyncio.run(
+        scheduler.run([ToolCall("7", "task_update", {"task_id": first_task_id, "owner": "planner"})], context)
+    )[0]
 
     assert update_first.status == ToolCallStatus.SUCCESS
     assert update_second.status == ToolCallStatus.ERROR
@@ -123,6 +238,73 @@ def test_task_tools_surface_structured_errors_and_strict_validation(tmp_path: Pa
     assert empty_patch.metadata["category"] == "invalid_request"
     assert missing_task.status == ToolCallStatus.ERROR
     assert missing_task.metadata["category"] == "not_found"
+    assert invalid_owner_update.status == ToolCallStatus.ERROR
+    assert invalid_owner_update.metadata["category"] == "invalid_request"
+    assert "task_claim" in invalid_owner_update.output["error"]["message"]
+
+
+def test_task_orchestration_tools_surface_readiness_and_dependency_controls(tmp_path: Path) -> None:
+    scheduler, context = _build_tool_runtime(tmp_path)
+
+    created = asyncio.run(
+        scheduler.run(
+            [
+                ToolCall("1", "task_create", {"subject": "Blocker"}),
+                ToolCall("2", "task_create", {"subject": "Blocked"}),
+            ],
+            context,
+        )
+    )
+    blocker_task_id = created[0].output["task"]["task_id"]
+    blocked_task_id = created[1].output["task"]["task_id"]
+
+    blocked = asyncio.run(
+        scheduler.run(
+            [ToolCall("3", "task_block", {"blocker_task_id": blocker_task_id, "blocked_task_id": blocked_task_id})],
+            context,
+        )
+    )[0]
+    listed = asyncio.run(
+        scheduler.run([ToolCall("4", "task_list", {})], context)
+    )[0]
+    assigned = asyncio.run(
+        scheduler.run([ToolCall("5", "task_assign_next", {"owner": "planner"})], context)
+    )[0]
+    blocked_claim = asyncio.run(
+        scheduler.run([ToolCall("6", "task_claim", {"task_id": blocked_task_id, "owner": "reviewer"})], context)
+    )[0]
+    released = asyncio.run(
+        scheduler.run([ToolCall("7", "task_release", {"task_id": blocker_task_id})], context)
+    )[0]
+    unblocked = asyncio.run(
+        scheduler.run(
+            [ToolCall("8", "task_unblock", {"blocker_task_id": blocker_task_id, "blocked_task_id": blocked_task_id})],
+            context,
+        )
+    )[0]
+    claimed = asyncio.run(
+        scheduler.run([ToolCall("9", "task_claim", {"task_id": blocked_task_id, "owner": "reviewer"})], context)
+    )[0]
+
+    assert blocked.status == ToolCallStatus.SUCCESS
+    assert blocked.output["blocker_task"]["blocks"] == [blocked_task_id]
+    assert blocked.output["blocked_task"]["blocked_by"] == [blocker_task_id]
+    assert listed.output["available_task_ids"] == [blocker_task_id]
+    assert listed.output["blocked_task_ids"] == [blocked_task_id]
+    assert listed.output["tasks"][1]["readiness_state"] == "blocked"
+    assert listed.output["tasks"][1]["unresolved_blockers"] == [blocker_task_id]
+    assert assigned.status == ToolCallStatus.SUCCESS
+    assert assigned.output["task"]["task_id"] == blocker_task_id
+    assert assigned.output["task"]["status"] == "in_progress"
+    assert blocked_claim.status == ToolCallStatus.ERROR
+    assert blocked_claim.output["error"]["code"] == "blocked"
+    assert released.output["task"]["status"] == "pending"
+    assert unblocked.status == ToolCallStatus.SUCCESS
+    assert unblocked.output["blocker_task"]["blocks"] == []
+    assert unblocked.output["blocked_task"]["blocked_by"] == []
+    assert claimed.status == ToolCallStatus.SUCCESS
+    assert claimed.output["task"]["task_id"] == blocked_task_id
+    assert claimed.output["task"]["owner"] == "reviewer"
 
 
 def test_job_stop_does_not_mutate_task_lists_and_task_update_does_not_mutate_jobs(tmp_path: Path) -> None:
@@ -160,12 +342,12 @@ def test_job_stop_does_not_mutate_task_lists_and_task_update_does_not_mutate_job
 def test_bound_host_runtime_exposes_task_list_watch_and_job_queries(tmp_path: Path) -> None:
     runtime = assemble_runtime(RuntimeConfig.for_project(tmp_path))
     bound = runtime.bind_host(NullHostAdapter())
-    observed: list[int] = []
+    observed: list[dict[str, object]] = []
 
     async def scenario():
         unsubscribe = await bound.watch_task_list(
             session_id="session-watch",
-            callback=lambda snapshot: observed.append(len(snapshot["tasks"])),
+            callback=lambda snapshot: observed.append(snapshot),
         )
         task_list_id = await bound.resolve_task_list_id(session_id="session-watch")
         await runtime.services.task_list_service.create(task_list_id, subject="Ship release")
@@ -183,9 +365,12 @@ def test_bound_host_runtime_exposes_task_list_watch_and_job_queries(tmp_path: Pa
 
     task_list_id, task_list_snapshot, jobs, job = asyncio.run(scenario())
 
-    assert observed == [0, 1]
+    assert [len(snapshot["tasks"]) for snapshot in observed] == [0, 1]
     assert task_list_snapshot["list_id"] == task_list_id
     assert task_list_snapshot["tasks"][0]["subject"] == "Ship release"
+    assert task_list_snapshot["tasks"][0]["readiness_state"] == "available"
+    assert task_list_snapshot["available_task_ids"] == [task_list_snapshot["tasks"][0]["task_id"]]
+    assert task_list_snapshot["blocked_task_ids"] == []
     assert jobs[0]["job_id"] == "job-1"
     assert job["status"] == "running"
 
