@@ -13,6 +13,7 @@ from runtime import (
     TeammateOrchestrationConfig,
     assemble_runtime,
 )
+from runtime.jobs import JobNotStoppableError, JobScopeFilter, JobStatus
 from runtime.permissions import PermissionOutcome, PermissionRequest
 from runtime.tasking import TaskStatus
 from runtime.turn_engine import ModelRequest, ModelStreamEvent, ModelStreamEventType
@@ -727,3 +728,107 @@ def test_teammate_identity_permission_bridge_and_idle_projection_consistency(tmp
         "Teammate 'tm-worker' is waiting for permission",
         "Teammate 'tm-worker' completed mailbox item",
     ]
+
+
+def test_teammate_projection_stop_is_rejected_without_corrupting_terminal_projection(tmp_path: Path) -> None:
+    model_client = FakeModelClient(
+        [
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-stop-1"}),
+                ModelStreamEvent(
+                    ModelStreamEventType.TOOL_CALL,
+                    {
+                        "tool_name": "bash",
+                        "tool_input": {"command": "printf teammate"},
+                        "call_id": "call-stop-bash",
+                    },
+                ),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "tool_use"}),
+            ],
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-stop-2"}),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "done"}),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+            ],
+        ]
+    )
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            model_client=model_client,
+            builtins=BuiltinPackConfig(
+                extra_agents=[
+                    AgentDefinition(
+                        name="worker",
+                        description="persistent teammate worker",
+                        prompt="work mailbox",
+                        tools=("*",),
+                    )
+                ]
+            ),
+            teammate_orchestration=TeammateOrchestrationConfig(enabled=True, heartbeat_interval_ms=10),
+        )
+    )
+    host = ControlledPermissionHost()
+    runtime.bind_host(host)
+    teammates = runtime.teammates
+    assert teammates is not None
+    teammates.register_teammate(
+        team_id="team-alpha",
+        teammate_id="tm-stop",
+        agent_name="worker",
+        session_id="session-stop",
+        working_directory=tmp_path,
+    )
+    teammates.publish_work_item(
+        team_id="team-alpha",
+        teammate_id="tm-stop",
+        prompt="run the privileged step",
+    )
+
+    async def scenario():
+        work_item = asyncio.create_task(
+            teammates.process_next_work_item(team_id="team-alpha", teammate_id="tm-stop")
+        )
+        while not host.requests:
+            await asyncio.sleep(0)
+        projection = teammates.projection("team-alpha", "tm-stop")
+        assert projection is not None
+
+        running = await runtime.job_service.get(
+            projection.task_id,
+            scope=JobScopeFilter(team_id="team-alpha"),
+        )
+        assert running is not None
+        assert running.status is JobStatus.RUNNING
+
+        try:
+            await runtime.job_service.stop(
+                projection.task_id,
+                scope=JobScopeFilter(team_id="team-alpha"),
+            )
+        except JobNotStoppableError as exc:
+            assert exc.code == "not_stoppable"
+        else:  # pragma: no cover - regression guard
+            raise AssertionError("teammate projection unexpectedly accepted stop")
+
+        host.allow_event.set()
+        result = await work_item
+        final_projection = teammates.projection("team-alpha", "tm-stop")
+        final_snapshot = teammates.snapshot("team-alpha", "tm-stop")
+        final_record = await runtime.job_service.get(
+            projection.task_id,
+            scope=JobScopeFilter(team_id="team-alpha"),
+        )
+        return result, final_projection, final_snapshot, final_record
+
+    result, final_projection, final_snapshot, final_record = asyncio.run(scenario())
+
+    assert result.status == "completed"
+    assert final_projection is not None
+    assert final_projection.lifecycle_state == TeammateLifecycleState.IDLE
+    assert final_snapshot is not None
+    assert final_snapshot.state == TeammateLifecycleState.IDLE
+    assert final_record is not None
+    assert final_record.status is JobStatus.COMPLETED
+    assert final_record.metadata["teammate_state"] == TeammateLifecycleState.IDLE.value

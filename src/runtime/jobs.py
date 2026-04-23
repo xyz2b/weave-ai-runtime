@@ -529,7 +529,7 @@ class DefaultJobService:
     services: "RuntimeServices | None" = None
     kernel: "RuntimeKernel | None" = None
     metadata: dict[str, Any] = field(default_factory=dict)
-    _watchers: dict[str, tuple[JobScopeFilter | None, JobWatcher]] = field(
+    _watchers: dict[str, tuple[JobScopeFilter | None, JobWatcher, asyncio.AbstractEventLoop]] = field(
         default_factory=dict,
         init=False,
     )
@@ -567,7 +567,8 @@ class DefaultJobService:
         *,
         scope: JobScopeFilter | None = None,
     ) -> JobRecord | None:
-        record = self.store.get(str(job_id))
+        with self._lock:
+            record = self.store.get(str(job_id))
         if record is None:
             return None
         if scope is not None and not scope.matches(record):
@@ -579,7 +580,8 @@ class DefaultJobService:
         *,
         scope: JobScopeFilter | None = None,
     ) -> tuple[JobRecord, ...]:
-        records = self.store.list()
+        with self._lock:
+            records = self.store.list()
         if scope is None:
             return records
         return tuple(record for record in records if scope.matches(record))
@@ -604,12 +606,10 @@ class DefaultJobService:
         description: str | None = None,
         metadata: Mapping[str, Any] | None = None,
     ) -> JobRecord:
-        existing = self.store.get(job_id)
+        existing = self.get_sync(job_id)
         mutation_time = utc_now()
         normalized_metadata = dict(metadata or {})
-        capabilities = JobControlCapabilities(
-            stoppable=_coerce_bool(normalized_metadata.get("stoppable"), default=True)
-        )
+        capabilities = JobControlCapabilities(stoppable=self.compat_stop_handler(job_id) is not None)
         base = JobRecord(
             job_id=job_id,
             executor_kind=_compat_executor_kind(normalized_metadata),
@@ -648,7 +648,7 @@ class DefaultJobService:
         metadata: Mapping[str, Any] | None = None,
         stop_requested: bool | object = _MISSING,
     ) -> JobRecord:
-        current = self.store.get(job_id)
+        current = self.get_sync(job_id)
         if current is None:
             raise KeyError(job_id)
         next_status = current.status if status is None else validate_job_transition(
@@ -673,12 +673,7 @@ class DefaultJobService:
             summary=current.summary,
             description=current.description if description is _MISSING else _coerce_optional_string(description),
             status=next_status,
-            capabilities=JobControlCapabilities(
-                stoppable=_coerce_bool(
-                    merged_metadata.get("stoppable"),
-                    default=_is_stoppable(current),
-                )
-            ),
+            capabilities=JobControlCapabilities(stoppable=self.compat_stop_handler(job_id) is not None),
             stop_requested=current.stop_requested if stop_requested is _MISSING else bool(stop_requested),
             updated_at=mutation_time,
             started_at=started_at,
@@ -704,7 +699,7 @@ class DefaultJobService:
 
     def register_compat_stop_handler(self, job_id: str, handler: CompatStopHandler) -> None:
         self._compat_stop_handlers[str(job_id)] = handler
-        record = self.store.get(str(job_id))
+        record = self.get_sync(str(job_id))
         if record is not None and not _is_stoppable(record):
             self.upsert_record(replace(record, capabilities=JobControlCapabilities(stoppable=True)))
 
@@ -745,10 +740,22 @@ class DefaultJobService:
             sidecar_refs=request.sidecar_refs,
         )
         self.upsert_record(pending, notify=False)
-        start_result = await executor.submit(
-            replace(request, requested_job_id=job_id),
-            context=executor_context,
-        )
+        try:
+            start_result = await executor.submit(
+                replace(request, requested_job_id=job_id),
+                context=executor_context,
+            )
+        except Exception as exc:
+            self.apply_start_result(
+                job_id,
+                JobStartResult(
+                    status=JobStatus.FAILED,
+                    capabilities=pending.capabilities,
+                    metadata={"submit_failed": True},
+                    error=str(exc),
+                ),
+            )
+            raise
         return self.apply_start_result(job_id, start_result)
 
     async def get(
@@ -773,17 +780,21 @@ class DefaultJobService:
         scope: JobScopeFilter | None = None,
     ) -> Callable[[], None]:
         watcher_id = uuid4().hex
-        self._watchers[watcher_id] = (scope, callback)
+        loop = asyncio.get_running_loop()
+        with self._lock:
+            self._watchers[watcher_id] = (scope, callback, loop)
         try:
             maybe_result = callback(self.list_sync(scope=scope))
             if inspect.isawaitable(maybe_result):
                 await maybe_result
         except Exception:
-            self._watchers.pop(watcher_id, None)
+            with self._lock:
+                self._watchers.pop(watcher_id, None)
             raise
 
         def unsubscribe() -> None:
-            self._watchers.pop(watcher_id, None)
+            with self._lock:
+                self._watchers.pop(watcher_id, None)
 
         return unsubscribe
 
@@ -802,11 +813,17 @@ class DefaultJobService:
             raise JobNotStoppableError(job_id=job_id)
 
         executor = self.executor_registry.get(record.executor_kind)
+        compat_handler = self._compat_stop_handlers.get(job_id)
+        if executor is None and compat_handler is None:
+            if _is_stoppable(record):
+                record = self.upsert_record(
+                    replace(record, capabilities=JobControlCapabilities(stoppable=False))
+                )
+            raise JobNotStoppableError(job_id=job_id)
         if executor is not None:
             stop_result = await executor.stop(record, context=self.executor_context())
             return self.apply_stop_result(job_id, stop_result)
 
-        compat_handler = self._compat_stop_handlers.get(job_id)
         accepted = self.apply_stop_result(
             job_id,
             JobStopResult(
@@ -818,7 +835,7 @@ class DefaultJobService:
             maybe_result = compat_handler(accepted)
             if inspect.isawaitable(maybe_result):
                 await maybe_result
-            refreshed = self.store.get(job_id)
+            refreshed = self.get_sync(job_id)
             if refreshed is not None and refreshed.status is JobStatus.RUNNING:
                 return self.apply_stop_result(job_id, JobStopResult(status=JobStatus.STOPPED))
             return refreshed or accepted
@@ -841,7 +858,7 @@ class DefaultJobService:
         return tuple(recovered)
 
     def apply_start_result(self, job_id: str, result: JobStartResult) -> JobRecord:
-        current = self.store.get(job_id)
+        current = self.get_sync(job_id)
         if current is None:
             raise KeyError(job_id)
         next_status = validate_job_transition(
@@ -863,7 +880,7 @@ class DefaultJobService:
         return self.upsert_record(updated)
 
     def apply_stop_result(self, job_id: str, result: JobStopResult) -> JobRecord:
-        current = self.store.get(job_id)
+        current = self.get_sync(job_id)
         if current is None:
             raise KeyError(job_id)
         next_status = validate_job_transition(
@@ -884,7 +901,7 @@ class DefaultJobService:
         return self.upsert_record(updated)
 
     def apply_recovery_result(self, job_id: str, result: JobRecoveryResult) -> JobRecord:
-        current = self.store.get(job_id)
+        current = self.get_sync(job_id)
         if current is None:
             raise KeyError(job_id)
         next_status = validate_job_transition(
@@ -906,22 +923,34 @@ class DefaultJobService:
         return self.upsert_record(updated)
 
     def _schedule_watch_notifications(self) -> None:
-        if not self._watchers:
-            return
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            return
-        loop.create_task(self._notify_watchers())
-
-    async def _notify_watchers(self) -> None:
-        watchers = tuple(self._watchers.items())
-        for watcher_id, (scope, callback) in watchers:
+        with self._lock:
+            watchers = tuple((watcher_id, loop) for watcher_id, (_, _, loop) in self._watchers.items())
+        for watcher_id, loop in watchers:
+            if loop.is_closed():
+                with self._lock:
+                    self._watchers.pop(watcher_id, None)
+                continue
             try:
-                maybe_result = callback(self.list_sync(scope=scope))
-                if inspect.isawaitable(maybe_result):
-                    await maybe_result
-            except Exception:
+                loop.call_soon_threadsafe(self._dispatch_watcher_notification, watcher_id)
+            except RuntimeError:
+                with self._lock:
+                    self._watchers.pop(watcher_id, None)
+
+    def _dispatch_watcher_notification(self, watcher_id: str) -> None:
+        asyncio.create_task(self._notify_watcher(watcher_id))
+
+    async def _notify_watcher(self, watcher_id: str) -> None:
+        with self._lock:
+            registration = self._watchers.get(watcher_id)
+        if registration is None:
+            return
+        scope, callback, _ = registration
+        try:
+            maybe_result = callback(self.list_sync(scope=scope))
+            if inspect.isawaitable(maybe_result):
+                await maybe_result
+        except Exception:
+            with self._lock:
                 self._watchers.pop(watcher_id, None)
 
 

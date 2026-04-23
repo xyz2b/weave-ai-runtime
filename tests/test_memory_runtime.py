@@ -17,6 +17,7 @@ from runtime.definitions import (
 )
 from runtime.execution_policy import build_root_execution_policy, resolve_agent_execution_policy
 from runtime.hooks import RuntimeHookPhase
+from runtime.jobs import JobNotStoppableError, JobScopeFilter, JobStatus
 from runtime.memory import (
     MemoryEntry,
     MemoryManager,
@@ -2661,6 +2662,72 @@ def test_multi_session_consolidation_generates_artifacts_and_topic_memory(tmp_pa
     )
     assert session_one_metadata["last_consolidated_at"]
     assert session_two_metadata["last_consolidated_at"]
+
+
+def test_background_consolidation_jobs_are_not_stoppable_without_a_stop_backend(tmp_path: Path) -> None:
+    original_execute = MemoryManager._execute_background_consolidation
+
+    def slow_consolidation(self, payload):
+        _ = self, payload
+        time.sleep(0.2)
+        return MemoryTurnResult()
+
+    MemoryManager._execute_background_consolidation = slow_consolidation
+    try:
+        async def scenario():
+            project_root = tmp_path / "project"
+            project_root.mkdir()
+            services = RuntimeServices(
+                memory=MemoryManagerService(project_root=project_root),
+                context_assembler=ContextAssembler(),
+            )
+            agent = AgentDefinition(name="main-router", description="router", prompt="route")
+
+            await services.memory.start_session(
+                session_id="session-stop-consolidation",
+                agent=agent,
+                cwd=project_root,
+            )
+            task_id = await services.memory.schedule_background_consolidation(
+                session_id="session-stop-consolidation",
+                agent=agent,
+                cwd=project_root,
+                task_manager=services.task_manager,
+            )
+            assert task_id is not None
+            await asyncio.sleep(0.05)
+
+            running = await services.job_service.get(
+                str(task_id),
+                scope=JobScopeFilter(session_id="session-stop-consolidation"),
+            )
+            assert running is not None
+            assert running.status is JobStatus.RUNNING
+
+            try:
+                await services.job_service.stop(
+                    str(task_id),
+                    scope=JobScopeFilter(session_id="session-stop-consolidation"),
+                )
+            except JobNotStoppableError as exc:
+                assert exc.code == "not_stoppable"
+            else:  # pragma: no cover - regression guard
+                raise AssertionError("background consolidation job unexpectedly accepted stop")
+
+            await services.memory.wait_for_background_consolidation(str(task_id))
+            final = await services.job_service.get(
+                str(task_id),
+                scope=JobScopeFilter(session_id="session-stop-consolidation"),
+            )
+            return final
+
+        final = asyncio.run(scenario())
+    finally:
+        MemoryManager._execute_background_consolidation = original_execute
+
+    assert final is not None
+    assert final.status is JobStatus.COMPLETED
+    assert final.stop_requested is False
 
 
 def test_consolidation_failure_rolls_back_existing_durable_memory(tmp_path: Path) -> None:

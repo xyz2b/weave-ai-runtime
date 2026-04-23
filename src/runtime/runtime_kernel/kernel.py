@@ -1108,7 +1108,7 @@ def _serialize_job(task: Any) -> dict[str, Any]:
         "description": task.description,
         "status": task.status.value,
         "control": {
-            "stoppable": bool(task.metadata.get("stoppable", True)),
+            "stoppable": bool(task.metadata.get("stoppable", False)),
             "stop_requested": task.stop_requested,
         },
         "timestamps": {

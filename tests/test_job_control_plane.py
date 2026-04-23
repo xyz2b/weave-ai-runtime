@@ -8,6 +8,7 @@ from runtime.jobs import (
     JobExecutorBinding,
     JobExecutorContext,
     JobRecoveryResult,
+    JobScopeFilter,
     JobStartResult,
     JobStatus,
     JobStopResult,
@@ -35,6 +36,25 @@ class _ImmediateExecutor:
             metadata={"executor_name": self.name},
             result={"handled_by": self.name, "executor_kind": request.executor_kind},
         )
+
+    async def stop(self, record, *, context: JobExecutorContext) -> JobStopResult:
+        _ = record, context
+        return JobStopResult(status=JobStatus.STOPPED)
+
+    async def recover(self, record, *, context: JobExecutorContext) -> JobRecoveryResult | None:
+        _ = record, context
+        return None
+
+
+class _FailingExecutor:
+    async def submit(
+        self,
+        request: JobSubmitRequest,
+        *,
+        context: JobExecutorContext,
+    ) -> JobStartResult:
+        _ = request, context
+        raise RuntimeError("boom")
 
     async def stop(self, record, *, context: JobExecutorContext) -> JobStopResult:
         _ = record, context
@@ -112,7 +132,7 @@ def test_job_payload_is_canonical_across_tool_and_host_surfaces(tmp_path: Path) 
     assert fetched == listed == hosted
     assert fetched["job_id"] == "job-1"
     assert fetched["executor_kind"] == "agent"
-    assert fetched["control"] == {"stoppable": True, "stop_requested": False}
+    assert fetched["control"] == {"stoppable": False, "stop_requested": False}
     assert fetched["visibility"] == {
         "session_id": "session-canonical",
         "team_id": "team-alpha",
@@ -142,6 +162,10 @@ def test_bound_host_watch_and_stop_use_shared_job_service(tmp_path: Path) -> Non
             title="background-watch",
             metadata={"session_id": "session-watch", "kind": "background_agent", "run_id": "run-watch"},
         )
+        runtime.task_manager.register_stop_handler(
+            "job-1",
+            lambda task: runtime.task_manager.update(task.task_id, status=TaskStatus.STOPPED),
+        )
         await asyncio.sleep(0)
         runtime.task_manager.update("job-1", status=TaskStatus.RUNNING)
         await asyncio.sleep(0)
@@ -157,6 +181,39 @@ def test_bound_host_watch_and_stop_use_shared_job_service(tmp_path: Path) -> Non
     assert observed[-1][0]["status"] == "stopped"
     assert stopped["status"] == "stopped"
     assert stopped["control"]["stop_requested"] is True
+
+
+def test_job_watchers_receive_cross_thread_terminal_updates(tmp_path: Path) -> None:
+    runtime = assemble_runtime(RuntimeConfig.for_project(tmp_path))
+    observed: list[list[tuple[str, str]]] = []
+
+    async def scenario() -> None:
+        unsubscribe = await runtime.job_service.watch(
+            scope=JobScopeFilter(session_id="session-cross-thread"),
+            callback=lambda snapshot: observed.append(
+                [(record.job_id, record.status.value) for record in snapshot]
+            ),
+        )
+        runtime.task_manager.create(
+            "job-threaded",
+            title="threaded projection",
+            metadata={"session_id": "session-cross-thread", "kind": "background_memory_consolidation"},
+        )
+        runtime.task_manager.update("job-threaded", status=TaskStatus.RUNNING)
+        await asyncio.sleep(0)
+        await asyncio.to_thread(
+            runtime.task_manager.update,
+            "job-threaded",
+            status=TaskStatus.COMPLETED,
+        )
+        await asyncio.sleep(0)
+        unsubscribe()
+
+    asyncio.run(scenario())
+
+    assert observed[0] == []
+    assert any(snapshot and snapshot[0][1] == "running" for snapshot in observed[1:])
+    assert any(snapshot and snapshot[0][1] == "completed" for snapshot in observed[1:])
 
 
 def test_job_stop_surface_returns_structured_shared_errors(tmp_path: Path) -> None:
@@ -238,6 +295,37 @@ def test_runtime_config_registers_direct_and_factory_job_executors(tmp_path: Pat
     assert factory_calls == [("factory-demo", "job-executor-test")]
     assert direct_job.result == {"handled_by": "direct", "executor_kind": "direct-demo"}
     assert factory_job.result == {"handled_by": "factory", "executor_kind": "factory-demo"}
+
+
+def test_submit_failure_marks_job_failed_in_store(tmp_path: Path) -> None:
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            discovery_sources=RuntimeConfig.for_project(tmp_path).discovery_sources,
+            job_executors={"failing-demo": JobExecutorBinding(executor=_FailingExecutor())},
+        )
+    )
+
+    async def scenario():
+        try:
+            await runtime.job_service.submit(
+                JobSubmitRequest(
+                    executor_kind="failing-demo",
+                    summary="run broken",
+                    session_id="session-failing",
+                    requested_job_id="job-failing",
+                )
+            )
+        except RuntimeError as exc:
+            assert str(exc) == "boom"
+        return await runtime.job_service.get("job-failing", scope=JobScopeFilter(session_id="session-failing"))
+
+    record = asyncio.run(scenario())
+
+    assert record is not None
+    assert record.status is JobStatus.FAILED
+    assert record.error == "boom"
+    assert record.metadata["submit_failed"] is True
 
 
 def test_task_manager_is_a_compatibility_projection_over_job_service(tmp_path: Path) -> None:
