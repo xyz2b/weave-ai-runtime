@@ -401,8 +401,15 @@ builtins
   - `task_update` 现在只保留非 orchestration 字段；owner 与 dependency edge 不再允许走 raw patch
 - `job_*`
   - 面向后台执行记录与停止控制
-  - 继续基于内部 `TaskManager` / child run tracking
+  - 由 runtime-owned `JobService` 提供权威记录
+  - `TaskManager` 只保留为 Stage A / Stage B 的 deprecated compatibility projection，不再是 source of truth
   - 当前 builtin surface 为 `job_get`、`job_list`、`job_stop`
+  - `job_get` / `job_list` / host `get_job` / `list_jobs` 复用同一个 canonical payload：
+    - `control`
+    - `timestamps`
+    - `visibility`
+    - `linkage`
+    - `sidecars`
 
 这意味着：
 
@@ -431,6 +438,8 @@ builtins
 - jobs
   - `list_jobs(session_id=...)`
   - `get_job(job_id, session_id=...)`
+  - `watch_jobs(session_id=..., callback=...)`
+  - `stop_job(job_id, session_id=...)`
 
 一个实用分工：
 
@@ -440,6 +449,47 @@ builtins
   - 直接消费 runtime 给出的 `readiness_state`、`unresolved_blockers`、`available_task_ids`、`blocked_task_ids`
 - host job monitor
   - 读 `list_jobs()` / `get_job()`
+  - 订阅 `watch_jobs()`
+  - 通过 `stop_job()` 发起 shared stop request，而不是自己追 executor-native handle
+
+### 5.2.3 自定义 job executor 的正式接入面
+
+当前稳定嵌入点不是 tool definition，也不是装配后的 late mutation，而是：
+
+- `RuntimeConfig.job_executors`
+- `JobExecutorBinding`
+
+推荐方式：
+
+```python
+from runtime import JobExecutorBinding, JobStartResult, JobStatus, JobStopResult, RuntimeConfig
+
+
+class ArchiveExecutor:
+    async def submit(self, request, *, context):
+        return JobStartResult(
+            status=JobStatus.COMPLETED,
+            result={"archive_path": "artifacts/run-1.txt"},
+        )
+
+    async def stop(self, record, *, context):
+        return JobStopResult(status=JobStatus.STOPPED)
+
+    async def recover(self, record, *, context):
+        return None
+
+
+config = RuntimeConfig.for_project(project_root)
+config.job_executors["archive"] = JobExecutorBinding(executor=ArchiveExecutor())
+runtime = assemble_runtime(config)
+```
+
+关键约束：
+
+- `executor_kind` 由 `job_executors` 的 dict key 决定
+- direct executor 与 factory-backed executor 都支持
+- 如果 key 命中 built-in kind，例如 `agent`，runtime 会显式用你的 binding 覆盖 built-in executor
+- host / tool surface 仍然只看到 shared `JobRecord` payload，而不是 executor-native live handle
   - 展示后台 agent、memory job、teammate projection 等执行状态
 
 不要把这两类 UI 混成一个“tasks 面板”。

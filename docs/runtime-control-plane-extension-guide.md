@@ -184,6 +184,66 @@ async with runtime.bind_host(host) as bound:
 
 不要假设 host lifecycle 已经作为 `HookBus` phase 正式派发。
 
+### 3.5 Job Control Plane 接入点
+
+当前 runtime 的后台执行控制已经收口到 shared job plane：
+
+- `RuntimeServices.job_service`
+- host bridge:
+  - `list_jobs()`
+  - `get_job()`
+  - `watch_jobs()`
+  - `stop_job()`
+- builtin tools:
+  - `job_get`
+  - `job_list`
+  - `job_stop`
+
+注意：
+
+- `TaskManager` 仍然存在，但它现在是 deprecated compatibility facade
+- authority record 是 `JobRecord`
+- host / tool surface 看到的是 canonical job payload，而不是 `ManagedTask` internals
+
+自定义 executor 的正式注册点是：
+
+- `RuntimeConfig.job_executors`
+- `JobExecutorBinding`
+
+最小 direct-binding 例子：
+
+```python
+from runtime import (
+    JobExecutorBinding,
+    JobStartResult,
+    JobStatus,
+    JobStopResult,
+    RuntimeConfig,
+    assemble_runtime,
+)
+
+
+class ArchiveExecutor:
+    async def submit(self, request, *, context):
+        return JobStartResult(
+            status=JobStatus.COMPLETED,
+            result={"archive_path": "artifacts/latest.txt"},
+        )
+
+    async def stop(self, record, *, context):
+        return JobStopResult(status=JobStatus.STOPPED)
+
+    async def recover(self, record, *, context):
+        return None
+
+
+config = RuntimeConfig.for_project(project_root)
+config.job_executors["archive"] = JobExecutorBinding(executor=ArchiveExecutor())
+runtime = assemble_runtime(config)
+```
+
+如果 executor 构造需要 `RuntimeServices`、`RuntimeKernel` 或 project config，应改用 factory-backed binding，而不是在 assemble 后直接 patch runtime internals。
+
 ## 4. Permission 与 Elicitation 接入规范
 
 ### 4.1 Permission 的位置
@@ -591,3 +651,17 @@ definition-level 可复用流程：
   - tool / agent / skill authoring 规范
 - `docs/current-system-architecture.md`
   - prompt/private carrier、ingress、lifecycle ownership 的系统总览
+
+## 13. Stage C Cleanup Checklist
+
+当 Stage B frozen compatibility 的退出条件全部满足后，Stage C 应至少执行下面的清理项：
+
+- 移除 `RuntimeServices.task_manager` 作为 primary integration point 的文档定位
+- 停止在 runtime-owned constructor 上把 `task_manager` 作为首选注入 seam
+- 删除 runtime-owned module 对 raw `ManagedTask` widening 的继续依赖
+- 把 remaining legacy embedder access 收口到显式 legacy adapter package 或 compatibility shim
+- 保证 host / tool / orchestration 文档只推广 shared `JobService` 与 canonical `JobRecord` payload
+- 在回归测试里保留：
+  - custom executor registration
+  - host job watch / stop
+  - compatibility facade read / stop 行为

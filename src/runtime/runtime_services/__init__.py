@@ -11,6 +11,7 @@ from ..elicitation import SharedElicitationService
 from ..hooks import HookBus
 from ..hosts.base import CallbackHostAdapter, HostRuntime, NullHostAdapter
 from ..isolation import IsolationManager
+from ..jobs import DefaultJobService
 from ..permissions import PermissionEngine
 from ..tasking import TaskManager
 from ..task_lists import DefaultTaskListService
@@ -198,7 +199,7 @@ class CallbackToolCatalogService:
 
 @dataclass(slots=True)
 class DefaultTaskService:
-    manager: TaskManager = field(default_factory=TaskManager)
+    manager: TaskManager | None = None
 
 
 @dataclass(slots=True)
@@ -237,6 +238,7 @@ class RuntimeServices:
     memory: ContextContributionService = field(default_factory=NoopMemoryService)
     compaction: CompactionService | ContextContributionService = field(default_factory=CompactionManager)
     host: HostRuntime = field(default_factory=NullHostAdapter)
+    jobs: DefaultJobService | None = None
     tasks: DefaultTaskService = field(default_factory=DefaultTaskService)
     task_lists: DefaultTaskListService = field(default_factory=DefaultTaskListService)
     task_discipline: ContextContributionService = field(default_factory=NoopHookService)
@@ -249,9 +251,36 @@ class RuntimeServices:
     teammates: Any = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
+    def __post_init__(self) -> None:
+        manager = self.tasks.manager
+        if manager is not None:
+            self.jobs = manager.job_service if self.jobs is None else manager.job_service
+        elif self.jobs is None:
+            self.jobs = DefaultJobService()
+        if self.jobs is None:  # pragma: no cover - defensive boundary
+            self.jobs = DefaultJobService()
+        if self.tasks.manager is None:
+            self.tasks = DefaultTaskService(TaskManager(job_service=self.jobs))
+        self.jobs.bind_runtime(
+            runtime_id=str(self.metadata.get("runtime_id") or "default"),
+            services=self,
+        )
+
     @property
     def task_manager(self) -> TaskManager:
+        if self.tasks.manager is None:  # pragma: no cover - defensive boundary
+            self.tasks = DefaultTaskService(TaskManager(job_service=self.job_service))
         return self.tasks.manager
+
+    @property
+    def job_service(self) -> DefaultJobService:
+        if self.jobs is None:  # pragma: no cover - defensive boundary
+            self.jobs = DefaultJobService()
+            self.jobs.bind_runtime(
+                runtime_id=str(self.metadata.get("runtime_id") or "default"),
+                services=self,
+            )
+        return self.jobs
 
     @property
     def task_list_service(self) -> DefaultTaskListService:

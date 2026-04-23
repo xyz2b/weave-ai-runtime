@@ -82,7 +82,12 @@ class AgentRuntime:
             tasks=DefaultTaskService(task_manager or TaskManager())
         )
         if task_manager is not None and self._runtime_services.task_manager is not task_manager:
+            self._runtime_services.jobs = task_manager.job_service
             self._runtime_services.tasks = DefaultTaskService(task_manager)
+            self._runtime_services.job_service.bind_runtime(
+                runtime_id=str(self._runtime_services.metadata.get("runtime_id") or "default"),
+                services=self._runtime_services,
+            )
         self._run_store = run_store or InMemoryChildRunStore()
         self._execution_service = AgentExecutionService(
             turn_engine=turn_engine,
@@ -99,6 +104,12 @@ class AgentRuntime:
             execution_service=self._execution_service,
             runtime_services=self._runtime_services,
         )
+        self._runtime_services.job_service.executor_registry.register(
+            "agent",
+            self._dispatcher.job_executor,
+            builtin=True,
+            override=True,
+        )
         self._skill_executor: Any = None
 
     @property
@@ -108,6 +119,10 @@ class AgentRuntime:
     @property
     def runtime_services(self) -> RuntimeServices:
         return self._runtime_services
+
+    @property
+    def job_executor(self) -> Any:
+        return self._dispatcher.job_executor
 
     @property
     def tool_registry(self) -> ToolRegistry:

@@ -1,3 +1,4 @@
+from ..jobs import JobExecutorBinding
 from .config import (
     BuiltinPackConfig,
     DefinitionSourcePaths,
@@ -12,6 +13,7 @@ __all__ = [
     "BuiltinPackConfig",
     "DefinitionSourcePaths",
     "HostBinding",
+    "JobExecutorBinding",
     "ModelProviderBinding",
     "ModelRouteBinding",
     "RuntimeConfig",

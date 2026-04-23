@@ -2,14 +2,24 @@ from __future__ import annotations
 
 import asyncio
 from typing import TYPE_CHECKING, Any
-from uuid import uuid4
 
 from .agent_execution import AgentExecutionSpec, AgentRunStatus, SpawnMode
 from .contracts import MessageRole, RuntimeMessage
 from .definitions import AgentDefinition
 from .execution_policy import policy_state_from_metadata
+from .jobs import (
+    JobControlCapabilities,
+    JobExecutor,
+    JobExecutorContext,
+    JobRecoveryResult,
+    JobSidecarRef,
+    JobStartResult,
+    JobStatus,
+    JobStopResult,
+    JobSubmitRequest,
+)
 from .runtime_services import RuntimeServices
-from .tasking import TaskStatus
+from uuid import uuid4
 
 if TYPE_CHECKING:
     from .agent_execution_service import AgentExecutionService
@@ -25,18 +35,38 @@ class AgentDispatcher:
     ) -> None:
         self._execution_service = execution_service
         self._runtime_services = runtime_services
-        self._task_manager = runtime_services.task_manager
         self._background_tasks: dict[str, asyncio.Task[AgentRunResult]] = {}
         self._notifications: list[RuntimeMessage] = []
+        self._job_executor = AgentJobExecutor(dispatcher=self)
 
     @property
     def notifications(self) -> tuple[RuntimeMessage, ...]:
         return tuple(self._notifications)
 
+    @property
+    def job_executor(self) -> JobExecutor:
+        return self._job_executor
+
     async def wait_for_background(self, task_id: str) -> AgentRunResult:
         task = self._background_tasks[task_id]
         try:
             return await task
+        except asyncio.CancelledError:
+            record = self._runtime_services.job_service.get_sync(task_id)
+            if record is None:
+                raise
+            from .agent_runtime import AgentRunResult
+
+            return AgentRunResult(
+                agent_name=_coerce_optional_string(record.metadata.get("agent")) or record.summary,
+                status=AgentRunStatus.STOPPED.value,
+                task_id=task_id,
+                background=True,
+                run_id=_coerce_optional_string(record.metadata.get("run_id")),
+                parent_run_id=record.parent_run_id,
+                turn_id=_coerce_optional_string(record.metadata.get("turn_id")) or record.parent_turn_id,
+                query_source=_coerce_optional_string(record.metadata.get("query_source")),
+            )
         finally:
             if self._background_tasks.get(task_id) is task:
                 self._background_tasks.pop(task_id, None)
@@ -116,132 +146,39 @@ class AgentDispatcher:
     ) -> AgentRunResult:
         from .agent_runtime import AgentRunResult
 
-        task_id = uuid4().hex
-        self._task_manager.create(
-            task_id,
-            title=f"agent:{agent.name}",
-            metadata=_background_job_metadata(
-                execution_spec,
-                agent_name=agent.name,
-            ),
-        )
-        running_record = await self._execution_service.write_running_record(invocation, execution_spec)
-
-        async def runner() -> AgentRunResult:
-            self._task_manager.update(
-                task_id,
-                status=TaskStatus.RUNNING,
+        job = await self._runtime_services.job_service.submit(
+            JobSubmitRequest(
+                executor_kind="agent",
+                summary=f"agent:{agent.name}",
+                input={
+                    "agent": agent,
+                    "invocation": invocation,
+                    "execution_spec": execution_spec,
+                },
+                description=invocation.prompt,
+                session_id=execution_spec.session_id,
+                team_id=_coerce_optional_string(execution_spec.metadata.get("team_id")),
+                submitted_by=_coerce_optional_string(execution_spec.metadata.get("submitted_by")),
+                projection_kind="background_agent",
+                parent_run_id=execution_spec.parent_run_id,
+                parent_turn_id=execution_spec.parent_turn_id,
                 metadata=_background_job_metadata(
                     execution_spec,
-                    agent_status=AgentRunStatus.RUNNING.value,
+                    agent_name=agent.name,
                 ),
+                capabilities=JobControlCapabilities(stoppable=True),
+                sidecar_refs=_agent_sidecar_refs(execution_spec, agent_name=agent.name),
             )
-            try:
-                result = await self._execution_service.run(invocation, execution_spec)
-                self._task_manager.update(
-                    task_id,
-                    status=_task_status_for_agent_result(result.status),
-                    result={
-                        "agent_status": result.status,
-                        "run_id": result.run_id,
-                        "turn_id": result.turn_id,
-                    },
-                    error=_background_error_for_result(result),
-                    metadata=_background_job_metadata(
-                        execution_spec,
-                        agent_status=result.status,
-                    ),
-                )
-                notification = _background_notification(
-                    agent_name=agent.name,
-                    status=result.status,
-                    task_id=task_id,
-                    error=_background_error_for_result(result),
-                )
-                result.notification = notification
-                self._notifications.append(notification)
-                await self._runtime_services.host.emit_notification(notification)
-                return result
-            except asyncio.CancelledError:
-                stopped_record = await self._execution_service.write_terminal_record(
-                    invocation,
-                    execution_spec,
-                    status=AgentRunStatus.STOPPED,
-                    terminal_metadata={"stopped": True},
-                )
-                self._task_manager.update(
-                    task_id,
-                    status=TaskStatus.STOPPED,
-                    result={
-                        "agent_status": AgentRunStatus.STOPPED.value,
-                        "run_id": execution_spec.run_id,
-                        "turn_id": execution_spec.turn_id,
-                    },
-                    metadata=_background_job_metadata(
-                        execution_spec,
-                        agent_status=AgentRunStatus.STOPPED.value,
-                    ),
-                )
-                notification = _background_notification(
-                    agent_name=agent.name,
-                    status=AgentRunStatus.STOPPED.value,
-                    task_id=task_id,
-                )
-                self._notifications.append(notification)
-                await self._runtime_services.host.emit_notification(notification)
-                return AgentRunResult(
-                    agent_name=agent.name,
-                    status=AgentRunStatus.STOPPED.value,
-                    messages=[],
-                    background=True,
-                    isolation_mode=None,
-                    notification=notification,
-                    run_id=execution_spec.run_id,
-                    parent_run_id=execution_spec.parent_run_id,
-                    turn_id=execution_spec.turn_id,
-                    query_source=execution_spec.query_source,
-                    execution_spec=execution_spec,
-                    run_record=stopped_record,
-                )
-            except Exception as exc:  # pragma: no cover - defensive boundary
-                self._task_manager.update(
-                    task_id,
-                    status=TaskStatus.FAILED,
-                    error=str(exc),
-                    metadata=_background_job_metadata(
-                        execution_spec,
-                        agent_status=AgentRunStatus.FAILED.value,
-                    ),
-                )
-                notification = _background_notification(
-                    agent_name=agent.name,
-                    status=AgentRunStatus.FAILED.value,
-                    task_id=task_id,
-                    error=str(exc),
-                )
-                self._notifications.append(notification)
-                await self._runtime_services.host.emit_notification(notification)
-                raise
-            finally:
-                self._task_manager.unregister_stop_handler(task_id)
-
-        task = asyncio.create_task(runner())
-        self._background_tasks[task_id] = task
-
-        async def stop_background(_: Any) -> None:
-            if task.done():
-                return
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                return
-
-        self._task_manager.register_stop_handler(task_id, stop_background)
+        )
+        running_record = await self._execution_service.run_store.get(execution_spec.run_id)
+        initial_status = (
+            _coerce_optional_string((job.result or {}).get("agent_status"))
+            or (JobStatus.RUNNING.value if job.status is JobStatus.RUNNING else job.status.value)
+        )
         return AgentRunResult(
             agent_name=agent.name,
-            status="running",
-            task_id=task_id,
+            status=initial_status,
+            task_id=job.job_id,
             background=True,
             run_id=execution_spec.run_id,
             parent_run_id=execution_spec.parent_run_id,
@@ -312,14 +249,14 @@ def _background_job_metadata(
     return metadata
 
 
-def _task_status_for_agent_result(status: str) -> TaskStatus:
+def _job_status_for_agent_result(status: str) -> JobStatus:
     if status == AgentRunStatus.COMPLETED.value:
-        return TaskStatus.COMPLETED
+        return JobStatus.COMPLETED
     if status == AgentRunStatus.MAX_TURNS.value:
-        return TaskStatus.STOPPED
+        return JobStatus.STOPPED
     if status == AgentRunStatus.STOPPED.value:
-        return TaskStatus.STOPPED
-    return TaskStatus.FAILED
+        return JobStatus.STOPPED
+    return JobStatus.FAILED
 
 
 def _background_error_for_result(result: AgentRunResult) -> str | None:
@@ -357,3 +294,218 @@ def _background_notification(
         content=content,
         metadata={"task_id": task_id, "status": status},
     )
+
+
+def _agent_sidecar_refs(
+    execution_spec: AgentExecutionSpec,
+    *,
+    agent_name: str | None,
+) -> tuple[JobSidecarRef, ...]:
+    metadata: dict[str, Any] = {}
+    if agent_name is not None:
+        metadata["agent"] = agent_name
+    return (JobSidecarRef(kind="agent_run", ref=execution_spec.run_id, metadata=metadata),)
+
+
+class AgentJobExecutor:
+    def __init__(self, *, dispatcher: AgentDispatcher) -> None:
+        self._dispatcher = dispatcher
+
+    async def submit(
+        self,
+        request: JobSubmitRequest,
+        *,
+        context: JobExecutorContext,
+    ) -> JobStartResult:
+        from .agent_runtime import AgentRunResult
+
+        invocation = request.input.get("invocation")
+        agent = request.input.get("agent")
+        execution_spec = request.input.get("execution_spec")
+        if invocation is None or agent is None or execution_spec is None:
+            raise ValueError("Agent job submission requires invocation, agent, and execution_spec")
+        job_id = request.requested_job_id or uuid4().hex
+        running_record = await self._dispatcher._execution_service.write_running_record(
+            invocation,
+            execution_spec,
+        )
+
+        async def runner() -> AgentRunResult:
+            try:
+                result = await self._dispatcher._execution_service.run(invocation, execution_spec)
+                context.services.job_service.apply_recovery_result(
+                    job_id,
+                    JobRecoveryResult(
+                        status=_job_status_for_agent_result(result.status),
+                        metadata=_background_job_metadata(
+                            execution_spec,
+                            agent_status=result.status,
+                        ),
+                        sidecar_refs=_agent_sidecar_refs(execution_spec, agent_name=agent.name),
+                        result={
+                            "agent_status": result.status,
+                            "run_id": result.run_id,
+                            "turn_id": result.turn_id,
+                        },
+                        error=_background_error_for_result(result),
+                    ),
+                )
+                notification = _background_notification(
+                    agent_name=agent.name,
+                    status=result.status,
+                    task_id=job_id,
+                    error=_background_error_for_result(result),
+                )
+                result.notification = notification
+                self._dispatcher._notifications.append(notification)
+                await self._dispatcher._runtime_services.host.emit_notification(notification)
+                return result
+            except asyncio.CancelledError:
+                stopped_record = await self._dispatcher._execution_service.write_terminal_record(
+                    invocation,
+                    execution_spec,
+                    status=AgentRunStatus.STOPPED,
+                    terminal_metadata={"stopped": True},
+                )
+                context.services.job_service.apply_recovery_result(
+                    job_id,
+                    JobRecoveryResult(
+                        status=JobStatus.STOPPED,
+                        metadata=_background_job_metadata(
+                            execution_spec,
+                            agent_status=AgentRunStatus.STOPPED.value,
+                        ),
+                        sidecar_refs=_agent_sidecar_refs(execution_spec, agent_name=agent.name),
+                        result={
+                            "agent_status": AgentRunStatus.STOPPED.value,
+                            "run_id": execution_spec.run_id,
+                            "turn_id": execution_spec.turn_id,
+                        },
+                    ),
+                )
+                notification = _background_notification(
+                    agent_name=agent.name,
+                    status=AgentRunStatus.STOPPED.value,
+                    task_id=job_id,
+                )
+                self._dispatcher._notifications.append(notification)
+                await self._dispatcher._runtime_services.host.emit_notification(notification)
+                return AgentRunResult(
+                    agent_name=agent.name,
+                    status=AgentRunStatus.STOPPED.value,
+                    messages=[],
+                    background=True,
+                    isolation_mode=None,
+                    notification=notification,
+                    run_id=execution_spec.run_id,
+                    parent_run_id=execution_spec.parent_run_id,
+                    turn_id=execution_spec.turn_id,
+                    query_source=execution_spec.query_source,
+                    execution_spec=execution_spec,
+                    run_record=stopped_record,
+                    task_id=job_id,
+                )
+            except Exception as exc:  # pragma: no cover - defensive boundary
+                context.services.job_service.apply_recovery_result(
+                    job_id,
+                    JobRecoveryResult(
+                        status=JobStatus.FAILED,
+                        metadata=_background_job_metadata(
+                            execution_spec,
+                            agent_status=AgentRunStatus.FAILED.value,
+                        ),
+                        sidecar_refs=_agent_sidecar_refs(execution_spec, agent_name=agent.name),
+                        error=str(exc),
+                    ),
+                )
+                notification = _background_notification(
+                    agent_name=agent.name,
+                    status=AgentRunStatus.FAILED.value,
+                    task_id=job_id,
+                    error=str(exc),
+                )
+                self._dispatcher._notifications.append(notification)
+                await self._dispatcher._runtime_services.host.emit_notification(notification)
+                raise
+
+        task = asyncio.create_task(runner())
+        self._dispatcher._background_tasks[job_id] = task
+        return JobStartResult(
+            status=JobStatus.RUNNING,
+            capabilities=JobControlCapabilities(stoppable=True),
+            metadata=_background_job_metadata(
+                execution_spec,
+                agent_status=AgentRunStatus.RUNNING.value,
+            ),
+            sidecar_refs=_agent_sidecar_refs(execution_spec, agent_name=agent.name),
+            result={
+                "agent_status": AgentRunStatus.RUNNING.value,
+                "run_id": running_record.run_id,
+                "turn_id": running_record.turn_id,
+            },
+        )
+
+    async def stop(
+        self,
+        record: Any,
+        *,
+        context: JobExecutorContext,
+    ) -> JobStopResult:
+        task = self._dispatcher._background_tasks.get(record.job_id)
+        run_id = _coerce_optional_string(record.metadata.get("run_id"))
+        turn_id = _coerce_optional_string(record.metadata.get("turn_id"))
+        if task is None:
+            return JobStopResult(
+                status=JobStatus.STOPPED,
+                stop_requested=True,
+                metadata=dict(record.metadata),
+                sidecar_refs=tuple(record.sidecar_refs),
+                result={
+                    "agent_status": AgentRunStatus.STOPPED.value,
+                    "run_id": run_id,
+                    "turn_id": turn_id,
+                },
+                error="Background agent handle was unavailable during stop",
+            )
+        if not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        return JobStopResult(
+            status=JobStatus.STOPPED,
+            stop_requested=True,
+            metadata=dict(record.metadata),
+            sidecar_refs=tuple(record.sidecar_refs),
+            result={
+                "agent_status": AgentRunStatus.STOPPED.value,
+                "run_id": run_id,
+                "turn_id": turn_id,
+            },
+        )
+
+    async def recover(
+        self,
+        record: Any,
+        *,
+        context: JobExecutorContext,
+    ) -> JobRecoveryResult | None:
+        task = self._dispatcher._background_tasks.get(record.job_id)
+        if task is not None and not task.done():
+            return JobRecoveryResult(
+                status=JobStatus.RUNNING,
+                capabilities=JobControlCapabilities(stoppable=True),
+                metadata=dict(record.metadata),
+                sidecar_refs=tuple(record.sidecar_refs),
+            )
+        metadata = dict(record.metadata)
+        metadata["agent_status"] = AgentRunStatus.STOPPED.value
+        metadata["recovery"] = "lost_handle"
+        return JobRecoveryResult(
+            status=JobStatus.STOPPED,
+            capabilities=record.capabilities or JobControlCapabilities(stoppable=True),
+            metadata=metadata,
+            sidecar_refs=tuple(record.sidecar_refs),
+            error="Background agent job was interrupted before recovery",
+        )

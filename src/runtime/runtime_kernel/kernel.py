@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -39,6 +40,7 @@ from ..hooks import (
     HookSourceKind,
 )
 from ..invocation_catalog import SkillInvocationProvider
+from ..jobs import DefaultJobService, FileJobStore, JobScopeFilter, job_record_to_payload
 from ..memory import MemoryManagerService
 from ..openai_client import (
     OPENAI_PROVIDER_NAME,
@@ -221,6 +223,7 @@ class RuntimeAssembly:
     skill_executor: SkillExecutor
     transcript_store: TranscriptStore
     task_manager: TaskManager
+    job_service: DefaultJobService
     teammates: PersistentTeammateOrchestrator | None = None
     system_prompt: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -427,12 +430,12 @@ class RuntimeAssembly:
         session_id: str | None = None,
         team_id: str | None = None,
     ) -> tuple[dict[str, Any], ...]:
-        tasks = (
-            self.task_manager.list_visible(session_id=session_id, team_id=team_id)
+        jobs = await self.services.job_service.list(
+            scope=JobScopeFilter(session_id=session_id, team_id=team_id)
             if session_id is not None or team_id is not None
-            else self.task_manager.list()
+            else None
         )
-        return tuple(_serialize_job(task) for task in tasks)
+        return tuple(_serialize_job(job) for job in jobs)
 
     async def get_job(
         self,
@@ -441,16 +444,42 @@ class RuntimeAssembly:
         session_id: str | None = None,
         team_id: str | None = None,
     ) -> dict[str, Any] | None:
-        task = self.task_manager.get(job_id)
-        if task is None:
-            return None
-        if session_id is not None or team_id is not None:
-            if session_id is not None and str(task.metadata.get("session_id") or "") == session_id:
-                return _serialize_job(task)
-            if team_id is not None and str(task.metadata.get("team_id") or "") == team_id:
-                return _serialize_job(task)
-            return None
-        return _serialize_job(task)
+        job = await self.services.job_service.get(
+            job_id,
+            scope=JobScopeFilter(session_id=session_id, team_id=team_id)
+            if session_id is not None or team_id is not None
+            else None,
+        )
+        return None if job is None else _serialize_job(job)
+
+    async def watch_jobs(
+        self,
+        *,
+        callback: Any,
+        session_id: str | None = None,
+        team_id: str | None = None,
+    ) -> Any:
+        return await self.services.job_service.watch(
+            callback=lambda snapshot: callback([_serialize_job(job) for job in snapshot]),
+            scope=JobScopeFilter(session_id=session_id, team_id=team_id)
+            if session_id is not None or team_id is not None
+            else None,
+        )
+
+    async def stop_job(
+        self,
+        job_id: str,
+        *,
+        session_id: str | None = None,
+        team_id: str | None = None,
+    ) -> dict[str, Any]:
+        job = await self.services.job_service.stop(
+            job_id,
+            scope=JobScopeFilter(session_id=session_id, team_id=team_id)
+            if session_id is not None or team_id is not None
+            else None,
+        )
+        return _serialize_job(job)
 
     def create_session(
         self,
@@ -586,6 +615,7 @@ class RuntimeAssembly:
         max_turns: int | None = None,
     ) -> dict[str, Any]:
         metadata = _merged_private_context(context.private_context, dict(context.metadata)).compat_metadata()
+        metadata.setdefault("submitted_by", context.agent_name)
         if reason is not None:
             metadata["delegation_reason"] = reason
         normalized_model_route = _coerce_optional_string(model_route)
@@ -854,6 +884,11 @@ def assemble_host_runtime(
 def _assemble_runtime_stack(kernel: RuntimeKernel) -> RuntimeAssembly:
     services = kernel.services or _build_runtime_services(kernel)
     kernel.services = services
+    services.job_service.bind_runtime(
+        runtime_id=kernel.config.runtime_id,
+        services=services,
+        kernel=kernel,
+    )
     transcript_store = services.transcript_store
     kernel.transcript_store = transcript_store
     task_manager = services.task_manager
@@ -909,10 +944,13 @@ def _assemble_runtime_stack(kernel: RuntimeKernel) -> RuntimeAssembly:
         skill_executor=skill_executor,
         transcript_store=transcript_store,
         task_manager=task_manager,
+        job_service=services.job_service,
         teammates=teammates,
         system_prompt=kernel.config.system_prompt,
         metadata=dict(kernel.config.metadata),
     )
+    _register_job_executors(kernel=kernel, services=services, agent_runtime=agent_runtime)
+    _schedule_job_recovery(services.job_service)
     services.bind_execution(
         agent_runner=runtime.run_agent_tool,
         skill_runner=runtime.run_skill_tool,
@@ -925,7 +963,12 @@ def _build_runtime_services(kernel: RuntimeKernel) -> RuntimeServices:
     task_list_service = DefaultTaskListService(
         store=FileTaskListStore(kernel.config.working_directory / ".runtime" / "task_lists")
     )
+    job_service = DefaultJobService(
+        store=FileJobStore(kernel.config.working_directory / ".runtime" / "jobs"),
+        metadata={"runtime_id": kernel.config.runtime_id},
+    )
     metadata = dict(kernel.config.metadata)
+    metadata["runtime_id"] = kernel.config.runtime_id
     metadata.setdefault(
         "task_discipline",
         {
@@ -941,6 +984,7 @@ def _build_runtime_services(kernel: RuntimeKernel) -> RuntimeServices:
             project_root=kernel.config.working_directory,
             memory_config=kernel.config.memory_config,
         ),
+        jobs=job_service,
         task_lists=task_list_service,
         task_discipline=TaskDisciplineSidecar(task_lists=task_list_service),
         context_assembler=ContextAssembler(),
@@ -960,6 +1004,32 @@ def _build_runtime_services(kernel: RuntimeKernel) -> RuntimeServices:
             default_scope_lifetime=HookScopeLifetime.SESSION_TEMPLATE,
         )
     return services
+
+
+def _register_job_executors(
+    *,
+    kernel: RuntimeKernel,
+    services: RuntimeServices,
+    agent_runtime: AgentRuntime,
+) -> None:
+    registry = services.job_service.executor_registry
+    registry.register("agent", agent_runtime.job_executor, builtin=True, override=True)
+    for executor_kind, binding in kernel.config.job_executors.items():
+        executor = (
+            binding.executor
+            if binding.executor is not None
+            else binding.factory(executor_kind, binding, kernel, services)
+        )
+        registry.register(executor_kind, executor, override=True)
+
+
+def _schedule_job_recovery(job_service: DefaultJobService) -> None:
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        asyncio.run(job_service.recover_inflight())
+        return
+    loop.create_task(job_service.recover_inflight())
 
 
 def _serialize_agent_run_result(result: AgentRunResult) -> dict[str, Any]:
@@ -1029,15 +1099,40 @@ def _merged_private_context(
 
 
 def _serialize_job(task: Any) -> dict[str, Any]:
+    if hasattr(task, "job_id"):
+        return job_record_to_payload(task)
     return {
         "job_id": task.task_id,
+        "executor_kind": str(task.metadata.get("executor_kind") or task.metadata.get("kind") or "legacy"),
         "summary": task.title,
         "description": task.description,
         "status": task.status.value,
+        "control": {
+            "stoppable": bool(task.metadata.get("stoppable", True)),
+            "stop_requested": task.stop_requested,
+        },
+        "timestamps": {
+            "created_at": task.created_at.isoformat(),
+            "updated_at": task.updated_at.isoformat(),
+            "started_at": None,
+            "ended_at": task.updated_at.isoformat()
+            if task.status.value in {"completed", "failed", "stopped"}
+            else None,
+        },
+        "visibility": {
+            "session_id": task.metadata.get("session_id"),
+            "team_id": task.metadata.get("team_id"),
+            "submitted_by": task.metadata.get("submitted_by"),
+            "projection_kind": task.metadata.get("projection_kind") or task.metadata.get("kind"),
+        },
+        "linkage": {
+            "parent_run_id": task.metadata.get("run_id"),
+            "parent_turn_id": task.metadata.get("turn_id"),
+        },
         "result": task.result,
         "error": task.error,
-        "stop_requested": task.stop_requested,
         "metadata": dict(task.metadata),
+        "sidecars": [],
     }
 
 

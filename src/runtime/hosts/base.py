@@ -251,6 +251,14 @@ class BoundHostRuntime:
         self._bind_host()
         return await self.runtime.get_job(*args, **kwargs)
 
+    async def watch_jobs(self, *args: Any, **kwargs: Any) -> Any:
+        self._bind_host()
+        return await self.runtime.watch_jobs(*args, **kwargs)
+
+    async def stop_job(self, *args: Any, **kwargs: Any) -> Any:
+        self._bind_host()
+        return await self.runtime.stop_job(*args, **kwargs)
+
     def bind_hook_callback(self, name: str, handler: Any) -> None:
         self._bind_host()
         self.services.hook_bus.bind_callback(name, handler)

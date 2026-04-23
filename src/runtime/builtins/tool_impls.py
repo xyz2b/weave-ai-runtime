@@ -19,6 +19,7 @@ from ..definitions import (
     SkillShell,
     ValidationOutcome,
 )
+from ..jobs import JobControlError, JobScopeFilter, job_record_to_payload
 from ..tasking import TaskManager, TaskStatus
 from ..task_lists import (
     DefaultTaskListService,
@@ -557,20 +558,27 @@ async def job_get_tool(
     tool_input: dict[str, Any],
     context: ToolContext,
 ) -> dict[str, Any] | ExecutionResult[dict[str, Any]]:
-    manager = _task_manager(context)
-    task = manager.get(tool_input["job_id"])
-    if task is None or not _job_visible_to_context(task, context):
+    service = _job_service(context)
+    job = await service.get(
+        tool_input["job_id"],
+        scope=JobScopeFilter(
+            session_id=context.session_id,
+            team_id=_context_team_id(context),
+        ),
+    )
+    if job is None:
         return _structured_error("not_found", f"Job '{tool_input['job_id']}' was not found", job_id=tool_input["job_id"])
-    return {"job": _job_to_dict(task)}
+    return {"job": _job_to_dict(job)}
 
 
 async def job_list_tool(_: dict[str, Any], context: ToolContext) -> dict[str, Any]:
-    manager = _task_manager(context)
     jobs = [
-        _job_to_dict(task)
-        for task in manager.list_visible(
-            session_id=context.session_id,
-            team_id=_context_team_id(context),
+        _job_to_dict(job)
+        for job in await _job_service(context).list(
+            scope=JobScopeFilter(
+                session_id=context.session_id,
+                team_id=_context_team_id(context),
+            )
         )
     ]
     return {"jobs": jobs}
@@ -580,18 +588,16 @@ async def job_stop_tool(
     tool_input: dict[str, Any],
     context: ToolContext,
 ) -> dict[str, Any] | ExecutionResult[dict[str, Any]]:
-    manager = _task_manager(context)
-    task = manager.get(tool_input["job_id"])
-    if task is None or not _job_visible_to_context(task, context):
-        return _structured_error("not_found", f"Job '{tool_input['job_id']}' was not found", job_id=tool_input["job_id"])
-    if task.status != TaskStatus.RUNNING:
-        return _structured_error(
-            "not_running",
-            f"Job '{tool_input['job_id']}' is not currently running",
-            job_id=tool_input["job_id"],
-            status=task.status.value,
+    try:
+        stopped = await _job_service(context).stop(
+            tool_input["job_id"],
+            scope=JobScopeFilter(
+                session_id=context.session_id,
+                team_id=_context_team_id(context),
+            ),
         )
-    stopped = await manager.stop_job(tool_input["job_id"])
+    except JobControlError as exc:
+        return _structured_error(exc.code, str(exc), **exc.details)
     return {"job": _job_to_dict(stopped)}
 
 
@@ -677,16 +683,47 @@ def _task_manager(context: ToolContext):
     return context.task_manager
 
 
+def _job_service(context: ToolContext):
+    if context.runtime_services is not None:
+        return context.runtime_services.job_service
+    return _task_manager(context).job_service
+
+
 def _job_to_dict(task: Any) -> dict[str, Any]:
+    if hasattr(task, "job_id"):
+        return job_record_to_payload(task)
     return {
         "job_id": task.task_id,
+        "executor_kind": str(task.metadata.get("executor_kind") or task.metadata.get("kind") or "legacy"),
         "summary": task.title,
         "description": task.description,
         "status": task.status.value,
+        "control": {
+            "stoppable": bool(task.metadata.get("stoppable", True)),
+            "stop_requested": task.stop_requested,
+        },
+        "timestamps": {
+            "created_at": task.created_at.isoformat(),
+            "updated_at": task.updated_at.isoformat(),
+            "started_at": None,
+            "ended_at": task.updated_at.isoformat()
+            if task.status.value in {"completed", "failed", "stopped"}
+            else None,
+        },
+        "visibility": {
+            "session_id": task.metadata.get("session_id"),
+            "team_id": task.metadata.get("team_id"),
+            "submitted_by": task.metadata.get("submitted_by"),
+            "projection_kind": task.metadata.get("projection_kind") or task.metadata.get("kind"),
+        },
+        "linkage": {
+            "parent_run_id": task.metadata.get("run_id"),
+            "parent_turn_id": task.metadata.get("turn_id"),
+        },
         "result": task.result,
         "error": task.error,
-        "stop_requested": task.stop_requested,
         "metadata": task.metadata,
+        "sidecars": [],
     }
 
 

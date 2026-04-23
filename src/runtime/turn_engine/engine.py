@@ -698,7 +698,12 @@ class TurnEngine:
         elif prompt_composer is not None:
             self._runtime_services.context_assembler = prompt_composer
         if task_manager is not None and self._runtime_services.task_manager is not task_manager:
+            self._runtime_services.jobs = task_manager.job_service
             self._runtime_services.tasks = DefaultTaskService(task_manager)
+            self._runtime_services.job_service.bind_runtime(
+                runtime_id=str(self._runtime_services.metadata.get("runtime_id") or "default"),
+                services=self._runtime_services,
+            )
         if any(
             value is not None
             for value in (

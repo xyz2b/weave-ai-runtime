@@ -21,6 +21,7 @@ from ..definitions import (
     ToolDefinition,
 )
 from ..hosts.base import HostFactory
+from ..jobs import JobExecutorBinding
 from ..teammate_orchestration.models import TeammateOrchestrationConfig
 from ..turn_engine.models import ModelClient, NormalizedModelCapabilities, TranscriptStore
 
@@ -237,6 +238,7 @@ class RuntimeConfig:
     extra_invocation_providers: list[InvocationProvider] = field(default_factory=list)
     memory_config: Mapping[str, Any] | None = None
     teammate_orchestration: TeammateOrchestrationConfig | None = None
+    job_executors: dict[str, JobExecutorBinding] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
