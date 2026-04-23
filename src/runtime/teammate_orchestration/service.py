@@ -440,12 +440,14 @@ class PersistentTeammateOrchestrator:
                 title=f"teammate:{teammate_id}",
                 description=f"{registration.agent_name}:{claimed.kind}",
                 metadata={
+                    "session_id": registration.session_id,
                     "team_id": team_id,
                     "teammate_id": teammate_id,
                     "run_id": execution_spec.run_id,
                     "message_id": claimed.message_id,
                     "claim_id": claimed.claim_id,
                     "projection_kind": "teammate",
+                    "kind": "teammate_projection",
                     "teammate_state": snapshot.state.value,
                 },
             ).task_id
@@ -453,10 +455,12 @@ class PersistentTeammateOrchestrator:
                 task_id,
                 status=TaskStatus.RUNNING,
                 metadata={
+                    "session_id": registration.session_id,
                     "teammate_state": snapshot.state.value,
                     "run_id": execution_spec.run_id,
                     "message_id": claimed.message_id,
                     "claim_id": claimed.claim_id,
+                    "kind": "teammate_projection",
                 },
             )
             self._set_projection(
@@ -493,8 +497,10 @@ class PersistentTeammateOrchestrator:
                     status=TaskStatus.FAILED,
                     error=str(exc),
                     metadata={
+                        "session_id": registration.session_id,
                         "teammate_state": snapshot.state.value,
                         "mailbox_terminal_state": archived.terminal_state.value if archived.terminal_state else None,
+                        "kind": "teammate_projection",
                     },
                 )
                 self._set_projection(
@@ -547,9 +553,11 @@ class PersistentTeammateOrchestrator:
                 },
                 error=None if terminal_task_status == TaskStatus.COMPLETED else archived.terminal_reason or status,
                 metadata={
+                    "session_id": registration.session_id,
                     "teammate_state": snapshot.state.value,
                     "mailbox_terminal_state": archived.terminal_state.value if archived.terminal_state is not None else None,
                     "run_id": execution_spec.run_id,
+                    "kind": "teammate_projection",
                 },
             )
             self._set_projection(
@@ -619,8 +627,10 @@ class PersistentTeammateOrchestrator:
                 task_id,
                 status=TaskStatus.RUNNING,
                 metadata={
+                    "session_id": snapshot.session_id,
                     "teammate_state": snapshot.state.value,
                     "waiting_permission_id": permission_id,
+                    "kind": "teammate_projection",
                 },
             )
         self._set_projection(
@@ -650,8 +660,10 @@ class PersistentTeammateOrchestrator:
                 task_id,
                 status=TaskStatus.RUNNING,
                 metadata={
+                    "session_id": snapshot.session_id,
                     "teammate_state": snapshot.state.value,
                     "waiting_permission_id": None,
+                    "kind": "teammate_projection",
                 },
             )
         self._set_projection(

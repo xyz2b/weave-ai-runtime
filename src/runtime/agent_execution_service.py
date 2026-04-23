@@ -302,6 +302,33 @@ class AgentExecutionService:
         await self._turn_engine.emit_child_run(running_record)
         return running_record
 
+    async def write_terminal_record(
+        self,
+        invocation: AgentInvocation,
+        execution_spec: AgentExecutionSpec,
+        *,
+        status: AgentRunStatus,
+        terminal_metadata: Mapping[str, Any] | None = None,
+        messages: Sequence[RuntimeMessage] = (),
+    ) -> AgentRunRecord:
+        agent = self.resolve_agent(execution_spec.agent_name)
+        policy = self.resolve_execution_policy(
+            invocation,
+            agent,
+            execution_spec=execution_spec,
+        )
+        record = self._build_run_record(
+            execution_spec,
+            agent_name=agent.name,
+            status=status,
+            request_metadata=self._policy_request_metadata(execution_spec, policy),
+            terminal_metadata=dict(terminal_metadata or {}),
+            messages=tuple(messages),
+        )
+        await self._run_store.upsert(record)
+        await self._turn_engine.emit_child_run(record)
+        return record
+
     async def _prepare_isolation(
         self,
         execution_spec: AgentExecutionSpec,

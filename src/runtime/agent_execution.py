@@ -22,6 +22,7 @@ class AgentRunStatus(StrEnum):
     RUNNING = "running"
     COMPLETED = "completed"
     MAX_TURNS = "max_turns"
+    STOPPED = "stopped"
     FAILED = "failed"
     DENIED = "denied"
 

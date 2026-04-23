@@ -8,6 +8,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+from ..contracts import ExecutionResult, ExecutionStatus
 from ..agent_execution import SpawnMode
 from ..definitions import (
     AgentDefinition,
@@ -19,7 +20,16 @@ from ..definitions import (
     ValidationOutcome,
 )
 from ..tasking import TaskManager, TaskStatus
+from ..task_lists import (
+    DefaultTaskListService,
+    TaskDisciplinePolicy,
+    TaskListError,
+    TaskListInvalidRequestError,
+    task_list_entry_to_dict,
+)
 from ..tool_runtime import ToolCallResult, ToolCallStatus, ToolContext
+
+_EPHEMERAL_TASK_LIST_SERVICES: dict[tuple[str, str], DefaultTaskListService] = {}
 
 
 async def read_file_tool(tool_input: dict[str, Any], context: ToolContext) -> dict[str, Any]:
@@ -332,45 +342,128 @@ async def skill_tool(tool_input: dict[str, Any], context: ToolContext) -> Any:
 
 
 async def task_create_tool(tool_input: dict[str, Any], context: ToolContext) -> dict[str, Any]:
-    manager = _task_manager(context)
-    task = manager.create(
-        task_id=tool_input["task_id"],
-        title=tool_input["title"],
+    service = _task_list_service(context)
+    task_list_id = await service.resolve_list_id(
+        session_id=context.session_id,
+        private_context=context.private_context,
+    )
+    task = await service.create(
+        task_list_id,
+        subject=tool_input["subject"],
         description=tool_input.get("description"),
+        active_form=tool_input.get("active_form"),
+        owner=tool_input.get("owner"),
+        blocks=tool_input.get("blocks", ()),
+        blocked_by=tool_input.get("blocked_by", ()),
         metadata=tool_input.get("metadata"),
     )
-    return _task_to_dict(task)
+    _record_task_touch(context, task_list_id=task_list_id)
+    return {"task_list_id": task_list_id, "task": task_list_entry_to_dict(task)}
 
 
-async def task_get_tool(tool_input: dict[str, Any], context: ToolContext) -> dict[str, Any]:
-    manager = _task_manager(context)
-    task = manager.get(tool_input["task_id"])
+async def task_get_tool(tool_input: dict[str, Any], context: ToolContext) -> dict[str, Any] | ExecutionResult[dict[str, Any]]:
+    service = _task_list_service(context)
+    task_list_id = await service.resolve_list_id(
+        session_id=context.session_id,
+        private_context=context.private_context,
+    )
+    task = await service.get(task_list_id, tool_input["task_id"])
     if task is None:
-        raise ValueError("Task not found")
-    return _task_to_dict(task)
+        return _structured_error(
+            "not_found",
+            f"Task '{tool_input['task_id']}' was not found",
+            task_list_id=task_list_id,
+            task_id=tool_input["task_id"],
+        )
+    _record_task_touch(context, task_list_id=task_list_id)
+    return {"task_list_id": task_list_id, "task": task_list_entry_to_dict(task)}
 
 
-async def task_update_tool(tool_input: dict[str, Any], context: ToolContext) -> dict[str, Any]:
-    manager = _task_manager(context)
-    task = manager.update(
-        tool_input["task_id"],
-        status=TaskStatus(tool_input["status"]) if tool_input.get("status") else None,
-        result=tool_input.get("result"),
-        error=tool_input.get("error"),
-        metadata=tool_input.get("metadata"),
+async def task_update_tool(
+    tool_input: dict[str, Any],
+    context: ToolContext,
+) -> dict[str, Any] | ExecutionResult[dict[str, Any]]:
+    service = _task_list_service(context)
+    task_list_id = await service.resolve_list_id(
+        session_id=context.session_id,
+        private_context=context.private_context,
     )
-    return _task_to_dict(task)
+    patch = {
+        key: tool_input[key]
+        for key in ("status", "subject", "description", "active_form", "owner", "blocks", "blocked_by", "metadata")
+        if key in tool_input
+    }
+    if not patch:
+        return _structured_error(
+            "invalid_request",
+            "task_update requires at least one supported mutable field",
+            task_list_id=task_list_id,
+            task_id=tool_input["task_id"],
+        )
+    try:
+        task = await service.update(
+            task_list_id,
+            tool_input["task_id"],
+            patch=patch,
+            strict_single_in_progress=_task_discipline_policy(context).strict_single_in_progress,
+        )
+    except TaskListError as exc:
+        return _task_list_error_result(exc)
+    _record_task_touch(context, task_list_id=task_list_id)
+    return {"task_list_id": task_list_id, "task": task_list_entry_to_dict(task)}
 
 
 async def task_list_tool(_: dict[str, Any], context: ToolContext) -> dict[str, Any]:
-    manager = _task_manager(context)
-    return {"tasks": [_task_to_dict(task) for task in manager.list()]}
+    service = _task_list_service(context)
+    task_list_id = await service.resolve_list_id(
+        session_id=context.session_id,
+        private_context=context.private_context,
+    )
+    tasks = await service.list(task_list_id)
+    _record_task_touch(context, task_list_id=task_list_id)
+    return {"task_list_id": task_list_id, "tasks": [task_list_entry_to_dict(task) for task in tasks]}
 
 
-async def task_stop_tool(tool_input: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+async def job_get_tool(
+    tool_input: dict[str, Any],
+    context: ToolContext,
+) -> dict[str, Any] | ExecutionResult[dict[str, Any]]:
     manager = _task_manager(context)
-    task = manager.stop(tool_input["task_id"])
-    return _task_to_dict(task)
+    task = manager.get(tool_input["job_id"])
+    if task is None or not _job_visible_to_context(task, context):
+        return _structured_error("not_found", f"Job '{tool_input['job_id']}' was not found", job_id=tool_input["job_id"])
+    return {"job": _job_to_dict(task)}
+
+
+async def job_list_tool(_: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+    manager = _task_manager(context)
+    jobs = [
+        _job_to_dict(task)
+        for task in manager.list_visible(
+            session_id=context.session_id,
+            team_id=_context_team_id(context),
+        )
+    ]
+    return {"jobs": jobs}
+
+
+async def job_stop_tool(
+    tool_input: dict[str, Any],
+    context: ToolContext,
+) -> dict[str, Any] | ExecutionResult[dict[str, Any]]:
+    manager = _task_manager(context)
+    task = manager.get(tool_input["job_id"])
+    if task is None or not _job_visible_to_context(task, context):
+        return _structured_error("not_found", f"Job '{tool_input['job_id']}' was not found", job_id=tool_input["job_id"])
+    if task.status != TaskStatus.RUNNING:
+        return _structured_error(
+            "not_running",
+            f"Job '{tool_input['job_id']}' is not currently running",
+            job_id=tool_input["job_id"],
+            status=task.status.value,
+        )
+    stopped = await manager.stop_job(tool_input["job_id"])
+    return {"job": _job_to_dict(stopped)}
 
 
 async def ask_user_tool(tool_input: dict[str, Any], context: ToolContext) -> dict[str, Any]:
@@ -455,10 +548,10 @@ def _task_manager(context: ToolContext):
     return context.task_manager
 
 
-def _task_to_dict(task: Any) -> dict[str, Any]:
+def _job_to_dict(task: Any) -> dict[str, Any]:
     return {
-        "task_id": task.task_id,
-        "title": task.title,
+        "job_id": task.task_id,
+        "summary": task.title,
         "description": task.description,
         "status": task.status.value,
         "result": task.result,
@@ -466,6 +559,64 @@ def _task_to_dict(task: Any) -> dict[str, Any]:
         "stop_requested": task.stop_requested,
         "metadata": task.metadata,
     }
+
+
+def _task_list_service(context: ToolContext) -> DefaultTaskListService:
+    if context.runtime_services is not None:
+        return context.runtime_services.task_list_service
+    key = (context.session_id, str(context.cwd))
+    service = _EPHEMERAL_TASK_LIST_SERVICES.get(key)
+    if service is None:
+        service = DefaultTaskListService()
+        _EPHEMERAL_TASK_LIST_SERVICES[key] = service
+    return service
+
+
+def _record_task_touch(context: ToolContext, *, task_list_id: str) -> None:
+    runtime_services = context.runtime_services
+    if runtime_services is None:
+        return
+    sidecar = getattr(runtime_services, "task_discipline", None)
+    if sidecar is None or not hasattr(sidecar, "record_task_touch"):
+        return
+    sidecar.record_task_touch(session_id=context.session_id, task_list_id=task_list_id)
+
+
+def _task_discipline_policy(context: ToolContext) -> TaskDisciplinePolicy:
+    runtime_metadata = context.runtime_services.metadata if context.runtime_services is not None else None
+    return TaskDisciplinePolicy.resolve(
+        private_context=context.private_context,
+        runtime_metadata=runtime_metadata,
+    )
+
+
+def _task_list_error_result(exc: TaskListError) -> ExecutionResult[dict[str, Any]]:
+    return _structured_error(exc.code, str(exc), **exc.details)
+
+
+def _structured_error(code: str, message: str, **details: Any) -> ExecutionResult[dict[str, Any]]:
+    return ExecutionResult(
+        status=ExecutionStatus.FAILED,
+        value={"error": {"code": code, "message": message, "details": details}},
+        error=message,
+        metadata={"category": code, **details},
+    )
+
+
+def _job_visible_to_context(task: Any, context: ToolContext) -> bool:
+    task_session_id = str(task.metadata.get("session_id") or "")
+    team_id = _context_team_id(context)
+    task_team_id = str(task.metadata.get("team_id") or "")
+    return (
+        (task_session_id != "" and task_session_id == context.session_id)
+        or (team_id is not None and task_team_id == team_id)
+    )
+
+
+def _context_team_id(context: ToolContext) -> str | None:
+    value = context.private_context.extensions.get("team_id")
+    normalized = _normalize_optional_string(value)
+    return normalized
 
 
 def cancelled_result(call_id: str, tool_name: str, message: str) -> ToolCallResult:

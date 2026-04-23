@@ -13,6 +13,7 @@ from ..hosts.base import CallbackHostAdapter, HostRuntime, NullHostAdapter
 from ..isolation import IsolationManager
 from ..permissions import PermissionEngine
 from ..tasking import TaskManager
+from ..task_lists import DefaultTaskListService
 
 
 @dataclass(frozen=True, slots=True)
@@ -216,6 +217,8 @@ class RuntimeServices:
     compaction: CompactionService | ContextContributionService = field(default_factory=CompactionManager)
     host: HostRuntime = field(default_factory=NullHostAdapter)
     tasks: DefaultTaskService = field(default_factory=DefaultTaskService)
+    task_lists: DefaultTaskListService = field(default_factory=DefaultTaskListService)
+    task_discipline: ContextContributionService = field(default_factory=NoopHookService)
     transcript: DefaultTranscriptService | None = None
     tool_catalog: ToolCatalogService = field(default_factory=CallbackToolCatalogService)
     context_assembler: Any = None
@@ -227,6 +230,10 @@ class RuntimeServices:
     @property
     def task_manager(self) -> TaskManager:
         return self.tasks.manager
+
+    @property
+    def task_list_service(self) -> DefaultTaskListService:
+        return self.task_lists
 
     @property
     def transcript_store(self) -> Any:

@@ -114,6 +114,7 @@ from .permissions import (
     PermissionTarget,
 )
 from .runtime_services import RuntimeServices
+from .task_lists import TaskDisciplinePolicy, TaskListEntry, TaskListSnapshot, TaskListStatus
 from .tool_lifecycle import (
     AgentCatalog,
     AppState,
@@ -293,6 +294,10 @@ __all__ = [
     "RuntimeMessage",
     "RuntimePrivateContext",
     "RuntimeServices",
+    "TaskDisciplinePolicy",
+    "TaskListEntry",
+    "TaskListSnapshot",
+    "TaskListStatus",
     "FileBackedTeammateMailbox",
     "MailboxEnvelope",
     "MailboxSender",

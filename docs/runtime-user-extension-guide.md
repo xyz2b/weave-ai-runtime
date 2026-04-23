@@ -212,6 +212,41 @@ bundled > user > project
 - 项目级同名定义不会天然覆盖 builtin。
 - 真要替换 builtin，应在 Python 装配层用 `BuiltinPackConfig`。
 
+### 2.6 三种常见 agent 组合：planning、ops、coordinator
+
+现在 builtin pack 已把 planning task list 和 background job control 明确拆开，所以定义 agent 时最好直接按职责配 tool pool，而不是给所有 agent 一把大锤。
+
+规划型 agent：
+
+- 适合做任务拆解、状态维护、进度同步。
+- 推荐只给：
+  - `task_create`
+  - `task_get`
+  - `task_update`
+  - `task_list`
+
+运维型 agent：
+
+- 适合做后台执行观察、停止、故障处理。
+- 推荐只给：
+  - `job_get`
+  - `job_list`
+  - `job_stop`
+
+协调型 agent：
+
+- 既要维护 shared plan，又要观察后台执行。
+- 可以同时给：
+  - `task_*`
+  - `job_*`
+
+推荐心智模型：
+
+- `task_*` 负责 “应该做什么、做到哪了”。
+- `job_*` 负责 “现在有哪些后台执行、它们跑到哪了”。
+
+不要再把 `task` 当作后台 job 的别名写进 agent prompt 或产品文案里。
+
 ## 3. 控制面与接入层扩展点
 
 ### 3.1 RuntimeConfig：总装配入口

@@ -9,7 +9,7 @@ from runtime.definitions import (
     SkillDefinition,
 )
 from runtime.registries import AgentRegistry, SkillRegistry, ToolRegistry
-from runtime.tasking import TaskManager
+from runtime.tasking import TaskManager, TaskStatus
 from runtime.tool_runtime import ToolCall, ToolCallStatus, ToolContext, ToolScheduler
 
 
@@ -124,8 +124,14 @@ def test_builtin_external_orchestration_and_task_tools(tmp_path: Path, monkeypat
         return FakeResponse("fetch body")
 
     monkeypatch.setattr("runtime.builtins.tool_impls.urllib.request.urlopen", fake_urlopen)
+    context.task_manager.create(
+        "job-1",
+        title="background-check",
+        metadata={"session_id": context.session_id, "kind": "background_agent"},
+    )
+    context.task_manager.update("job-1", status=TaskStatus.RUNNING)
 
-    results = asyncio.run(
+    primary = asyncio.run(
         scheduler.run(
             [
                 ToolCall("1", "bash", {"command": "printf hi"}),
@@ -133,26 +139,42 @@ def test_builtin_external_orchestration_and_task_tools(tmp_path: Path, monkeypat
                 ToolCall("3", "web_search", {"query": "example"}),
                 ToolCall("4", "agent", {"agent": "verification", "prompt": "run checks", "background": True}),
                 ToolCall("5", "skill", {"skill": "verify", "arguments": ["src/app.py"]}),
-                ToolCall("6", "task_create", {"task_id": "t1", "title": "test task"}),
-                ToolCall("7", "task_update", {"task_id": "t1", "status": "running"}),
-                ToolCall("8", "task_get", {"task_id": "t1"}),
-                ToolCall("9", "task_list", {}),
-                ToolCall("10", "task_stop", {"task_id": "t1"}),
-                ToolCall("11", "ask_user", {"question": "continue?", "options": ["yes", "no"]}),
-                ToolCall("12", "sleep", {"seconds": 0.01}),
+                ToolCall("6", "task_create", {"subject": "test task"}),
+                ToolCall("7", "job_get", {"job_id": "job-1"}),
+                ToolCall("8", "job_list", {}),
+                ToolCall("9", "job_stop", {"job_id": "job-1"}),
+                ToolCall("10", "ask_user", {"question": "continue?", "options": ["yes", "no"]}),
+                ToolCall("11", "sleep", {"seconds": 0.01}),
             ],
             context,
         )
     )
 
-    assert all(result.status == ToolCallStatus.SUCCESS for result in results)
-    assert results[0].output["stdout"] == "hi"
-    assert results[1].output["content"] == "fetch body"
-    assert results[2].output["results"][0]["title"] == "Example Result"
-    assert results[3].output["background"] is True
-    assert results[4].output["arguments"] == ["src/app.py"]
-    assert results[7].output["status"] == "running"
-    assert results[8].output["tasks"][0]["task_id"] == "t1"
-    assert results[9].output["status"] == "stopped"
-    assert results[10].output["response"] == "yes"
-    assert results[11].output["slept_seconds"] == 0.01
+    created_task_id = primary[5].output["task"]["task_id"]
+    follow_up = asyncio.run(
+        scheduler.run(
+            [
+                ToolCall("12", "task_update", {"task_id": created_task_id, "status": "in_progress"}),
+                ToolCall("13", "task_get", {"task_id": created_task_id}),
+                ToolCall("14", "task_list", {}),
+            ],
+            context,
+        )
+    )
+
+    assert all(result.status == ToolCallStatus.SUCCESS for result in primary)
+    assert all(result.status == ToolCallStatus.SUCCESS for result in follow_up)
+    assert primary[0].output["stdout"] == "hi"
+    assert primary[1].output["content"] == "fetch body"
+    assert primary[2].output["results"][0]["title"] == "Example Result"
+    assert primary[3].output["background"] is True
+    assert primary[4].output["arguments"] == ["src/app.py"]
+    assert primary[5].output["task"]["subject"] == "test task"
+    assert primary[6].output["job"]["job_id"] == "job-1"
+    assert primary[7].output["jobs"][0]["job_id"] == "job-1"
+    assert primary[8].output["job"]["status"] == "stopped"
+    assert primary[9].output["response"] == "yes"
+    assert primary[10].output["slept_seconds"] == 0.01
+    assert follow_up[0].output["task"]["status"] == "in_progress"
+    assert follow_up[1].output["task"]["task_id"] == created_task_id
+    assert follow_up[2].output["tasks"][0]["task_id"] == created_task_id

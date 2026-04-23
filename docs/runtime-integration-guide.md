@@ -378,6 +378,7 @@ builtins
   - `agent`
   - `skill`
   - `task_*`
+  - `job_*`
   - `ask_user`
   - `sleep`
 
@@ -385,6 +386,62 @@ builtins
 
 - 你可以先不投任何自定义 definitions，直接拿到一个可用 Runtime
 - 然后逐步把自己的定义叠上去
+
+### 5.2.1 `task_*` 与 `job_*` 的公开契约
+
+当前 runtime 已明确把 planning 和 background execution 拆成两条 control plane：
+
+- `task_*`
+  - 面向模型规划语义
+  - 由 runtime-owned `TaskListService` 提供
+  - 当前 builtin surface 为 `task_create`、`task_get`、`task_update`、`task_list`
+- `job_*`
+  - 面向后台执行记录与停止控制
+  - 继续基于内部 `TaskManager` / child run tracking
+  - 当前 builtin surface 为 `job_get`、`job_list`、`job_stop`
+
+这意味着：
+
+- `task` 不再表示后台 job。
+- `job` 不再复用规划 task 的字段。
+- builtin public pack 不再把 `task_stop` 当作后台控制入口。
+
+如果你在 host、agent 或 tool 文档里要解释这两类对象，建议直接用下面的定义：
+
+- `task`
+  - 共享 planning checklist entry
+- `job`
+  - runtime background execution record
+
+### 5.2.2 Host 侧 task panel 与 job monitor
+
+当你接的是正式宿主，而不是 one-shot helper 时，应通过 bound runtime 读取和观察这两条 surface，而不是自己拼 transcript 或通知流。
+
+当前推荐 API：
+
+- task list
+  - `resolve_task_list_id(session_id=...)`
+  - `list_task_lists(...)`
+  - `get_task_list(session_id=...)`
+  - `watch_task_list(session_id=..., callback=...)`
+- jobs
+  - `list_jobs(session_id=...)`
+  - `get_job(job_id, session_id=...)`
+
+一个实用分工：
+
+- host task panel
+  - 读 `get_task_list()` / `watch_task_list()`
+  - 展示共享 plan、负责人、依赖、完成状态
+- host job monitor
+  - 读 `list_jobs()` / `get_job()`
+  - 展示后台 agent、memory job、teammate projection 等执行状态
+
+不要把这两类 UI 混成一个“tasks 面板”。
+
+- planning UI 应展示 `task_*` 语义。
+- operational UI 应展示 `job_*` 语义。
+- 两边如果要做联动，应该靠 metadata 或显式 linkage，而不是假设 task id 等于 job id。
 
 ### 5.3 动态 skill roots
 

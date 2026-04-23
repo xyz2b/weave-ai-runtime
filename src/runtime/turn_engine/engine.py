@@ -557,6 +557,7 @@ class _PreTurnSidecarSupervisor:
         self.generation = 0
         self._memory_task: asyncio.Task[_SidecarJoinResult] | None = None
         self._hook_task: asyncio.Task[_SidecarJoinResult] | None = None
+        self._task_discipline_task: asyncio.Task[_SidecarJoinResult] | None = None
 
     def start(
         self,
@@ -590,6 +591,12 @@ class _PreTurnSidecarSupervisor:
                 **task_kwargs,
             )
         )
+        self._task_discipline_task = asyncio.create_task(
+            self._engine._collect_control_plane_fragments_with_context(
+                self._engine._runtime_services.task_discipline,
+                **task_kwargs,
+            )
+        )
 
     async def restart(
         self,
@@ -611,26 +618,33 @@ class _PreTurnSidecarSupervisor:
     ) -> tuple[tuple[str, ...], tuple[str, ...], dict[str, Any], dict[str, Any]]:
         memory_result = await self._resolve(self._memory_task)
         hook_result = await self._resolve(self._hook_task)
+        task_discipline_result = await self._resolve(self._task_discipline_task)
         merged_private_updates = dict(memory_result.private_updates)
         merged_private_updates.update(hook_result.private_updates)
+        merged_private_updates.update(task_discipline_result.private_updates)
         merged_diagnostics = dict(memory_result.diagnostics)
         merged_diagnostics.update(hook_result.diagnostics)
+        merged_diagnostics.update(task_discipline_result.diagnostics)
         return (
             memory_result.prompt_fragments,
-            hook_result.prompt_fragments,
+            hook_result.prompt_fragments + task_discipline_result.prompt_fragments,
             merged_private_updates,
             merged_diagnostics,
         )
 
     async def close(self) -> None:
-        tasks = tuple(task for task in (self._memory_task, self._hook_task) if task is not None)
+        tasks = tuple(
+            task
+            for task in (self._memory_task, self._hook_task, self._task_discipline_task)
+            if task is not None
+        )
         self.cancel()
         if not tasks:
             return
         await asyncio.gather(*tasks, return_exceptions=True)
 
     def cancel(self) -> None:
-        for task in (self._memory_task, self._hook_task):
+        for task in (self._memory_task, self._hook_task, self._task_discipline_task):
             if task is not None and not task.done():
                 task.cancel()
 

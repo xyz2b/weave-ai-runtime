@@ -48,6 +48,13 @@ from ..openai_client import (
 )
 from ..registries import AgentRegistry, DefinitionDiscovery, InvocationRegistry, SkillRegistry, ToolRegistry
 from ..runtime_services import DefaultTranscriptService, RuntimeServices
+from ..task_discipline import TaskDisciplineSidecar
+from ..task_lists import (
+    DefaultTaskListService,
+    FileTaskListStore,
+    coerce_private_context,
+    task_list_snapshot_to_dict,
+)
 from ..session_runtime import (
     InMemoryTranscriptStore,
     InboundEvent,
@@ -333,6 +340,108 @@ class RuntimeAssembly:
             runtime_context=runtime_context,
         )
         return catalog.diagnostics
+
+    async def resolve_task_list_id(
+        self,
+        *,
+        session_id: str,
+        private_context: RuntimePrivateContext | dict[str, object] | None = None,
+        runtime_context: dict[str, object] | None = None,
+    ) -> str:
+        return await self.services.task_list_service.resolve_list_id(
+            session_id=session_id,
+            private_context=_merged_private_context(private_context, runtime_context),
+        )
+
+    async def list_task_lists(
+        self,
+        *,
+        session_id: str | None = None,
+        list_id: str | None = None,
+        private_context: RuntimePrivateContext | dict[str, object] | None = None,
+        runtime_context: dict[str, object] | None = None,
+    ) -> tuple[dict[str, Any], ...]:
+        if list_id is not None or session_id is not None:
+            resolved_list_id = list_id or await self.resolve_task_list_id(
+                session_id=str(session_id),
+                private_context=private_context,
+                runtime_context=runtime_context,
+            )
+            snapshot = await self.services.task_list_service.get_snapshot(resolved_list_id)
+            return (task_list_snapshot_to_dict(snapshot),)
+        snapshots = await self.services.task_list_service.list_snapshots()
+        return tuple(task_list_snapshot_to_dict(snapshot) for snapshot in snapshots)
+
+    async def get_task_list(
+        self,
+        *,
+        list_id: str | None = None,
+        session_id: str | None = None,
+        private_context: RuntimePrivateContext | dict[str, object] | None = None,
+        runtime_context: dict[str, object] | None = None,
+    ) -> dict[str, Any]:
+        if list_id is None and session_id is None:
+            raise ValueError("get_task_list requires either list_id or session_id")
+        resolved_list_id = list_id or await self.resolve_task_list_id(
+            session_id=str(session_id),
+            private_context=private_context,
+            runtime_context=runtime_context,
+        )
+        snapshot = await self.services.task_list_service.get_snapshot(resolved_list_id)
+        return task_list_snapshot_to_dict(snapshot)
+
+    async def watch_task_list(
+        self,
+        *,
+        callback: Any,
+        list_id: str | None = None,
+        session_id: str | None = None,
+        private_context: RuntimePrivateContext | dict[str, object] | None = None,
+        runtime_context: dict[str, object] | None = None,
+    ) -> Any:
+        if list_id is None and session_id is None:
+            raise ValueError("watch_task_list requires either list_id or session_id")
+        resolved_list_id = list_id or await self.resolve_task_list_id(
+            session_id=str(session_id),
+            private_context=private_context,
+            runtime_context=runtime_context,
+        )
+
+        async def emit(snapshot: Any) -> Any:
+            return callback(task_list_snapshot_to_dict(snapshot))
+
+        return await self.services.task_list_service.watch(resolved_list_id, emit)
+
+    async def list_jobs(
+        self,
+        *,
+        session_id: str | None = None,
+        team_id: str | None = None,
+    ) -> tuple[dict[str, Any], ...]:
+        tasks = (
+            self.task_manager.list_visible(session_id=session_id, team_id=team_id)
+            if session_id is not None or team_id is not None
+            else self.task_manager.list()
+        )
+        return tuple(_serialize_job(task) for task in tasks)
+
+    async def get_job(
+        self,
+        job_id: str,
+        *,
+        session_id: str | None = None,
+        team_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        task = self.task_manager.get(job_id)
+        if task is None:
+            return None
+        if session_id is not None or team_id is not None:
+            if session_id is not None and str(task.metadata.get("session_id") or "") == session_id:
+                return _serialize_job(task)
+            if team_id is not None and str(task.metadata.get("team_id") or "") == team_id:
+                return _serialize_job(task)
+            return None
+        return _serialize_job(task)
 
     def create_session(
         self,
@@ -803,14 +912,29 @@ def _assemble_runtime_stack(kernel: RuntimeKernel) -> RuntimeAssembly:
 
 def _build_runtime_services(kernel: RuntimeKernel) -> RuntimeServices:
     transcript_store = kernel.transcript_store or InMemoryTranscriptStore()
+    task_list_service = DefaultTaskListService(
+        store=FileTaskListStore(kernel.config.working_directory / ".runtime" / "task_lists")
+    )
+    metadata = dict(kernel.config.metadata)
+    metadata.setdefault(
+        "task_discipline",
+        {
+            "enabled": True,
+            "reminder_turn_threshold": 3,
+            "strict_single_in_progress": False,
+            "reminder_task_limit": 8,
+        },
+    )
     services = RuntimeServices(
         transcript=DefaultTranscriptService(transcript_store),
         memory=MemoryManagerService(
             project_root=kernel.config.working_directory,
             memory_config=kernel.config.memory_config,
         ),
+        task_lists=task_list_service,
+        task_discipline=TaskDisciplineSidecar(task_lists=task_list_service),
         context_assembler=ContextAssembler(),
-        metadata=dict(kernel.config.metadata),
+        metadata=metadata,
     )
     services.configure_compat(
         permission_handler=kernel.config.permission_handler,
@@ -879,6 +1003,31 @@ def _serialize_message(message: RuntimeMessage) -> dict[str, Any]:
         "role": message.role.value,
         "content": serialize_content_blocks(message.content),
         "metadata": dict(message.metadata),
+    }
+
+
+def _merged_private_context(
+    private_context: RuntimePrivateContext | dict[str, object] | None,
+    runtime_context: dict[str, object] | None,
+) -> RuntimePrivateContext:
+    merged: dict[str, object] = {}
+    if runtime_context:
+        merged.update(runtime_context)
+    if private_context is not None:
+        merged.update(coerce_private_context(private_context).compat_metadata())
+    return coerce_private_context(merged)
+
+
+def _serialize_job(task: Any) -> dict[str, Any]:
+    return {
+        "job_id": task.task_id,
+        "summary": task.title,
+        "description": task.description,
+        "status": task.status.value,
+        "result": task.result,
+        "error": task.error,
+        "stop_requested": task.stop_requested,
+        "metadata": dict(task.metadata),
     }
 
 

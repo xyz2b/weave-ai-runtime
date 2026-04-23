@@ -34,7 +34,12 @@ class AgentDispatcher:
         return tuple(self._notifications)
 
     async def wait_for_background(self, task_id: str) -> AgentRunResult:
-        return await self._background_tasks[task_id]
+        task = self._background_tasks[task_id]
+        try:
+            return await task
+        finally:
+            if self._background_tasks.get(task_id) is task:
+                self._background_tasks.pop(task_id, None)
 
     def resolve_agent(self, name: str) -> AgentDefinition:
         return self._execution_service.resolve_agent(name)
@@ -115,7 +120,13 @@ class AgentDispatcher:
         self._task_manager.create(
             task_id,
             title=f"agent:{agent.name}",
-            metadata={"agent": agent.name, "run_id": execution_spec.run_id},
+            metadata={
+                "agent": agent.name,
+                "run_id": execution_spec.run_id,
+                "session_id": execution_spec.session_id,
+                "query_source": execution_spec.query_source,
+                "kind": "background_agent",
+            },
         )
         running_record = await self._execution_service.write_running_record(invocation, execution_spec)
 
@@ -127,6 +138,9 @@ class AgentDispatcher:
                     "agent_status": AgentRunStatus.RUNNING.value,
                     "run_id": execution_spec.run_id,
                     "turn_id": execution_spec.turn_id,
+                    "session_id": execution_spec.session_id,
+                    "query_source": execution_spec.query_source,
+                    "kind": "background_agent",
                 },
             )
             try:
@@ -144,6 +158,9 @@ class AgentDispatcher:
                         "agent_status": result.status,
                         "run_id": result.run_id,
                         "turn_id": result.turn_id,
+                        "session_id": execution_spec.session_id,
+                        "query_source": execution_spec.query_source,
+                        "kind": "background_agent",
                     },
                 )
                 notification = _background_notification(
@@ -156,6 +173,51 @@ class AgentDispatcher:
                 self._notifications.append(notification)
                 await self._runtime_services.host.emit_notification(notification)
                 return result
+            except asyncio.CancelledError:
+                stopped_record = await self._execution_service.write_terminal_record(
+                    invocation,
+                    execution_spec,
+                    status=AgentRunStatus.STOPPED,
+                    terminal_metadata={"stopped": True},
+                )
+                self._task_manager.update(
+                    task_id,
+                    status=TaskStatus.STOPPED,
+                    result={
+                        "agent_status": AgentRunStatus.STOPPED.value,
+                        "run_id": execution_spec.run_id,
+                        "turn_id": execution_spec.turn_id,
+                    },
+                    metadata={
+                        "agent_status": AgentRunStatus.STOPPED.value,
+                        "run_id": execution_spec.run_id,
+                        "turn_id": execution_spec.turn_id,
+                        "session_id": execution_spec.session_id,
+                        "query_source": execution_spec.query_source,
+                        "kind": "background_agent",
+                    },
+                )
+                notification = _background_notification(
+                    agent_name=agent.name,
+                    status=AgentRunStatus.STOPPED.value,
+                    task_id=task_id,
+                )
+                self._notifications.append(notification)
+                await self._runtime_services.host.emit_notification(notification)
+                return AgentRunResult(
+                    agent_name=agent.name,
+                    status=AgentRunStatus.STOPPED.value,
+                    messages=[],
+                    background=True,
+                    isolation_mode=None,
+                    notification=notification,
+                    run_id=execution_spec.run_id,
+                    parent_run_id=execution_spec.parent_run_id,
+                    turn_id=execution_spec.turn_id,
+                    query_source=execution_spec.query_source,
+                    execution_spec=execution_spec,
+                    run_record=stopped_record,
+                )
             except Exception as exc:  # pragma: no cover - defensive boundary
                 self._task_manager.update(
                     task_id,
@@ -165,6 +227,9 @@ class AgentDispatcher:
                         "agent_status": AgentRunStatus.FAILED.value,
                         "run_id": execution_spec.run_id,
                         "turn_id": execution_spec.turn_id,
+                        "session_id": execution_spec.session_id,
+                        "query_source": execution_spec.query_source,
+                        "kind": "background_agent",
                     },
                 )
                 notification = _background_notification(
@@ -176,9 +241,22 @@ class AgentDispatcher:
                 self._notifications.append(notification)
                 await self._runtime_services.host.emit_notification(notification)
                 raise
+            finally:
+                self._task_manager.unregister_stop_handler(task_id)
 
         task = asyncio.create_task(runner())
         self._background_tasks[task_id] = task
+
+        async def stop_background(_: Any) -> None:
+            if task.done():
+                return
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                return
+
+        self._task_manager.register_stop_handler(task_id, stop_background)
         return AgentRunResult(
             agent_name=agent.name,
             status="running",
@@ -235,6 +313,8 @@ def _task_status_for_agent_result(status: str) -> TaskStatus:
         return TaskStatus.COMPLETED
     if status == AgentRunStatus.MAX_TURNS.value:
         return TaskStatus.STOPPED
+    if status == AgentRunStatus.STOPPED.value:
+        return TaskStatus.STOPPED
     return TaskStatus.FAILED
 
 
@@ -260,6 +340,7 @@ def _background_notification(
     status_text = {
         AgentRunStatus.COMPLETED.value: "completed",
         AgentRunStatus.MAX_TURNS.value: "stopped after reaching the max turn limit",
+        AgentRunStatus.STOPPED.value: "was stopped",
         AgentRunStatus.DENIED.value: "was denied",
         AgentRunStatus.FAILED.value: "failed",
     }.get(status, f"ended with status '{status}'")

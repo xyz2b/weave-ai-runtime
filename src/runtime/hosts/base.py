@@ -227,6 +227,30 @@ class BoundHostRuntime:
         self._bind_host()
         return self.runtime.invocation_diagnostics(*args, **kwargs)
 
+    async def resolve_task_list_id(self, *args: Any, **kwargs: Any) -> Any:
+        self._bind_host()
+        return await self.runtime.resolve_task_list_id(*args, **kwargs)
+
+    async def list_task_lists(self, *args: Any, **kwargs: Any) -> Any:
+        self._bind_host()
+        return await self.runtime.list_task_lists(*args, **kwargs)
+
+    async def get_task_list(self, *args: Any, **kwargs: Any) -> Any:
+        self._bind_host()
+        return await self.runtime.get_task_list(*args, **kwargs)
+
+    async def watch_task_list(self, *args: Any, **kwargs: Any) -> Any:
+        self._bind_host()
+        return await self.runtime.watch_task_list(*args, **kwargs)
+
+    async def list_jobs(self, *args: Any, **kwargs: Any) -> Any:
+        self._bind_host()
+        return await self.runtime.list_jobs(*args, **kwargs)
+
+    async def get_job(self, *args: Any, **kwargs: Any) -> Any:
+        self._bind_host()
+        return await self.runtime.get_job(*args, **kwargs)
+
     def bind_hook_callback(self, name: str, handler: Any) -> None:
         self._bind_host()
         self.services.hook_bus.bind_callback(name, handler)
