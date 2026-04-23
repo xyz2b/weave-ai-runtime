@@ -2,17 +2,22 @@ import asyncio
 from pathlib import Path
 
 from runtime.builtins.tools import builtin_tools
-from runtime.contracts import RuntimePrivateContext
+from runtime.contracts import MessageRole, RuntimeMessage, RuntimePrivateContext
 from runtime.definitions import AgentDefinition, PermissionBehavior, PermissionDecision
 from runtime.execution_policy import ExecutionPolicy, ExecutionPolicyState
 from runtime.hosts.base import NullHostAdapter
+from runtime.memory.manager import LongTermMemory
 from runtime.permissions import PermissionContext
 from runtime.registries import SkillRegistry, ToolRegistry
 from runtime.runtime_kernel.config import RuntimeConfig
 from runtime.runtime_kernel.kernel import assemble_runtime
 from runtime.runtime_services import RuntimeServices
 from runtime.task_discipline import TaskDisciplineSidecar
-from runtime.task_lists import DefaultTaskListService, FileTaskListStore
+from runtime.task_lists import (
+    TASK_LIST_RESOLVED_ID_EXTENSION_KEY,
+    DefaultTaskListService,
+    FileTaskListStore,
+)
 from runtime.tasking import TaskManager, TaskStatus
 from runtime.tool_runtime import ToolCall, ToolCallStatus, ToolContext, ToolScheduler
 
@@ -185,6 +190,27 @@ def test_bound_host_runtime_exposes_task_list_watch_and_job_queries(tmp_path: Pa
     assert job["status"] == "running"
 
 
+def test_task_list_watch_rolls_back_failed_initial_callback() -> None:
+    task_lists = DefaultTaskListService()
+
+    async def scenario() -> None:
+        async def broken(_: object) -> None:
+            raise RuntimeError("boom")
+
+        try:
+            await task_lists.watch("session:failed-watch", broken)
+        except RuntimeError as exc:
+            assert str(exc) == "boom"
+        else:  # pragma: no cover - defensive guard
+            raise AssertionError("watch() should surface the initial callback failure")
+
+        assert task_lists._watchers == {}
+        await task_lists.create("session:failed-watch", subject="Ship release")
+        assert task_lists._watchers == {}
+
+    asyncio.run(scenario())
+
+
 def test_custom_agent_task_access_and_child_execution_inherit_task_list_scope(tmp_path: Path) -> None:
     scheduler, context = _build_tool_runtime(tmp_path)
     custom_private_context = RuntimePrivateContext(extensions={"task_list_id": "team:team-alpha"})
@@ -241,6 +267,111 @@ def test_custom_agent_task_access_and_child_execution_inherit_task_list_scope(tm
     assert captured["task_list_id"] == "team:team-alpha"
 
 
+def test_sidecar_resolved_task_list_does_not_pin_session_fallback_over_team_scope() -> None:
+    task_lists = DefaultTaskListService()
+    sidecar = TaskDisciplineSidecar(task_lists=task_lists)
+    task_tools = tuple(definition for definition in builtin_tools() if definition.name.startswith("task_"))
+    policy_state = ExecutionPolicyState(
+        ExecutionPolicy(
+            tool_pool=task_tools,
+            skill_pool=(),
+            permission_context=PermissionContext(session_id="session-fallback"),
+        )
+    )
+
+    async def scenario() -> None:
+        initial_private = RuntimePrivateContext(policy_state=policy_state)
+        first = await sidecar.collect(
+            session_id="session-fallback",
+            turn_id="turn-1",
+            agent=AgentDefinition(name="planner", description="planner", prompt="plan"),
+            cwd=".",
+            messages=(),
+            private_context=initial_private,
+            runtime_context={},
+        )
+        inherited_private = RuntimePrivateContext(
+            policy_state=policy_state,
+            extensions={
+                **first.private_updates,
+                "team_id": "team-alpha",
+            },
+        )
+        resolved = await task_lists.resolve_list_id(
+            session_id="session-fallback",
+            private_context=inherited_private,
+        )
+
+        assert first.private_updates[TASK_LIST_RESOLVED_ID_EXTENSION_KEY] == "session:session-fallback"
+        assert resolved == "team:team-alpha"
+
+    asyncio.run(scenario())
+
+
+def test_team_scoped_background_jobs_are_visible_to_job_queries(tmp_path: Path) -> None:
+    runtime = assemble_runtime(RuntimeConfig.for_project(tmp_path))
+    bound = runtime.bind_host(NullHostAdapter())
+
+    async def scenario() -> None:
+        context = ToolContext(
+            session_id="session-team",
+            turn_id="turn-team",
+            agent_name="coordinator",
+            cwd=tmp_path,
+            private_context=RuntimePrivateContext(extensions={"team_id": "team-alpha"}),
+            metadata={"run_id": "parent-run"},
+            runtime_services=runtime.services,
+        )
+        delegated = await runtime.run_agent_tool(
+            "general-purpose",
+            "inspect team state",
+            context,
+            background=True,
+        )
+        job_id = delegated["task_id"]
+        job = runtime.task_manager.get(job_id)
+        assert job is not None
+        assert job.metadata["team_id"] == "team-alpha"
+
+        jobs = await bound.list_jobs(team_id="team-alpha")
+        assert jobs[0]["job_id"] == job_id
+
+        current = runtime.task_manager.get(job_id)
+        if current is not None and current.status == TaskStatus.RUNNING:
+            await runtime.task_manager.stop_job(job_id)
+        await runtime.agent_runtime.wait_for_background(job_id)
+
+    asyncio.run(scenario())
+
+
+def test_memory_background_jobs_include_team_scope_metadata(tmp_path: Path) -> None:
+    memory = LongTermMemory(project_root=tmp_path, user_root=tmp_path / ".user")
+    task_manager = TaskManager()
+
+    async def scenario() -> None:
+        task_id = memory.schedule_background_extraction(
+            session_id="session-memory",
+            agent=AgentDefinition(name="planner", description="planner", prompt="plan"),
+            cwd=tmp_path,
+            messages=(
+                RuntimeMessage(
+                    message_id="msg-1",
+                    role=MessageRole.USER,
+                    content="Remember the deployment checklist.",
+                ),
+            ),
+            task_manager=task_manager,
+            team_id="team-alpha",
+        )
+        assert task_id is not None
+        task = task_manager.get(str(task_id))
+        assert task is not None
+        assert task.metadata["team_id"] == "team-alpha"
+        await memory.wait_for_background_extraction(str(task_id))
+
+    asyncio.run(scenario())
+
+
 def test_task_discipline_sidecar_emits_hidden_reminders_for_stale_lists() -> None:
     task_lists = DefaultTaskListService()
     sidecar = TaskDisciplineSidecar(task_lists=task_lists)
@@ -277,7 +408,7 @@ def test_task_discipline_sidecar_emits_hidden_reminders_for_stale_lists() -> Non
     sidecar.record_task_touch(session_id="session-reminder", task_list_id=task_list_id)
     third = asyncio.run(collect("turn-3"))
 
-    assert first.private_updates["task_list_id"] == "team:team-alpha"
+    assert first.private_updates[TASK_LIST_RESOLVED_ID_EXTENSION_KEY] == "team:team-alpha"
     assert first.prompt_fragments == ()
     assert second.prompt_fragments
     assert "Coordinate rollout" in second.prompt_fragments[0]

@@ -9,7 +9,7 @@ from .execution_policy import policy_state_from_metadata
 from .runtime_services import SidecarContributionResult
 from .task_lists import (
     TASK_DISCIPLINE_EXTENSION_KEY,
-    TASK_LIST_ID_EXTENSION_KEY,
+    TASK_LIST_RESOLVED_ID_EXTENSION_KEY,
     DefaultTaskListService,
     TaskDisciplinePolicy,
     TaskListStatus,
@@ -61,7 +61,7 @@ class TaskDisciplineSidecar:
             runtime_metadata=runtime_context,
         )
         private_updates = {
-            TASK_LIST_ID_EXTENSION_KEY: task_list_id,
+            TASK_LIST_RESOLVED_ID_EXTENSION_KEY: task_list_id,
             TASK_DISCIPLINE_EXTENSION_KEY: {
                 "turn_counter": state.turn_counter,
                 "last_touch_turn": state.last_touch_turn,

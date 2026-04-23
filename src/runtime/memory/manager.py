@@ -87,6 +87,31 @@ _DEFAULT_CAPTURE_ROUTING_TARGETS = {
 _MISSING = object()
 
 
+def _background_memory_job_metadata(
+    *,
+    session_id: str,
+    agent_name: str,
+    kind: str,
+    team_id: str | None = None,
+) -> dict[str, Any]:
+    metadata = {
+        "session_id": session_id,
+        "agent": agent_name,
+        "kind": kind,
+    }
+    normalized_team_id = _coerce_optional_string(team_id)
+    if normalized_team_id is not None:
+        metadata["team_id"] = normalized_team_id
+    return metadata
+
+
+def _coerce_optional_string(value: object) -> str | None:
+    if value is None:
+        return None
+    normalized = str(value).strip()
+    return normalized or None
+
+
 @dataclass(slots=True)
 class _ScoredManifestCandidate:
     doc_id: str
@@ -379,6 +404,7 @@ class LongTermMemory:
         cwd: str | Path,
         messages: Sequence[RuntimeMessage],
         task_manager: TaskManager | None = None,
+        team_id: str | None = None,
     ) -> str | None:
         context = self.resolve_context(session_id=session_id, agent=agent, cwd=cwd)
         resolved_config = self._resolve_memory_config(context)
@@ -405,11 +431,12 @@ class LongTermMemory:
                 task_manager.create(
                     task_id,
                     title=f"memory-extraction:{normalize_memory_segment(agent.name, default='agent')}",
-                    metadata={
-                        "session_id": session_id,
-                        "agent": agent.name,
-                        "kind": "background_memory_extraction",
-                    },
+                    metadata=_background_memory_job_metadata(
+                        session_id=session_id,
+                        agent_name=agent.name,
+                        kind="background_memory_extraction",
+                        team_id=team_id,
+                    ),
                 )
         elif task_manager is not None:
             task = task_manager.get(task_id)
@@ -444,6 +471,7 @@ class LongTermMemory:
         agent: AgentDefinition,
         cwd: str | Path,
         task_manager: TaskManager | None = None,
+        team_id: str | None = None,
     ) -> str | None:
         context = self.resolve_context(session_id=session_id, agent=agent, cwd=cwd)
         resolved_config = self._resolve_memory_config(context)
@@ -475,11 +503,12 @@ class LongTermMemory:
                     task_manager.create(
                         task_id,
                         title=f"memory-consolidation:{context.scope.value}",
-                        metadata={
-                            "session_id": session_id,
-                            "agent": agent.name,
-                            "kind": "background_memory_consolidation",
-                        },
+                        metadata=_background_memory_job_metadata(
+                            session_id=session_id,
+                            agent_name=agent.name,
+                            kind="background_memory_consolidation",
+                            team_id=team_id,
+                        ),
                     )
             elif task_manager is not None:
                 task = task_manager.get(task_id)
@@ -2508,6 +2537,7 @@ class LongTermMemoryService:
         cwd: str | Path,
         messages: Sequence[RuntimeMessage],
         task_manager: TaskManager | None = None,
+        team_id: str | None = None,
     ) -> str | None:
         return self.manager.schedule_background_extraction(
             session_id=session_id,
@@ -2515,6 +2545,7 @@ class LongTermMemoryService:
             cwd=cwd,
             messages=messages,
             task_manager=task_manager,
+            team_id=team_id,
         )
 
     async def wait_for_background_extraction(self, task_id: str) -> MemoryTurnResult:
@@ -2527,12 +2558,14 @@ class LongTermMemoryService:
         agent: AgentDefinition,
         cwd: str | Path,
         task_manager: TaskManager | None = None,
+        team_id: str | None = None,
     ) -> str | None:
         return self.manager.schedule_background_consolidation(
             session_id=session_id,
             agent=agent,
             cwd=cwd,
             task_manager=task_manager,
+            team_id=team_id,
         )
 
     async def wait_for_background_consolidation(self, task_id: str) -> MemoryTurnResult:

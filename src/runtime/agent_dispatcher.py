@@ -120,13 +120,10 @@ class AgentDispatcher:
         self._task_manager.create(
             task_id,
             title=f"agent:{agent.name}",
-            metadata={
-                "agent": agent.name,
-                "run_id": execution_spec.run_id,
-                "session_id": execution_spec.session_id,
-                "query_source": execution_spec.query_source,
-                "kind": "background_agent",
-            },
+            metadata=_background_job_metadata(
+                execution_spec,
+                agent_name=agent.name,
+            ),
         )
         running_record = await self._execution_service.write_running_record(invocation, execution_spec)
 
@@ -134,14 +131,10 @@ class AgentDispatcher:
             self._task_manager.update(
                 task_id,
                 status=TaskStatus.RUNNING,
-                metadata={
-                    "agent_status": AgentRunStatus.RUNNING.value,
-                    "run_id": execution_spec.run_id,
-                    "turn_id": execution_spec.turn_id,
-                    "session_id": execution_spec.session_id,
-                    "query_source": execution_spec.query_source,
-                    "kind": "background_agent",
-                },
+                metadata=_background_job_metadata(
+                    execution_spec,
+                    agent_status=AgentRunStatus.RUNNING.value,
+                ),
             )
             try:
                 result = await self._execution_service.run(invocation, execution_spec)
@@ -154,14 +147,10 @@ class AgentDispatcher:
                         "turn_id": result.turn_id,
                     },
                     error=_background_error_for_result(result),
-                    metadata={
-                        "agent_status": result.status,
-                        "run_id": result.run_id,
-                        "turn_id": result.turn_id,
-                        "session_id": execution_spec.session_id,
-                        "query_source": execution_spec.query_source,
-                        "kind": "background_agent",
-                    },
+                    metadata=_background_job_metadata(
+                        execution_spec,
+                        agent_status=result.status,
+                    ),
                 )
                 notification = _background_notification(
                     agent_name=agent.name,
@@ -188,14 +177,10 @@ class AgentDispatcher:
                         "run_id": execution_spec.run_id,
                         "turn_id": execution_spec.turn_id,
                     },
-                    metadata={
-                        "agent_status": AgentRunStatus.STOPPED.value,
-                        "run_id": execution_spec.run_id,
-                        "turn_id": execution_spec.turn_id,
-                        "session_id": execution_spec.session_id,
-                        "query_source": execution_spec.query_source,
-                        "kind": "background_agent",
-                    },
+                    metadata=_background_job_metadata(
+                        execution_spec,
+                        agent_status=AgentRunStatus.STOPPED.value,
+                    ),
                 )
                 notification = _background_notification(
                     agent_name=agent.name,
@@ -223,14 +208,10 @@ class AgentDispatcher:
                     task_id,
                     status=TaskStatus.FAILED,
                     error=str(exc),
-                    metadata={
-                        "agent_status": AgentRunStatus.FAILED.value,
-                        "run_id": execution_spec.run_id,
-                        "turn_id": execution_spec.turn_id,
-                        "session_id": execution_spec.session_id,
-                        "query_source": execution_spec.query_source,
-                        "kind": "background_agent",
-                    },
+                    metadata=_background_job_metadata(
+                        execution_spec,
+                        agent_status=AgentRunStatus.FAILED.value,
+                    ),
                 )
                 notification = _background_notification(
                     agent_name=agent.name,
@@ -306,6 +287,29 @@ def _coerce_optional_string(value: Any) -> str | None:
         return None
     stringified = str(value).strip()
     return stringified or None
+
+
+def _background_job_metadata(
+    execution_spec: AgentExecutionSpec,
+    *,
+    agent_name: str | None = None,
+    agent_status: str | None = None,
+) -> dict[str, Any]:
+    metadata: dict[str, Any] = {
+        "run_id": execution_spec.run_id,
+        "session_id": execution_spec.session_id,
+        "query_source": execution_spec.query_source,
+        "kind": "background_agent",
+    }
+    if agent_name is not None:
+        metadata["agent"] = agent_name
+    if agent_status is not None:
+        metadata["agent_status"] = agent_status
+        metadata["turn_id"] = execution_spec.turn_id
+    team_id = _coerce_optional_string(execution_spec.metadata.get("team_id"))
+    if team_id is not None:
+        metadata["team_id"] = team_id
+    return metadata
 
 
 def _task_status_for_agent_result(status: str) -> TaskStatus:

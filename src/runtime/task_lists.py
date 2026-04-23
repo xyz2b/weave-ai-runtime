@@ -15,6 +15,7 @@ from uuid import uuid4
 from .contracts import RuntimePrivateContext, private_context_from_legacy_runtime_context, utc_now
 
 TASK_LIST_ID_EXTENSION_KEY = "task_list_id"
+TASK_LIST_RESOLVED_ID_EXTENSION_KEY = "resolved_task_list_id"
 TASK_DISCIPLINE_EXTENSION_KEY = "task_discipline"
 _SAFE_FILENAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
@@ -402,24 +403,24 @@ class DefaultTaskListService:
     ) -> Callable[[], None]:
         watcher_id = uuid4().hex
         self._watchers.setdefault(list_id, {})[watcher_id] = callback
-        await _maybe_await(callback(await self.get_snapshot(list_id)))
+        try:
+            await _maybe_await(callback(await self.get_snapshot(list_id)))
+        except Exception:
+            self._remove_watcher(list_id, watcher_id)
+            raise
 
         def unsubscribe() -> None:
-            watchers = self._watchers.get(list_id)
-            if watchers is None:
-                return
-            watchers.pop(watcher_id, None)
-            if not watchers:
-                self._watchers.pop(list_id, None)
+            self._remove_watcher(list_id, watcher_id)
 
         return unsubscribe
 
     async def _notify_watchers(self, snapshot: TaskListSnapshot) -> None:
-        watchers = tuple(self._watchers.get(snapshot.list_id, {}).values())
-        for callback in watchers:
+        watchers = tuple(self._watchers.get(snapshot.list_id, {}).items())
+        for watcher_id, callback in watchers:
             try:
                 await _maybe_await(callback(snapshot))
             except Exception:
+                self._remove_watcher(snapshot.list_id, watcher_id)
                 continue
 
     def _lock_for(self, list_id: str) -> asyncio.Lock:
@@ -428,6 +429,14 @@ class DefaultTaskListService:
             lock = asyncio.Lock()
             self._locks[list_id] = lock
         return lock
+
+    def _remove_watcher(self, list_id: str, watcher_id: str) -> None:
+        watchers = self._watchers.get(list_id)
+        if watchers is None:
+            return
+        watchers.pop(watcher_id, None)
+        if not watchers:
+            self._watchers.pop(list_id, None)
 
     def _apply_patch(self, task: TaskListEntry, patch: Mapping[str, Any]) -> TaskListEntry:
         allowed = {
@@ -521,6 +530,9 @@ def resolve_task_list_id(
     team_id = _coerce_optional_string(extensions.get("team_id"))
     if team_id is not None:
         return f"team:{team_id}"
+    inherited = _coerce_optional_string(extensions.get(TASK_LIST_RESOLVED_ID_EXTENSION_KEY))
+    if inherited is not None:
+        return inherited
     return f"session:{session_id}"
 
 
@@ -634,6 +646,7 @@ __all__ = [
     "InMemoryTaskListStore",
     "TASK_DISCIPLINE_EXTENSION_KEY",
     "TASK_LIST_ID_EXTENSION_KEY",
+    "TASK_LIST_RESOLVED_ID_EXTENSION_KEY",
     "TaskDisciplinePolicy",
     "TaskListEntry",
     "TaskListError",

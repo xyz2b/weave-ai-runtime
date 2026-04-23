@@ -781,6 +781,7 @@ class SessionController:
                 cwd=self._cwd,
                 messages=tuple(self._messages),
                 task_manager=self._runtime_services.task_manager,
+                team_id=self._session_team_id(),
             )
         )
         return str(task_id) if task_id is not None else None
@@ -795,9 +796,15 @@ class SessionController:
                 agent=self._agent,
                 cwd=self._cwd,
                 task_manager=self._runtime_services.task_manager,
+                team_id=self._session_team_id(),
             )
         )
         return str(task_id) if task_id is not None else None
+
+    def _session_team_id(self) -> str | None:
+        value = self._session_scope.private_context.extensions.get("team_id")
+        normalized = str(value).strip() if value is not None else ""
+        return normalized or None
 
     def _resolve_session_memory_context(self):
         memory_service = self._runtime_services.memory

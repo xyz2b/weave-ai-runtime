@@ -576,7 +576,7 @@ class RuntimeAssembly:
         isolation: str | None = None,
         max_turns: int | None = None,
     ) -> dict[str, Any]:
-        metadata = dict(context.metadata)
+        metadata = _merged_private_context(context.private_context, dict(context.metadata)).compat_metadata()
         if reason is not None:
             metadata["delegation_reason"] = reason
         normalized_model_route = _coerce_optional_string(model_route)
@@ -594,7 +594,7 @@ class RuntimeAssembly:
                 background=background,
                 query_source="agent_tool",
                 spawn_mode=_coerce_spawn_mode(spawn_mode),
-                parent_run_id=_coerce_optional_string(context.metadata.get("run_id")),
+                parent_run_id=_coerce_optional_string(metadata.get("run_id")),
                 parent_turn_id=context.turn_id,
                 requested_model_route=normalized_model_route,
                 requested_model=_coerce_optional_string(model),
@@ -614,6 +614,7 @@ class RuntimeAssembly:
         arguments: list[str] | tuple[str, ...],
         context: ToolContext,
     ) -> dict[str, Any]:
+        metadata = _merged_private_context(context.private_context, dict(context.metadata)).compat_metadata()
         result = await self.skill_executor.execute(
             skill_name,
             arguments=tuple(arguments),
@@ -623,8 +624,8 @@ class RuntimeAssembly:
             parent_skill_pool=context.skill_pool,
             permission_context=context.permission_context,
             turn_id=context.turn_id,
-            parent_run_id=_coerce_optional_string(context.metadata.get("run_id")),
-            policy_state=policy_state_from_metadata(context.metadata),
+            parent_run_id=_coerce_optional_string(metadata.get("run_id")),
+            policy_state=policy_state_from_metadata(metadata),
         )
         return _serialize_skill_execution_result(result)
 
