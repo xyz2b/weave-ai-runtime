@@ -422,7 +422,8 @@ def test_assembled_runtime_golden_covers_model_generated_agent_and_skill_tools(
     assert agent_result_block["tool_use_id"] == "call-agent-1"
     assert agent_result_block["content"]["agent"] == "verification"
     assert agent_result_block["content"]["status"] == "completed"
-    assert agent_result_block["content"]["messages"][-1]["content"][0]["text"] == "subagent answer"
+    assert agent_result_block["content"]["summary"] == "subagent answer"
+    assert "messages" not in agent_result_block["content"]
 
     skill_followup_request = request_messages_fixture(model_client.requests[5])
     skill_result_block = skill_followup_request[2]["content"][0]
@@ -437,10 +438,8 @@ def test_assembled_runtime_golden_covers_model_generated_agent_and_skill_tools(
     assert skill_result_block["tool_use_id"] == "call-skill-1"
     assert skill_result_block["content"]["skill"] == "fork-skill"
     assert skill_result_block["content"]["mode"] == "fork"
-    assert (
-        skill_result_block["content"]["agent_result"]["messages"][-1]["content"][0]["text"]
-        == "forked answer"
-    )
+    assert skill_result_block["content"]["agent_result"]["summary"] == "forked answer"
+    assert "messages" not in skill_result_block["content"]["agent_result"]
     assert agent_messages[-1].text == "agent delegation done"
     assert skill_messages[-1].text == "skill delegation done"
 
@@ -524,6 +523,7 @@ def test_headless_host_can_consume_runtime_turn_event_stream_without_reimplement
                 "tool_use_id": "call-agent-1",
                 "tool_name": "agent",
                 "status": "success",
+                "summary_text": "subagent answer",
             }
         ]
     }
@@ -536,17 +536,14 @@ def test_headless_host_can_consume_runtime_turn_event_stream_without_reimplement
     assert tool_result["content"]["background"] is False
     assert tool_result["content"]["run_id"]
     assert tool_result["content"]["turn_id"]
-    assert len(tool_result["content"]["messages"]) == 1
-    child_message = tool_result["content"]["messages"][0]
-    assert child_message["role"] == "assistant"
-    assert child_message["content"] == [{"type": "text", "text": "subagent answer"}]
+    assert tool_result["content"]["summary"] == "subagent answer"
+    assert "messages" not in tool_result["content"]
     assert tool_result["content"]["isolation_mode"] == "worktree"
     stable_terminal_metadata = terminal_stable_fields(tool_result["content"]["terminal_metadata"])
     assert stable_terminal_metadata == {
         "stop_reason": "end_turn",
         "request_id": "req-host-sub",
     }
-    assert terminal_stable_fields(child_message["metadata"]) == stable_terminal_metadata
     assert set(tool_result["content"]["terminal_metadata"]) - set(stable_terminal_metadata)
     assert host_view[3] == {
         "role": "assistant",

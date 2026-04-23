@@ -424,6 +424,48 @@ builtins
 - `job`
   - runtime background execution record
 
+#### `task/todo` 在 framework 层的边界
+
+从嵌入方视角看，`task/todo` 最好被视为 runtime-owned primitive，而不是某个 builtin agent 的私有能力。
+
+推荐分层：
+
+- runtime core
+  - 维护 `TaskListService`
+  - 暴露 `task_*` public tools
+  - 提供 host query / watch surface
+  - 产出 runtime-derived orchestration snapshot
+  - 承担 blocker / claim / assign-next / dependency validation
+- agent profile
+  - 决定是否选择 `task_*`
+  - 决定如何在 prompt 中使用 shared plan
+  - 决定 planner / coordinator / worker 这类角色工作流
+- host
+  - 决定是否展示 task panel 或 projection
+  - 不负责重算 readiness，也不接管调度语义
+
+这意味着：
+
+- builtin agent 可以消费 task/todo，但不应成为 task/todo 的唯一入口。
+- user-defined agent 只要拿到 `task_*`，就应能参与同一套 shared planning contract。
+- host 即使完全不做 task UI，runtime 语义也应成立。
+- task discipline 是 runtime-owned policy，可选启用，但不应依赖某个特定 host 或 agent prompt 才成立。
+
+如果要定义最小稳定 contract，建议把下面几类能力当作 framework guarantee，而不是 profile 细节：
+
+- `TaskListService` 与 resolved `task_list_id` scope 规则
+- `task_create/get/update/list/claim/release/assign_next/block/unblock`
+- host `resolve_task_list_id` / `get_task_list` / `list_task_lists` / `watch_task_list`
+- orchestration snapshot 中的 `readiness_state`、`unresolved_blockers`、`available_task_ids`、`blocked_task_ids`
+
+相反，下面这些更适合保持在 profile / product 层，而不要过早冻结进 core contract：
+
+- 某个 builtin agent 是否默认先拆任务
+- reminder 文案长什么样
+- terminal task panel、快捷键和交互布局
+- 除默认 `assign_next` 以外的高阶调度策略
+- “每个 agent 都必须维护 todo” 这类工作流约束
+
 ### 5.2.2 Host 侧 task panel 与 job monitor
 
 当你接的是正式宿主，而不是 one-shot helper 时，应通过 bound runtime 读取和观察这两条 surface，而不是自己拼 transcript 或通知流。
@@ -512,6 +554,66 @@ terminal child run 现在保留两层正式契约：
     - `RUNNING` session 只排队，等当前 turn 结束后再处理
 
 这意味着 host 不需要靠 transcript scraping 来判断 child run 结束，也不需要重复提交同一个“子任务已完成”的 user prompt。
+
+### 5.2.4 Child delegation policy 与 parent-facing child result
+
+child delegation 现在也属于 runtime-owned policy，不再建议只靠 prompt 约束。
+
+当前首版稳定入口放在：
+
+- `RuntimeConfig.metadata["delegation"]`
+- 装配后流入 `RuntimeServices.metadata["delegation"]`
+
+默认值是：
+
+- `max_depth = 1`
+- `child_result_projection = "summary"`
+- `summary_max_chars = 2000`
+
+这组默认值的语义是：
+
+- root execution 可以创建一层 child run
+- 已经处在 child 层的 execution，默认不能再通过 `agent` 或 forked `skill` 继续向下 delegation
+- 超过深度上限时，当前执行路径会收到结构化 `delegation_depth_exceeded` policy error
+- 被拒绝的更深层 child 不会继续分配新的 `run_id`、也不会写入一条“本不该存在”的 deeper child run record
+
+parent-facing child result 也改成了 projection contract，而不是 child transcript replay：
+
+- builtin `agent` tool 默认返回 summary-first payload
+- forked skill 的 `agent_result` 复用同一套 child projection
+- 默认保留稳定标识与终态字段，例如：
+  - `run_id`
+  - `status`
+  - `summary`
+  - `terminal_metadata`
+  - `delegation_depth`
+- 默认不再把完整 child `messages[]` 回灌进 parent result
+
+如果下游仍依赖旧式详细结果，可临时显式开启：
+
+```python
+config.metadata.setdefault(
+    "delegation",
+    {
+        "max_depth": 1,
+        "child_result_projection": "detailed",
+    },
+)
+```
+
+但这应视为 migration-only compatibility mode，而不是新的默认 contract。
+
+需要完整 child history 时，推荐直接走 runtime observability surface：
+
+- `ChildRunStore` / `AgentRunRecord`
+- typed `CHILD_RUN` turn events
+- child-run query / watch surface
+
+换句话说：
+
+- parent-facing result 负责“把 child outcome 以低噪声方式反馈给当前执行”
+- sidechain child record 与 `CHILD_RUN` 事件继续负责“完整 child truth”
+- continuation bridge 现在也会携带同一套 summary-aware child completion payload，而不是 generic child-completed 文本
 
 ### 5.3 动态 skill roots
 

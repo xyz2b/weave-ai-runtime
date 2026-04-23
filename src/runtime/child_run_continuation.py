@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from typing import Any, Mapping
 
 from .agent_execution import AgentRunRecord
+from .child_result_projection import project_child_run_record
 from .runtime_services import LiveSessionRegistry
 from .session_runtime import InboundEvent, InboundEventType, SessionStatus
 
@@ -50,38 +51,38 @@ class ChildRunContinuationBridge:
 
         event = InboundEvent(
             InboundEventType.TASK_NOTIFICATION,
-            _continuation_content(record),
-            metadata=_continuation_metadata(record),
+            _continuation_content(record, runtime_metadata=self.runtime_metadata),
+            metadata=_continuation_metadata(record, runtime_metadata=self.runtime_metadata),
         )
         await session.submit_runtime_event(event, drain=drain)
         self._delivered_terminal_states.add(delivery_key)
         return True
 
 
-def _continuation_content(record: AgentRunRecord) -> str:
-    return (
-        f"Child run '{record.agent_name}' reached terminal status '{record.status.value}' "
-        f"(run_id={record.run_id})."
+def _continuation_content(
+    record: AgentRunRecord,
+    *,
+    runtime_metadata: Mapping[str, Any] | None = None,
+) -> str:
+    summary = project_child_run_record(record, runtime_metadata=runtime_metadata).get("summary") or (
+        f"Child run '{record.agent_name}' reached terminal status '{record.status.value}'."
     )
+    return str(summary)
 
 
-def _continuation_metadata(record: AgentRunRecord) -> dict[str, Any]:
+def _continuation_metadata(
+    record: AgentRunRecord,
+    *,
+    runtime_metadata: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    projected = project_child_run_record(record, runtime_metadata=runtime_metadata)
     return {
         "admission_kind": "admit_turn",
         "ingress_reason": "child_run_completion",
         "source": "child_run_continuation",
         "visibility": "transcript",
         "private_updates": {
-            "child_run_continuation": {
-                "run_id": record.run_id,
-                "parent_run_id": record.parent_run_id,
-                "parent_turn_id": record.parent_turn_id,
-                "turn_id": record.turn_id,
-                "agent_name": record.agent_name,
-                "status": record.status.value,
-                "query_source": record.query_source,
-                "spawn_mode": record.spawn_mode.value,
-            }
+            "child_run_continuation": dict(projected)
         },
     }
 

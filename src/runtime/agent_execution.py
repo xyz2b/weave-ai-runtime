@@ -52,6 +52,7 @@ class AgentExecutionSpec:
     query_source: str | None
     prompt_messages: tuple[RuntimeMessage, ...]
     cwd: Path
+    delegation_depth: int = 0
     base_system_prompt: str = ""
     parent_policy_state: ExecutionPolicyState | None = None
     requested_model_route: str | None = None
@@ -89,6 +90,7 @@ class AgentRunRecord:
     spawn_mode: SpawnMode
     status: AgentRunStatus
     query_source: str | None = None
+    delegation_depth: int = 0
     requested_model_route: str | None = None
     requested_model: str | None = None
     requested_effort: Any = None

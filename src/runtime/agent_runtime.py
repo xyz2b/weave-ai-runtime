@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -11,7 +11,11 @@ from .agent_execution import AgentExecutionSpec, AgentRunRecord, ChildRunStore, 
 from .agent_execution_service import AgentExecutionService
 from .contracts import MessageRole, RuntimeMessage
 from .definitions import IsolationMode, PermissionMode, SkillDefinition, ToolDefinition
-from .execution_policy import policy_state_from_metadata
+from .execution_policy import (
+    DELEGATION_DEPTH_METADATA_KEY,
+    enforce_child_delegation_allowed,
+    policy_state_from_metadata,
+)
 from .registries import AgentRegistry, SkillRegistry, ToolRegistry
 from .runtime_services import DefaultTaskService, RuntimeServices
 from .runtime_kernel.config import ModelProviderBinding, ModelRouteBinding
@@ -141,6 +145,7 @@ class AgentRuntime:
 
     async def invoke(self, invocation: AgentInvocation) -> AgentRunResult:
         agent = self._dispatcher.resolve_agent(invocation.agent_name)
+        invocation = self._with_child_delegation_depth(invocation)
         execution_spec = self._dispatcher.build_execution_spec(invocation, agent)
         if agent.name == "main-router":
             routed = await self._try_compat_route(invocation, execution_spec)
@@ -154,6 +159,7 @@ class AgentRuntime:
 
     def prepare_execution(self, invocation: AgentInvocation) -> tuple[Any, AgentExecutionSpec]:
         agent = self._dispatcher.resolve_agent(invocation.agent_name)
+        invocation = self._with_child_delegation_depth(invocation)
         execution_spec = self._dispatcher.build_execution_spec(invocation, agent)
         return agent, execution_spec
 
@@ -173,6 +179,21 @@ class AgentRuntime:
             agent=agent,
             execution_spec=execution_spec,
         )
+
+    def _with_child_delegation_depth(self, invocation: AgentInvocation) -> AgentInvocation:
+        if not _invocation_requests_child_execution(invocation):
+            return invocation
+        spawn_mode = invocation.spawn_mode.value if invocation.spawn_mode is not None else None
+        child_depth = enforce_child_delegation_allowed(
+            runtime_metadata=self._runtime_services.metadata,
+            execution_metadata=invocation.metadata,
+            child_label=invocation.agent_name,
+            query_source=invocation.query_source,
+            spawn_mode=spawn_mode,
+        )
+        metadata = dict(invocation.metadata)
+        metadata[DELEGATION_DEPTH_METADATA_KEY] = child_depth
+        return replace(invocation, metadata=metadata)
 
     async def wait_for_background(self, task_id: str) -> AgentRunResult:
         return await self._dispatcher.wait_for_background(task_id)
@@ -271,6 +292,7 @@ class AgentRuntime:
                 turn_id=execution_spec.turn_id,
                 parent_run_id=execution_spec.run_id,
                 policy_state=policy_state_from_metadata(invocation.metadata),
+                runtime_metadata=invocation.metadata,
             )
             return AgentRunResult(
                 agent_name="main-router",
@@ -296,3 +318,18 @@ class AgentRuntime:
                 )
             )
         return None
+
+
+def _invocation_requests_child_execution(invocation: AgentInvocation) -> bool:
+    if invocation.parent_run_id is not None or invocation.parent_turn_id is not None:
+        return True
+    if _coerce_optional_string(invocation.metadata.get("run_id")) is not None:
+        return True
+    return invocation.query_source in {"agent_tool", "skill_fork", "compat_agent_route"}
+
+
+def _coerce_optional_string(value: Any) -> str | None:
+    if value is None:
+        return None
+    stringified = str(value).strip()
+    return stringified or None

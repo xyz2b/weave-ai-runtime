@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import Enum, StrEnum
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -16,6 +16,11 @@ from .definitions import (
 from .permissions import PermissionContext
 
 EXECUTION_POLICY_STATE_KEY = "execution_policy_state"
+DELEGATION_POLICY_METADATA_KEY = "delegation"
+DELEGATION_DEPTH_METADATA_KEY = "delegation_depth"
+DELEGATION_DEPTH_EXCEEDED_CODE = "delegation_depth_exceeded"
+DEFAULT_DELEGATION_MAX_DEPTH = 1
+DEFAULT_CHILD_SUMMARY_MAX_CHARS = 2000
 
 _DEFAULT_PERMISSION_MODES = {
     PermissionMode.DEFAULT,
@@ -43,6 +48,69 @@ class ExecutionPolicy:
     memory_scope: MemoryScope | None = None
     isolation_mode: IsolationMode = IsolationMode.NONE
     trace: dict[str, Any] = field(default_factory=dict)
+
+
+class ChildResultProjectionMode(StrEnum):
+    SUMMARY = "summary"
+    DETAILED = "detailed"
+
+
+@dataclass(frozen=True, slots=True)
+class DelegationPolicy:
+    max_depth: int = DEFAULT_DELEGATION_MAX_DEPTH
+    child_result_projection: ChildResultProjectionMode = ChildResultProjectionMode.SUMMARY
+    summary_max_chars: int = DEFAULT_CHILD_SUMMARY_MAX_CHARS
+
+    @property
+    def include_child_messages(self) -> bool:
+        return self.child_result_projection == ChildResultProjectionMode.DETAILED
+
+    def serialize(self) -> dict[str, Any]:
+        return {
+            "max_depth": self.max_depth,
+            "child_result_projection": self.child_result_projection.value,
+            "summary_max_chars": self.summary_max_chars,
+        }
+
+
+class DelegationPolicyError(RuntimeError):
+    def __init__(
+        self,
+        *,
+        current_depth: int,
+        attempted_depth: int,
+        max_depth: int,
+        child_label: str | None = None,
+        query_source: str | None = None,
+        spawn_mode: str | None = None,
+    ) -> None:
+        self.code = DELEGATION_DEPTH_EXCEEDED_CODE
+        self.current_depth = current_depth
+        self.attempted_depth = attempted_depth
+        self.max_depth = max_depth
+        self.child_label = child_label
+        self.query_source = query_source
+        self.spawn_mode = spawn_mode
+        target = f" for '{child_label}'" if child_label else ""
+        super().__init__(
+            f"{self.code}: delegation depth {current_depth} has reached max_depth {max_depth}; "
+            f"cannot spawn child depth {attempted_depth}{target}"
+        )
+
+    def to_payload(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "code": self.code,
+            "current_depth": self.current_depth,
+            "attempted_depth": self.attempted_depth,
+            "max_depth": self.max_depth,
+        }
+        if self.child_label is not None:
+            payload["child"] = self.child_label
+        if self.query_source is not None:
+            payload["query_source"] = self.query_source
+        if self.spawn_mode is not None:
+            payload["spawn_mode"] = self.spawn_mode
+        return payload
 
 
 @dataclass(slots=True)
@@ -76,6 +144,64 @@ def policy_state_from_metadata(
     if isinstance(state, ExecutionPolicyState):
         return state
     return None
+
+
+def resolve_delegation_policy(
+    metadata: Mapping[str, Any] | None,
+) -> DelegationPolicy:
+    raw_policy = metadata.get(DELEGATION_POLICY_METADATA_KEY) if isinstance(metadata, Mapping) else None
+    if not isinstance(raw_policy, Mapping):
+        raw_policy = {}
+    max_depth = _coerce_non_negative_int(
+        raw_policy.get("max_depth", raw_policy.get("max_child_depth")),
+        default=DEFAULT_DELEGATION_MAX_DEPTH,
+    )
+    summary_max_chars = _coerce_positive_int(
+        raw_policy.get("summary_max_chars", raw_policy.get("summary_max_length")),
+        default=DEFAULT_CHILD_SUMMARY_MAX_CHARS,
+    )
+    projection = _coerce_child_result_projection(raw_policy)
+    return DelegationPolicy(
+        max_depth=max_depth,
+        child_result_projection=projection,
+        summary_max_chars=summary_max_chars,
+    )
+
+
+def default_delegation_policy_metadata() -> dict[str, Any]:
+    return DelegationPolicy().serialize()
+
+
+def delegation_depth_from_metadata(metadata: Mapping[str, Any] | None) -> int:
+    if not isinstance(metadata, Mapping):
+        return 0
+    return _coerce_non_negative_int(
+        metadata.get(DELEGATION_DEPTH_METADATA_KEY, metadata.get("child_delegation_depth")),
+        default=0,
+    )
+
+
+def enforce_child_delegation_allowed(
+    *,
+    runtime_metadata: Mapping[str, Any] | None,
+    execution_metadata: Mapping[str, Any] | None,
+    child_label: str | None = None,
+    query_source: str | None = None,
+    spawn_mode: str | None = None,
+) -> int:
+    policy = resolve_delegation_policy(runtime_metadata)
+    current_depth = delegation_depth_from_metadata(execution_metadata)
+    attempted_depth = current_depth + 1
+    if current_depth >= policy.max_depth:
+        raise DelegationPolicyError(
+            current_depth=current_depth,
+            attempted_depth=attempted_depth,
+            max_depth=policy.max_depth,
+            child_label=child_label,
+            query_source=query_source,
+            spawn_mode=spawn_mode,
+        )
+    return attempted_depth
 
 
 def build_root_execution_policy(
@@ -340,6 +466,45 @@ def serialize_runtime_metadata(
     return serialized
 
 
+def _coerce_non_negative_int(value: Any, *, default: int) -> int:
+    if value is None or isinstance(value, bool):
+        return default
+    try:
+        resolved = int(str(value).strip())
+    except (TypeError, ValueError):
+        return default
+    return max(0, resolved)
+
+
+def _coerce_positive_int(value: Any, *, default: int) -> int:
+    if value is None or isinstance(value, bool):
+        return default
+    try:
+        resolved = int(str(value).strip())
+    except (TypeError, ValueError):
+        return default
+    return resolved if resolved > 0 else default
+
+
+def _coerce_child_result_projection(raw_policy: Mapping[str, Any]) -> ChildResultProjectionMode:
+    explicit = raw_policy.get("child_result_projection", raw_policy.get("result_projection"))
+    if explicit is None:
+        explicit = raw_policy.get("projection")
+    if explicit is not None:
+        normalized = str(explicit).strip().lower()
+        if normalized in {"detailed", "detail", "messages", "full", "legacy"}:
+            return ChildResultProjectionMode.DETAILED
+        if normalized in {"summary", "summary_first", "summary-only", "summary_only"}:
+            return ChildResultProjectionMode.SUMMARY
+    include_messages = raw_policy.get(
+        "include_child_messages",
+        raw_policy.get("include_messages", raw_policy.get("detailed_child_results")),
+    )
+    if isinstance(include_messages, bool) and include_messages:
+        return ChildResultProjectionMode.DETAILED
+    return ChildResultProjectionMode.SUMMARY
+
+
 def _serialize_value(value: Any) -> Any:
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
@@ -358,4 +523,3 @@ def _serialize_value(value: Any) -> Any:
     if isinstance(value, (list, tuple)):
         return [_serialize_value(item) for item in value]
     return str(value)
-

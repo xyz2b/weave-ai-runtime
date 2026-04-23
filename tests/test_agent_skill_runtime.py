@@ -43,7 +43,7 @@ from runtime.turn_engine import (
     TurnStreamEventType,
 )
 
-from .runtime_protocol_harness import terminal_stable_fields
+from .runtime_protocol_harness import request_messages_fixture, terminal_stable_fields
 
 
 class FakeModelClient:
@@ -220,18 +220,18 @@ def test_agent_tool_v1_contract_normalizes_and_returns_structured_payload(tmp_pa
     assert payload["turn_id"]
     assert payload["task_id"] is None
     assert payload["query_source"] == "agent_tool"
+    assert payload["summary"] == "subagent answer"
     assert payload["requested_model"] == "override-model"
     assert payload["requested_model_route"] == "reviewer-route"
     assert payload["resolved_model_route"] == "reviewer-route"
     assert payload["isolation_mode"] == "worktree"
+    assert "messages" not in payload
     stable_terminal_metadata = terminal_stable_fields(payload["terminal_metadata"])
     assert stable_terminal_metadata == {
         "stop_reason": "end_turn",
         "request_id": "req-agent-structured",
     }
-    assert terminal_stable_fields(payload["messages"][-1]["metadata"]) == stable_terminal_metadata
     assert set(payload["terminal_metadata"]) - set(stable_terminal_metadata)
-    assert payload["messages"][-1]["content"][0]["text"] == "subagent answer"
 
     request = model_client.requests[0]
     assert request.turn_context.cwd == str(workspace.resolve())
@@ -239,6 +239,64 @@ def test_agent_tool_v1_contract_normalizes_and_returns_structured_payload(tmp_pa
     assert request.requested_model_route == "reviewer-route"
     assert request.resolved_model_route == "reviewer-route"
     assert request.metadata["delegation_reason"] == "need specialist"
+
+
+def test_agent_tool_detailed_projection_mode_preserves_summary_and_messages(tmp_path: Path) -> None:
+    model_client = FakeModelClient(
+        [
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-agent-detailed"}),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "detailed child answer"}),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+            ]
+        ]
+    )
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            model_client=model_client,
+            metadata={"delegation": {"child_result_projection": "detailed"}},
+            builtins=BuiltinPackConfig(
+                agents_enabled=False,
+                extra_agents=[
+                    AgentDefinition(name="main-router", description="router", prompt="route", tools=("*",)),
+                    AgentDefinition(name="verification", description="verify", prompt="verify"),
+                ],
+            ),
+        )
+    )
+    context = ToolContext(
+        session_id="session-agent-tool-detailed",
+        turn_id="turn-agent-tool-detailed",
+        agent_name="main-router",
+        cwd=tmp_path,
+        tool_registry=runtime.kernel.tool_registry,
+        agent_registry=runtime.kernel.agent_registry,
+        skill_registry=runtime.kernel.skill_registry,
+        agent_runner=runtime.run_agent_tool,
+    )
+
+    result = asyncio.run(
+        ToolScheduler(runtime.kernel.tool_registry).run(
+            [
+                ToolCall(
+                    "call-agent-detailed",
+                    "agent",
+                    {
+                        "agent": "verification",
+                        "prompt": "run checks",
+                    },
+                )
+            ],
+            context,
+        )
+    )[0]
+
+    assert result.status == ToolCallStatus.SUCCESS
+    payload = result.output
+    assert payload["summary"] == "detailed child answer"
+    assert len(payload["messages"]) == 1
+    assert payload["messages"][0]["content"][0]["text"] == "detailed child answer"
 
 
 def test_agent_tool_rejects_invalid_cwd_input(tmp_path: Path) -> None:
@@ -736,7 +794,8 @@ def test_assembled_runtime_executes_model_generated_agent_and_skill_tools(
     )
     assert agent_tool_result.content["agent"] == "verification"
     assert agent_tool_result.content["status"] == "completed"
-    assert agent_tool_result.content["messages"][-1]["content"][0]["text"] == "subagent answer"
+    assert agent_tool_result.content["summary"] == "subagent answer"
+    assert "messages" not in agent_tool_result.content
     assert agent_messages[-1].text == "agent delegation done"
 
     skill_tool_result_message = next(
@@ -749,8 +808,320 @@ def test_assembled_runtime_executes_model_generated_agent_and_skill_tools(
     )
     assert skill_tool_result.content["skill"] == "fork-skill"
     assert skill_tool_result.content["mode"] == SkillExecutionContext.FORK.value
-    assert skill_tool_result.content["agent_result"]["messages"][-1]["content"][0]["text"] == "forked answer"
+    assert skill_tool_result.content["agent_result"]["summary"] == "forked answer"
+    assert "messages" not in skill_tool_result.content["agent_result"]
     assert skill_messages[-1].text == "skill delegation done"
+
+
+def test_nested_agent_delegation_is_rejected_by_default_and_does_not_allocate_grandchild_run(
+    tmp_path: Path,
+) -> None:
+    model_client = FakeModelClient(
+        [
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-parent-agent-1"}),
+                ModelStreamEvent(
+                    ModelStreamEventType.TOOL_CALL,
+                    {
+                        "tool_name": "agent",
+                        "tool_input": {"agent": "worker", "prompt": "delegate further"},
+                        "call_id": "call-parent-agent",
+                    },
+                ),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "tool_use"}),
+            ],
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-worker-agent-1"}),
+                ModelStreamEvent(
+                    ModelStreamEventType.TOOL_CALL,
+                    {
+                        "tool_name": "agent",
+                        "tool_input": {"agent": "verification", "prompt": "nested"},
+                        "call_id": "call-worker-agent",
+                    },
+                ),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "tool_use"}),
+            ],
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-worker-agent-2"}),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "worker finished"}),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+            ],
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-parent-agent-2"}),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "parent finished"}),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+            ],
+        ]
+    )
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            model_client=model_client,
+            builtins=BuiltinPackConfig(
+                extra_agents=[
+                    AgentDefinition(name="worker", description="worker", prompt="work", tools=("*",)),
+                    AgentDefinition(name="verification", description="verify", prompt="verify"),
+                ]
+            ),
+        )
+    )
+
+    messages = asyncio.run(runtime.run_prompt("Run nested agent", session_id="session-nested-agent"))
+
+    assert len(model_client.requests) == 4
+    worker_followup_request = request_messages_fixture(model_client.requests[2])
+    nested_error_block = worker_followup_request[2]["content"][0]
+    assert nested_error_block["tool_use_id"] == "call-worker-agent"
+    assert nested_error_block["content"]["code"] == "delegation_depth_exceeded"
+    assert nested_error_block["content"]["attempted_depth"] == 2
+
+    parent_tool_result_message = next(
+        message
+        for message in messages
+        if message.role == MessageRole.USER and any(isinstance(block, ToolResultBlock) for block in message.content)
+    )
+    parent_tool_result = next(
+        block for block in parent_tool_result_message.content if isinstance(block, ToolResultBlock)
+    )
+    assert parent_tool_result.content["summary"] == "worker finished"
+    assert "messages" not in parent_tool_result.content
+
+    child_records = asyncio.run(runtime.agent_runtime.run_store.list_by_session("session-nested-agent"))
+    assert len(child_records) == 1
+    assert child_records[0].agent_name == "worker"
+
+
+def test_nested_skill_fork_is_rejected_by_default_and_does_not_allocate_grandchild_run(
+    tmp_path: Path,
+) -> None:
+    model_client = FakeModelClient(
+        [
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-parent-skill-1"}),
+                ModelStreamEvent(
+                    ModelStreamEventType.TOOL_CALL,
+                    {
+                        "tool_name": "skill",
+                        "tool_input": {"skill": "fork-work"},
+                        "call_id": "call-parent-skill",
+                    },
+                ),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "tool_use"}),
+            ],
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-worker-skill-1"}),
+                ModelStreamEvent(
+                    ModelStreamEventType.TOOL_CALL,
+                    {
+                        "tool_name": "skill",
+                        "tool_input": {"skill": "fork-work"},
+                        "call_id": "call-worker-skill",
+                    },
+                ),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "tool_use"}),
+            ],
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-worker-skill-2"}),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "worker skill finished"}),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+            ],
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-parent-skill-2"}),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "parent skill finished"}),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+            ],
+        ]
+    )
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            model_client=model_client,
+            builtins=BuiltinPackConfig(
+                extra_agents=[
+                    AgentDefinition(name="worker", description="worker", prompt="work", tools=("*",)),
+                ],
+                extra_skills=[
+                    SkillDefinition(
+                        name="fork-work",
+                        description="fork work",
+                        content="Forked work",
+                        execution_context=SkillExecutionContext.FORK,
+                        agent="worker",
+                    )
+                ],
+            ),
+        )
+    )
+
+    messages = asyncio.run(runtime.run_prompt("Run nested skill", session_id="session-nested-skill"))
+
+    assert len(model_client.requests) == 4
+    worker_followup_request = request_messages_fixture(model_client.requests[2])
+    nested_error_block = worker_followup_request[2]["content"][0]
+    assert nested_error_block["tool_use_id"] == "call-worker-skill"
+    assert nested_error_block["content"]["code"] == "delegation_depth_exceeded"
+    assert nested_error_block["content"]["attempted_depth"] == 2
+
+    parent_tool_result_message = next(
+        message
+        for message in messages
+        if message.role == MessageRole.USER and any(isinstance(block, ToolResultBlock) for block in message.content)
+    )
+    parent_tool_result = next(
+        block for block in parent_tool_result_message.content if isinstance(block, ToolResultBlock)
+    )
+    assert parent_tool_result.content["agent_result"]["summary"] == "worker skill finished"
+    assert "messages" not in parent_tool_result.content["agent_result"]
+
+    child_records = asyncio.run(runtime.agent_runtime.run_store.list_by_session("session-nested-skill"))
+    assert len(child_records) == 1
+    assert child_records[0].agent_name == "worker"
+
+
+def test_explicit_higher_delegation_ceiling_allows_nested_agent_runs(tmp_path: Path) -> None:
+    model_client = FakeModelClient(
+        [
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-parent-agent-allow-1"}),
+                ModelStreamEvent(
+                    ModelStreamEventType.TOOL_CALL,
+                    {
+                        "tool_name": "agent",
+                        "tool_input": {"agent": "worker", "prompt": "delegate further"},
+                        "call_id": "call-parent-agent-allow",
+                    },
+                ),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "tool_use"}),
+            ],
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-worker-agent-allow-1"}),
+                ModelStreamEvent(
+                    ModelStreamEventType.TOOL_CALL,
+                    {
+                        "tool_name": "agent",
+                        "tool_input": {"agent": "verification", "prompt": "nested"},
+                        "call_id": "call-worker-agent-allow",
+                    },
+                ),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "tool_use"}),
+            ],
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-grandchild-agent"}),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "grandchild answer"}),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+            ],
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-worker-agent-allow-2"}),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "worker allowed"}),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+            ],
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-parent-agent-allow-2"}),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "parent allowed"}),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+            ],
+        ]
+    )
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            model_client=model_client,
+            metadata={"delegation": {"max_depth": 2}},
+            builtins=BuiltinPackConfig(
+                extra_agents=[
+                    AgentDefinition(name="worker", description="worker", prompt="work", tools=("*",)),
+                    AgentDefinition(name="verification", description="verify", prompt="verify"),
+                ]
+            ),
+        )
+    )
+
+    asyncio.run(runtime.run_prompt("Run nested agent", session_id="session-nested-agent-allow"))
+
+    assert len(model_client.requests) == 6
+    child_records = asyncio.run(
+        runtime.agent_runtime.run_store.list_by_session("session-nested-agent-allow")
+    )
+    assert [
+        (record.agent_name, record.delegation_depth)
+        for record in sorted(child_records, key=lambda record: record.delegation_depth)
+    ] == [("worker", 1), ("verification", 2)]
+
+
+def test_explicit_higher_delegation_ceiling_allows_nested_skill_forks(tmp_path: Path) -> None:
+    model_client = FakeModelClient(
+        [
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-parent-skill-allow-1"}),
+                ModelStreamEvent(
+                    ModelStreamEventType.TOOL_CALL,
+                    {
+                        "tool_name": "skill",
+                        "tool_input": {"skill": "fork-work"},
+                        "call_id": "call-parent-skill-allow",
+                    },
+                ),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "tool_use"}),
+            ],
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-worker-skill-allow-1"}),
+                ModelStreamEvent(
+                    ModelStreamEventType.TOOL_CALL,
+                    {
+                        "tool_name": "skill",
+                        "tool_input": {"skill": "fork-work"},
+                        "call_id": "call-worker-skill-allow",
+                    },
+                ),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "tool_use"}),
+            ],
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-grandchild-skill"}),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "grandchild skill answer"}),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+            ],
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-worker-skill-allow-2"}),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "worker skill allowed"}),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+            ],
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-parent-skill-allow-2"}),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "parent skill allowed"}),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+            ],
+        ]
+    )
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            model_client=model_client,
+            metadata={"delegation": {"max_depth": 2}},
+            builtins=BuiltinPackConfig(
+                extra_agents=[
+                    AgentDefinition(name="worker", description="worker", prompt="work", tools=("*",)),
+                ],
+                extra_skills=[
+                    SkillDefinition(
+                        name="fork-work",
+                        description="fork work",
+                        content="Forked work",
+                        execution_context=SkillExecutionContext.FORK,
+                        agent="worker",
+                    )
+                ],
+            ),
+        )
+    )
+
+    asyncio.run(runtime.run_prompt("Run nested skill", session_id="session-nested-skill-allow"))
+
+    assert len(model_client.requests) == 6
+    child_records = asyncio.run(
+        runtime.agent_runtime.run_store.list_by_session("session-nested-skill-allow")
+    )
+    assert [record.agent_name for record in child_records] == ["worker", "worker"]
 
 
 def test_inline_skill_request_override_shapes_next_request_and_is_consumed_once(
@@ -1610,16 +1981,20 @@ def test_forked_skill_and_subagent_preserve_policy_and_isolation_ceilings(
     skill_tool_result = next(
         block for block in skill_tool_result_message.content if isinstance(block, ToolResultBlock)
     )
+    assert skill_tool_result.content["agent_result"]["summary"] == "worker done"
+    assert "messages" not in skill_tool_result.content["agent_result"]
+
+    worker_record = asyncio.run(runtime.agent_runtime.run_store.list_by_session("session-ceilings"))[0]
     worker_tool_result_message = next(
         message
-        for message in skill_tool_result.content["agent_result"]["messages"]
-        if any(block["type"] == "tool_result" for block in message["content"])
+        for message in worker_record.messages
+        if any(isinstance(block, ToolResultBlock) for block in message.content)
     )
     worker_tool_result = next(
-        block for block in worker_tool_result_message["content"] if block["type"] == "tool_result"
+        block for block in worker_tool_result_message.content if isinstance(block, ToolResultBlock)
     )
-    assert worker_tool_result["is_error"] is True
-    assert "approval required" in worker_tool_result["content"]
+    assert worker_tool_result.is_error is True
+    assert "approval required" in worker_tool_result.content
 
 
 def test_remote_isolation_uses_adapter_contract_and_emits_trace(tmp_path: Path) -> None:

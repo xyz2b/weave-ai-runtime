@@ -38,6 +38,7 @@ from .context_window import (
     TokenEstimationHint,
 )
 from .control_plane import RuntimeControlPlaneContext
+from .execution_policy import ChildResultProjectionMode, DelegationPolicy
 from .definitions import (
     AgentDefinition,
     DefinitionOrigin,
@@ -334,6 +335,7 @@ __all__ = [
     "RuntimeMessage",
     "RuntimePrivateContext",
     "RuntimeServices",
+    "DelegationPolicy",
     "TaskDisciplinePolicy",
     "TaskListEntry",
     "TaskOrchestrationEntry",
@@ -349,6 +351,7 @@ __all__ = [
     "PersistentTeammateOrchestrator",
     "SdkHostRuntime",
     "CliHostRuntime",
+    "ChildResultProjectionMode",
     "SessionCommand",
     "SessionCommandType",
     "SessionState",

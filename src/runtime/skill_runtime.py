@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 from uuid import uuid4
 
 from .agent_execution import SpawnMode
@@ -24,8 +24,10 @@ from .definitions import (
     ToolCallStatus,
 )
 from .execution_policy import (
+    DELEGATION_DEPTH_METADATA_KEY,
     EXECUTION_POLICY_STATE_KEY,
     ExecutionPolicyState,
+    delegation_depth_from_metadata,
     policy_allows_skill,
     resolve_skill_execution_policy,
     serialize_policy,
@@ -75,6 +77,7 @@ class SkillExecutor:
         turn_id: str | None = None,
         parent_run_id: str | None = None,
         policy_state: ExecutionPolicyState | None = None,
+        runtime_metadata: Mapping[str, Any] | None = None,
     ) -> SkillExecutionResult:
         parent_policy = policy_state.effective if policy_state is not None else None
         available_skills = (
@@ -138,6 +141,7 @@ class SkillExecutor:
                     metadata={
                         "permission_context": resolved_policy.permission_context,
                         EXECUTION_POLICY_STATE_KEY: ExecutionPolicyState(resolved_policy),
+                        DELEGATION_DEPTH_METADATA_KEY: delegation_depth_from_metadata(runtime_metadata),
                         "skill_hooks": dict(skill.hooks),
                         "skill_hook_owner": hook_owner,
                         "skill_policy_trace": dict(resolved_policy.trace),

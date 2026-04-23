@@ -73,9 +73,12 @@ def test_terminal_child_run_wakes_waiting_session_and_preserves_child_run_event(
     assert controller.state.status == SessionStatus.READY
     assert controller.state.queued_commands == []
     assert model_client.requests[0].query_source == "task_notification"
+    assert model_client.requests[0].private_context.extensions["child_run_continuation"]["summary"] == (
+        "Child run 'verification' completed without a textual assistant summary."
+    )
     assert any(
         message.role == MessageRole.NOTIFICATION
-        and "Child run 'verification' reached terminal status 'completed'" in message.text
+        and message.text == "Child run 'verification' completed without a textual assistant summary."
         for message in controller.messages
     )
     assert controller.messages[-1].text == "Coordinator resumed"
@@ -113,6 +116,12 @@ def test_terminal_child_run_queues_ready_session_by_default(tmp_path: Path) -> N
 
     assert controller.state.status == SessionStatus.READY
     assert len(controller.state.queued_commands) == 1
+    assert (
+        controller.state.queued_commands[0].payload["metadata"]["private_updates"]["child_run_continuation"][
+            "summary"
+        ]
+        == "Child run 'verification' completed without a textual assistant summary."
+    )
     assert model_client.requests == []
 
     produced = asyncio.run(controller.run_until_idle())

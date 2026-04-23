@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any
 from .agent_execution import AgentExecutionSpec, AgentRunStatus, SpawnMode
 from .contracts import MessageRole, RuntimeMessage
 from .definitions import AgentDefinition
-from .execution_policy import policy_state_from_metadata
+from .execution_policy import delegation_depth_from_metadata, policy_state_from_metadata
 from .jobs import (
     JobControlCapabilities,
     JobExecutor,
@@ -107,6 +107,7 @@ class AgentDispatcher:
                 ),
             ),
             cwd=invocation.cwd,
+            delegation_depth=delegation_depth_from_metadata(invocation.metadata),
             base_system_prompt=_coerce_optional_string(invocation.metadata.get("system_prompt")) or "",
             parent_policy_state=policy_state_from_metadata(invocation.metadata),
             requested_model_route=invocation.requested_model_route
@@ -236,6 +237,7 @@ def _background_job_metadata(
         "run_id": execution_spec.run_id,
         "session_id": execution_spec.session_id,
         "query_source": execution_spec.query_source,
+        "delegation_depth": execution_spec.delegation_depth,
         "kind": "background_agent",
     }
     if agent_name is not None:

@@ -129,6 +129,10 @@ def test_builtin_external_orchestration_and_task_tools(tmp_path: Path, monkeypat
         title="background-check",
         metadata={"session_id": context.session_id, "kind": "background_agent"},
     )
+    context.task_manager.register_stop_handler(
+        "job-1",
+        lambda task: context.task_manager.update(task.task_id, status=TaskStatus.STOPPED),
+    )
     context.task_manager.update("job-1", status=TaskStatus.RUNNING)
 
     primary = asyncio.run(

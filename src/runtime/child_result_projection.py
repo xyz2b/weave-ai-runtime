@@ -1,0 +1,179 @@
+from __future__ import annotations
+
+import re
+from typing import Any, Mapping, Sequence
+
+from .agent_execution import AgentRunRecord
+from .contracts import MessageRole, RuntimeMessage, serialize_content_blocks
+from .definitions import IsolationMode
+from .execution_policy import DelegationPolicy, resolve_delegation_policy
+
+
+def project_agent_run_result(
+    result: Any,
+    *,
+    runtime_metadata: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    policy = resolve_delegation_policy(runtime_metadata)
+    run_record = getattr(result, "run_record", None)
+    messages = tuple(getattr(result, "messages", ()) or ())
+    if isinstance(run_record, AgentRunRecord):
+        messages = tuple(run_record.messages or messages)
+    projection = _base_projection_from_result(result, run_record, policy=policy, messages=messages)
+    if policy.include_child_messages:
+        projection["messages"] = [_serialize_message(message) for message in messages]
+    return projection
+
+
+def project_child_run_record(
+    record: AgentRunRecord,
+    *,
+    runtime_metadata: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    policy = resolve_delegation_policy(runtime_metadata)
+    projection: dict[str, Any] = {
+        "agent": record.agent_name,
+        "agent_name": record.agent_name,
+        "status": record.status.value,
+        "background": record.background if hasattr(record, "background") else record.spawn_mode.value == "background",
+        "run_id": record.run_id,
+        "parent_run_id": record.parent_run_id,
+        "turn_id": record.turn_id,
+        "parent_turn_id": record.parent_turn_id,
+        "query_source": record.query_source,
+        "spawn_mode": record.spawn_mode.value,
+        "delegation_depth": record.delegation_depth,
+        "summary": summarize_child_run_record(record, policy=policy),
+        "terminal_metadata": dict(record.terminal_metadata),
+        "requested_model": record.requested_model,
+        "requested_effort": record.requested_effort,
+        "requested_model_route": record.requested_model_route,
+        "resolved_model_route": record.resolved_model_route,
+        "provider_name": record.provider_name,
+        "invocation_mode": record.invocation_mode,
+    }
+    if policy.include_child_messages:
+        projection["messages"] = [_serialize_message(message) for message in record.messages]
+    return projection
+
+
+def summarize_child_run_record(
+    record: AgentRunRecord,
+    *,
+    policy: DelegationPolicy | None = None,
+) -> str:
+    resolved_policy = policy or DelegationPolicy()
+    for message in reversed(record.messages):
+        if message.role != MessageRole.ASSISTANT:
+            continue
+        summary = _normalize_summary_text(message.text, max_chars=resolved_policy.summary_max_chars)
+        if summary:
+            return summary
+    return _fallback_summary(
+        agent_name=record.agent_name,
+        status=record.status.value,
+        terminal_metadata=record.terminal_metadata,
+        max_chars=resolved_policy.summary_max_chars,
+    )
+
+
+def _base_projection_from_result(
+    result: Any,
+    run_record: AgentRunRecord | None,
+    *,
+    policy: DelegationPolicy,
+    messages: Sequence[RuntimeMessage],
+) -> dict[str, Any]:
+    execution_spec = getattr(result, "execution_spec", None)
+    isolation_mode = getattr(result, "isolation_mode", None)
+    if isinstance(isolation_mode, IsolationMode):
+        serialized_isolation = isolation_mode.value
+    else:
+        serialized_isolation = isolation_mode
+    terminal_metadata = dict(run_record.terminal_metadata) if run_record is not None else {}
+    summary = (
+        summarize_child_run_record(run_record, policy=policy)
+        if run_record is not None
+        else _fallback_summary(
+            agent_name=str(getattr(result, "agent_name", "child")),
+            status=str(getattr(result, "status", "unknown")),
+            terminal_metadata=terminal_metadata,
+            max_chars=policy.summary_max_chars,
+        )
+    )
+    return {
+        "agent": getattr(result, "agent_name", None),
+        "status": getattr(result, "status", None),
+        "background": bool(getattr(result, "background", False)),
+        "run_id": getattr(result, "run_id", None),
+        "parent_run_id": getattr(result, "parent_run_id", None),
+        "turn_id": getattr(result, "turn_id", None),
+        "parent_turn_id": execution_spec.parent_turn_id if execution_spec is not None else None,
+        "query_source": getattr(result, "query_source", None),
+        "spawn_mode": (
+            execution_spec.spawn_mode.value if execution_spec is not None else None
+        ),
+        "summary": summary,
+        "terminal_metadata": terminal_metadata,
+        "task_id": getattr(result, "task_id", None),
+        "requested_model": (
+            execution_spec.requested_model if execution_spec is not None else None
+        ),
+        "requested_effort": (
+            execution_spec.requested_effort if execution_spec is not None else None
+        ),
+        "requested_model_route": (
+            execution_spec.requested_model_route if execution_spec is not None else None
+        ),
+        "resolved_model_route": run_record.resolved_model_route if run_record is not None else None,
+        "isolation_mode": serialized_isolation,
+        "notification": (
+            _serialize_message(getattr(result, "notification"))
+            if getattr(result, "notification", None) is not None
+            else None
+        ),
+        "delegation_depth": (
+            run_record.delegation_depth
+            if run_record is not None
+            else (execution_spec.delegation_depth if execution_spec is not None else 0)
+        ),
+    }
+
+
+def _fallback_summary(
+    *,
+    agent_name: str,
+    status: str,
+    terminal_metadata: Mapping[str, Any],
+    max_chars: int,
+) -> str:
+    error = terminal_metadata.get("error") or terminal_metadata.get("abort_reason")
+    if status == "running":
+        text = f"Child run '{agent_name}' is running."
+    elif error:
+        text = f"Child run '{agent_name}' ended with status '{status}': {error}"
+    elif status == "completed":
+        text = f"Child run '{agent_name}' completed without a textual assistant summary."
+    else:
+        text = f"Child run '{agent_name}' ended with status '{status}'."
+    return _normalize_summary_text(text, max_chars=max_chars) or text[:max_chars]
+
+
+def _normalize_summary_text(text: str, *, max_chars: int) -> str:
+    normalized = re.sub(r"\s+", " ", text).strip()
+    if not normalized:
+        return ""
+    if len(normalized) <= max_chars:
+        return normalized
+    if max_chars <= 3:
+        return normalized[:max_chars]
+    return f"{normalized[: max_chars - 3].rstrip()}..."
+
+
+def _serialize_message(message: RuntimeMessage) -> dict[str, Any]:
+    return {
+        "message_id": message.message_id,
+        "role": message.role.value,
+        "content": serialize_content_blocks(message.content),
+        "metadata": dict(message.metadata),
+    }

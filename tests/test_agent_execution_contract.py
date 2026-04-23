@@ -16,6 +16,7 @@ from runtime.definitions import (
     ToolDefinition,
     ToolTraits,
 )
+from runtime.execution_policy import ChildResultProjectionMode, resolve_delegation_policy
 from runtime.hooks import RuntimeHookPhase
 from runtime.registries import AgentRegistry, SkillRegistry, ToolRegistry
 from runtime.runtime_kernel import ModelProviderBinding, ModelRouteBinding
@@ -63,6 +64,86 @@ class FailingIsolationService:
 
     async def cleanup(self, lease):  # pragma: no cover - protocol completeness
         _ = lease
+
+
+def test_delegation_policy_parsing_defaults_and_overrides() -> None:
+    default_policy = resolve_delegation_policy({})
+    assert default_policy.max_depth == 1
+    assert default_policy.child_result_projection == ChildResultProjectionMode.SUMMARY
+    assert default_policy.summary_max_chars == 2000
+
+    overridden = resolve_delegation_policy(
+        {
+            "delegation": {
+                "max_depth": "3",
+                "child_result_projection": "detailed",
+                "summary_max_chars": "120",
+            }
+        }
+    )
+    assert overridden.max_depth == 3
+    assert overridden.child_result_projection == ChildResultProjectionMode.DETAILED
+    assert overridden.summary_max_chars == 120
+
+
+def test_child_delegation_depth_is_threaded_into_spec_request_and_record(tmp_path: Path) -> None:
+    async def scenario():
+        model_client = FakeModelClient(
+            [
+                [
+                    ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-delegation-depth"}),
+                    ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "depth ok"}),
+                    ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+                ]
+            ]
+        )
+        agent_registry = AgentRegistry()
+        agent_registry.register(
+            AgentDefinition(
+                name="verification",
+                description="verify",
+                prompt="verify",
+            )
+        )
+        services = RuntimeServices(metadata={"delegation": {"max_depth": 3}})
+        runtime = AgentRuntime(
+            turn_engine=TurnEngine(
+                model_client=model_client,
+                tool_registry=ToolRegistry(),
+                agent_registry=agent_registry,
+                skill_registry=SkillRegistry(),
+                task_manager=TaskManager(),
+                runtime_services=services,
+            ),
+            agent_registry=agent_registry,
+            tool_registry=ToolRegistry(),
+            skill_registry=SkillRegistry(),
+            task_manager=TaskManager(),
+            runtime_services=services,
+        )
+        result = await runtime.invoke(
+            AgentInvocation(
+                agent_name="verification",
+                prompt="run checks",
+                session_id="session-child-depth",
+                cwd=tmp_path,
+                query_source="agent_tool",
+                parent_run_id="parent-run-depth",
+                parent_turn_id="parent-turn-depth",
+                metadata={"delegation_depth": 1},
+            )
+        )
+        record = await runtime.run_store.get(result.run_id)
+        return model_client, result, record
+
+    model_client, result, record = asyncio.run(scenario())
+
+    assert result.execution_spec is not None
+    assert result.execution_spec.delegation_depth == 2
+    assert model_client.requests[0].metadata["delegation_depth"] == 2
+    assert record is not None
+    assert record.delegation_depth == 2
+    assert record.request_metadata["delegation_depth"] == 2
 
 
 def test_sync_agent_execution_spec_and_run_record_are_structured(tmp_path: Path) -> None:

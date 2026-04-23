@@ -21,6 +21,7 @@ from .contracts import MessageRole, RuntimeMessage
 from .definitions import AgentDefinition, IsolationMode, PermissionBehavior, PermissionDecision
 from .execution_policy import (
     EXECUTION_POLICY_STATE_KEY,
+    DELEGATION_DEPTH_METADATA_KEY,
     ExecutionPolicy,
     ExecutionPolicyState,
     policy_state_from_metadata,
@@ -356,6 +357,7 @@ class AgentExecutionService:
                 "parent_turn_id": execution_spec.parent_turn_id,
                 "spawn_mode": execution_spec.spawn_mode.value,
                 "query_source": execution_spec.query_source,
+                DELEGATION_DEPTH_METADATA_KEY: execution_spec.delegation_depth,
                 "policy": serialize_runtime_metadata({EXECUTION_POLICY_STATE_KEY: ExecutionPolicyState(policy)})[
                     "policy"
                 ],
@@ -467,6 +469,7 @@ class AgentExecutionService:
             "parent_turn_id": execution_spec.parent_turn_id,
             "spawn_mode": execution_spec.spawn_mode,
             "query_source": execution_spec.query_source,
+            DELEGATION_DEPTH_METADATA_KEY: execution_spec.delegation_depth,
             "requested_model_route": execution_spec.requested_model_route,
             "requested_model": execution_spec.requested_model,
             "requested_effort": execution_spec.requested_effort,
@@ -505,6 +508,7 @@ class AgentExecutionService:
                 "parent_turn_id": execution_spec.parent_turn_id,
                 "spawn_mode": execution_spec.spawn_mode,
                 "query_source": execution_spec.query_source,
+                DELEGATION_DEPTH_METADATA_KEY: execution_spec.delegation_depth,
                 "requested_model_route": execution_spec.requested_model_route,
                 "requested_model": execution_spec.requested_model,
                 "requested_effort": execution_spec.requested_effort,
@@ -574,6 +578,7 @@ class AgentExecutionService:
             spawn_mode=execution_spec.spawn_mode,
             status=status,
             query_source=execution_spec.query_source,
+            delegation_depth=execution_spec.delegation_depth,
             requested_model_route=execution_spec.requested_model_route,
             requested_model=execution_spec.requested_model,
             requested_effort=execution_spec.requested_effort,

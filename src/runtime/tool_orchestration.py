@@ -604,11 +604,12 @@ def _empty_result(resolved_call: ResolvedToolCall):
 
 
 def _tool_result_block(result: Any) -> ToolResultBlock:
-    content = (
-        coerce_replay_payload(result.output)
-        if result.status == ToolCallStatus.SUCCESS
-        else (result.error or "")
-    )
+    if result.output is not None and isinstance(result.output, Mapping):
+        content = coerce_replay_payload(result.output)
+    elif result.status == ToolCallStatus.SUCCESS:
+        content = coerce_replay_payload(result.output)
+    else:
+        content = result.error or ""
     return ToolResultBlock(
         tool_use_id=result.call_id,
         content=content,

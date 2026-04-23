@@ -134,6 +134,7 @@ class RuntimePrivateContext:
     policy_state: Any = None
     run_id: str | None = None
     parent_run_id: str | None = None
+    delegation_depth: int | None = None
     requested_model_route: str | None = None
     resolved_model_route: str | None = None
     provider_name: str | None = None
@@ -155,6 +156,8 @@ class RuntimePrivateContext:
             metadata["run_id"] = self.run_id
         if self.parent_run_id is not None:
             metadata["parent_run_id"] = self.parent_run_id
+        if self.delegation_depth is not None:
+            metadata["delegation_depth"] = self.delegation_depth
         if self.requested_model_route is not None:
             metadata["requested_model_route"] = self.requested_model_route
         if self.resolved_model_route is not None:
@@ -170,6 +173,7 @@ class RuntimePrivateContext:
         return RuntimePrivateContextView(
             run_id=self.run_id,
             parent_run_id=self.parent_run_id,
+            delegation_depth=self.delegation_depth,
             requested_model_route=self.requested_model_route,
             resolved_model_route=self.resolved_model_route,
             provider_name=self.provider_name,
@@ -183,6 +187,7 @@ class RuntimePrivateContext:
 class RuntimePrivateContextView:
     run_id: str | None = None
     parent_run_id: str | None = None
+    delegation_depth: int | None = None
     requested_model_route: str | None = None
     resolved_model_route: str | None = None
     provider_name: str | None = None
@@ -312,6 +317,7 @@ def private_context_from_legacy_runtime_context(
         policy_state=raw_context.pop("execution_policy_state", None),
         run_id=_coerce_optional_string(raw_context.pop("run_id", None)),
         parent_run_id=_coerce_optional_string(raw_context.pop("parent_run_id", None)),
+        delegation_depth=_coerce_optional_int(raw_context.pop("delegation_depth", None)),
         requested_model_route=_coerce_optional_string(
             raw_context.pop("requested_model_route", None)
         ),

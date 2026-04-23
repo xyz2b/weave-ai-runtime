@@ -11,11 +11,14 @@ from ..agent_execution import SpawnMode
 from ..agent_runtime import AgentInvocation, AgentRunResult, AgentRuntime
 from ..builtins import load_builtin_pack
 from ..contracts import (
+    ExecutionResult,
+    ExecutionStatus,
     PromptContextEnvelope,
     RuntimeMessage,
     RuntimePrivateContext,
     serialize_content_blocks,
 )
+from ..child_result_projection import project_agent_run_result
 from ..definitions import (
     AgentDefinition,
     DefinitionOrigin,
@@ -72,7 +75,7 @@ from ..turn_engine.composer import ContextAssembler
 from ..turn_engine.engine import TurnEngine, TurnStreamEvent, TurnStreamEventType
 from ..turn_engine.models import ModelRequest, TranscriptStore
 from .config import DefinitionSourcePaths, RuntimeConfig
-from ..execution_policy import policy_state_from_metadata
+from ..execution_policy import DelegationPolicyError, default_delegation_policy_metadata, policy_state_from_metadata
 
 SKILL_DYNAMIC_ROOTS_KEY = "skill_dynamic_roots"
 
@@ -388,7 +391,7 @@ class RuntimeAssembly:
         session_id: str | None = None,
         private_context: RuntimePrivateContext | dict[str, object] | None = None,
         runtime_context: dict[str, object] | None = None,
-    ) -> dict[str, Any]:
+    ) -> dict[str, Any] | ExecutionResult[dict[str, Any]]:
         if list_id is None and session_id is None:
             raise ValueError("get_task_list requires either list_id or session_id")
         resolved_list_id = list_id or await self.resolve_task_list_id(
@@ -624,49 +627,56 @@ class RuntimeAssembly:
             and normalized_model_route not in self.kernel.config.model_routes
         ):
             raise ValueError(f"Unknown model route: {normalized_model_route}")
-        result = await self.agent_runtime.invoke(
-            AgentInvocation(
-                agent_name=agent_name,
-                prompt=prompt,
-                session_id=context.session_id,
-                cwd=_resolve_invocation_cwd(context.cwd, cwd),
-                background=background,
-                query_source="agent_tool",
-                spawn_mode=_coerce_spawn_mode(spawn_mode),
-                parent_run_id=_coerce_optional_string(metadata.get("run_id")),
-                parent_turn_id=context.turn_id,
-                requested_model_route=normalized_model_route,
-                requested_model=_coerce_optional_string(model),
-                requested_permission_mode=_coerce_permission_mode(permission_mode),
-                requested_isolation=_coerce_isolation_mode(isolation),
-                max_turns=max_turns,
-                parent_tool_pool=context.tool_pool,
-                parent_skill_pool=context.skill_pool,
-                metadata=metadata,
+        try:
+            result = await self.agent_runtime.invoke(
+                AgentInvocation(
+                    agent_name=agent_name,
+                    prompt=prompt,
+                    session_id=context.session_id,
+                    cwd=_resolve_invocation_cwd(context.cwd, cwd),
+                    background=background,
+                    query_source="agent_tool",
+                    spawn_mode=_coerce_spawn_mode(spawn_mode),
+                    parent_run_id=_coerce_optional_string(metadata.get("run_id")),
+                    parent_turn_id=context.turn_id,
+                    requested_model_route=normalized_model_route,
+                    requested_model=_coerce_optional_string(model),
+                    requested_permission_mode=_coerce_permission_mode(permission_mode),
+                    requested_isolation=_coerce_isolation_mode(isolation),
+                    max_turns=max_turns,
+                    parent_tool_pool=context.tool_pool,
+                    parent_skill_pool=context.skill_pool,
+                    metadata=metadata,
+                )
             )
-        )
-        return _serialize_agent_run_result(result)
+        except DelegationPolicyError as exc:
+            return _delegation_policy_error_result(exc)
+        return _serialize_agent_run_result(result, runtime_metadata=self.services.metadata)
 
     async def run_skill_tool(
         self,
         skill_name: str,
         arguments: list[str] | tuple[str, ...],
         context: ToolContext,
-    ) -> dict[str, Any]:
+    ) -> dict[str, Any] | ExecutionResult[dict[str, Any]]:
         metadata = _merged_private_context(context.private_context, dict(context.metadata)).compat_metadata()
-        result = await self.skill_executor.execute(
-            skill_name,
-            arguments=tuple(arguments),
-            session_id=context.session_id,
-            cwd=context.cwd,
-            parent_tool_pool=context.tool_pool,
-            parent_skill_pool=context.skill_pool,
-            permission_context=context.permission_context,
-            turn_id=context.turn_id,
-            parent_run_id=_coerce_optional_string(metadata.get("run_id")),
-            policy_state=policy_state_from_metadata(metadata),
-        )
-        return _serialize_skill_execution_result(result)
+        try:
+            result = await self.skill_executor.execute(
+                skill_name,
+                arguments=tuple(arguments),
+                session_id=context.session_id,
+                cwd=context.cwd,
+                parent_tool_pool=context.tool_pool,
+                parent_skill_pool=context.skill_pool,
+                permission_context=context.permission_context,
+                turn_id=context.turn_id,
+                parent_run_id=_coerce_optional_string(metadata.get("run_id")),
+                policy_state=policy_state_from_metadata(metadata),
+                runtime_metadata=metadata,
+            )
+        except DelegationPolicyError as exc:
+            return _delegation_policy_error_result(exc)
+        return _serialize_skill_execution_result(result, runtime_metadata=self.services.metadata)
 
     def _resolve_agent(self, agent_name: str) -> AgentDefinition:
         agent = self.kernel.agent_registry.get(agent_name)
@@ -978,6 +988,7 @@ def _build_runtime_services(kernel: RuntimeKernel) -> RuntimeServices:
             "reminder_task_limit": 8,
         },
     )
+    metadata.setdefault("delegation", default_delegation_policy_metadata())
     services = RuntimeServices(
         transcript=DefaultTranscriptService(transcript_store),
         memory=MemoryManagerService(
@@ -1032,36 +1043,19 @@ def _schedule_job_recovery(job_service: DefaultJobService) -> None:
     loop.create_task(job_service.recover_inflight())
 
 
-def _serialize_agent_run_result(result: AgentRunResult) -> dict[str, Any]:
-    run_record = result.run_record
-    payload: dict[str, Any] = {
-        "agent": result.agent_name,
-        "status": result.status,
-        "background": result.background,
-        "run_id": result.run_id,
-        "parent_run_id": result.parent_run_id,
-        "turn_id": result.turn_id,
-        "query_source": result.query_source,
-        "messages": [_serialize_message(message) for message in result.messages],
-        "task_id": result.task_id,
-        "requested_model": (
-            result.execution_spec.requested_model if result.execution_spec is not None else None
-        ),
-        "requested_effort": (
-            result.execution_spec.requested_effort if result.execution_spec is not None else None
-        ),
-        "requested_model_route": (
-            result.execution_spec.requested_model_route if result.execution_spec is not None else None
-        ),
-        "resolved_model_route": run_record.resolved_model_route if run_record is not None else None,
-        "isolation_mode": result.isolation_mode.value if result.isolation_mode is not None else None,
-        "terminal_metadata": dict(run_record.terminal_metadata) if run_record is not None else {},
-        "notification": _serialize_message(result.notification) if result.notification is not None else None,
-    }
-    return payload
+def _serialize_agent_run_result(
+    result: AgentRunResult,
+    *,
+    runtime_metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return project_agent_run_result(result, runtime_metadata=runtime_metadata)
 
 
-def _serialize_skill_execution_result(result: SkillExecutionResult) -> dict[str, Any]:
+def _serialize_skill_execution_result(
+    result: SkillExecutionResult,
+    *,
+    runtime_metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "skill": result.skill_name,
         "mode": result.mode.value,
@@ -1073,8 +1067,23 @@ def _serialize_skill_execution_result(result: SkillExecutionResult) -> dict[str,
         ),
     }
     if result.agent_result is not None:
-        payload["agent_result"] = _serialize_agent_run_result(result.agent_result)
+        payload["agent_result"] = _serialize_agent_run_result(
+            result.agent_result,
+            runtime_metadata=runtime_metadata,
+        )
     return payload
+
+
+def _delegation_policy_error_result(
+    exc: DelegationPolicyError,
+) -> ExecutionResult[dict[str, Any]]:
+    payload = exc.to_payload()
+    return ExecutionResult(
+        status=ExecutionStatus.FAILED,
+        value=payload,
+        error=str(exc),
+        metadata=payload,
+    )
 
 
 def _serialize_message(message: RuntimeMessage) -> dict[str, Any]:
