@@ -249,6 +249,7 @@ class SessionController:
         return self.register_hook(request)
 
     async def start(self) -> None:
+        replay_pending_team_messages = not self._started and not self.state.queued_commands
         if not self._started:
             memory_service = self._runtime_services.memory
             if memory_service is not None and hasattr(memory_service, "start_session"):
@@ -271,9 +272,11 @@ class SessionController:
                         "cwd": self._cwd,
                     },
                 ),
-            )
+                )
             self._started = True
         self.state.status = SessionStatus.READY
+        if replay_pending_team_messages:
+            await self._replay_pending_team_messages()
 
     def normalize_event(self, event: InboundEvent) -> SessionCommand:
         priority_map = {
@@ -327,6 +330,8 @@ class SessionController:
         _sync_skill_runtime_metadata(self.state.metadata, self._messages, self._cwd)
         self.state.status = SessionStatus.READY
         self.state.active_turn_id = None
+        if not self.state.queued_commands:
+            await self._replay_pending_team_messages()
 
     async def close(self, final_status: str = "completed") -> None:
         if self._closed:
@@ -392,8 +397,9 @@ class SessionController:
         while self.state.queued_commands:
             command = self.state.queued_commands.pop(0)
             prior_status = self.state.status
+            event = self._inbound_event_from_command(command)
             ingress_result = self._ingress_processor.process(
-                self._inbound_event_from_command(command),
+                event,
                 session_snapshot=self._ingress_snapshot(),
                 runtime_services=self._runtime_services,
             )
@@ -411,7 +417,9 @@ class SessionController:
             if not ingress_result.admits_turn:
                 self._apply_ingress_private_updates(ingress_result.private_updates)
             await self._emit_ingress_replay_outputs(ingress_result.replay_outputs)
+            await self._acknowledge_team_delivery(event.metadata)
             if not ingress_result.admits_turn:
+                await self._persist_session_metadata()
                 if self.state.status != SessionStatus.WAITING:
                     self.state.status = SessionStatus.READY
                 continue
@@ -564,6 +572,26 @@ class SessionController:
                 )
             )
 
+    async def _acknowledge_team_delivery(self, metadata: Mapping[str, Any] | None) -> None:
+        if not isinstance(metadata, Mapping):
+            return
+        raw = metadata.get("team_delivery_ack")
+        if not isinstance(raw, Mapping):
+            return
+        team_id = str(raw.get("team_id") or "").strip()
+        message_id = str(raw.get("message_id") or "").strip()
+        delivery_id = str(raw.get("delivery_id") or "").strip()
+        if not team_id or not message_id or not delivery_id:
+            return
+        message_bus = getattr(self._runtime_services, "team_message_bus", None)
+        if message_bus is None or not hasattr(message_bus, "acknowledge_delivery"):
+            return
+        await message_bus.acknowledge_delivery(
+            team_id=team_id,
+            message_id=message_id,
+            delivery_id=delivery_id,
+        )
+
     def _apply_ingress_private_updates(self, private_updates: dict[str, Any]) -> None:
         for key, value in private_updates.items():
             normalized_key = str(key)
@@ -606,6 +634,12 @@ class SessionController:
         )
 
     def _restore_resumable_private_context(self) -> None:
+        for key in _PERSISTED_SESSION_PRIVATE_CONTEXT_KEYS:
+            value = self.state.metadata.get(key)
+            if value is None:
+                self._session_private_context.pop(key, None)
+                continue
+            self._session_private_context[key] = _copy_ingress_private_value(value)
         resumable_override = self.state.metadata.get("resumable_request_override")
         if isinstance(resumable_override, dict):
             self._session_private_context["request_override"] = _copy_ingress_private_value(
@@ -632,6 +666,12 @@ class SessionController:
         else:
             self.state.metadata.pop("resumable_request_override", None)
         self._restore_resumable_private_context()
+
+    async def _replay_pending_team_messages(self) -> None:
+        message_bus = getattr(self._runtime_services, "team_message_bus", None)
+        if message_bus is None or not hasattr(message_bus, "replay_pending_leader_messages"):
+            return
+        await message_bus.replay_pending_leader_messages(session_id=self.state.session_id)
 
     def _ingress_snapshot(self) -> SessionIngressSnapshot:
         return SessionIngressSnapshot.from_state(
@@ -1190,6 +1230,11 @@ def _session_control_plane_metadata_snapshot(
 ) -> dict[str, Any]:
     persisted: dict[str, Any] = {}
     for key in (
+        "team_id",
+        "team_role",
+        "team_member_id",
+        "team_member_name",
+        "leader_session_id",
         "compaction",
         "compaction_summary",
         "compaction_boundary",
@@ -1203,6 +1248,15 @@ def _session_control_plane_metadata_snapshot(
             continue
         persisted[key] = _copy_ingress_private_value(value)
     return persisted
+
+
+_PERSISTED_SESSION_PRIVATE_CONTEXT_KEYS = (
+    "team_id",
+    "team_role",
+    "team_member_id",
+    "team_member_name",
+    "leader_session_id",
+)
 
 
 def _event_has_control_plane_effect(

@@ -2,6 +2,10 @@ import asyncio
 from pathlib import Path
 
 from runtime import (
+    AgentDefinition,
+    BuiltinPackConfig,
+    PermissionBehavior,
+    PermissionOutcome,
     RuntimeConfig,
     SessionStatus,
     SdkHostRuntime,
@@ -29,6 +33,46 @@ class FakeModelClient:
         batch = self._event_batches.pop(0)
         for event in batch:
             yield event
+
+
+class ControlledPermissionHost:
+    def __init__(self) -> None:
+        self.name = "controlled"
+        self.requests = []
+        self.notifications = []
+        self.team_events = []
+        self.allow_event = asyncio.Event()
+
+    async def startup(self) -> None:
+        return None
+
+    async def ready(self) -> None:
+        return None
+
+    async def shutdown(self) -> None:
+        return None
+
+    async def request_permission(self, request):
+        self.requests.append(request)
+        await self.allow_event.wait()
+        return PermissionOutcome(PermissionBehavior.ALLOW, message="approved")
+
+    async def request_elicitation(self, request):  # pragma: no cover - protocol completeness
+        _ = request
+        raise RuntimeError("elicitation not used in this test")
+
+    def current_notifications(self):
+        return tuple(self.notifications)
+
+    async def emit_notification(self, message) -> None:
+        self.notifications.append(message)
+
+    async def emit_turn_event(self, session_id: str, event) -> None:
+        _ = session_id, event
+        return None
+
+    async def emit_team_event(self, event) -> None:
+        self.team_events.append(event)
 
 
 def _message_batch(request_id: str, text: str) -> list[ModelStreamEvent]:
@@ -143,6 +187,88 @@ def test_team_control_plane_create_reuse_and_delete(tmp_path: Path) -> None:
     stored_member = plane.get_member(team.team_id, member.member_id)
     assert stored_member is not None
     assert stored_member.status.value == "removed"
+
+
+def test_team_private_context_persists_across_resume(tmp_path: Path) -> None:
+    runtime = _build_runtime(tmp_path)
+    plane = runtime.team_control_plane
+    assert plane is not None
+
+    async def scenario():
+        session = runtime.create_session(session_id="leader-session", agent_name="general-purpose")
+        await session.start()
+        team, _ = await plane.create_team(session_id="leader-session", extensions={}, name="ops")
+        await session.run_until_idle()
+        before_close = dict(session._session_scope.private_context.extensions)
+        await session.close()
+
+        resumed = runtime.create_session(session_id="leader-session", agent_name="general-purpose")
+        await resumed.resume()
+        return team, before_close, dict(resumed._session_scope.private_context.extensions)
+
+    team, before_close, resumed_scope = asyncio.run(scenario())
+
+    assert before_close["team_id"] == team.team_id
+    assert before_close["team_role"] == "leader"
+    assert resumed_scope["team_id"] == team.team_id
+    assert resumed_scope["team_role"] == "leader"
+    assert resumed_scope["leader_session_id"] == "leader-session"
+
+
+def test_offline_leader_messages_replay_on_resume_and_ack_delivery(tmp_path: Path) -> None:
+    runtime = _build_runtime(
+        tmp_path,
+        model_batches=[_message_batch("leader-replayed", "leader handled offline")],
+    )
+    plane = runtime.team_control_plane
+    bus = runtime.team_message_bus
+    assert plane is not None
+    assert bus is not None
+
+    async def scenario():
+        session = runtime.create_session(session_id="leader-session", agent_name="general-purpose")
+        await session.start()
+        team, _ = await plane.create_team(session_id="leader-session", extensions={}, name="ops")
+        await session.run_until_idle()
+        await session.close()
+
+        member = await plane.register_member(
+            session_id="leader-session",
+            extensions={},
+            name="alpha",
+            agent_name="general-purpose",
+            execution_defaults={"cwd": str(tmp_path)},
+        )
+        teammate_extensions = {
+            "team_id": team.team_id,
+            "team_member_id": member.member_id,
+            "team_role": "teammate",
+            "leader_session_id": "leader-session",
+        }
+        envelope = await bus.send_public_message(
+            session_id="leader-session",
+            extensions=teammate_extensions,
+            to="leader",
+            message="offline hello",
+        )
+        stored_before = bus.store.load(team.team_id, envelope.message_id)
+
+        resumed = runtime.create_session(session_id="leader-session", agent_name="general-purpose")
+        await resumed.resume()
+        queued_after_resume = len(resumed.state.queued_commands)
+        await resumed.run_until_idle()
+        stored_after = bus.store.load(team.team_id, envelope.message_id)
+        return queued_after_resume, tuple(message.text for message in resumed.messages), stored_before, stored_after
+
+    queued_after_resume, texts, stored_before, stored_after = asyncio.run(scenario())
+
+    assert queued_after_resume == 1
+    assert stored_before is not None
+    assert stored_before.deliveries[0].delivered_at is None
+    assert "Message from alpha: offline hello" in texts
+    assert stored_after is not None
+    assert stored_after.deliveries[0].queued is False
+    assert stored_after.deliveries[0].delivered_at is not None
 
 
 def test_team_message_bus_routes_messages_and_emits_events(tmp_path: Path) -> None:
@@ -399,3 +525,90 @@ def test_team_ingress_ready_running_defaults_and_no_sink_fallback(tmp_path: Path
     assert len(session.messages) > running_message_count
     assert not any(message.metadata.get("source") == "team_control_message" for message in session.messages)
     assert session.state.metadata["team_last_control_message"]["control_type"] == "permission_request"
+
+
+def test_permission_bridge_routes_correlated_team_control_messages(tmp_path: Path) -> None:
+    model_client = FakeModelClient(
+        [
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-worker-1"}),
+                ModelStreamEvent(
+                    ModelStreamEventType.TOOL_CALL,
+                    {
+                        "tool_name": "bash",
+                        "tool_input": {"command": "printf teammate"},
+                        "call_id": "call-bash-1",
+                    },
+                ),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "tool_use"}),
+            ],
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-worker-2"}),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "done"}),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+            ],
+        ]
+    )
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            model_client=model_client,
+            builtins=BuiltinPackConfig(
+                extra_agents=[
+                    AgentDefinition(
+                        name="worker",
+                        description="persistent teammate worker",
+                        prompt="work mailbox",
+                        tools=("*",),
+                    )
+                ]
+            ),
+            teammate_orchestration=TeammateOrchestrationConfig(enabled=True, heartbeat_interval_ms=10),
+        )
+    )
+    host = ControlledPermissionHost()
+    runtime.bind_host(host)
+    plane = runtime.team_control_plane
+    bus = runtime.team_message_bus
+    assert plane is not None
+    assert bus is not None
+
+    async def scenario():
+        team, _ = await plane.create_team(session_id="leader-session", extensions={}, name="ops")
+        member = await plane.register_member(
+            session_id="leader-session",
+            extensions={},
+            name="alpha",
+            agent_name="worker",
+            execution_defaults={"cwd": str(tmp_path)},
+        )
+        await bus.send_public_message(
+            session_id="leader-session",
+            extensions={},
+            to="alpha",
+            message="run the privileged step",
+        )
+        while not host.requests:
+            await asyncio.sleep(0)
+        host.allow_event.set()
+        await plane.runner_manager.wait_for_idle(team_id=team.team_id, member_id=member.member_id)
+        return team, member
+
+    team, member = asyncio.run(scenario())
+
+    control_messages = [
+        envelope
+        for envelope in bus.store.list_messages(team.team_id)
+        if envelope.kind is TeamMessageKind.CONTROL
+    ]
+
+    assert [envelope.metadata["control_type"] for envelope in control_messages] == [
+        "permission_request",
+        "permission_response",
+    ]
+    assert {envelope.correlation_id for envelope in control_messages} == {
+        control_messages[0].correlation_id,
+    }
+    assert control_messages[0].sender.member_id == member.member_id
+    assert control_messages[1].sender.member_id == team.leader_member_id
+    assert any(event.event_type == "team.message.routed" for event in host.team_events)

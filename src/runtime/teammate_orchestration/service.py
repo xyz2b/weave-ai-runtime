@@ -69,10 +69,25 @@ class PersistentTeammateHostBridge:
             return await self._delegate.request_permission(request)
 
         permission_id = uuid4().hex
+        leader_member_id = self._leader_member_id(details["team_id"])
         self._orchestrator.enter_permission_wait(
             team_id=details["team_id"],
             teammate_id=details["teammate_id"],
             permission_id=permission_id,
+        )
+        await self._emit_team_control_message(
+            team_id=details["team_id"],
+            sender_member_id=details["teammate_id"],
+            recipient_member_id=leader_member_id,
+            control_type="permission_request",
+            correlation_id=permission_id,
+            payload={
+                "permission_id": permission_id,
+                "permission_target": request.target.value,
+                "permission_name": request.name,
+                "permission_message": request.message,
+                "permission_payload": dict(request.payload),
+            },
         )
         await self.emit_notification(
             RuntimeMessage(
@@ -101,6 +116,20 @@ class PersistentTeammateHostBridge:
             teammate_id=details["teammate_id"],
             permission_id=permission_id,
         )
+        await self._emit_team_control_message(
+            team_id=details["team_id"],
+            sender_member_id=leader_member_id,
+            recipient_member_id=leader_member_id,
+            control_type="permission_response",
+            correlation_id=permission_id,
+            payload={
+                "permission_id": permission_id,
+                "behavior": outcome.behavior.value,
+                "message": outcome.message,
+                "source": outcome.source,
+                "details": dict(outcome.details),
+            },
+        )
         return outcome
 
     async def request_elicitation(self, request: Any) -> Any:
@@ -118,6 +147,44 @@ class PersistentTeammateHostBridge:
     async def emit_team_event(self, event: Any) -> None:
         if hasattr(self._delegate, "emit_team_event"):
             await self._delegate.emit_team_event(event)
+
+    def _leader_member_id(self, team_id: str) -> str | None:
+        services = getattr(self._orchestrator, "_runtime_services", None)
+        control_plane = getattr(services, "team_control_plane", None)
+        if control_plane is None or not hasattr(control_plane, "get_team"):
+            return None
+        team = control_plane.get_team(team_id)
+        if team is None or getattr(team, "active", False) is False:
+            return None
+        return str(getattr(team, "leader_member_id", "") or "") or None
+
+    async def _emit_team_control_message(
+        self,
+        *,
+        team_id: str,
+        sender_member_id: str | None,
+        recipient_member_id: str | None,
+        control_type: str,
+        correlation_id: str,
+        payload: Mapping[str, Any] | None = None,
+    ) -> None:
+        if sender_member_id is None or recipient_member_id is None:
+            return
+        services = getattr(self._orchestrator, "_runtime_services", None)
+        message_bus = getattr(services, "team_message_bus", None)
+        if message_bus is None or not hasattr(message_bus, "send_control_message"):
+            return
+        try:
+            await message_bus.send_control_message(
+                team_id=team_id,
+                sender_member_id=sender_member_id,
+                recipient_member_id=recipient_member_id,
+                control_type=control_type,
+                payload=payload,
+                correlation_id=correlation_id,
+            )
+        except Exception:
+            return
 
 
 class PersistentTeammateOrchestrator:

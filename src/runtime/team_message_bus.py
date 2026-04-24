@@ -67,7 +67,15 @@ class TeamMessageDelivery:
     route: str
     queued: bool = True
     created_at: datetime = field(default_factory=utc_now)
+    delivered_at: datetime | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def pending(self) -> bool:
+        return self.delivered_at is None
+
+    def mark_delivered(self) -> "TeamMessageDelivery":
+        return replace(self, queued=False, delivered_at=utc_now())
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -78,6 +86,7 @@ class TeamMessageDelivery:
             "route": self.route,
             "queued": self.queued,
             "created_at": _utc_isoformat(self.created_at),
+            "delivered_at": _utc_isoformat(self.delivered_at) if self.delivered_at is not None else None,
             "metadata": {str(key): value for key, value in self.metadata.items()},
         }
 
@@ -92,6 +101,7 @@ class TeamMessageDelivery:
             route=str(payload.get("route") or ""),
             queued=bool(payload.get("queued", True)),
             created_at=_parse_utc_timestamp(payload.get("created_at")) or utc_now(),
+            delivered_at=_parse_utc_timestamp(payload.get("delivered_at")),
             metadata=_coerce_mapping(payload.get("metadata")),
         )
 
@@ -197,6 +207,7 @@ class FileBackedTeamMessageBus:
             ):
                 continue
             messages.append(envelope)
+        messages.sort(key=lambda envelope: (envelope.created_at, envelope.message_id))
         return tuple(messages)
 
     def _message_path(self, team_id: str, message_id: str) -> Path:
@@ -308,6 +319,49 @@ class RuntimeTeamMessageBus:
         self._store.publish(envelope)
         await self._route_delivery(team=team, envelope=envelope, delivery=envelope.deliveries[0])
         return envelope
+
+    async def acknowledge_delivery(
+        self,
+        *,
+        team_id: str,
+        message_id: str,
+        delivery_id: str,
+    ) -> bool:
+        envelope = self._store.load(team_id, message_id)
+        if envelope is None:
+            return False
+        updated = False
+        deliveries: list[TeamMessageDelivery] = []
+        for delivery in envelope.deliveries:
+            if delivery.delivery_id == delivery_id and delivery.pending:
+                deliveries.append(delivery.mark_delivered())
+                updated = True
+                continue
+            deliveries.append(delivery)
+        if not updated:
+            return False
+        self._store.save(replace(envelope, deliveries=tuple(deliveries)))
+        return True
+
+    async def replay_pending_leader_messages(self, *, session_id: str) -> int:
+        team = self._control_plane.active_team_for_leader_session(session_id)
+        if team is None:
+            return 0
+        leader = self._control_plane.get_member(team.team_id, team.leader_member_id)
+        if leader is None or not leader.active:
+            return 0
+        replayed = 0
+        for envelope in self._store.list_messages(team.team_id, recipient_member_id=leader.member_id):
+            for delivery in envelope.deliveries:
+                if (
+                    delivery.recipient_member_id != leader.member_id
+                    or delivery.route != "leader_ingress"
+                    or not delivery.pending
+                ):
+                    continue
+                await self._route_to_leader(team=team, envelope=envelope, delivery=delivery)
+                replayed += 1
+        return replayed
 
     async def _route_delivery(
         self,
@@ -461,6 +515,11 @@ class RuntimeTeamMessageBus:
                 content="",
                 metadata={
                     "admission_kind": "replay_only",
+                    "team_delivery_ack": {
+                        "team_id": team.team_id,
+                        "message_id": envelope.message_id,
+                        "delivery_id": delivery.delivery_id,
+                    },
                     "private_updates": {
                         "team_last_control_message": {
                             "team_id": team.team_id,
@@ -506,6 +565,11 @@ class RuntimeTeamMessageBus:
                 "team_sender_role": envelope.sender.role.value,
                 "team_recipient_member_id": delivery.recipient_member_id,
                 "correlation_id": envelope.correlation_id,
+                "team_delivery_ack": {
+                    "team_id": team.team_id,
+                    "message_id": envelope.message_id,
+                    "delivery_id": delivery.delivery_id,
+                },
                 "private_updates": {
                     "team_last_message": {
                         "team_id": team.team_id,
