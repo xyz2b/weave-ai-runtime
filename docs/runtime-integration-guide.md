@@ -143,6 +143,7 @@ Runtime 核心流转本身由框架收口，用户通常不应该改 `TurnEngine
 - `current_notifications()`
 - `emit_notification()`
 - `emit_turn_event()`
+- `emit_team_event()`（可选 structured sink）
 
 这意味着：
 
@@ -860,19 +861,62 @@ config.default_model_route = "research"
 
 这让更多能力源可以进入统一 invocation catalog，而不是让 host 再自己造一套能力列表。
 
-### 8.4 Persistent Teammate Shell
+### 8.4 Runtime-Owned Team Mode
 
 如果你要做多 agent 协作，不要直接把它理解成“再起一个执行引擎”。  
-当前更合适的接入点是 `teammate_orchestration`。
+当前更合适的接入点仍然是 `teammate_orchestration`，但打开之后会一起装配三层 runtime-owned 协作面：
 
-它提供的是：
+- `RuntimeTeamControlPlane`
+  - team registry
+  - leader session binding
+  - persistent teammate member record
+- `RuntimeTeamMessageBus`
+  - direct / broadcast / control messages
+  - leader ingress routing
+  - teammate delivery routing
+- `PersistentTeammateOrchestrator`
+  - mailbox
+  - stable execution identity
+  - permission bridge
+  - task / progress projection
 
-- mailbox
-- stable identity
-- permission bridge
-- task / progress projection
+所以它提供的不是第二套 query engine，而是一套 headless team collaboration contract。
 
-而不是第二套 query engine。
+### 8.5 Built-in `team_*` Contract
+
+打开 team mode 后，runtime 会默认带上 4 个 v1 built-in：
+
+- `team_create`
+  - leader-only
+  - 每个 leader session 同时最多一个 active team
+  - 重复调用会复用已有 team，并返回 `created=false`
+- `team_spawn`
+  - leader-only
+  - 需要唯一 teammate `name` 和 `agent`
+  - 可以附带 `cwd`、`model`、`model_route`、`permission_mode`、`isolation`、`max_turns`
+- `team_send`
+  - leader 和 teammate 都可调用
+  - `to=\"leader\"` -> leader
+  - `to=\"*\"` -> 当前 team 中除发送者外的所有 active member
+  - 其他 `to` 值 -> 当前 team 内按 teammate `name` 解析
+- `team_delete`
+  - leader-only
+  - 删除 team，并清理 leader binding 与 teammate runner state
+
+v1 不接受 caller-supplied `team_id`；所有 team_* 调用都从 active team binding 和 runtime-private context 解析 team scope。
+
+### 8.6 Leader Ingress Default
+
+leader 接收 teammate collaboration message 时，默认策略是：
+
+- `WAITING`
+  - 作为 admitted runtime-generated input 立即 drain
+- `READY`
+  - 进入 ingress queue，但默认不自动 drain
+- `RUNNING`
+  - 进入 ingress queue，但默认不打断当前 turn
+
+control-plane envelope（例如 permission / shutdown 一类）默认走 `local_only` 或 `replay_only` ingress outcome，并通过 `private_updates` / host replay 输出暴露，而不是直接写进 transcript-visible history。
 
 ## 9. 接入方最容易踩错的地方
 

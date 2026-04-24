@@ -19,6 +19,7 @@ class CliHostRuntime(NullHostAdapter):
     input_reader: Callable[[str], str] = input
     output_writer: Callable[[str], Any] = print
     turn_events: list["TurnStreamEvent"] = field(default_factory=list)
+    team_events: list[Any] = field(default_factory=list)
 
     async def request_permission(self, request: PermissionRequest) -> PermissionOutcome:
         prompt = f"[permission] {request.target.value}:{request.name} {request.message or 'Allow?'} [y/N] "
@@ -47,11 +48,15 @@ class CliHostRuntime(NullHostAdapter):
         _ = session_id
         self.turn_events.append(event)
 
+    async def emit_team_event(self, event: Any) -> None:
+        self.team_events.append(event)
+
 
 @dataclass(slots=True)
 class SdkHostRuntime(CallbackHostAdapter):
     notifications: list["RuntimeMessage"] = field(default_factory=list)
     turn_events: list[tuple[str, "TurnStreamEvent"]] = field(default_factory=list)
+    team_events: list[Any] = field(default_factory=list)
 
     async def emit_notification(self, message: "RuntimeMessage") -> None:
         self.notifications.append(message)
@@ -60,6 +65,10 @@ class SdkHostRuntime(CallbackHostAdapter):
     async def emit_turn_event(self, session_id: str, event: "TurnStreamEvent") -> None:
         self.turn_events.append((session_id, event))
         await CallbackHostAdapter.emit_turn_event(self, session_id, event)
+
+    async def emit_team_event(self, event: Any) -> None:
+        self.team_events.append(event)
+        await CallbackHostAdapter.emit_team_event(self, event)
 
 
 __all__ = ["CliHostRuntime", "SdkHostRuntime"]

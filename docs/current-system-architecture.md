@@ -508,23 +508,32 @@ host 不是外围包装层，而是 runtime 的正式集成边界。
 
 ## 11. Teammate Orchestration
 
-当前 teammate 体系不是第二套执行引擎，而是共享 execution core 外面的 persistent shell。
+当前多 agent 协作已经拆成三层，而不是把所有语义都塞进 persistent teammate shell：
 
-它的核心组成包括：
-
+- `RuntimeTeamControlPlane`
+  - durable team registry
+  - leader session binding
+  - persistent member records
+  - leader-owned lifecycle authority
+- `RuntimeTeamMessageBus`
+  - structured direct / broadcast / control messages
+  - leader ingress routing
+  - teammate delivery routing
+  - optional structured host observation
 - `PersistentTeammateOrchestrator`
-- `FileBackedTeammateMailbox`
-- stable teammate identity
-- permission bridge
-- task / progress projection
+  - mailbox
+  - stable teammate execution identity
+  - permission bridge
+  - task / progress projection
 
 当前设计强调：
 
 - execution core 继续复用 `AgentExecutionService` 和 `TurnEngine`
-- mailbox 和 teammate lifecycle 不进入 turn engine 内部
+- team registry 与 collaboration bus 保持 runtime-owned，而不是塞回 host UI state
+- teammate mailbox 仍然只负责 execution work item，不承担 leader/team lifecycle 语义
 - teammate 的审批通过主控侧桥接，而不是直接接管 host 权限
 
-这让多 agent 协作能力建立在现有 runtime 之上，而不是另起炉灶。
+这让多 agent 协作能力建立在现有 runtime 之上，而不是另起炉灶，也让 headless host 可以围绕 runtime-owned team state 做自己的 UI 或自动化。
 
 ## 12. 状态与持久化
 
@@ -558,6 +567,10 @@ host 不是外围包装层，而是 runtime 的正式集成边界。
   - `PromptContextEnvelope`
 - runtime-private state
   - `RuntimePrivateContext`
+- runtime-owned collaboration state
+  - team registry
+  - leader binding
+  - team message bus
 - child runs
   - `ChildRunStore`
   - typed `CHILD_RUN` event 仍是 host/SDK observability truth
@@ -626,9 +639,24 @@ host 不是外围包装层，而是 runtime 的正式集成边界。
 
 通过 `RuntimeConfig.memory_config` 或 `.runtime/memory/config.yaml` 调整 memory retrieval 和 extraction 行为。
 
-### 13.6 Teammate 扩展
+### 13.6 Team / Teammate 扩展
 
-通过 `TeammateOrchestrationConfig` 打开 mailbox 和 persistent teammate shell。
+通过 `TeammateOrchestrationConfig` 打开 runtime-owned team control plane、team message bus 和 persistent teammate shell。
+
+v1 的稳定 public contract 是：
+
+- built-in tools
+  - `team_create`
+  - `team_spawn`
+  - `team_send`
+  - `team_delete`
+- addressing
+  - `to="leader"` -> 当前 team leader
+  - `to="*"` -> 当前 team 里除发送者之外的所有 active member
+  - 其他 `to` 值 -> 当前 team 内按 teammate `name` 精确解析
+- authority
+  - 只有 leader 能 `team_create` / `team_spawn` / `team_delete`
+  - leader 和 teammate 都能 `team_send`
 
 ## 14. 当前成熟度判断
 
@@ -642,14 +670,14 @@ host 不是外围包装层，而是 runtime 的正式集成边界。
 - streaming tool orchestration
 - child-run observability
 - layered memory runtime v2
-- teammate orchestration shell
+- runtime-owned team control plane + message bus + teammate shell
 
 仍应视为“契约已立、实现深度仍可继续加厚”的部分包括：
 
 - `WORKTREE` 和 `REMOTE` isolation 目前仍偏 stub
 - transcript 和 child runs 默认不是 durable store
 - provider route contract 已完整，但具体 provider 仍依赖外部注入
-- teammate orchestration 是正式外壳，但不等于独立 execution engine
+- team mode 已经有正式 control plane / bus / tool contract，但 teammate 执行仍然复用共享 execution core
 
 ### 14.1 边界收敛 gate
 
@@ -674,7 +702,7 @@ host 不是外围包装层，而是 runtime 的正式集成边界。
 5. execution expansion
    - streaming tools、agent execution、skill semantics、route-aware provider path
 6. durability and collaboration
-   - layered memory v2、persistent teammate shell、test contract alignment
+   - layered memory v2、runtime-owned team control plane、team message bus、persistent teammate shell、test contract alignment
 
 这条演化路径说明：当前系统重点已经从“能跑”转向“边界清晰、契约稳定、可持续扩展”。
 
@@ -863,6 +891,8 @@ flowchart LR
         SessionMem["sessions/{session}/"]
         Cons["consolidations/"]
         Manifests["manifests/*.json"]
+        TeamControl[".runtime/team_control_plane/"]
+        TeamBus[".runtime/team_messages/"]
         Mailbox[".runtime/teammates/"]
     end
 
@@ -879,6 +909,9 @@ flowchart LR
     MemoryRoot --> SessionMem
     MemoryRoot --> Cons
     MemoryRoot --> Manifests
+    Metadata --> TeamControl
+    TeamControl --> TeamBus
+    TeamBus --> Mailbox
     ChildRuns -. in-memory by default .-> RunStoreDefault
     Transcript -. in-memory by default .-> TranscriptDefault
 ```
@@ -937,6 +970,8 @@ flowchart TB
 | `src/runtime/agent_runtime.py` | agent invocation facade，与 turn engine 和 skill runtime 串联 |
 | `src/runtime/agent_execution_service.py` | child agent 执行控制面、route resolution、run record、isolation 准备 |
 | `src/runtime/memory/manager.py` | layered memory runtime v2 的 retrieval、extraction、consolidation 主体 |
+| `src/runtime/team_control_plane.py` | runtime-owned team registry、leader binding、persistent member records、runner manager |
+| `src/runtime/team_message_bus.py` | structured team message envelope、durable bus、leader ingress / teammate routing、team host events |
 | `src/runtime/teammate_orchestration/service.py` | persistent teammate shell、mailbox 消费、permission bridge、projection |
 | `src/runtime/hosts/base.py` | host contract、callback host、bound host runtime、managed session ownership |
 

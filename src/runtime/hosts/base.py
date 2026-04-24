@@ -34,6 +34,8 @@ class HostRuntime(Protocol):
 
     async def emit_turn_event(self, session_id: str, event: "TurnStreamEvent") -> None: ...
 
+    async def emit_team_event(self, event: Any) -> None: ...
+
 
 class HostAdapter(HostRuntime, Protocol):
     pass
@@ -84,6 +86,10 @@ class NullHostAdapter:
         _ = session_id, event
         return None
 
+    async def emit_team_event(self, event: Any) -> None:
+        _ = event
+        return None
+
 
 @dataclass(slots=True)
 class CallbackHostAdapter:
@@ -93,6 +99,7 @@ class CallbackHostAdapter:
     notification_provider: Callable[[], Sequence["RuntimeMessage"]] | None = None
     notification_sink: Callable[["RuntimeMessage"], Any] | None = None
     turn_event_sink: Callable[[str, "TurnStreamEvent"], Any] | None = None
+    team_event_sink: Callable[[Any], Any] | None = None
     lifecycle: list[str] = field(default_factory=list)
 
     async def startup(self) -> None:
@@ -139,6 +146,11 @@ class CallbackHostAdapter:
         if self.turn_event_sink is None:
             return None
         await _maybe_await(self.turn_event_sink(session_id, event))
+
+    async def emit_team_event(self, event: Any) -> None:
+        if self.team_event_sink is None:
+            return None
+        await _maybe_await(self.team_event_sink(event))
 
 
 @dataclass(slots=True)

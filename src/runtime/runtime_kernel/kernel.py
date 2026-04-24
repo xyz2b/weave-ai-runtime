@@ -70,6 +70,8 @@ from ..session_runtime import (
     SessionController,
     SessionStatus,
 )
+from ..team_control_plane import FileBackedTeamStore, RuntimeTeamControlPlane, RuntimeTeamRunnerManager
+from ..team_message_bus import FileBackedTeamMessageBus, RuntimeTeamMessageBus
 from ..skill_runtime import SkillExecutionResult, SkillExecutor
 from ..tasking import TaskManager
 from ..teammate_orchestration import PersistentTeammateOrchestrator
@@ -232,6 +234,8 @@ class RuntimeAssembly:
     task_manager: TaskManager
     job_service: DefaultJobService
     teammates: PersistentTeammateOrchestrator | None = None
+    team_control_plane: Any = None
+    team_message_bus: Any = None
     system_prompt: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -1384,6 +1388,8 @@ def _assemble_runtime_stack(kernel: RuntimeKernel) -> RuntimeAssembly:
         tool_refresh_callback=kernel.config.tool_refresh_callback,
     )
     teammates = None
+    team_control_plane = None
+    team_message_bus = None
     teammate_config = kernel.config.teammate_orchestration
     if teammate_config is not None and teammate_config.enabled:
         teammates = PersistentTeammateOrchestrator(
@@ -1393,6 +1399,24 @@ def _assemble_runtime_stack(kernel: RuntimeKernel) -> RuntimeAssembly:
             execution_core=agent_runtime,
         )
         services.bind_teammates(teammates)
+        runner_manager = RuntimeTeamRunnerManager(
+            teammates=teammates,
+            runtime_services=services,
+        )
+        team_control_plane = RuntimeTeamControlPlane(
+            store=FileBackedTeamStore(kernel.config.working_directory / ".runtime" / "team_control_plane"),
+            runtime_services=services,
+            runner_manager=runner_manager,
+        )
+        team_message_bus = RuntimeTeamMessageBus(
+            store=FileBackedTeamMessageBus(kernel.config.working_directory / ".runtime" / "team_messages"),
+            control_plane=team_control_plane,
+            runtime_services=services,
+        )
+        services.bind_team_services(
+            control_plane=team_control_plane,
+            message_bus=team_message_bus,
+        )
     runtime = RuntimeAssembly(
         kernel=kernel,
         services=services,
@@ -1403,6 +1427,8 @@ def _assemble_runtime_stack(kernel: RuntimeKernel) -> RuntimeAssembly:
         task_manager=task_manager,
         job_service=services.job_service,
         teammates=teammates,
+        team_control_plane=team_control_plane,
+        team_message_bus=team_message_bus,
         system_prompt=kernel.config.system_prompt,
         metadata=dict(kernel.config.metadata),
     )

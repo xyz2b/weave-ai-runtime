@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -193,6 +194,12 @@ class FileBackedTeammateMailbox:
     def has_pending_inbox(self, team_id: str, teammate_id: str) -> bool:
         paths = self.ensure_paths(team_id, teammate_id)
         return any(paths.inbox.glob("*.json"))
+
+    def delete_teammate(self, team_id: str, teammate_id: str) -> None:
+        shutil.rmtree(self.ensure_paths(team_id, teammate_id).root, ignore_errors=True)
+
+    def delete_team(self, team_id: str) -> None:
+        shutil.rmtree(self._root / "teams" / team_id, ignore_errors=True)
 
     def complete_done(
         self,

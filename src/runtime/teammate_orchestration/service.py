@@ -115,6 +115,10 @@ class PersistentTeammateHostBridge:
     async def emit_turn_event(self, session_id: str, event: Any) -> None:
         await self._delegate.emit_turn_event(session_id, event)
 
+    async def emit_team_event(self, event: Any) -> None:
+        if hasattr(self._delegate, "emit_team_event"):
+            await self._delegate.emit_team_event(event)
+
 
 class PersistentTeammateOrchestrator:
     def __init__(
@@ -594,6 +598,25 @@ class PersistentTeammateOrchestrator:
             results.append(result)
         return tuple(results)
 
+    async def remove_teammate(
+        self,
+        *,
+        team_id: str,
+        teammate_id: str,
+    ) -> None:
+        key = (team_id, teammate_id)
+        await self._stop_heartbeat(team_id, teammate_id)
+        self._processing_locks.pop(key, None)
+        self._recovered_targets.discard(key)
+        self._live_permission_waits = {
+            wait for wait in self._live_permission_waits if wait[:2] != (team_id, teammate_id)
+        }
+        if hasattr(self._registry, "_records"):
+            self._registry._records.pop(key, None)  # noqa: SLF001
+        self._snapshots.pop(key, None)
+        self._projections.pop(key, None)
+        self._mailbox.delete_teammate(team_id, teammate_id)
+
     def permission_bridge_details(self, request: PermissionRequest) -> dict[str, str] | None:
         context = request.context
         if context is None:
@@ -709,6 +732,7 @@ class PersistentTeammateOrchestrator:
             "mailbox_kind": envelope.kind,
             "query_source": "teammate_mailbox",
         }
+        metadata.update(_coerce_mapping(payload.get("metadata")))
         return TeammateExecutionRequest(
             team_id=registration.team_id,
             teammate_id=registration.teammate_id,
@@ -889,6 +913,12 @@ def _coerce_sender(value: Mapping[str, Any] | None) -> Any:
     from .models import MailboxSender
 
     return MailboxSender.from_value(value)
+
+
+def _coerce_mapping(value: object) -> dict[str, Any]:
+    if isinstance(value, Mapping):
+        return {str(key): inner for key, inner in value.items()}
+    return {}
 
 
 def _coerce_optional_int(value: object) -> int | None:

@@ -157,6 +157,7 @@ async with runtime.bind_host(host) as bound:
 
 - Host 成为 Runtime 的正式控制面一部分
 - 权限、提问、通知、turn event 都统一走 host bridge
+- team mode 打开时，structured `team_event` 也通过同一条 host bridge 侧带发出，但 host 仍然不是 team state 的 authority
 
 ### 3.3 Host 生命周期顺序
 
@@ -198,6 +199,12 @@ async with runtime.bind_host(host) as bound:
   - `job_get`
   - `job_list`
   - `job_stop`
+
+team collaboration 的 host-facing bridge 也保持同样的最小化原则：
+
+- 只有一个可选 structured `team_event` sink
+- runtime-owned team state 查询和 mutation 不依赖 host callback
+- host 不实现这个 sink 时，team routing 仍然正确，只是少了 side-channel observation
 
 注意：
 

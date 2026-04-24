@@ -249,6 +249,8 @@ class RuntimeServices:
     agent_runner: Any = None
     skill_runner: Any = None
     teammates: Any = None
+    team_control_plane: Any = None
+    team_message_bus: Any = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -338,6 +340,10 @@ class RuntimeServices:
         if self.host is not None and hasattr(teammates, "bind_host"):
             self.host = teammates.bind_host(self.host)
 
+    def bind_team_services(self, *, control_plane: Any = None, message_bus: Any = None) -> None:
+        self.team_control_plane = control_plane
+        self.team_message_bus = message_bus
+
     def configure_compat(
         self,
         *,
@@ -347,6 +353,7 @@ class RuntimeServices:
         notification_provider: Callable[[], Sequence[RuntimeMessage]] | None = None,
         notification_sink: Callable[[RuntimeMessage], Any] | None = None,
         turn_event_sink: Callable[[str, Any], Any] | None = None,
+        team_event_sink: Callable[[Any], Any] | None = None,
     ) -> None:
         if tool_refresh_callback is not None or isinstance(self.tool_catalog, CallbackToolCatalogService):
             self.tool_catalog = CallbackToolCatalogService(tool_refresh_callback)
@@ -358,6 +365,7 @@ class RuntimeServices:
                 notification_provider,
                 notification_sink,
                 turn_event_sink,
+                team_event_sink,
             )
         ):
             self.host = CallbackHostAdapter(
@@ -366,6 +374,7 @@ class RuntimeServices:
                 notification_provider=notification_provider,
                 notification_sink=notification_sink,
                 turn_event_sink=turn_event_sink,
+                team_event_sink=team_event_sink,
             )
 
 
