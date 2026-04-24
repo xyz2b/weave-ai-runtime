@@ -235,6 +235,50 @@ class BoundHostRuntime:
         self._bind_host()
         return await self.runtime.list_task_lists(*args, **kwargs)
 
+    async def create_task(self, *args: Any, **kwargs: Any) -> Any:
+        self._bind_host()
+        return await self.runtime.create_task(*args, **kwargs)
+
+    async def get_task(self, *args: Any, **kwargs: Any) -> Any:
+        self._bind_host()
+        return await self.runtime.get_task(*args, **kwargs)
+
+    async def update_task(self, *args: Any, **kwargs: Any) -> Any:
+        self._bind_host()
+        return await self.runtime.update_task(*args, **kwargs)
+
+    async def claim_task(self, *args: Any, **kwargs: Any) -> Any:
+        self._bind_host()
+        return await self.runtime.claim_task(*args, **kwargs)
+
+    async def release_task(self, *args: Any, **kwargs: Any) -> Any:
+        self._bind_host()
+        return await self.runtime.release_task(*args, **kwargs)
+
+    async def assign_next_task(self, *args: Any, **kwargs: Any) -> Any:
+        self._bind_host()
+        return await self.runtime.assign_next_task(*args, **kwargs)
+
+    async def block_task(self, *args: Any, **kwargs: Any) -> Any:
+        self._bind_host()
+        return await self.runtime.block_task(*args, **kwargs)
+
+    async def unblock_task(self, *args: Any, **kwargs: Any) -> Any:
+        self._bind_host()
+        return await self.runtime.unblock_task(*args, **kwargs)
+
+    async def archive_task(self, *args: Any, **kwargs: Any) -> Any:
+        self._bind_host()
+        return await self.runtime.archive_task(*args, **kwargs)
+
+    async def unarchive_task(self, *args: Any, **kwargs: Any) -> Any:
+        self._bind_host()
+        return await self.runtime.unarchive_task(*args, **kwargs)
+
+    async def delete_task(self, *args: Any, **kwargs: Any) -> Any:
+        self._bind_host()
+        return await self.runtime.delete_task(*args, **kwargs)
+
     async def get_task_list(self, *args: Any, **kwargs: Any) -> Any:
         self._bind_host()
         return await self.runtime.get_task_list(*args, **kwargs)

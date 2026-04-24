@@ -26,6 +26,9 @@ _TASK_TOOL_NAMES = frozenset(
         "task_assign_next",
         "task_block",
         "task_unblock",
+        "task_archive",
+        "task_unarchive",
+        "task_delete",
         "task_list",
     }
 )

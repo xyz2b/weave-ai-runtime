@@ -57,7 +57,9 @@ from ..task_discipline import TaskDisciplineSidecar
 from ..task_lists import (
     DefaultTaskListService,
     FileTaskListStore,
+    TaskListError,
     coerce_private_context,
+    task_list_entry_to_dict,
     task_list_snapshot_to_dict,
 )
 from ..session_runtime import (
@@ -78,6 +80,7 @@ from .config import DefinitionSourcePaths, RuntimeConfig
 from ..execution_policy import DelegationPolicyError, default_delegation_policy_metadata, policy_state_from_metadata
 
 SKILL_DYNAMIC_ROOTS_KEY = "skill_dynamic_roots"
+_UNSET = object()
 
 
 @dataclass(slots=True)
@@ -359,11 +362,389 @@ class RuntimeAssembly:
             private_context=_merged_private_context(private_context, runtime_context),
         )
 
+    async def create_task(
+        self,
+        *,
+        subject: str,
+        description: str | None = None,
+        active_form: str | None = None,
+        owner: str | None = None,
+        blocks: tuple[str, ...] | list[str] = (),
+        blocked_by: tuple[str, ...] | list[str] = (),
+        metadata: dict[str, Any] | None = None,
+        list_id: str | None = None,
+        session_id: str | None = None,
+        private_context: RuntimePrivateContext | dict[str, object] | None = None,
+        runtime_context: dict[str, object] | None = None,
+    ) -> dict[str, Any] | ExecutionResult[dict[str, Any]]:
+        resolved_list_id = await self._resolve_task_target(
+            list_id=list_id,
+            session_id=session_id,
+            private_context=private_context,
+            runtime_context=runtime_context,
+            required_message="create_task requires either list_id or session_id",
+        )
+        try:
+            task = await self.services.task_list_service.create(
+                resolved_list_id,
+                subject=subject,
+                description=description,
+                active_form=active_form,
+                owner=owner,
+                blocks=blocks,
+                blocked_by=blocked_by,
+                metadata=metadata,
+            )
+        except TaskListError as exc:
+            return _task_list_error_result(exc)
+        return {
+            "task_list_id": resolved_list_id,
+            "task": await self._task_payload(resolved_list_id, task.task_id),
+        }
+
+    async def get_task(
+        self,
+        task_id: str,
+        *,
+        list_id: str | None = None,
+        session_id: str | None = None,
+        private_context: RuntimePrivateContext | dict[str, object] | None = None,
+        runtime_context: dict[str, object] | None = None,
+    ) -> dict[str, Any] | ExecutionResult[dict[str, Any]]:
+        resolved_list_id = await self._resolve_task_target(
+            list_id=list_id,
+            session_id=session_id,
+            private_context=private_context,
+            runtime_context=runtime_context,
+            required_message="get_task requires either list_id or session_id",
+        )
+        task = await self.services.task_list_service.get_orchestration_task(
+            resolved_list_id,
+            task_id,
+            include_archived=True,
+        )
+        if task is None:
+            return _structured_task_error(
+                "not_found",
+                f"Task '{task_id}' was not found",
+                task_list_id=resolved_list_id,
+                task_id=task_id,
+            )
+        return {"task_list_id": resolved_list_id, "task": task_list_entry_to_dict(task)}
+
+    async def update_task(
+        self,
+        task_id: str,
+        *,
+        status: str | None = None,
+        subject: str | None = None,
+        description: Any = _UNSET,
+        active_form: Any = _UNSET,
+        metadata: Mapping[str, Any] | None = None,
+        list_id: str | None = None,
+        session_id: str | None = None,
+        private_context: RuntimePrivateContext | dict[str, object] | None = None,
+        runtime_context: dict[str, object] | None = None,
+    ) -> dict[str, Any] | ExecutionResult[dict[str, Any]]:
+        resolved_list_id = await self._resolve_task_target(
+            list_id=list_id,
+            session_id=session_id,
+            private_context=private_context,
+            runtime_context=runtime_context,
+            required_message="update_task requires either list_id or session_id",
+        )
+        patch: dict[str, Any] = {}
+        if status is not None:
+            patch["status"] = status
+        if subject is not None:
+            patch["subject"] = subject
+        if description is not _UNSET:
+            patch["description"] = description
+        if active_form is not _UNSET:
+            patch["active_form"] = active_form
+        if metadata is not None:
+            patch["metadata"] = dict(metadata)
+        if not patch:
+            return _structured_task_error(
+                "invalid_request",
+                "task_update requires at least one supported mutable field",
+                task_list_id=resolved_list_id,
+                task_id=task_id,
+            )
+        try:
+            task = await self.services.task_list_service.update(
+                resolved_list_id,
+                task_id,
+                patch=patch,
+            )
+        except TaskListError as exc:
+            return _task_list_error_result(exc)
+        return {
+            "task_list_id": resolved_list_id,
+            "task": await self._task_payload(resolved_list_id, task.task_id),
+        }
+
+    async def claim_task(
+        self,
+        task_id: str,
+        *,
+        owner: str | None = None,
+        set_in_progress: bool = True,
+        enforce_owner_busy: bool = False,
+        list_id: str | None = None,
+        session_id: str | None = None,
+        private_context: RuntimePrivateContext | dict[str, object] | None = None,
+        runtime_context: dict[str, object] | None = None,
+    ) -> dict[str, Any] | ExecutionResult[dict[str, Any]]:
+        resolved_list_id = await self._resolve_task_target(
+            list_id=list_id,
+            session_id=session_id,
+            private_context=private_context,
+            runtime_context=runtime_context,
+            required_message="claim_task requires either list_id or session_id",
+        )
+        try:
+            task = await self.services.task_list_service.claim(
+                resolved_list_id,
+                task_id,
+                owner,
+                set_in_progress=set_in_progress,
+                enforce_owner_busy=enforce_owner_busy,
+            )
+        except TaskListError as exc:
+            return _task_list_error_result(exc)
+        return {
+            "task_list_id": resolved_list_id,
+            "task": await self._task_payload(resolved_list_id, task.task_id),
+        }
+
+    async def release_task(
+        self,
+        task_id: str,
+        *,
+        list_id: str | None = None,
+        session_id: str | None = None,
+        private_context: RuntimePrivateContext | dict[str, object] | None = None,
+        runtime_context: dict[str, object] | None = None,
+    ) -> dict[str, Any] | ExecutionResult[dict[str, Any]]:
+        resolved_list_id = await self._resolve_task_target(
+            list_id=list_id,
+            session_id=session_id,
+            private_context=private_context,
+            runtime_context=runtime_context,
+            required_message="release_task requires either list_id or session_id",
+        )
+        try:
+            task = await self.services.task_list_service.release(
+                resolved_list_id,
+                task_id,
+            )
+        except TaskListError as exc:
+            return _task_list_error_result(exc)
+        return {
+            "task_list_id": resolved_list_id,
+            "task": await self._task_payload(resolved_list_id, task.task_id),
+        }
+
+    async def assign_next_task(
+        self,
+        *,
+        owner: str | None = None,
+        set_in_progress: bool = True,
+        enforce_owner_busy: bool = False,
+        list_id: str | None = None,
+        session_id: str | None = None,
+        private_context: RuntimePrivateContext | dict[str, object] | None = None,
+        runtime_context: dict[str, object] | None = None,
+    ) -> dict[str, Any] | ExecutionResult[dict[str, Any]]:
+        resolved_list_id = await self._resolve_task_target(
+            list_id=list_id,
+            session_id=session_id,
+            private_context=private_context,
+            runtime_context=runtime_context,
+            required_message="assign_next_task requires either list_id or session_id",
+        )
+        try:
+            task = await self.services.task_list_service.assign_next(
+                resolved_list_id,
+                owner,
+                set_in_progress=set_in_progress,
+                enforce_owner_busy=enforce_owner_busy,
+            )
+        except TaskListError as exc:
+            return _task_list_error_result(exc)
+        return {
+            "task_list_id": resolved_list_id,
+            "task": (
+                await self._task_payload(resolved_list_id, task.task_id)
+                if task is not None
+                else None
+            ),
+        }
+
+    async def block_task(
+        self,
+        *,
+        blocker_task_id: str,
+        blocked_task_id: str,
+        list_id: str | None = None,
+        session_id: str | None = None,
+        private_context: RuntimePrivateContext | dict[str, object] | None = None,
+        runtime_context: dict[str, object] | None = None,
+    ) -> dict[str, Any] | ExecutionResult[dict[str, Any]]:
+        resolved_list_id = await self._resolve_task_target(
+            list_id=list_id,
+            session_id=session_id,
+            private_context=private_context,
+            runtime_context=runtime_context,
+            required_message="block_task requires either list_id or session_id",
+        )
+        try:
+            blocker_task, blocked_task = await self.services.task_list_service.add_dependency(
+                resolved_list_id,
+                blocker_task_id,
+                blocked_task_id,
+            )
+        except TaskListError as exc:
+            return _task_list_error_result(exc)
+        return {
+            "task_list_id": resolved_list_id,
+            "blocker_task": await self._task_payload(resolved_list_id, blocker_task.task_id),
+            "blocked_task": await self._task_payload(resolved_list_id, blocked_task.task_id),
+        }
+
+    async def unblock_task(
+        self,
+        *,
+        blocker_task_id: str,
+        blocked_task_id: str,
+        list_id: str | None = None,
+        session_id: str | None = None,
+        private_context: RuntimePrivateContext | dict[str, object] | None = None,
+        runtime_context: dict[str, object] | None = None,
+    ) -> dict[str, Any] | ExecutionResult[dict[str, Any]]:
+        resolved_list_id = await self._resolve_task_target(
+            list_id=list_id,
+            session_id=session_id,
+            private_context=private_context,
+            runtime_context=runtime_context,
+            required_message="unblock_task requires either list_id or session_id",
+        )
+        try:
+            blocker_task, blocked_task = await self.services.task_list_service.remove_dependency(
+                resolved_list_id,
+                blocker_task_id,
+                blocked_task_id,
+            )
+        except TaskListError as exc:
+            return _task_list_error_result(exc)
+        return {
+            "task_list_id": resolved_list_id,
+            "blocker_task": await self._task_payload(resolved_list_id, blocker_task.task_id),
+            "blocked_task": await self._task_payload(resolved_list_id, blocked_task.task_id),
+        }
+
+    async def archive_task(
+        self,
+        task_id: str,
+        *,
+        archived_by: str | None = None,
+        list_id: str | None = None,
+        session_id: str | None = None,
+        private_context: RuntimePrivateContext | dict[str, object] | None = None,
+        runtime_context: dict[str, object] | None = None,
+    ) -> dict[str, Any] | ExecutionResult[dict[str, Any]]:
+        resolved_list_id = await self._resolve_task_target(
+            list_id=list_id,
+            session_id=session_id,
+            private_context=private_context,
+            runtime_context=runtime_context,
+            required_message="archive_task requires either list_id or session_id",
+        )
+        try:
+            task = await self.services.task_list_service.archive(
+                resolved_list_id,
+                task_id,
+                archived_by=archived_by,
+            )
+        except TaskListError as exc:
+            return _task_list_error_result(exc)
+        return {
+            "task_list_id": resolved_list_id,
+            "task": await self._task_payload(resolved_list_id, task.task_id),
+        }
+
+    async def unarchive_task(
+        self,
+        task_id: str,
+        *,
+        list_id: str | None = None,
+        session_id: str | None = None,
+        private_context: RuntimePrivateContext | dict[str, object] | None = None,
+        runtime_context: dict[str, object] | None = None,
+    ) -> dict[str, Any] | ExecutionResult[dict[str, Any]]:
+        resolved_list_id = await self._resolve_task_target(
+            list_id=list_id,
+            session_id=session_id,
+            private_context=private_context,
+            runtime_context=runtime_context,
+            required_message="unarchive_task requires either list_id or session_id",
+        )
+        try:
+            task = await self.services.task_list_service.unarchive(
+                resolved_list_id,
+                task_id,
+            )
+        except TaskListError as exc:
+            return _task_list_error_result(exc)
+        return {
+            "task_list_id": resolved_list_id,
+            "task": await self._task_payload(resolved_list_id, task.task_id),
+        }
+
+    async def delete_task(
+        self,
+        task_id: str,
+        *,
+        list_id: str | None = None,
+        session_id: str | None = None,
+        private_context: RuntimePrivateContext | dict[str, object] | None = None,
+        runtime_context: dict[str, object] | None = None,
+    ) -> dict[str, Any] | ExecutionResult[dict[str, Any]]:
+        resolved_list_id = await self._resolve_task_target(
+            list_id=list_id,
+            session_id=session_id,
+            private_context=private_context,
+            runtime_context=runtime_context,
+            required_message="delete_task requires either list_id or session_id",
+        )
+        task = await self.services.task_list_service.get_orchestration_task(
+            resolved_list_id,
+            task_id,
+            include_archived=True,
+        )
+        if task is None:
+            return _structured_task_error(
+                "not_found",
+                f"Task '{task_id}' was not found",
+                task_list_id=resolved_list_id,
+                task_id=task_id,
+            )
+        try:
+            await self.services.task_list_service.delete(
+                resolved_list_id,
+                task_id,
+            )
+        except TaskListError as exc:
+            return _task_list_error_result(exc)
+        return {"task_list_id": resolved_list_id, "task": task_list_entry_to_dict(task)}
+
     async def list_task_lists(
         self,
         *,
         session_id: str | None = None,
         list_id: str | None = None,
+        include_archived: bool = False,
         private_context: RuntimePrivateContext | dict[str, object] | None = None,
         runtime_context: dict[str, object] | None = None,
     ) -> tuple[dict[str, Any], ...]:
@@ -373,13 +754,17 @@ class RuntimeAssembly:
                 private_context=private_context,
                 runtime_context=runtime_context,
             )
-            snapshot = await self.services.task_list_service.get_orchestration_snapshot(resolved_list_id)
+            snapshot = await self.services.task_list_service.get_orchestration_snapshot(
+                resolved_list_id,
+                include_archived=include_archived,
+            )
             return (task_list_snapshot_to_dict(snapshot),)
         snapshots = await self.services.task_list_service.list_snapshots()
         results: list[dict[str, Any]] = []
         for snapshot in snapshots:
             orchestration = await self.services.task_list_service.get_orchestration_snapshot(
-                snapshot.list_id
+                snapshot.list_id,
+                include_archived=include_archived,
             )
             results.append(task_list_snapshot_to_dict(orchestration))
         return tuple(results)
@@ -389,6 +774,7 @@ class RuntimeAssembly:
         *,
         list_id: str | None = None,
         session_id: str | None = None,
+        include_archived: bool = False,
         private_context: RuntimePrivateContext | dict[str, object] | None = None,
         runtime_context: dict[str, object] | None = None,
     ) -> dict[str, Any] | ExecutionResult[dict[str, Any]]:
@@ -399,7 +785,10 @@ class RuntimeAssembly:
             private_context=private_context,
             runtime_context=runtime_context,
         )
-        snapshot = await self.services.task_list_service.get_orchestration_snapshot(resolved_list_id)
+        snapshot = await self.services.task_list_service.get_orchestration_snapshot(
+            resolved_list_id,
+            include_archived=include_archived,
+        )
         return task_list_snapshot_to_dict(snapshot)
 
     async def watch_task_list(
@@ -408,6 +797,7 @@ class RuntimeAssembly:
         callback: Any,
         list_id: str | None = None,
         session_id: str | None = None,
+        include_archived: bool = False,
         private_context: RuntimePrivateContext | dict[str, object] | None = None,
         runtime_context: dict[str, object] | None = None,
     ) -> Any:
@@ -421,7 +811,8 @@ class RuntimeAssembly:
 
         async def emit(snapshot: Any) -> Any:
             orchestration = await self.services.task_list_service.get_orchestration_snapshot(
-                snapshot.list_id
+                snapshot.list_id,
+                include_archived=include_archived,
             )
             return callback(task_list_snapshot_to_dict(orchestration))
 
@@ -683,6 +1074,35 @@ class RuntimeAssembly:
         if agent is None:
             raise KeyError(agent_name)
         return agent
+
+    async def _resolve_task_target(
+        self,
+        *,
+        list_id: str | None,
+        session_id: str | None,
+        private_context: RuntimePrivateContext | dict[str, object] | None,
+        runtime_context: dict[str, object] | None,
+        required_message: str,
+    ) -> str:
+        if list_id is not None:
+            return list_id
+        if session_id is None:
+            raise ValueError(required_message)
+        return await self.resolve_task_list_id(
+            session_id=str(session_id),
+            private_context=private_context,
+            runtime_context=runtime_context,
+        )
+
+    async def _task_payload(self, list_id: str, task_id: str) -> dict[str, Any]:
+        task = await self.services.task_list_service.get_orchestration_task(
+            list_id,
+            task_id,
+            include_archived=True,
+        )
+        if task is None:
+            raise ValueError(f"Task '{task_id}' was not found in task list '{list_id}'")
+        return task_list_entry_to_dict(task)
 
 
 def _discover_dynamic_skill_root_records(
@@ -1083,6 +1503,19 @@ def _delegation_policy_error_result(
         value=payload,
         error=str(exc),
         metadata=payload,
+    )
+
+
+def _task_list_error_result(exc: TaskListError) -> ExecutionResult[dict[str, Any]]:
+    return _structured_task_error(exc.code, str(exc), **exc.details)
+
+
+def _structured_task_error(code: str, message: str, **details: Any) -> ExecutionResult[dict[str, Any]]:
+    return ExecutionResult(
+        status=ExecutionStatus.FAILED,
+        value={"error": {"code": code, "message": message, "details": details}},
+        error=message,
+        metadata={"category": code, **details},
     )
 
 

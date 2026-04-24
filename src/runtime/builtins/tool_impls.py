@@ -365,7 +365,7 @@ async def task_create_tool(tool_input: dict[str, Any], context: ToolContext) -> 
 async def task_get_tool(tool_input: dict[str, Any], context: ToolContext) -> dict[str, Any] | ExecutionResult[dict[str, Any]]:
     service = _task_list_service(context)
     task_list_id = await _resolved_task_list_id(service, context)
-    task = await service.get_orchestration_task(task_list_id, tool_input["task_id"])
+    task = await service.get_orchestration_task(task_list_id, tool_input["task_id"], include_archived=True)
     if task is None:
         return _structured_error(
             "not_found",
@@ -383,11 +383,7 @@ async def task_update_tool(
 ) -> dict[str, Any] | ExecutionResult[dict[str, Any]]:
     service = _task_list_service(context)
     task_list_id = await _resolved_task_list_id(service, context)
-    patch = {
-        key: tool_input[key]
-        for key in ("status", "subject", "description", "active_form", "owner", "blocks", "blocked_by", "metadata")
-        if key in tool_input
-    }
+    patch = {key: value for key, value in tool_input.items() if key != "task_id"}
     if not patch:
         return _structured_error(
             "invalid_request",
@@ -409,6 +405,69 @@ async def task_update_tool(
         "task_list_id": task_list_id,
         "task": await _task_payload(service, task_list_id=task_list_id, task_id=task.task_id),
     }
+
+
+async def task_archive_tool(
+    tool_input: dict[str, Any],
+    context: ToolContext,
+) -> dict[str, Any] | ExecutionResult[dict[str, Any]]:
+    service = _task_list_service(context)
+    task_list_id = await _resolved_task_list_id(service, context)
+    try:
+        task = await service.archive(
+            task_list_id,
+            tool_input["task_id"],
+            archived_by=context.agent_name,
+        )
+    except TaskListError as exc:
+        return _task_list_error_result(exc)
+    _record_task_touch(context, task_list_id=task_list_id)
+    return {
+        "task_list_id": task_list_id,
+        "task": await _task_payload(service, task_list_id=task_list_id, task_id=task.task_id),
+    }
+
+
+async def task_unarchive_tool(
+    tool_input: dict[str, Any],
+    context: ToolContext,
+) -> dict[str, Any] | ExecutionResult[dict[str, Any]]:
+    service = _task_list_service(context)
+    task_list_id = await _resolved_task_list_id(service, context)
+    try:
+        task = await service.unarchive(
+            task_list_id,
+            tool_input["task_id"],
+        )
+    except TaskListError as exc:
+        return _task_list_error_result(exc)
+    _record_task_touch(context, task_list_id=task_list_id)
+    return {
+        "task_list_id": task_list_id,
+        "task": await _task_payload(service, task_list_id=task_list_id, task_id=task.task_id),
+    }
+
+
+async def task_delete_tool(
+    tool_input: dict[str, Any],
+    context: ToolContext,
+) -> dict[str, Any] | ExecutionResult[dict[str, Any]]:
+    service = _task_list_service(context)
+    task_list_id = await _resolved_task_list_id(service, context)
+    task = await service.get_orchestration_task(task_list_id, tool_input["task_id"], include_archived=True)
+    if task is None:
+        return _structured_error(
+            "not_found",
+            f"Task '{tool_input['task_id']}' was not found",
+            task_list_id=task_list_id,
+            task_id=tool_input["task_id"],
+        )
+    try:
+        await service.delete(task_list_id, tool_input["task_id"])
+    except TaskListError as exc:
+        return _task_list_error_result(exc)
+    _record_task_touch(context, task_list_id=task_list_id)
+    return {"task_list_id": task_list_id, "task": task_list_entry_to_dict(task)}
 
 
 async def task_claim_tool(
@@ -544,10 +603,13 @@ async def task_unblock_tool(
     }
 
 
-async def task_list_tool(_: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+async def task_list_tool(tool_input: dict[str, Any], context: ToolContext) -> dict[str, Any]:
     service = _task_list_service(context)
     task_list_id = await _resolved_task_list_id(service, context)
-    tasks = await service.get_orchestration_snapshot(task_list_id)
+    tasks = await service.get_orchestration_snapshot(
+        task_list_id,
+        include_archived=tool_input.get("include_archived", False),
+    )
     _record_task_touch(context, task_list_id=task_list_id)
     payload = task_list_snapshot_to_dict(tasks)
     payload["task_list_id"] = task_list_id
@@ -772,7 +834,7 @@ async def _task_payload(
     task_list_id: str,
     task_id: str,
 ) -> dict[str, Any]:
-    task = await service.get_orchestration_task(task_list_id, task_id)
+    task = await service.get_orchestration_task(task_list_id, task_id, include_archived=True)
     if task is None:
         raise ValueError(f"Task '{task_id}' was not found in task list '{task_list_id}'")
     return task_list_entry_to_dict(task)

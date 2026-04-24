@@ -228,10 +228,19 @@ bundled > user > project
   - `task_assign_next`
   - `task_block`
   - `task_unblock`
+  - `task_archive`
+  - `task_unarchive`
+  - `task_delete`
   - `task_list`
 
 如果你已经给了 `task_update`，要明确它现在只适合改非 orchestration 字段。
-owner 与 dependency edge 维护应走专门的 orchestration tools，而不是继续发 raw patch。
+owner、dependency edge 和 retirement 都应走专门的 task lifecycle / orchestration tools，而不是继续发 raw patch。
+
+如果 agent 需要看历史 task 或做恢复/清理动作，再额外告诉它：
+
+- 默认 `task_list` 只看 active work
+- 需要 archived record 时用 `task_get(task_id=...)` 做 exact lookup
+- 需要 archived-visible snapshot 时显式传 `include_archived=True`
 
 运维型 agent：
 

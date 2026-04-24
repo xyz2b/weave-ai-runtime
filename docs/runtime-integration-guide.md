@@ -394,11 +394,21 @@ builtins
 - `task_*`
   - 面向模型规划语义
   - 由 runtime-owned `TaskListService` 提供
-  - 当前 builtin surface 为 `task_create`、`task_get`、`task_update`、`task_claim`、`task_release`、`task_assign_next`、`task_block`、`task_unblock`、`task_list`
+  - 当前 builtin surface 为 `task_create`、`task_get`、`task_update`、`task_claim`、`task_release`、`task_assign_next`、`task_block`、`task_unblock`、`task_archive`、`task_unarchive`、`task_delete`、`task_list`
   - `task_list` / host task-list snapshot 现在同时返回持久化 task 字段与 derived readiness：
     - per-task `readiness_state` / `unresolved_blockers`
     - list-level `available_task_ids` / `blocked_task_ids`
-  - `task_update` 现在只保留非 orchestration 字段；owner 与 dependency edge 不再允许走 raw patch
+  - canonical task payload 现在统一带：
+    - `is_archived`
+    - `archived_at`
+    - `archived_by`
+  - `task_update` 现在只保留非 orchestration 字段；owner、dependency edge 和 retirement 都不再允许走 raw patch
+  - archive / unarchive / delete 是显式 lifecycle：
+    - 只有 `completed` task 才能 archive
+    - 只有 archived task 才能 unarchive / delete
+    - archived task 默认不出现在 `task_list` / host snapshot 里，但可通过 `include_archived=True` 显式取回
+    - `task_get` / host `get_task(...)` 作为 exact lookup，默认仍能按 id 取到 archived record
+  - 默认 active-work projection 会隐藏指向 archived task 的 dependency edge；只有 exact lookup 或 `include_archived=True` 才保留完整 dependency data
 - `job_*`
   - 面向后台执行记录与停止控制
   - 由 runtime-owned `JobService` 提供权威记录
@@ -454,8 +464,9 @@ builtins
 如果要定义最小稳定 contract，建议把下面几类能力当作 framework guarantee，而不是 profile 细节：
 
 - `TaskListService` 与 resolved `task_list_id` scope 规则
-- `task_create/get/update/list/claim/release/assign_next/block/unblock`
-- host `resolve_task_list_id` / `get_task_list` / `list_task_lists` / `watch_task_list`
+- `task_create/get/update/list/claim/release/assign_next/block/unblock/archive/unarchive/delete`
+- host `resolve_task_list_id` / `create_task` / `get_task` / `update_task` / `claim_task` / `release_task` / `assign_next_task` / `block_task` / `unblock_task` / `archive_task` / `unarchive_task` / `delete_task`
+- host `get_task_list` / `list_task_lists` / `watch_task_list` 的 `include_archived` 视图控制
 - orchestration snapshot 中的 `readiness_state`、`unresolved_blockers`、`available_task_ids`、`blocked_task_ids`
 
 相反，下面这些更适合保持在 profile / product 层，而不要过早冻结进 core contract：
@@ -474,6 +485,17 @@ builtins
 
 - task list
   - `resolve_task_list_id(session_id=...)`
+  - `create_task(...)`
+  - `get_task(task_id, ...)`
+  - `update_task(task_id, ...)`
+  - `claim_task(task_id, ...)`
+  - `release_task(task_id, ...)`
+  - `assign_next_task(...)`
+  - `block_task(...)`
+  - `unblock_task(...)`
+  - `archive_task(task_id, ...)`
+  - `unarchive_task(task_id, ...)`
+  - `delete_task(task_id, ...)`
   - `list_task_lists(...)`
   - `get_task_list(session_id=...)`
   - `watch_task_list(session_id=..., callback=...)`
@@ -488,11 +510,30 @@ builtins
 - host task panel
   - 读 `get_task_list()` / `watch_task_list()`
   - 展示共享 plan、负责人、依赖、完成状态
+  - 默认 active view 不显示 archived task；要做历史/恢复/清理入口时显式传 `include_archived=True`
   - 直接消费 runtime 给出的 `readiness_state`、`unresolved_blockers`、`available_task_ids`、`blocked_task_ids`
 - host job monitor
   - 读 `list_jobs()` / `get_job()`
   - 订阅 `watch_jobs()`
   - 通过 `stop_job()` 发起 shared stop request，而不是自己追 executor-native handle
+
+### 5.2.2.1 默认 task store 的 durability 边界
+
+默认 `FileTaskListStore` 现在用 temp-write + atomic replace 写 task snapshot。
+
+你可以依赖的边界是：
+
+- 单次 snapshot 保存不会直接原地改写 live JSON 文件
+- 中断写入后，runtime 至少还能恢复到“旧快照”或“新快照”之一
+- 默认实现只承诺 single-runtime writer
+
+你不应该依赖的边界是：
+
+- 多进程同时写同一个 task-list root
+- 跨进程 watcher 同步
+- 默认 store 的锁竞争、合并或分布式一致性
+
+如果你的产品需要 multi-writer / distributed task control plane，应替换成自定义 `TaskListStore`，不要把共享文件系统当成默认实现的隐含能力。
 
 ### 5.2.3 自定义 job executor 的正式接入面
 

@@ -500,6 +500,9 @@ host 不是外围包装层，而是 runtime 的正式集成边界。
 - 它是 host-scope owner
 - 它统一托管 managed sessions
 - 它保证 host shutdown 前先完成 session cleanup
+- 它现在同时承接 runtime-owned task control plane：
+  - query/watch：`list_task_lists`、`get_task_list`、`watch_task_list`
+  - mutation：`create_task`、`get_task`、`update_task`、`claim_task`、`release_task`、`assign_next_task`、`block_task`、`unblock_task`、`archive_task`、`unarchive_task`、`delete_task`
 
 这让 CLI、SDK 和未来 UI 能复用同一套 session/turn runtime，而不是各自包一个 while loop。
 
@@ -558,6 +561,20 @@ host 不是外围包装层，而是 runtime 的正式集成边界。
 - child runs
   - `ChildRunStore`
   - typed `CHILD_RUN` event 仍是 host/SDK observability truth
+
+### 12.3 默认 task durability 边界
+
+默认 task persistence 由 `FileTaskListStore` 提供，当前 contract 是：
+
+- 保存时先写临时文件，再做 atomic replace
+- default store 是 single-writer 设计，不声明多进程 writer safety
+- archived task 继续持久化，直到显式 `task_delete` 才真正移除
+
+因此：
+
+- host / product 可以把 archive 当成可恢复的 retirement state，而不是 status enum 扩展
+- 默认实现适合单个 runtime 进程管理自己的 task-list root
+- 如果要跨进程或分布式共享 task plane，应注入自定义 `TaskListStore`
   - terminal child run 可以再经过 runtime-owned continuation bridge 进入 session ingress
 - durable memory
   - `.runtime/memory/**`

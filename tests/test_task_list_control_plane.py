@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from runtime.builtins.tools import builtin_tools
-from runtime.contracts import MessageRole, RuntimeMessage, RuntimePrivateContext
+from runtime.contracts import ExecutionResult, ExecutionStatus, MessageRole, RuntimeMessage, RuntimePrivateContext
 from runtime.definitions import AgentDefinition, PermissionBehavior, PermissionDecision
 from runtime.execution_policy import ExecutionPolicy, ExecutionPolicyState
 from runtime.hosts.base import NullHostAdapter
@@ -21,6 +21,7 @@ from runtime.task_lists import (
     FileTaskListStore,
     TaskListBlockedError,
     TaskListDependencyCycleError,
+    TaskListError,
     TaskListInvalidRequestError,
     TaskListOwnerBusyError,
     TaskReadinessState,
@@ -209,6 +210,8 @@ def test_task_list_service_rejects_dependency_cycles_and_cleans_dangling_edges()
             await service.add_dependency(list_id, third.task_id, first.task_id)
         await service.remove_dependency(list_id, first.task_id, second.task_id)
         await service.add_dependency(list_id, first.task_id, second.task_id)
+        await service.update(list_id, second.task_id, patch={"status": "completed"})
+        await service.archive(list_id, second.task_id, archived_by="planner")
         await service.delete(list_id, second.task_id)
         first_after = await service.get(list_id, first.task_id)
         third_after = await service.get(list_id, third.task_id)
@@ -220,6 +223,122 @@ def test_task_list_service_rejects_dependency_cycles_and_cleans_dangling_edges()
     assert third_after is not None
     assert first_after.blocks == ()
     assert third_after.blocked_by == ()
+
+
+def test_task_list_service_enforces_retirement_lifecycle_and_archive_visibility() -> None:
+    service = DefaultTaskListService()
+
+    async def scenario():
+        list_id = "session:retirement-rules"
+        blocker = await service.create(list_id, subject="Archived blocker")
+        dependent = await service.create(list_id, subject="Dependent task", blocked_by=(blocker.task_id,))
+        active = await service.create(list_id, subject="Active task")
+
+        with pytest.raises(TaskListError) as archive_requires_completed:
+            await service.archive(list_id, blocker.task_id, archived_by="planner")
+
+        await service.update(list_id, blocker.task_id, patch={"status": "completed"})
+        archived = await service.archive(list_id, blocker.task_id, archived_by="planner")
+        exact = await service.get_orchestration_task(list_id, blocker.task_id, include_archived=True)
+        default_view = await service.get_orchestration_snapshot(list_id)
+        archived_view = await service.get_orchestration_snapshot(list_id, include_archived=True)
+
+        with pytest.raises(TaskListError) as repeated_archive:
+            await service.archive(list_id, blocker.task_id, archived_by="planner")
+        with pytest.raises(TaskListError) as archived_update:
+            await service.update(list_id, blocker.task_id, patch={"subject": "Renamed"})
+        with pytest.raises(TaskListError) as archived_claim:
+            await service.claim(list_id, blocker.task_id, "planner")
+        with pytest.raises(TaskListError) as archived_dependency:
+            await service.add_dependency(list_id, blocker.task_id, active.task_id)
+        with pytest.raises(TaskListError) as not_archived:
+            await service.unarchive(list_id, active.task_id)
+        with pytest.raises(TaskListError) as delete_requires_archived:
+            await service.delete(list_id, active.task_id)
+
+        restored = await service.unarchive(list_id, blocker.task_id)
+        rearchived = await service.archive(list_id, blocker.task_id, archived_by="planner")
+        deleted = await service.delete(list_id, blocker.task_id)
+        after_delete = await service.get_orchestration_snapshot(list_id, include_archived=True)
+        return {
+            "blocker": blocker,
+            "dependent": dependent,
+            "archived": archived,
+            "exact": exact,
+            "default_view": default_view,
+            "archived_view": archived_view,
+            "archive_requires_completed": archive_requires_completed.value,
+            "repeated_archive": repeated_archive.value,
+            "archived_update": archived_update.value,
+            "archived_claim": archived_claim.value,
+            "archived_dependency": archived_dependency.value,
+            "not_archived": not_archived.value,
+            "delete_requires_archived": delete_requires_archived.value,
+            "restored": restored,
+            "rearchived": rearchived,
+            "deleted": deleted,
+            "after_delete": after_delete,
+        }
+
+    result = asyncio.run(scenario())
+
+    blocker = result["blocker"]
+    dependent = result["dependent"]
+    default_tasks = {task.task.task_id: task for task in result["default_view"].tasks}
+    archived_tasks = {task.task.task_id: task for task in result["archived_view"].tasks}
+    dependent_default = default_tasks[dependent.task_id]
+    dependent_archived = archived_tasks[dependent.task_id]
+    after_delete_tasks = {task.task.task_id: task for task in result["after_delete"].tasks}
+
+    assert result["archive_requires_completed"].code == "archive_requires_completed"
+    assert result["archived"].is_archived is True
+    assert result["archived"].archived_by == "planner"
+    assert result["exact"] is not None
+    assert result["exact"].task.is_archived is True
+    assert dependent.task_id in result["default_view"].available_task_ids
+    assert blocker.task_id not in default_tasks
+    assert blocker.task_id in archived_tasks
+    assert dependent_default.task.blocked_by == ()
+    assert dependent_default.readiness_state == TaskReadinessState.AVAILABLE
+    assert dependent_archived.task.blocked_by == (blocker.task_id,)
+    assert blocker.task_id not in result["archived_view"].completed_task_ids
+    assert result["repeated_archive"].code == "already_archived"
+    assert result["archived_update"].code == "archived_task_immutable"
+    assert result["archived_claim"].code == "archived_task_immutable"
+    assert result["archived_dependency"].code == "archived_task_immutable"
+    assert result["not_archived"].code == "not_archived"
+    assert result["delete_requires_archived"].code == "delete_requires_archived"
+    assert result["restored"].is_archived is False
+    assert result["rearchived"].is_archived is True
+    assert result["deleted"].task_id == blocker.task_id
+    assert after_delete_tasks[dependent.task_id].task.blocked_by == ()
+
+
+def test_file_task_list_store_uses_atomic_replace_and_ignores_interrupted_temp_files(tmp_path: Path) -> None:
+    store = FileTaskListStore(tmp_path / ".runtime" / "task_lists")
+    service = DefaultTaskListService(store=store)
+
+    async def scenario():
+        list_id = "session:atomic-store"
+        await service.create(list_id, subject="First task")
+        path = store._path_for(list_id)
+        interrupted = path.with_name(f".{path.name}.interrupted.tmp")
+        interrupted.write_text("{broken", encoding="utf-8")
+        before = await store.load(list_id)
+        await service.create(list_id, subject="Second task")
+        after = await store.load(list_id)
+        snapshots = await store.list_snapshots()
+        return path, interrupted, before, after, snapshots
+
+    path, interrupted, before, after, snapshots = asyncio.run(scenario())
+
+    assert path.exists()
+    assert interrupted.exists()
+    assert before is not None
+    assert after is not None
+    assert [task.subject for task in before.tasks] == ["First task"]
+    assert [task.subject for task in after.tasks] == ["First task", "Second task"]
+    assert len(snapshots) == 1
 
 
 def test_task_tools_surface_structured_errors_and_strict_validation(tmp_path: Path) -> None:
@@ -277,6 +396,107 @@ def test_task_tools_surface_structured_errors_and_strict_validation(tmp_path: Pa
     assert invalid_owner_update.status == ToolCallStatus.ERROR
     assert invalid_owner_update.metadata["category"] == "invalid_request"
     assert "task_claim" in invalid_owner_update.output["error"]["message"]
+
+
+def test_task_retirement_tools_surface_lifecycle_and_archived_visibility(tmp_path: Path) -> None:
+    scheduler, context = _build_tool_runtime(tmp_path)
+
+    created = asyncio.run(
+        scheduler.run(
+            [
+                ToolCall("1", "task_create", {"subject": "Completed blocker"}),
+                ToolCall("2", "task_create", {"subject": "Dependent task"}),
+                ToolCall("3", "task_create", {"subject": "Pending task"}),
+            ],
+            context,
+        )
+    )
+    blocker_task_id = created[0].output["task"]["task_id"]
+    dependent_task_id = created[1].output["task"]["task_id"]
+    pending_task_id = created[2].output["task"]["task_id"]
+
+    asyncio.run(
+        scheduler.run(
+            [ToolCall("4", "task_block", {"blocker_task_id": blocker_task_id, "blocked_task_id": dependent_task_id})],
+            context,
+        )
+    )
+
+    archive_requires_completed = asyncio.run(
+        scheduler.run([ToolCall("5", "task_archive", {"task_id": blocker_task_id})], context)
+    )[0]
+    asyncio.run(
+        scheduler.run([ToolCall("6", "task_update", {"task_id": blocker_task_id, "status": "completed"})], context)
+    )
+    archived = asyncio.run(
+        scheduler.run([ToolCall("7", "task_archive", {"task_id": blocker_task_id})], context)
+    )[0]
+    repeated_archive = asyncio.run(
+        scheduler.run([ToolCall("8", "task_archive", {"task_id": blocker_task_id})], context)
+    )[0]
+    exact = asyncio.run(
+        scheduler.run([ToolCall("9", "task_get", {"task_id": blocker_task_id})], context)
+    )[0]
+    default_list = asyncio.run(
+        scheduler.run([ToolCall("10", "task_list", {})], context)
+    )[0]
+    archived_list = asyncio.run(
+        scheduler.run([ToolCall("11", "task_list", {"include_archived": True})], context)
+    )[0]
+    archived_claim = asyncio.run(
+        scheduler.run([ToolCall("12", "task_claim", {"task_id": blocker_task_id, "owner": "planner"})], context)
+    )[0]
+    invalid_owner_update = asyncio.run(
+        scheduler.run([ToolCall("13", "task_update", {"task_id": dependent_task_id, "owner": "planner"})], context)
+    )[0]
+    not_archived_unarchive = asyncio.run(
+        scheduler.run([ToolCall("14", "task_unarchive", {"task_id": pending_task_id})], context)
+    )[0]
+    delete_requires_archived = asyncio.run(
+        scheduler.run([ToolCall("15", "task_delete", {"task_id": dependent_task_id})], context)
+    )[0]
+    unarchived = asyncio.run(
+        scheduler.run([ToolCall("16", "task_unarchive", {"task_id": blocker_task_id})], context)
+    )[0]
+    rearchived = asyncio.run(
+        scheduler.run([ToolCall("17", "task_archive", {"task_id": blocker_task_id})], context)
+    )[0]
+    deleted = asyncio.run(
+        scheduler.run([ToolCall("18", "task_delete", {"task_id": blocker_task_id})], context)
+    )[0]
+    after_delete = asyncio.run(
+        scheduler.run([ToolCall("19", "task_list", {"include_archived": True})], context)
+    )[0]
+
+    dependent_default = next(task for task in default_list.output["tasks"] if task["task_id"] == dependent_task_id)
+    dependent_archived = next(task for task in archived_list.output["tasks"] if task["task_id"] == dependent_task_id)
+
+    assert archive_requires_completed.status == ToolCallStatus.ERROR
+    assert archive_requires_completed.output["error"]["code"] == "archive_requires_completed"
+    assert archived.status == ToolCallStatus.SUCCESS
+    assert archived.output["task"]["is_archived"] is True
+    assert archived.output["task"]["archived_by"] == "planner"
+    assert repeated_archive.status == ToolCallStatus.ERROR
+    assert repeated_archive.output["error"]["code"] == "already_archived"
+    assert exact.output["task"]["is_archived"] is True
+    assert blocker_task_id not in [task["task_id"] for task in default_list.output["tasks"]]
+    assert dependent_default["blocked_by"] == []
+    assert dependent_default["readiness_state"] == "available"
+    assert blocker_task_id in [task["task_id"] for task in archived_list.output["tasks"]]
+    assert dependent_archived["blocked_by"] == [blocker_task_id]
+    assert blocker_task_id not in archived_list.output["completed_task_ids"]
+    assert archived_claim.status == ToolCallStatus.ERROR
+    assert archived_claim.output["error"]["code"] == "archived_task_immutable"
+    assert invalid_owner_update.status == ToolCallStatus.ERROR
+    assert invalid_owner_update.output["error"]["code"] == "invalid_request"
+    assert "task_claim" in invalid_owner_update.output["error"]["message"]
+    assert not_archived_unarchive.output["error"]["code"] == "not_archived"
+    assert delete_requires_archived.output["error"]["code"] == "delete_requires_archived"
+    assert unarchived.output["task"]["is_archived"] is False
+    assert rearchived.output["task"]["is_archived"] is True
+    assert deleted.status == ToolCallStatus.SUCCESS
+    assert deleted.output["task"]["task_id"] == blocker_task_id
+    assert next(task for task in after_delete.output["tasks"] if task["task_id"] == dependent_task_id)["blocked_by"] == []
 
 
 def test_task_orchestration_tools_surface_readiness_and_dependency_controls(tmp_path: Path) -> None:
@@ -413,6 +633,10 @@ def test_job_stop_does_not_mutate_task_lists_and_task_update_does_not_mutate_job
         title="background-review",
         metadata={"session_id": context.session_id, "kind": "background_agent"},
     )
+    context.task_manager.register_stop_handler(
+        "job-1",
+        lambda task: context.task_manager.update(task.task_id, status=TaskStatus.STOPPED),
+    )
     context.task_manager.update("job-1", status=TaskStatus.RUNNING)
 
     created = asyncio.run(
@@ -436,6 +660,161 @@ def test_job_stop_does_not_mutate_task_lists_and_task_update_does_not_mutate_job
     assert stopped.status == ToolCallStatus.SUCCESS
     assert stopped.output["job"]["status"] == "stopped"
     assert listed.output["tasks"][0]["status"] == "completed"
+
+
+def test_bound_host_runtime_exposes_task_mutations_and_archived_visibility(tmp_path: Path) -> None:
+    runtime = assemble_runtime(RuntimeConfig.for_project(tmp_path))
+    bound = runtime.bind_host(NullHostAdapter())
+    observed_default: list[dict[str, object]] = []
+    observed_archived: list[dict[str, object]] = []
+
+    async def scenario():
+        unsubscribe_default = await bound.watch_task_list(
+            session_id="session-host-mutations",
+            callback=lambda snapshot: observed_default.append(snapshot),
+        )
+        unsubscribe_archived = await bound.watch_task_list(
+            session_id="session-host-mutations",
+            include_archived=True,
+            callback=lambda snapshot: observed_archived.append(snapshot),
+        )
+
+        first = await bound.create_task(session_id="session-host-mutations", subject="First task")
+        second = await bound.create_task(session_id="session-host-mutations", subject="Second task")
+        blocked = await bound.block_task(
+            session_id="session-host-mutations",
+            blocker_task_id=first["task"]["task_id"],
+            blocked_task_id=second["task"]["task_id"],
+        )
+        assigned = await bound.assign_next_task(session_id="session-host-mutations", owner="planner")
+        blocked_claim = await bound.claim_task(
+            second["task"]["task_id"],
+            session_id="session-host-mutations",
+            owner="reviewer",
+        )
+        released = await bound.release_task(first["task"]["task_id"], session_id="session-host-mutations")
+        unblocked = await bound.unblock_task(
+            session_id="session-host-mutations",
+            blocker_task_id=first["task"]["task_id"],
+            blocked_task_id=second["task"]["task_id"],
+        )
+        claimed_second = await bound.claim_task(
+            second["task"]["task_id"],
+            session_id="session-host-mutations",
+            owner="reviewer",
+        )
+
+        archived_blocker = await bound.create_task(session_id="session-host-mutations", subject="Archived blocker")
+        dependent = await bound.create_task(
+            session_id="session-host-mutations",
+            subject="Dependent on archived task",
+            blocked_by=[archived_blocker["task"]["task_id"]],
+        )
+        await bound.update_task(
+            archived_blocker["task"]["task_id"],
+            session_id="session-host-mutations",
+            status="completed",
+        )
+        archived = await bound.archive_task(
+            archived_blocker["task"]["task_id"],
+            session_id="session-host-mutations",
+            archived_by="host-user",
+        )
+        exact = await bound.get_task(
+            archived_blocker["task"]["task_id"],
+            session_id="session-host-mutations",
+        )
+        default_list = await bound.get_task_list(session_id="session-host-mutations")
+        archived_list = await bound.get_task_list(
+            session_id="session-host-mutations",
+            include_archived=True,
+        )
+        listed = await bound.list_task_lists(
+            session_id="session-host-mutations",
+            include_archived=True,
+        )
+        unarchived = await bound.unarchive_task(
+            archived_blocker["task"]["task_id"],
+            session_id="session-host-mutations",
+        )
+        rearchived = await bound.archive_task(
+            archived_blocker["task"]["task_id"],
+            session_id="session-host-mutations",
+            archived_by="host-user",
+        )
+        deleted = await bound.delete_task(
+            archived_blocker["task"]["task_id"],
+            session_id="session-host-mutations",
+        )
+        after_delete = await bound.get_task_list(
+            session_id="session-host-mutations",
+            include_archived=True,
+        )
+
+        unsubscribe_default()
+        unsubscribe_archived()
+        return {
+            "first": first,
+            "second": second,
+            "blocked": blocked,
+            "assigned": assigned,
+            "blocked_claim": blocked_claim,
+            "released": released,
+            "unblocked": unblocked,
+            "claimed_second": claimed_second,
+            "archived_blocker": archived_blocker,
+            "dependent": dependent,
+            "archived": archived,
+            "exact": exact,
+            "default_list": default_list,
+            "archived_list": archived_list,
+            "listed": listed,
+            "unarchived": unarchived,
+            "rearchived": rearchived,
+            "deleted": deleted,
+            "after_delete": after_delete,
+        }
+
+    result = asyncio.run(scenario())
+
+    first_task_id = result["first"]["task"]["task_id"]
+    second_task_id = result["second"]["task"]["task_id"]
+    archived_task_id = result["archived_blocker"]["task"]["task_id"]
+    dependent_task_id = result["dependent"]["task"]["task_id"]
+    dependent_default = next(task for task in result["default_list"]["tasks"] if task["task_id"] == dependent_task_id)
+    dependent_archived = next(task for task in result["archived_list"]["tasks"] if task["task_id"] == dependent_task_id)
+
+    assert result["blocked"]["blocked_task"]["blocked_by"] == [first_task_id]
+    assert result["assigned"]["task"]["task_id"] == first_task_id
+    assert isinstance(result["blocked_claim"], ExecutionResult)
+    assert result["blocked_claim"].status == ExecutionStatus.FAILED
+    assert result["blocked_claim"].metadata["category"] == "blocked"
+    assert result["released"]["task"]["status"] == "pending"
+    assert result["unblocked"]["blocked_task"]["blocked_by"] == []
+    assert result["claimed_second"]["task"]["task_id"] == second_task_id
+    assert result["claimed_second"]["task"]["owner"] == "reviewer"
+    assert result["archived"]["task"]["is_archived"] is True
+    assert result["archived"]["task"]["archived_by"] == "host-user"
+    assert result["exact"]["task"]["is_archived"] is True
+    assert archived_task_id not in [task["task_id"] for task in result["default_list"]["tasks"]]
+    assert dependent_default["blocked_by"] == []
+    assert dependent_default["readiness_state"] == "available"
+    assert archived_task_id in [task["task_id"] for task in result["archived_list"]["tasks"]]
+    assert dependent_archived["blocked_by"] == [archived_task_id]
+    assert archived_task_id not in result["archived_list"]["completed_task_ids"]
+    assert result["listed"][0]["list_id"] == "session:session-host-mutations"
+    assert result["unarchived"]["task"]["is_archived"] is False
+    assert result["rearchived"]["task"]["is_archived"] is True
+    assert result["deleted"]["task"]["task_id"] == archived_task_id
+    assert next(task for task in result["after_delete"]["tasks"] if task["task_id"] == dependent_task_id)["blocked_by"] == []
+    assert not any(
+        any(task["task_id"] == archived_task_id and task["is_archived"] for task in snapshot["tasks"])
+        for snapshot in observed_default
+    )
+    assert any(
+        any(task["task_id"] == archived_task_id and task["is_archived"] for task in snapshot["tasks"])
+        for snapshot in observed_archived
+    )
 
 
 def test_bound_host_runtime_exposes_task_list_watch_and_job_queries(tmp_path: Path) -> None:

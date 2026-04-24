@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import inspect
 import json
+import os
 import re
 from dataclasses import dataclass, field, replace
 from datetime import datetime
@@ -45,6 +46,9 @@ class TaskListEntry:
     blocks: tuple[str, ...] = ()
     blocked_by: tuple[str, ...] = ()
     metadata: dict[str, Any] = field(default_factory=dict)
+    is_archived: bool = False
+    archived_at: datetime | None = None
+    archived_by: str | None = None
     created_at: datetime = field(default_factory=utc_now)
     updated_at: datetime = field(default_factory=utc_now)
 
@@ -52,6 +56,14 @@ class TaskListEntry:
         object.__setattr__(self, "blocks", tuple(str(item) for item in self.blocks))
         object.__setattr__(self, "blocked_by", tuple(str(item) for item in self.blocked_by))
         object.__setattr__(self, "metadata", dict(self.metadata))
+        object.__setattr__(self, "is_archived", bool(self.is_archived))
+        archived_at = self.archived_at if isinstance(self.archived_at, datetime) else None
+        object.__setattr__(self, "archived_at", archived_at)
+        archived_by = _coerce_optional_string(self.archived_by)
+        object.__setattr__(self, "archived_by", archived_by)
+        if not self.is_archived:
+            object.__setattr__(self, "archived_at", None)
+            object.__setattr__(self, "archived_by", None)
 
     def serialize(self) -> dict[str, Any]:
         return {
@@ -64,12 +76,21 @@ class TaskListEntry:
             "blocks": list(self.blocks),
             "blocked_by": list(self.blocked_by),
             "metadata": _json_safe_mapping(self.metadata),
+            "is_archived": self.is_archived,
+            "archived_at": self.archived_at.isoformat() if self.archived_at is not None else None,
+            "archived_by": self.archived_by,
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat(),
         }
 
     @classmethod
     def from_payload(cls, payload: Mapping[str, Any]) -> "TaskListEntry":
+        archived_at = _coerce_datetime(payload.get("archived_at"))
+        archived_by = _coerce_optional_string(payload.get("archived_by"))
+        is_archived = _coerce_bool(
+            payload.get("is_archived"),
+            default=archived_at is not None or archived_by is not None,
+        )
         return cls(
             task_id=str(payload.get("task_id") or uuid4().hex),
             subject=str(payload.get("subject") or ""),
@@ -80,6 +101,9 @@ class TaskListEntry:
             blocks=_coerce_string_sequence(payload.get("blocks")),
             blocked_by=_coerce_string_sequence(payload.get("blocked_by")),
             metadata=_coerce_mapping(payload.get("metadata")),
+            is_archived=is_archived,
+            archived_at=archived_at if is_archived else None,
+            archived_by=archived_by if is_archived else None,
             created_at=_coerce_datetime(payload.get("created_at")) or utc_now(),
             updated_at=_coerce_datetime(payload.get("updated_at")) or utc_now(),
         )
@@ -236,6 +260,22 @@ class TaskListInvalidRequestError(TaskListError):
         super().__init__("invalid_request", message, details=details)
 
 
+class TaskListLifecycleError(TaskListError):
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        list_id: str,
+        task_id: str,
+        details: Mapping[str, Any] | None = None,
+    ) -> None:
+        payload = {"task_list_id": list_id, "task_id": task_id}
+        if details is not None:
+            payload.update(details)
+        super().__init__(code, message, details=payload)
+
+
 class TaskListMultipleInProgressError(TaskListError):
     def __init__(self, *, list_id: str, task_id: str, existing_task_id: str) -> None:
         super().__init__(
@@ -359,10 +399,14 @@ class FileTaskListStore:
     async def save(self, snapshot: TaskListSnapshot) -> TaskListSnapshot:
         path = self._path_for(snapshot.list_id)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            json.dumps(snapshot.serialize(), ensure_ascii=True, indent=2, sort_keys=True),
-            encoding="utf-8",
-        )
+        temp_path = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+        payload = json.dumps(snapshot.serialize(), ensure_ascii=True, indent=2, sort_keys=True)
+        with temp_path.open("w", encoding="utf-8") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_path, path)
+        _fsync_directory(path.parent)
         return snapshot
 
     async def list_snapshots(self) -> tuple[TaskListSnapshot, ...]:
@@ -412,12 +456,23 @@ class DefaultTaskListService:
             return TaskListSnapshot(list_id=list_id)
         return snapshot
 
-    async def get_orchestration_snapshot(self, list_id: str) -> TaskOrchestrationSnapshot:
+    async def get_orchestration_snapshot(
+        self,
+        list_id: str,
+        *,
+        include_archived: bool = False,
+    ) -> TaskOrchestrationSnapshot:
         snapshot = await self.get_snapshot(list_id)
-        return _derive_orchestration_snapshot(snapshot)
+        return _derive_orchestration_snapshot(snapshot, include_archived=include_archived)
 
-    async def get_orchestration_task(self, list_id: str, task_id: str) -> TaskOrchestrationEntry | None:
-        snapshot = await self.get_orchestration_snapshot(list_id)
+    async def get_orchestration_task(
+        self,
+        list_id: str,
+        task_id: str,
+        *,
+        include_archived: bool = True,
+    ) -> TaskOrchestrationEntry | None:
+        snapshot = await self.get_orchestration_snapshot(list_id, include_archived=include_archived)
         for task in snapshot.tasks:
             if task.task.task_id == task_id:
                 return task
@@ -478,8 +533,23 @@ class DefaultTaskListService:
                 return task
         return None
 
-    async def list(self, list_id: str) -> tuple[TaskListEntry, ...]:
-        return (await self.get_snapshot(list_id)).tasks
+    async def list(
+        self,
+        list_id: str,
+        *,
+        include_archived: bool = False,
+    ) -> tuple[TaskListEntry, ...]:
+        snapshot = await self.get_snapshot(list_id)
+        visible = _visible_tasks(snapshot.tasks, include_archived=include_archived)
+        archived_task_ids = _archived_task_ids(snapshot.tasks)
+        return tuple(
+            _project_task_entry(
+                task,
+                archived_task_ids=archived_task_ids,
+                include_archived=include_archived,
+            )
+            for task in visible
+        )
 
     async def update(
         self,
@@ -499,6 +569,7 @@ class DefaultTaskListService:
             tasks = list(snapshot.tasks)
             index = _find_task_index(tasks, list_id=list_id, task_id=task_id)
             existing = tasks[index]
+            _assert_task_mutable(existing, list_id=list_id)
             updated = self._apply_patch(existing, patch)
             if strict_single_in_progress and updated.status is TaskListStatus.IN_PROGRESS:
                 _validate_single_in_progress(tasks, list_id=list_id, task_id=task_id)
@@ -512,9 +583,94 @@ class DefaultTaskListService:
         await self._notify_watchers(next_snapshot)
         return updated
 
-    async def delete(self, list_id: str, task_id: str) -> None:
+    async def archive(
+        self,
+        list_id: str,
+        task_id: str,
+        *,
+        archived_by: str | None = None,
+    ) -> TaskListEntry:
         async with self._lock_for(list_id):
             snapshot = await self.get_snapshot(list_id)
+            tasks = list(snapshot.tasks)
+            index = _find_task_index(tasks, list_id=list_id, task_id=task_id)
+            existing = tasks[index]
+            if existing.is_archived:
+                raise TaskListLifecycleError(
+                    "already_archived",
+                    f"Task '{task_id}' in task list '{list_id}' is already archived",
+                    list_id=list_id,
+                    task_id=task_id,
+                )
+            if existing.status is not TaskListStatus.COMPLETED:
+                raise TaskListLifecycleError(
+                    "archive_requires_completed",
+                    f"Task '{task_id}' in task list '{list_id}' must be completed before archiving",
+                    list_id=list_id,
+                    task_id=task_id,
+                    details={"status": existing.status.value},
+                )
+            mutation_time = utc_now()
+            archived = replace(
+                existing,
+                is_archived=True,
+                archived_at=mutation_time,
+                archived_by=_coerce_optional_string(archived_by),
+                updated_at=mutation_time,
+            )
+            tasks[index] = archived
+            next_snapshot = replace(
+                snapshot,
+                tasks=tuple(tasks),
+                updated_at=mutation_time,
+            )
+            await self.store.save(next_snapshot)
+        await self._notify_watchers(next_snapshot)
+        return archived
+
+    async def unarchive(self, list_id: str, task_id: str) -> TaskListEntry:
+        async with self._lock_for(list_id):
+            snapshot = await self.get_snapshot(list_id)
+            tasks = list(snapshot.tasks)
+            index = _find_task_index(tasks, list_id=list_id, task_id=task_id)
+            existing = tasks[index]
+            if not existing.is_archived:
+                raise TaskListLifecycleError(
+                    "not_archived",
+                    f"Task '{task_id}' in task list '{list_id}' is not archived",
+                    list_id=list_id,
+                    task_id=task_id,
+                )
+            mutation_time = utc_now()
+            updated = replace(
+                existing,
+                is_archived=False,
+                archived_at=None,
+                archived_by=None,
+                updated_at=mutation_time,
+            )
+            tasks[index] = updated
+            next_snapshot = replace(
+                snapshot,
+                tasks=tuple(tasks),
+                updated_at=mutation_time,
+            )
+            await self.store.save(next_snapshot)
+        await self._notify_watchers(next_snapshot)
+        return updated
+
+    async def delete(self, list_id: str, task_id: str) -> TaskListEntry:
+        async with self._lock_for(list_id):
+            snapshot = await self.get_snapshot(list_id)
+            index = _find_task_index(snapshot.tasks, list_id=list_id, task_id=task_id)
+            deleted = snapshot.tasks[index]
+            if not deleted.is_archived:
+                raise TaskListLifecycleError(
+                    "delete_requires_archived",
+                    f"Task '{task_id}' in task list '{list_id}' must be archived before deletion",
+                    list_id=list_id,
+                    task_id=task_id,
+                )
             remaining = [task for task in snapshot.tasks if task.task_id != task_id]
             if len(remaining) == len(snapshot.tasks):
                 raise TaskListNotFoundError(list_id=list_id, task_id=task_id)
@@ -528,6 +684,7 @@ class DefaultTaskListService:
             )
             await self.store.save(next_snapshot)
         await self._notify_watchers(next_snapshot)
+        return deleted
 
     async def claim(
         self,
@@ -543,6 +700,7 @@ class DefaultTaskListService:
         async with self._lock_for(list_id):
             snapshot = await self.get_snapshot(list_id)
             tasks = list(snapshot.tasks)
+            _assert_task_mutable(tasks[_find_task_index(tasks, list_id=list_id, task_id=task_id)], list_id=list_id)
             updated, changed = _claim_task(
                 tasks,
                 list_id=list_id,
@@ -568,6 +726,7 @@ class DefaultTaskListService:
         async with self._lock_for(list_id):
             snapshot = await self.get_snapshot(list_id)
             tasks = list(snapshot.tasks)
+            _assert_task_mutable(tasks[_find_task_index(tasks, list_id=list_id, task_id=task_id)], list_id=list_id)
             updated, changed = _release_task(
                 tasks,
                 list_id=list_id,
@@ -864,6 +1023,58 @@ def _find_task_index(tasks: Sequence[TaskListEntry], *, list_id: str, task_id: s
     raise TaskListNotFoundError(list_id=list_id, task_id=task_id)
 
 
+def _fsync_directory(path: Path) -> None:
+    try:
+        descriptor = os.open(path, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(descriptor)
+    except OSError:
+        pass
+    finally:
+        os.close(descriptor)
+
+
+def _archived_task_ids(tasks: Sequence[TaskListEntry]) -> frozenset[str]:
+    return frozenset(task.task_id for task in tasks if task.is_archived)
+
+
+def _visible_tasks(
+    tasks: Sequence[TaskListEntry],
+    *,
+    include_archived: bool,
+) -> tuple[TaskListEntry, ...]:
+    if include_archived:
+        return tuple(tasks)
+    return tuple(task for task in tasks if not task.is_archived)
+
+
+def _project_task_entry(
+    task: TaskListEntry,
+    *,
+    archived_task_ids: frozenset[str],
+    include_archived: bool,
+) -> TaskListEntry:
+    if include_archived or not archived_task_ids:
+        return task
+    projected_blocks = tuple(task_id for task_id in task.blocks if task_id not in archived_task_ids)
+    projected_blocked_by = tuple(task_id for task_id in task.blocked_by if task_id not in archived_task_ids)
+    if projected_blocks == task.blocks and projected_blocked_by == task.blocked_by:
+        return task
+    return replace(task, blocks=projected_blocks, blocked_by=projected_blocked_by)
+
+
+def _assert_task_mutable(task: TaskListEntry, *, list_id: str) -> None:
+    if task.is_archived:
+        raise TaskListLifecycleError(
+            "archived_task_immutable",
+            f"Task '{task.task_id}' in task list '{list_id}' is archived and cannot be modified",
+            list_id=list_id,
+            task_id=task.task_id,
+        )
+
+
 def _claim_task(
     tasks: list[TaskListEntry],
     *,
@@ -882,6 +1093,7 @@ def _claim_task(
         )
     index = _find_task_index(tasks, list_id=list_id, task_id=task_id)
     existing = tasks[index]
+    _assert_task_mutable(existing, list_id=list_id)
     if existing.status is TaskListStatus.COMPLETED:
         raise TaskListInvalidRequestError(
             "task_claim does not support completed tasks",
@@ -952,6 +1164,7 @@ def _release_task(
 ) -> tuple[TaskListEntry, bool]:
     index = _find_task_index(tasks, list_id=list_id, task_id=task_id)
     existing = tasks[index]
+    _assert_task_mutable(existing, list_id=list_id)
     desired_status = existing.status if existing.status is TaskListStatus.COMPLETED else TaskListStatus.PENDING
     if existing.owner is None and existing.status is desired_status:
         return existing, False
@@ -1022,8 +1235,10 @@ def _mutate_dependency_graph(
     remove: bool,
     mutation_time: datetime,
 ) -> tuple[list[TaskListEntry], bool]:
-    _find_task_index(tasks, list_id=list_id, task_id=blocker_task_id)
-    _find_task_index(tasks, list_id=list_id, task_id=blocked_task_id)
+    blocker_index = _find_task_index(tasks, list_id=list_id, task_id=blocker_task_id)
+    blocked_index = _find_task_index(tasks, list_id=list_id, task_id=blocked_task_id)
+    _assert_task_mutable(tasks[blocker_index], list_id=list_id)
+    _assert_task_mutable(tasks[blocked_index], list_id=list_id)
     if not remove and blocker_task_id == blocked_task_id:
         raise TaskListDependencyCycleError(
             list_id=list_id,
@@ -1055,13 +1270,16 @@ def _apply_dependency_overrides(
     blocked_by: Sequence[str],
     mutation_time: datetime,
 ) -> tuple[list[TaskListEntry], bool]:
-    _find_task_index(tasks, list_id=list_id, task_id=task_id)
+    task_index = _find_task_index(tasks, list_id=list_id, task_id=task_id)
+    _assert_task_mutable(tasks[task_index], list_id=list_id)
     task_ids = {task.task_id for task in tasks}
     edges, _ = _normalized_dependency_graph(tasks)
+    task_map = {task.task_id: task for task in tasks}
 
     for blocked_task_id in _coerce_string_sequence(blocks):
         if blocked_task_id not in task_ids:
             raise TaskListNotFoundError(list_id=list_id, task_id=blocked_task_id)
+        _assert_task_mutable(task_map[blocked_task_id], list_id=list_id)
         if task_id == blocked_task_id or _path_exists(edges, start=blocked_task_id, target=task_id):
             raise TaskListDependencyCycleError(
                 list_id=list_id,
@@ -1073,6 +1291,7 @@ def _apply_dependency_overrides(
     for blocker_task_id in _coerce_string_sequence(blocked_by):
         if blocker_task_id not in task_ids:
             raise TaskListNotFoundError(list_id=list_id, task_id=blocker_task_id)
+        _assert_task_mutable(task_map[blocker_task_id], list_id=list_id)
         if blocker_task_id == task_id or _path_exists(edges, start=task_id, target=blocker_task_id):
             raise TaskListDependencyCycleError(
                 list_id=list_id,
@@ -1084,9 +1303,13 @@ def _apply_dependency_overrides(
     return _tasks_from_graph(tasks, edges, mutation_time)
 
 
-def _derive_orchestration_snapshot(snapshot: TaskListSnapshot) -> TaskOrchestrationSnapshot:
+def _derive_orchestration_snapshot(
+    snapshot: TaskListSnapshot,
+    *,
+    include_archived: bool = False,
+) -> TaskOrchestrationSnapshot:
     order = {task.task_id: index for index, task in enumerate(snapshot.tasks)}
-    _, blocked_by = _normalized_dependency_graph(snapshot.tasks)
+    archived_task_ids = _archived_task_ids(snapshot.tasks)
     available_task_ids: list[str] = []
     blocked_task_ids: list[str] = []
     claimed_task_ids: list[str] = []
@@ -1096,23 +1319,34 @@ def _derive_orchestration_snapshot(snapshot: TaskListSnapshot) -> TaskOrchestrat
     tasks: list[TaskOrchestrationEntry] = []
     task_map = {task.task_id: task for task in snapshot.tasks}
 
-    for task in snapshot.tasks:
+    for task in _visible_tasks(snapshot.tasks, include_archived=include_archived):
+        projected_task = _project_task_entry(
+            task,
+            archived_task_ids=archived_task_ids,
+            include_archived=include_archived,
+        )
         blockers = tuple(
             blocker_id
             for blocker_id in sorted(
-                blocked_by.get(task.task_id, set()),
+                projected_task.blocked_by,
                 key=lambda item: (order.get(item, len(order)), item),
             )
-            if task_map[blocker_id].status is not TaskListStatus.COMPLETED
+            if (
+                (blocker := task_map.get(blocker_id)) is not None
+                and not blocker.is_archived
+                and blocker.status is not TaskListStatus.COMPLETED
+            )
         )
-        state = _readiness_state(task, blockers)
+        state = _readiness_state(projected_task, blockers)
         tasks.append(
             TaskOrchestrationEntry(
-                task=task,
+                task=projected_task,
                 readiness_state=state,
                 unresolved_blockers=blockers,
             )
         )
+        if projected_task.is_archived:
+            continue
         if state is TaskReadinessState.AVAILABLE:
             available_task_ids.append(task.task_id)
         elif state is TaskReadinessState.BLOCKED:
