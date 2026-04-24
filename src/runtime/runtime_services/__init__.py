@@ -251,6 +251,7 @@ class RuntimeServices:
     teammates: Any = None
     team_control_plane: Any = None
     team_message_bus: Any = None
+    team_workflows: Any = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -340,9 +341,16 @@ class RuntimeServices:
         if self.host is not None and hasattr(teammates, "bind_host"):
             self.host = teammates.bind_host(self.host)
 
-    def bind_team_services(self, *, control_plane: Any = None, message_bus: Any = None) -> None:
+    def bind_team_services(
+        self,
+        *,
+        control_plane: Any = None,
+        message_bus: Any = None,
+        workflow_service: Any = None,
+    ) -> None:
         self.team_control_plane = control_plane
         self.team_message_bus = message_bus
+        self.team_workflows = workflow_service
 
     def configure_compat(
         self,

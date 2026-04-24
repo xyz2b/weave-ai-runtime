@@ -448,10 +448,62 @@ class RuntimeTeamRunnerManager:
         if task is not None:
             await asyncio.shield(task)
 
-    async def remove_member(self, *, team_id: str, member_id: str) -> None:
+    async def remove_member(
+        self,
+        *,
+        team: TeamRecord,
+        member: TeamMemberRecord,
+        requester_member_id: str,
+        requester_name: str,
+        reason: str,
+    ) -> None:
+        team_id = team.team_id
+        member_id = member.member_id
         key = (team_id, member_id)
+        workflow_service = getattr(self._runtime_services, "team_workflows", None)
+        if workflow_service is None:
+            task = self._drain_tasks.pop(key, None)
+            if task is not None and not task.done():
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+            await self._teammates.remove_teammate(team_id=team_id, teammate_id=member_id)
+            return
+
+        workflow = await workflow_service.create_shutdown_workflow(
+            team=team,
+            requester_member_id=requester_member_id,
+            requester_name=requester_name,
+            responder_member_id=member.member_id,
+            responder_name=member.name,
+            request_payload={"reason": reason, "member_id": member.member_id, "member_name": member.name},
+        )
+        snapshot = self._teammates.begin_shutdown(
+            team_id=team.team_id,
+            teammate_id=member.member_id,
+            workflow_id=workflow.workflow_id,
+        )
+        current = workflow_service.get(workflow.workflow_id)
+        if current is not None and str(getattr(current.status, "value", current.status)) == "pending":
+            await workflow_service.acknowledge_shutdown(
+                workflow.workflow_id,
+                actor_id=member.member_id,
+                payload={"teammate_id": member.member_id, "accepted": True},
+            )
+        if snapshot is None or not snapshot.current_work_attached:
+            await self._teammates.complete_shutdown(
+                team_id=team.team_id,
+                teammate_id=member.member_id,
+                workflow_id=workflow.workflow_id,
+            )
+        terminal = await workflow_service.wait_for_terminal(workflow.workflow_id)
         task = self._drain_tasks.pop(key, None)
-        if task is not None and not task.done():
+        if task is not None and not task.done() and str(getattr(terminal.status, "value", terminal.status)) in {
+            "forced_closed",
+            "timed_out",
+        }:
             task.cancel()
             try:
                 await task
@@ -459,10 +511,24 @@ class RuntimeTeamRunnerManager:
                 pass
         await self._teammates.remove_teammate(team_id=team_id, teammate_id=member_id)
 
-    async def shutdown_team(self, team_id: str, members: tuple[TeamMemberRecord, ...]) -> None:
+    async def shutdown_team(
+        self,
+        *,
+        team: TeamRecord,
+        members: tuple[TeamMemberRecord, ...],
+        requester_member_id: str,
+        requester_name: str,
+        reason: str,
+    ) -> None:
         for member in members:
             if member.role is TeamRole.TEAMMATE:
-                await self.remove_member(team_id=team_id, member_id=member.member_id)
+                await self.remove_member(
+                    team=team,
+                    member=member,
+                    requester_member_id=requester_member_id,
+                    requester_name=requester_name,
+                    reason=reason,
+                )
 
     async def _drain_loop(self, *, team_id: str, member_id: str) -> tuple[Any, ...] | None:
         try:
@@ -657,7 +723,7 @@ class RuntimeTeamControlPlane:
         member_id: str,
     ) -> TeamMemberRecord:
         actor = self.resolve_actor(session_id=session_id, extensions=extensions)
-        team, _leader = self._require_leader(actor)
+        team, leader = self._require_leader(actor)
         if member_id == team.leader_member_id:
             raise TeamControlError(
                 "authority_denied",
@@ -673,15 +739,14 @@ class RuntimeTeamControlPlane:
                 team_id=team.team_id,
                 member_id=member_id,
             )
-        removed = self._store.remove_member(team.team_id, member_id)
-        if removed is None:
-            raise TeamControlError(
-                "not_found",
-                f"Team member '{member_id}' was not found",
-                team_id=team.team_id,
-                member_id=member_id,
-            )
-        await self._runner_manager.remove_member(team_id=team.team_id, member_id=member_id)
+        await self._runner_manager.remove_member(
+            team=team,
+            member=member,
+            requester_member_id=leader.member_id,
+            requester_name=leader.name,
+            reason="member_removed",
+        )
+        removed = self._store.remove_member(team.team_id, member_id) or member
         await self._emit_event(
             event_type="team.member.removed",
             team=team,
@@ -699,7 +764,13 @@ class RuntimeTeamControlPlane:
         actor = self.resolve_actor(session_id=session_id, extensions=extensions)
         team, leader = self._require_leader(actor)
         members = self._store.list_members(team.team_id)
-        await self._runner_manager.shutdown_team(team.team_id, members)
+        await self._runner_manager.shutdown_team(
+            team=team,
+            members=members,
+            requester_member_id=leader.member_id,
+            requester_name=leader.name,
+            reason="team_deleted",
+        )
         for member in members:
             if member.member_id == team.leader_member_id:
                 continue

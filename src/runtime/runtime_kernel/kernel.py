@@ -4,7 +4,7 @@ import asyncio
 import hashlib
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Mapping
 from uuid import uuid4
 
 from ..agent_execution import SpawnMode
@@ -72,6 +72,7 @@ from ..session_runtime import (
 )
 from ..team_control_plane import FileBackedTeamStore, RuntimeTeamControlPlane, RuntimeTeamRunnerManager
 from ..team_message_bus import FileBackedTeamMessageBus, RuntimeTeamMessageBus
+from ..team_workflows import FileBackedTeamWorkflowStore, RuntimeTeamWorkflowService, workflow_record_to_payload
 from ..skill_runtime import SkillExecutionResult, SkillExecutor
 from ..tasking import TaskManager
 from ..teammate_orchestration import PersistentTeammateOrchestrator
@@ -236,6 +237,7 @@ class RuntimeAssembly:
     teammates: PersistentTeammateOrchestrator | None = None
     team_control_plane: Any = None
     team_message_bus: Any = None
+    team_workflows: Any = None
     system_prompt: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -892,6 +894,43 @@ class RuntimeAssembly:
         )
         return _serialize_job(job)
 
+    async def list_team_workflows(
+        self,
+        *,
+        team_id: str | None = None,
+        session_id: str | None = None,
+        pending_only: bool | None = True,
+    ) -> tuple[dict[str, Any], ...]:
+        service = getattr(self.services, "team_workflows", None)
+        if service is None:
+            return ()
+        resolved_team_id = team_id
+        if resolved_team_id is None and session_id is not None and self.team_control_plane is not None:
+            team = self.team_control_plane.active_team_for_leader_session(session_id)
+            if team is not None:
+                resolved_team_id = team.team_id
+        records = service.list_workflows(team_id=resolved_team_id, pending_only=pending_only)
+        return tuple(workflow_record_to_payload(record) for record in records)
+
+    async def respond_team_workflow(
+        self,
+        workflow_id: str,
+        *,
+        action: str,
+        host_name: str | None = None,
+        payload: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        service = getattr(self.services, "team_workflows", None)
+        if service is None:
+            raise RuntimeError("Runtime team workflow service is not configured")
+        record = await service.respond_host(
+            workflow_id=workflow_id,
+            action=action,
+            host_name=host_name,
+            payload=payload,
+        )
+        return workflow_record_to_payload(record)
+
     def create_session(
         self,
         *,
@@ -1390,6 +1429,7 @@ def _assemble_runtime_stack(kernel: RuntimeKernel) -> RuntimeAssembly:
     teammates = None
     team_control_plane = None
     team_message_bus = None
+    team_workflows = None
     teammate_config = kernel.config.teammate_orchestration
     if teammate_config is not None and teammate_config.enabled:
         teammates = PersistentTeammateOrchestrator(
@@ -1408,15 +1448,26 @@ def _assemble_runtime_stack(kernel: RuntimeKernel) -> RuntimeAssembly:
             runtime_services=services,
             runner_manager=runner_manager,
         )
+        team_workflows = RuntimeTeamWorkflowService(
+            store=FileBackedTeamWorkflowStore(
+                kernel.config.working_directory / ".runtime" / "team_workflows"
+            ),
+            control_plane=team_control_plane,
+            runtime_services=services,
+        )
         team_message_bus = RuntimeTeamMessageBus(
             store=FileBackedTeamMessageBus(kernel.config.working_directory / ".runtime" / "team_messages"),
             control_plane=team_control_plane,
             runtime_services=services,
         )
+        team_workflows.bind_message_bus(team_message_bus)
         services.bind_team_services(
             control_plane=team_control_plane,
             message_bus=team_message_bus,
+            workflow_service=team_workflows,
         )
+        if hasattr(teammates, "bind_workflow_service"):
+            teammates.bind_workflow_service(team_workflows)
     runtime = RuntimeAssembly(
         kernel=kernel,
         services=services,
@@ -1429,6 +1480,7 @@ def _assemble_runtime_stack(kernel: RuntimeKernel) -> RuntimeAssembly:
         teammates=teammates,
         team_control_plane=team_control_plane,
         team_message_bus=team_message_bus,
+        team_workflows=team_workflows,
         system_prompt=kernel.config.system_prompt,
         metadata=dict(kernel.config.metadata),
     )
@@ -1438,6 +1490,11 @@ def _assemble_runtime_stack(kernel: RuntimeKernel) -> RuntimeAssembly:
         agent_runner=runtime.run_agent_tool,
         skill_runner=runtime.run_skill_tool,
     )
+    if team_workflows is not None:
+        try:
+            asyncio.get_running_loop().create_task(team_workflows.recover_pending())
+        except RuntimeError:
+            pass
     return runtime
 
 

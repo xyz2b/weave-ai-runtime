@@ -29,6 +29,7 @@ _CONTROL_METADATA_KEYS = frozenset(
         "replay_source",
         "replay_metadata",
         "team_delivery_ack",
+        "ingress_priority",
         "role",
         "source",
         "visibility",

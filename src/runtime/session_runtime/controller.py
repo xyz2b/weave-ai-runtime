@@ -279,6 +279,7 @@ class SessionController:
             await self._replay_pending_team_messages()
 
     def normalize_event(self, event: InboundEvent) -> SessionCommand:
+        metadata = getattr(event, "metadata", None)
         priority_map = {
             InboundEventType.USER_PROMPT: 10,
             InboundEventType.SYSTEM_MESSAGE: 50,
@@ -295,7 +296,7 @@ class SessionController:
             command_id=uuid4().hex,
             command_type=command_type,
             payload={"content": event.content, "metadata": event.metadata},
-            priority=priority_map[event.event_type],
+            priority=_event_ingress_priority(metadata, fallback=priority_map[event.event_type]),
         )
 
     def enqueue_event(self, event: InboundEvent) -> None:
@@ -414,7 +415,7 @@ class SessionController:
                 ingress_result.normalized_messages,
                 turn_id=record_turn_id,
             )
-            if not ingress_result.admits_turn:
+            if ingress_result.private_updates:
                 self._apply_ingress_private_updates(ingress_result.private_updates)
             await self._emit_ingress_replay_outputs(ingress_result.replay_outputs)
             await self._acknowledge_team_delivery(event.metadata)
@@ -1235,6 +1236,10 @@ def _session_control_plane_metadata_snapshot(
         "team_member_id",
         "team_member_name",
         "leader_session_id",
+        "team_last_control_message",
+        "team_last_workflow_request",
+        "team_last_workflow_update",
+        "team_workflow_requests",
         "compaction",
         "compaction_summary",
         "compaction_boundary",
@@ -1256,6 +1261,10 @@ _PERSISTED_SESSION_PRIVATE_CONTEXT_KEYS = (
     "team_member_id",
     "team_member_name",
     "leader_session_id",
+    "team_last_control_message",
+    "team_last_workflow_request",
+    "team_last_workflow_update",
+    "team_workflow_requests",
 )
 
 
@@ -1287,6 +1296,16 @@ _SESSION_SUMMARY_TOOL_CALL_THRESHOLD = 8
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _event_ingress_priority(metadata: object, *, fallback: int) -> int:
+    if not isinstance(metadata, Mapping):
+        return fallback
+    value = metadata.get("ingress_priority")
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return fallback
 
 
 def _default_session_metadata(*, session_id: str, status: str) -> dict[str, Any]:

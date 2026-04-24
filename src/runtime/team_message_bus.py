@@ -17,6 +17,12 @@ from .team_control_plane import (
     TeamRole,
     TeamStatus,
 )
+from .team_workflows import (
+    TeamWorkflowKind,
+    parse_workflow_request_protocol,
+    parse_workflow_response_protocol,
+    workflow_priority,
+)
 
 if TYPE_CHECKING:
     from .runtime_services import RuntimeServices
@@ -281,10 +287,23 @@ class RuntimeTeamMessageBus:
         control_type: str,
         payload: Mapping[str, Any] | None = None,
         correlation_id: str | None = None,
+        allow_workflow_response: bool = False,
     ) -> TeamMessageEnvelope:
         team = self._control_plane.get_team(team_id)
         if team is None or team.status is TeamStatus.DELETED:
             raise TeamControlError("invalid_team_state", "Team is not active", team_id=team_id)
+        normalized_control_type = str(control_type).strip()
+        normalized_payload = _coerce_mapping(payload)
+        if not allow_workflow_response and (
+            normalized_control_type.endswith("_response")
+            or parse_workflow_response_protocol(normalized_payload) is not None
+        ):
+            raise TeamControlError(
+                "invalid_request",
+                "Workflow responses must use the runtime-owned workflow response surfaces",
+                team_id=team_id,
+                control_type=normalized_control_type,
+            )
         sender = self._control_plane.get_member(team_id, sender_member_id)
         recipient = self._control_plane.get_member(team_id, recipient_member_id)
         if sender is None or not sender.active:
@@ -302,7 +321,7 @@ class RuntimeTeamMessageBus:
             sender=TeamSender.from_member(sender),
             kind=TeamMessageKind.CONTROL,
             public_to=recipient.name,
-            content=str(control_type),
+            content=normalized_control_type,
             deliveries=(
                 TeamMessageDelivery(
                     delivery_id=uuid4().hex,
@@ -310,11 +329,11 @@ class RuntimeTeamMessageBus:
                     recipient_role=recipient.role,
                     recipient_name=recipient.name,
                     route="leader_ingress" if recipient.role is TeamRole.LEADER else "teammate_runner",
-                    metadata={"control_type": control_type, **_coerce_mapping(payload)},
+                    metadata={"control_type": normalized_control_type, **normalized_payload},
                 ),
             ),
             correlation_id=correlation_id or uuid4().hex,
-            metadata={"control_type": control_type, **_coerce_mapping(payload)},
+            metadata={"control_type": normalized_control_type, **normalized_payload},
         )
         self._store.publish(envelope)
         await self._route_delivery(team=team, envelope=envelope, delivery=envelope.deliveries[0])
@@ -510,6 +529,111 @@ class RuntimeTeamMessageBus:
 
         if envelope.kind is TeamMessageKind.CONTROL:
             control_type = str(envelope.metadata.get("control_type") or envelope.content)
+            request_protocol = parse_workflow_request_protocol(envelope.metadata)
+            if request_protocol is not None and self._workflow_request_is_actionable(
+                team=team,
+                workflow_id=request_protocol.workflow_id,
+                workflow_kind=request_protocol.workflow_kind,
+            ):
+                workflow_private = {
+                    "workflow_id": request_protocol.workflow_id,
+                    "workflow_kind": request_protocol.workflow_kind.value,
+                    "requester_member_id": request_protocol.requester_member_id,
+                    "requester_name": request_protocol.requester_name,
+                    "allowed_actions": list(request_protocol.allowed_actions),
+                }
+                return InboundEvent(
+                    event_type=InboundEventType.HOST_EVENT,
+                    content=request_protocol.summary
+                    or f"Team workflow '{request_protocol.workflow_id}' requires a response",
+                    metadata={
+                        "admission_kind": "admit_turn",
+                        "role": "user",
+                        "source": "team_workflow_request",
+                        "visibility": "transcript",
+                        "workflow_id": request_protocol.workflow_id,
+                        "workflow_kind": request_protocol.workflow_kind.value,
+                        "workflow_requester_member_id": request_protocol.requester_member_id,
+                        "workflow_requester_name": request_protocol.requester_name,
+                        "team_delivery_ack": {
+                            "team_id": team.team_id,
+                            "message_id": envelope.message_id,
+                            "delivery_id": delivery.delivery_id,
+                        },
+                        "ingress_priority": int(
+                            envelope.metadata.get("workflow_priority")
+                            or workflow_priority(request_protocol.workflow_kind)
+                        ),
+                        "private_updates": {
+                            "team_last_workflow_request": workflow_private,
+                            "team_workflow_requests": {
+                                request_protocol.workflow_id: workflow_private,
+                            },
+                            "team_last_control_message": {
+                                "team_id": team.team_id,
+                                "message_id": envelope.message_id,
+                                "control_type": control_type,
+                                "sender_member_id": envelope.sender.member_id,
+                                "sender_name": envelope.sender.name,
+                                "correlation_id": envelope.correlation_id,
+                                "content": envelope.content,
+                                "payload": _coerce_mapping(envelope.metadata),
+                            },
+                        },
+                    },
+                )
+            response_protocol = parse_workflow_response_protocol(envelope.metadata)
+            if response_protocol is not None:
+                return InboundEvent(
+                    event_type=InboundEventType.HOST_EVENT,
+                    content="",
+                    metadata={
+                        "admission_kind": "replay_only",
+                        "team_delivery_ack": {
+                            "team_id": team.team_id,
+                            "message_id": envelope.message_id,
+                            "delivery_id": delivery.delivery_id,
+                        },
+                        "private_updates": {
+                            "team_last_workflow_update": {
+                                "workflow_id": response_protocol.workflow_id,
+                                "workflow_kind": response_protocol.workflow_kind.value,
+                                "status": response_protocol.status.value,
+                                "response_action": response_protocol.response_action,
+                                "actor_kind": response_protocol.actor_kind.value,
+                                "actor_id": response_protocol.actor_id,
+                            },
+                            "team_last_control_message": {
+                                "team_id": team.team_id,
+                                "message_id": envelope.message_id,
+                                "control_type": control_type,
+                                "sender_member_id": envelope.sender.member_id,
+                                "sender_name": envelope.sender.name,
+                                "correlation_id": envelope.correlation_id,
+                                "content": envelope.content,
+                                "payload": _coerce_mapping(envelope.metadata),
+                            },
+                        },
+                        "replay_outputs": [
+                            {
+                                "output_id": uuid4().hex,
+                                "role": "notification",
+                                "content": response_protocol.summary
+                                or f"Team workflow '{response_protocol.workflow_id}' updated",
+                                "visibility": "host",
+                                "source": "team_workflow_update",
+                                "metadata": {
+                                    "team_id": team.team_id,
+                                    "message_id": envelope.message_id,
+                                    "correlation_id": envelope.correlation_id,
+                                    "workflow_id": response_protocol.workflow_id,
+                                },
+                            }
+                        ],
+                        "source": "team_workflow_update",
+                        "visibility": "private",
+                    },
+                )
             return InboundEvent(
                 event_type=InboundEventType.HOST_EVENT,
                 content="",
@@ -528,6 +652,8 @@ class RuntimeTeamMessageBus:
                             "sender_member_id": envelope.sender.member_id,
                             "sender_name": envelope.sender.name,
                             "correlation_id": envelope.correlation_id,
+                            "content": envelope.content,
+                            "payload": _coerce_mapping(envelope.metadata),
                         }
                     },
                     "replay_outputs": [
@@ -585,8 +711,33 @@ class RuntimeTeamMessageBus:
 
     def _teammate_prompt(self, envelope: TeamMessageEnvelope) -> str:
         if envelope.kind is TeamMessageKind.CONTROL:
+            request_protocol = parse_workflow_request_protocol(envelope.metadata)
+            if request_protocol is not None and request_protocol.summary:
+                return request_protocol.summary
+            response_protocol = parse_workflow_response_protocol(envelope.metadata)
+            if response_protocol is not None and response_protocol.summary:
+                return response_protocol.summary
             return f"Team control message from {envelope.sender.name}: {envelope.content}"
         return f"Team message from {envelope.sender.name}: {envelope.content}"
+
+    def _workflow_request_is_actionable(
+        self,
+        *,
+        team: TeamRecord,
+        workflow_id: str,
+        workflow_kind: TeamWorkflowKind,
+    ) -> bool:
+        workflow_service = getattr(self._runtime_services, "team_workflows", None)
+        if workflow_service is None or not hasattr(workflow_service, "get"):
+            return True
+        record = workflow_service.get(workflow_id)
+        if record is None:
+            return True
+        if record.team_id != team.team_id or record.terminal:
+            return False
+        if workflow_kind is TeamWorkflowKind.PERMISSION:
+            return bool(record.allowed_actions)
+        return bool(record.allowed_actions)
 
     async def _emit_team_event(
         self,

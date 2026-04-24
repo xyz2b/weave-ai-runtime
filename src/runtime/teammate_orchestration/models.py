@@ -246,6 +246,7 @@ class TeammateStateSnapshot:
     current_run_id: str | None = None
     current_claim_id: str | None = None
     waiting_permission_id: str | None = None
+    shutdown_workflow_id: str | None = None
     agent_name: str | None = None
     session_id: str | None = None
     working_directory: str | None = None
@@ -299,17 +300,46 @@ class TeammateStateSnapshot:
         )
 
     def waiting_permission(self, permission_id: str) -> "TeammateStateSnapshot":
+        next_state = (
+            self.state
+            if self.state in {TeammateLifecycleState.STOPPING, TeammateLifecycleState.STOPPED}
+            else TeammateLifecycleState.WAITING_PERMISSION
+        )
         return replace(
             self,
-            state=TeammateLifecycleState.WAITING_PERMISSION,
+            state=next_state,
             waiting_permission_id=permission_id,
             updated_at=utc_now(),
         )
 
     def resume_active(self) -> "TeammateStateSnapshot":
+        next_state = (
+            TeammateLifecycleState.STOPPING
+            if self.shutdown_workflow_id is not None
+            else TeammateLifecycleState.ACTIVE
+        )
         return replace(
             self,
-            state=TeammateLifecycleState.ACTIVE,
+            state=next_state,
+            waiting_permission_id=None,
+            updated_at=utc_now(),
+        )
+
+    def stopping(self, workflow_id: str) -> "TeammateStateSnapshot":
+        return replace(
+            self,
+            state=TeammateLifecycleState.STOPPING,
+            shutdown_workflow_id=workflow_id,
+            updated_at=utc_now(),
+        )
+
+    def stopped(self) -> "TeammateStateSnapshot":
+        return replace(
+            self,
+            state=TeammateLifecycleState.STOPPED,
+            current_message_id=None,
+            current_run_id=None,
+            current_claim_id=None,
             waiting_permission_id=None,
             updated_at=utc_now(),
         )
@@ -322,6 +352,7 @@ class TeammateStateSnapshot:
             current_run_id=None,
             current_claim_id=None,
             waiting_permission_id=None,
+            shutdown_workflow_id=None,
             updated_at=utc_now(),
         )
 
@@ -335,6 +366,7 @@ class TeammateStateSnapshot:
             "current_run_id": self.current_run_id,
             "current_claim_id": self.current_claim_id,
             "waiting_permission_id": self.waiting_permission_id,
+            "shutdown_workflow_id": self.shutdown_workflow_id,
             "updated_at": utc_isoformat(self.updated_at),
         }
         if self.agent_name is not None:
@@ -360,6 +392,7 @@ class TeammateStateSnapshot:
             current_run_id=_coerce_optional_string(payload.get("current_run_id")),
             current_claim_id=_coerce_optional_string(payload.get("current_claim_id")),
             waiting_permission_id=_coerce_optional_string(payload.get("waiting_permission_id")),
+            shutdown_workflow_id=_coerce_optional_string(payload.get("shutdown_workflow_id")),
             updated_at=parse_utc_timestamp(payload.get("updated_at")) or utc_now(),
             agent_name=_coerce_optional_string(payload.get("agent_name")),
             session_id=_coerce_optional_string(payload.get("session_id")),
@@ -413,6 +446,7 @@ class TeammateProjection:
     current_run_id: str | None = None
     current_message_id: str | None = None
     waiting_permission_id: str | None = None
+    shutdown_workflow_id: str | None = None
     progress_status: str | None = None
     latest_notification: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)

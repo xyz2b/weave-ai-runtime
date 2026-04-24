@@ -10,9 +10,11 @@ from uuid import uuid4
 from ..agent_execution import AgentRunStatus, SpawnMode
 from ..agent_runtime import AgentInvocation
 from ..contracts import MessageRole, RuntimeMessage
-from ..definitions import IsolationMode, PermissionMode
+from ..definitions import IsolationMode, PermissionBehavior, PermissionMode
 from ..hosts.base import HostRuntime
 from ..permissions import PermissionContext, PermissionOutcome, PermissionRequest
+from ..team_control_plane import TeamRole
+from ..team_workflows import RuntimeTeamWorkflowService, TeamWorkflowStatus
 from ..tasking import TaskManager, TaskStatus
 from .mailbox import FileBackedTeammateMailbox
 from .models import (
@@ -67,27 +69,32 @@ class PersistentTeammateHostBridge:
         details = self._orchestrator.permission_bridge_details(request)
         if details is None:
             return await self._delegate.request_permission(request)
-
-        permission_id = uuid4().hex
+        workflow_service = self._orchestrator.workflow_service
+        if workflow_service is None:
+            return await self._delegate.request_permission(request)
         leader_member_id = self._leader_member_id(details["team_id"])
-        self._orchestrator.enter_permission_wait(
-            team_id=details["team_id"],
-            teammate_id=details["teammate_id"],
-            permission_id=permission_id,
-        )
-        await self._emit_team_control_message(
-            team_id=details["team_id"],
-            sender_member_id=details["teammate_id"],
-            recipient_member_id=leader_member_id,
-            control_type="permission_request",
-            correlation_id=permission_id,
-            payload={
-                "permission_id": permission_id,
+        team = self._team_record(details["team_id"])
+        requester_name = self._teammate_name(details["team_id"], details["teammate_id"])
+        responder_name = self._leader_name(details["team_id"])
+        if team is None or leader_member_id is None:
+            return await self._delegate.request_permission(request)
+        workflow = await workflow_service.create_permission_workflow(
+            team=team,
+            requester_member_id=details["teammate_id"],
+            requester_name=requester_name,
+            responder_member_id=leader_member_id,
+            responder_name=responder_name,
+            request_payload={
                 "permission_target": request.target.value,
                 "permission_name": request.name,
                 "permission_message": request.message,
                 "permission_payload": dict(request.payload),
             },
+        )
+        self._orchestrator.enter_permission_wait(
+            team_id=details["team_id"],
+            teammate_id=details["teammate_id"],
+            permission_id=workflow.workflow_id,
         )
         await self.emit_notification(
             RuntimeMessage(
@@ -97,40 +104,43 @@ class PersistentTeammateHostBridge:
                 metadata={
                     "teammate_id": details["teammate_id"],
                     "team_id": details["team_id"],
-                    "permission_id": permission_id,
+                    "permission_id": workflow.workflow_id,
                     "source": "teammate_permission_bridge",
                 },
             )
         )
         try:
-            outcome = await self._delegate.request_permission(request)
+            leader_resolution = await workflow_service.wait_for_permission_resolution(workflow.workflow_id)
+            if leader_resolution.status is not TeamWorkflowStatus.WAITING_HOST:
+                outcome = leader_resolution
+            else:
+                try:
+                    delegated_outcome = await self._delegate.request_permission(request)
+                except Exception as exc:
+                    delegated_outcome = PermissionOutcome(
+                        behavior=PermissionBehavior.DENY,
+                        message=str(exc),
+                        updated_input=dict(request.payload),
+                        details={"host_error": str(exc)},
+                        source="host",
+                    )
+                outcome = await workflow_service.record_permission_host_outcome(
+                    workflow.workflow_id,
+                    delegated_outcome,
+                )
         except BaseException:
             self._orchestrator.exit_permission_wait(
                 team_id=details["team_id"],
                 teammate_id=details["teammate_id"],
-                permission_id=permission_id,
+                permission_id=workflow.workflow_id,
             )
             raise
         self._orchestrator.exit_permission_wait(
             team_id=details["team_id"],
             teammate_id=details["teammate_id"],
-            permission_id=permission_id,
+            permission_id=workflow.workflow_id,
         )
-        await self._emit_team_control_message(
-            team_id=details["team_id"],
-            sender_member_id=leader_member_id,
-            recipient_member_id=leader_member_id,
-            control_type="permission_response",
-            correlation_id=permission_id,
-            payload={
-                "permission_id": permission_id,
-                "behavior": outcome.behavior.value,
-                "message": outcome.message,
-                "source": outcome.source,
-                "details": dict(outcome.details),
-            },
-        )
-        return outcome
+        return self._terminal_permission_outcome(outcome, request)
 
     async def request_elicitation(self, request: Any) -> Any:
         return await self._delegate.request_elicitation(request)
@@ -148,6 +158,10 @@ class PersistentTeammateHostBridge:
         if hasattr(self._delegate, "emit_team_event"):
             await self._delegate.emit_team_event(event)
 
+    @property
+    def workflow_service(self) -> RuntimeTeamWorkflowService | None:
+        return self._orchestrator.workflow_service
+
     def _leader_member_id(self, team_id: str) -> str | None:
         services = getattr(self._orchestrator, "_runtime_services", None)
         control_plane = getattr(services, "team_control_plane", None)
@@ -157,6 +171,64 @@ class PersistentTeammateHostBridge:
         if team is None or getattr(team, "active", False) is False:
             return None
         return str(getattr(team, "leader_member_id", "") or "") or None
+
+    def _leader_name(self, team_id: str) -> str:
+        member_id = self._leader_member_id(team_id)
+        if member_id is None:
+            return TeamRole.LEADER.value
+        member = self._member_record(team_id, member_id)
+        return getattr(member, "name", None) or TeamRole.LEADER.value
+
+    def _teammate_name(self, team_id: str, teammate_id: str) -> str:
+        member = self._member_record(team_id, teammate_id)
+        return getattr(member, "name", None) or teammate_id
+
+    def _member_record(self, team_id: str, member_id: str) -> Any:
+        services = getattr(self._orchestrator, "_runtime_services", None)
+        control_plane = getattr(services, "team_control_plane", None)
+        if control_plane is None or not hasattr(control_plane, "get_member"):
+            return None
+        return control_plane.get_member(team_id, member_id)
+
+    def _team_record(self, team_id: str) -> Any:
+        services = getattr(self._orchestrator, "_runtime_services", None)
+        control_plane = getattr(services, "team_control_plane", None)
+        if control_plane is None or not hasattr(control_plane, "get_team"):
+            return None
+        return control_plane.get_team(team_id)
+
+    def _terminal_permission_outcome(
+        self,
+        workflow: Any,
+        request: PermissionRequest,
+    ) -> PermissionOutcome:
+        response_payload = getattr(workflow, "response_payload", None) or {}
+        if getattr(workflow, "status", None) == TeamWorkflowStatus.COMPLETED:
+            return PermissionOutcome(
+                behavior=PermissionBehavior.ALLOW,
+                message=str(response_payload.get("host_message") or request.message or "Permission approved"),
+                updated_input=dict(request.payload),
+                details={
+                    "workflow_id": getattr(workflow, "workflow_id", None),
+                    "source": response_payload.get("host_source") or "workflow",
+                    **dict(response_payload.get("host_details") or {}),
+                },
+                source=str(response_payload.get("host_source") or "workflow"),
+            )
+        return PermissionOutcome(
+            behavior=PermissionBehavior.DENY,
+            message=str(
+                response_payload.get("host_message")
+                or request.message
+                or "Permission denied"
+            ),
+            updated_input=dict(request.payload),
+            details={
+                "workflow_id": getattr(workflow, "workflow_id", None),
+                "workflow_status": getattr(getattr(workflow, "status", None), "value", None),
+            },
+            source=str(response_payload.get("host_source") or "workflow"),
+        )
 
     async def _emit_team_control_message(
         self,
@@ -214,6 +286,7 @@ class PersistentTeammateOrchestrator:
         self._recovered_targets: set[tuple[str, str]] = set()
         self._live_permission_waits: set[tuple[str, str, str]] = set()
         self._host_bridge: PersistentTeammateHostBridge | None = None
+        self._workflow_service: RuntimeTeamWorkflowService | None = None
 
     @property
     def config(self) -> TeammateOrchestrationConfig:
@@ -227,8 +300,15 @@ class PersistentTeammateOrchestrator:
     def registry(self) -> TeammateRegistry:
         return self._registry
 
+    @property
+    def workflow_service(self) -> RuntimeTeamWorkflowService | None:
+        return self._workflow_service
+
     def bind_execution_core(self, execution_core: SharedExecutionCore) -> None:
         self._execution_core = execution_core
+
+    def bind_workflow_service(self, workflow_service: RuntimeTeamWorkflowService) -> None:
+        self._workflow_service = workflow_service
 
     def bind_host(self, host: HostRuntime) -> HostRuntime:
         bridge = PersistentTeammateHostBridge(delegate=host, orchestrator=self)
@@ -382,8 +462,7 @@ class PersistentTeammateOrchestrator:
             for envelope in claimed:
                 active_run_linked = await self._active_run_linked(snapshot, envelope)
                 waiting_permission_snapshot = (
-                    snapshot.state == TeammateLifecycleState.WAITING_PERMISSION
-                    and snapshot.current_message_id == envelope.message_id
+                    snapshot.current_message_id == envelope.message_id
                     and snapshot.current_claim_id == envelope.claim_id
                     and snapshot.waiting_permission_id is not None
                 )
@@ -451,6 +530,8 @@ class PersistentTeammateOrchestrator:
                     self._write_snapshot(snapshot)
             if snapshot.state == TeammateLifecycleState.IDLE:
                 self._set_projection(snapshot, task_id=None, task_status=None, progress_status="idle")
+            elif snapshot.state == TeammateLifecycleState.STOPPING:
+                self._set_projection(snapshot, task_id=None, task_status=None, progress_status="stopping")
             self._recovered_targets.add(key)
         return tuple(recovered)
 
@@ -467,6 +548,19 @@ class PersistentTeammateOrchestrator:
             if key not in self._recovered_targets:
                 await self.recover(team_id=team_id, teammate_id=teammate_id)
 
+            existing_snapshot = self.snapshot(team_id, teammate_id)
+            if existing_snapshot is not None and existing_snapshot.state in {
+                TeammateLifecycleState.STOPPING,
+                TeammateLifecycleState.STOPPED,
+            }:
+                if existing_snapshot.shutdown_workflow_id is not None and not existing_snapshot.current_work_attached:
+                    await self.complete_shutdown(
+                        team_id=team_id,
+                        teammate_id=teammate_id,
+                        workflow_id=existing_snapshot.shutdown_workflow_id,
+                    )
+                return None
+
             registration = self._resolve_registration(team_id, teammate_id)
             claimed = self._mailbox.claim_next(
                 team_id,
@@ -478,6 +572,15 @@ class PersistentTeammateOrchestrator:
             if claimed is None:
                 snapshot = self.snapshot(team_id, teammate_id)
                 active_claims = self._mailbox.list_claimed(team_id, teammate_id)
+                if snapshot is not None and snapshot.state == TeammateLifecycleState.STOPPING:
+                    self._set_projection(snapshot, task_id=None, task_status=None, progress_status="stopping")
+                    if snapshot.shutdown_workflow_id is not None and not active_claims:
+                        await self.complete_shutdown(
+                            team_id=team_id,
+                            teammate_id=teammate_id,
+                            workflow_id=snapshot.shutdown_workflow_id,
+                        )
+                    return None
                 if snapshot is not None and not active_claims and snapshot.state != TeammateLifecycleState.IDLE:
                     snapshot = snapshot.idle()
                     self._write_snapshot(snapshot)
@@ -612,7 +715,10 @@ class PersistentTeammateOrchestrator:
                     else f"Teammate '{teammate_id}' failed mailbox item"
                 )
 
-            snapshot = snapshot.idle()
+            if snapshot.shutdown_workflow_id is not None:
+                snapshot = snapshot.stopped()
+            else:
+                snapshot = snapshot.idle()
             self._write_snapshot(snapshot)
             self._task_manager().update(
                 task_id,
@@ -635,7 +741,7 @@ class PersistentTeammateOrchestrator:
                 snapshot,
                 task_id=task_id,
                 task_status=terminal_task_status,
-                progress_status="idle",
+                progress_status="stopped" if snapshot.state == TeammateLifecycleState.STOPPED else "idle",
                 latest_notification=notification_text,
             )
             await self._emit_notification(
@@ -648,6 +754,12 @@ class PersistentTeammateOrchestrator:
                     "mailbox_terminal_state": archived.terminal_state.value if archived.terminal_state is not None else None,
                 },
             )
+            if snapshot.shutdown_workflow_id is not None:
+                await self.complete_shutdown(
+                    team_id=team_id,
+                    teammate_id=teammate_id,
+                    workflow_id=snapshot.shutdown_workflow_id,
+                )
             return result
 
     async def drain_teammate(
@@ -664,6 +776,79 @@ class PersistentTeammateOrchestrator:
                 break
             results.append(result)
         return tuple(results)
+
+    def begin_shutdown(
+        self,
+        *,
+        team_id: str,
+        teammate_id: str,
+        workflow_id: str,
+    ) -> TeammateStateSnapshot | None:
+        snapshot = self.snapshot(team_id, teammate_id)
+        if snapshot is None:
+            return None
+        snapshot = snapshot.stopping(workflow_id)
+        self._write_snapshot(snapshot)
+        projection = self._projections.get((team_id, teammate_id))
+        task_id = projection.task_id if projection is not None else None
+        if task_id is not None:
+            self._task_manager().update(
+                task_id,
+                status=TaskStatus.RUNNING,
+                metadata={
+                    "session_id": snapshot.session_id,
+                    "teammate_state": snapshot.state.value,
+                    "shutdown_workflow_id": workflow_id,
+                    "kind": "teammate_projection",
+                },
+            )
+        self._set_projection(
+            snapshot,
+            task_id=task_id,
+            task_status=TaskStatus.RUNNING if task_id is not None else None,
+            progress_status="stopping",
+            latest_notification=f"Teammate '{teammate_id}' is stopping",
+        )
+        return snapshot
+
+    async def complete_shutdown(
+        self,
+        *,
+        team_id: str,
+        teammate_id: str,
+        workflow_id: str,
+    ) -> TeammateStateSnapshot | None:
+        snapshot = self.snapshot(team_id, teammate_id)
+        if snapshot is None:
+            return None
+        if snapshot.shutdown_workflow_id != workflow_id:
+            return snapshot
+        if self.workflow_service is not None:
+            current = self.workflow_service.get(workflow_id)
+            if current is not None and not current.terminal:
+                if current.status is TeamWorkflowStatus.PENDING:
+                    await self.workflow_service.acknowledge_shutdown(
+                        workflow_id,
+                        actor_id=teammate_id,
+                        payload={"teammate_id": teammate_id},
+                    )
+                await self.workflow_service.complete_shutdown(
+                    workflow_id,
+                    actor_id=teammate_id,
+                    payload={"teammate_id": teammate_id},
+                )
+        snapshot = snapshot.stopped()
+        self._write_snapshot(snapshot)
+        projection = self._projections.get((team_id, teammate_id))
+        task_id = projection.task_id if projection is not None else None
+        self._set_projection(
+            snapshot,
+            task_id=task_id,
+            task_status=projection.task_status if projection is not None else None,
+            progress_status="stopped",
+            latest_notification=f"Teammate '{teammate_id}' stopped",
+        )
+        return snapshot
 
     async def remove_teammate(
         self,
@@ -760,7 +945,9 @@ class PersistentTeammateOrchestrator:
             snapshot,
             task_id=task_id,
             task_status=TaskStatus.RUNNING,
-            progress_status="active",
+            progress_status=(
+                "stopping" if snapshot.state == TeammateLifecycleState.STOPPING else "active"
+            ),
         )
 
     async def _active_run_linked(
@@ -893,7 +1080,12 @@ class PersistentTeammateOrchestrator:
         permission_id = snapshot.waiting_permission_id
         if permission_id is None:
             return False
-        return (snapshot.team_id, snapshot.teammate_id, permission_id) in self._live_permission_waits
+        if (snapshot.team_id, snapshot.teammate_id, permission_id) in self._live_permission_waits:
+            return True
+        workflow_service = self.workflow_service
+        if workflow_service is None:
+            return False
+        return workflow_service.is_pending(permission_id)
 
     def _restore_registration(self, snapshot: TeammateStateSnapshot) -> None:
         if snapshot.agent_name is None or snapshot.session_id is None or snapshot.working_directory is None:
@@ -949,6 +1141,7 @@ class PersistentTeammateOrchestrator:
             current_run_id=snapshot.current_run_id,
             current_message_id=snapshot.current_message_id,
             waiting_permission_id=snapshot.waiting_permission_id,
+            shutdown_workflow_id=snapshot.shutdown_workflow_id,
             progress_status=progress_status,
             latest_notification=latest_notification,
             metadata={

@@ -29,6 +29,7 @@ from ..task_lists import (
     task_list_snapshot_to_dict,
 )
 from ..team_control_plane import TeamControlError
+from ..team_workflows import TeamWorkflowError, workflow_record_to_payload
 from ..tool_runtime import ToolCallResult, ToolCallStatus, ToolContext
 
 _EPHEMERAL_TASK_LIST_SERVICES: dict[tuple[str, str], DefaultTaskListService] = {}
@@ -474,6 +475,39 @@ async def team_delete_tool(_: dict[str, Any], context: ToolContext) -> dict[str,
     except TeamControlError as exc:
         return _team_error_result(exc)
     return {"team_id": team.team_id, "deleted": True}
+
+
+def validate_team_respond_tool(tool_input: dict[str, Any], _: ToolContext) -> ValidationOutcome:
+    workflow_id = _normalize_optional_string(tool_input.get("workflow_id"))
+    action = _normalize_optional_string(tool_input.get("action"))
+    if workflow_id is None:
+        return ValidationOutcome(False, "workflow_id must be non-empty")
+    if action is None:
+        return ValidationOutcome(False, "action must be non-empty")
+    normalized: dict[str, Any] = {"workflow_id": workflow_id, "action": action}
+    payload = tool_input.get("payload")
+    if payload is not None:
+        if not isinstance(payload, dict):
+            return ValidationOutcome(False, "payload must be an object")
+        normalized["payload"] = payload
+    return ValidationOutcome(True, updated_input=normalized)
+
+
+async def team_respond_tool(tool_input: dict[str, Any], context: ToolContext) -> dict[str, Any] | ExecutionResult[dict[str, Any]]:
+    workflows = _team_workflow_service(context)
+    if workflows is None:
+        return _structured_error("unavailable", "Runtime team workflow service is not configured")
+    try:
+        record = await workflows.respond_model(
+            session_id=context.session_id,
+            extensions=context.private_context.extensions,
+            workflow_id=tool_input["workflow_id"],
+            action=tool_input["action"],
+            payload=tool_input.get("payload"),
+        )
+    except TeamWorkflowError as exc:
+        return _structured_error(exc.code, str(exc), **exc.details)
+    return workflow_record_to_payload(record)
 
 
 async def skill_tool(tool_input: dict[str, Any], context: ToolContext) -> Any:
@@ -1032,6 +1066,12 @@ def _team_message_bus(context: ToolContext):
     if context.runtime_services is None:
         return None
     return getattr(context.runtime_services, "team_message_bus", None)
+
+
+def _team_workflow_service(context: ToolContext):
+    if context.runtime_services is None:
+        return None
+    return getattr(context.runtime_services, "team_workflows", None)
 
 
 def _team_member_execution_defaults(context: ToolContext, tool_input: dict[str, Any]) -> dict[str, Any]:

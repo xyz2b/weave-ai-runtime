@@ -315,6 +315,14 @@ class BoundHostRuntime:
         self._bind_host()
         return await self.runtime.stop_job(*args, **kwargs)
 
+    async def list_team_workflows(self, *args: Any, **kwargs: Any) -> Any:
+        self._bind_host()
+        return await self.runtime.list_team_workflows(*args, **kwargs)
+
+    async def respond_team_workflow(self, *args: Any, **kwargs: Any) -> Any:
+        self._bind_host()
+        return await self.runtime.respond_team_workflow(*args, **kwargs)
+
     def bind_hook_callback(self, name: str, handler: Any) -> None:
         self._bind_host()
         self.services.hook_bus.bind_callback(name, handler)
