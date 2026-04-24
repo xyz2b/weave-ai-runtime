@@ -619,7 +619,7 @@ def builtin_tools() -> tuple[ToolDefinition, ...]:
                     "metadata": {"type": "object"},
                 },
                 "required": ["task_id"],
-                "additionalProperties": True,
+                "additionalProperties": False,
             },
             semantics=_static_semantics(
                 read_only=False,

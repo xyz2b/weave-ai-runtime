@@ -57,6 +57,7 @@ from ..task_discipline import TaskDisciplineSidecar
 from ..task_lists import (
     DefaultTaskListService,
     FileTaskListStore,
+    TaskDisciplinePolicy,
     TaskListError,
     coerce_private_context,
     task_list_entry_to_dict,
@@ -476,6 +477,10 @@ class RuntimeAssembly:
                 resolved_list_id,
                 task_id,
                 patch=patch,
+                strict_single_in_progress=self._task_discipline_policy(
+                    private_context=private_context,
+                    runtime_context=runtime_context,
+                ).strict_single_in_progress,
             )
         except TaskListError as exc:
             return _task_list_error_result(exc)
@@ -510,6 +515,10 @@ class RuntimeAssembly:
                 owner,
                 set_in_progress=set_in_progress,
                 enforce_owner_busy=enforce_owner_busy,
+                strict_single_in_progress=self._task_discipline_policy(
+                    private_context=private_context,
+                    runtime_context=runtime_context,
+                ).strict_single_in_progress,
             )
         except TaskListError as exc:
             return _task_list_error_result(exc)
@@ -570,6 +579,10 @@ class RuntimeAssembly:
                 owner,
                 set_in_progress=set_in_progress,
                 enforce_owner_busy=enforce_owner_busy,
+                strict_single_in_progress=self._task_discipline_policy(
+                    private_context=private_context,
+                    runtime_context=runtime_context,
+                ).strict_single_in_progress,
             )
         except TaskListError as exc:
             return _task_list_error_result(exc)
@@ -1103,6 +1116,20 @@ class RuntimeAssembly:
         if task is None:
             raise ValueError(f"Task '{task_id}' was not found in task list '{list_id}'")
         return task_list_entry_to_dict(task)
+
+    def _task_discipline_policy(
+        self,
+        *,
+        private_context: RuntimePrivateContext | dict[str, object] | None = None,
+        runtime_context: dict[str, object] | None = None,
+    ) -> TaskDisciplinePolicy:
+        runtime_metadata: dict[str, Any] = dict(getattr(self.services, "metadata", {}) or {})
+        if runtime_context:
+            runtime_metadata.update(runtime_context)
+        return TaskDisciplinePolicy.resolve(
+            private_context=_merged_private_context(private_context, runtime_context),
+            runtime_metadata=runtime_metadata or None,
+        )
 
 
 def _discover_dynamic_skill_root_records(

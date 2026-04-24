@@ -27,7 +27,7 @@ from runtime.task_lists import (
     TaskReadinessState,
 )
 from runtime.tasking import TaskManager, TaskStatus
-from runtime.tool_runtime import ToolCall, ToolCallStatus, ToolContext, ToolScheduler
+from runtime.tool_runtime import ToolCall, ToolCallStatus, ToolContext, ToolScheduler, validate_input_schema
 
 
 def _build_tool_runtime(
@@ -341,6 +341,21 @@ def test_file_task_list_store_uses_atomic_replace_and_ignores_interrupted_temp_f
     assert len(snapshots) == 1
 
 
+def test_task_update_schema_rejects_orchestration_fields() -> None:
+    task_update_schema = next(definition.input_schema for definition in builtin_tools() if definition.name == "task_update")
+
+    assert validate_input_schema(task_update_schema, {"task_id": "task-1", "status": "completed"}) == {
+        "task_id": "task-1",
+        "status": "completed",
+    }
+
+    with pytest.raises(ValueError, match="additional properties are not allowed"):
+        validate_input_schema(task_update_schema, {"task_id": "task-1", "owner": "planner"})
+
+    with pytest.raises(ValueError, match="additional properties are not allowed"):
+        validate_input_schema(task_update_schema, {"task_id": "task-1", "blocked_by": ["task-0"]})
+
+
 def test_task_tools_surface_structured_errors_and_strict_validation(tmp_path: Path) -> None:
     task_lists = DefaultTaskListService(store=FileTaskListStore(tmp_path / ".runtime" / "task_lists"))
     task_discipline = TaskDisciplineSidecar(task_lists=task_lists)
@@ -381,9 +396,6 @@ def test_task_tools_surface_structured_errors_and_strict_validation(tmp_path: Pa
     missing_task = asyncio.run(
         scheduler.run([ToolCall("6", "task_get", {"task_id": "missing-task"})], context)
     )[0]
-    invalid_owner_update = asyncio.run(
-        scheduler.run([ToolCall("7", "task_update", {"task_id": first_task_id, "owner": "planner"})], context)
-    )[0]
 
     assert update_first.status == ToolCallStatus.SUCCESS
     assert update_second.status == ToolCallStatus.ERROR
@@ -393,9 +405,6 @@ def test_task_tools_surface_structured_errors_and_strict_validation(tmp_path: Pa
     assert empty_patch.metadata["category"] == "invalid_request"
     assert missing_task.status == ToolCallStatus.ERROR
     assert missing_task.metadata["category"] == "not_found"
-    assert invalid_owner_update.status == ToolCallStatus.ERROR
-    assert invalid_owner_update.metadata["category"] == "invalid_request"
-    assert "task_claim" in invalid_owner_update.output["error"]["message"]
 
 
 def test_task_retirement_tools_surface_lifecycle_and_archived_visibility(tmp_path: Path) -> None:
@@ -446,26 +455,23 @@ def test_task_retirement_tools_surface_lifecycle_and_archived_visibility(tmp_pat
     archived_claim = asyncio.run(
         scheduler.run([ToolCall("12", "task_claim", {"task_id": blocker_task_id, "owner": "planner"})], context)
     )[0]
-    invalid_owner_update = asyncio.run(
-        scheduler.run([ToolCall("13", "task_update", {"task_id": dependent_task_id, "owner": "planner"})], context)
-    )[0]
     not_archived_unarchive = asyncio.run(
-        scheduler.run([ToolCall("14", "task_unarchive", {"task_id": pending_task_id})], context)
+        scheduler.run([ToolCall("13", "task_unarchive", {"task_id": pending_task_id})], context)
     )[0]
     delete_requires_archived = asyncio.run(
-        scheduler.run([ToolCall("15", "task_delete", {"task_id": dependent_task_id})], context)
+        scheduler.run([ToolCall("14", "task_delete", {"task_id": dependent_task_id})], context)
     )[0]
     unarchived = asyncio.run(
-        scheduler.run([ToolCall("16", "task_unarchive", {"task_id": blocker_task_id})], context)
+        scheduler.run([ToolCall("15", "task_unarchive", {"task_id": blocker_task_id})], context)
     )[0]
     rearchived = asyncio.run(
-        scheduler.run([ToolCall("17", "task_archive", {"task_id": blocker_task_id})], context)
+        scheduler.run([ToolCall("16", "task_archive", {"task_id": blocker_task_id})], context)
     )[0]
     deleted = asyncio.run(
-        scheduler.run([ToolCall("18", "task_delete", {"task_id": blocker_task_id})], context)
+        scheduler.run([ToolCall("17", "task_delete", {"task_id": blocker_task_id})], context)
     )[0]
     after_delete = asyncio.run(
-        scheduler.run([ToolCall("19", "task_list", {"include_archived": True})], context)
+        scheduler.run([ToolCall("18", "task_list", {"include_archived": True})], context)
     )[0]
 
     dependent_default = next(task for task in default_list.output["tasks"] if task["task_id"] == dependent_task_id)
@@ -487,9 +493,6 @@ def test_task_retirement_tools_surface_lifecycle_and_archived_visibility(tmp_pat
     assert blocker_task_id not in archived_list.output["completed_task_ids"]
     assert archived_claim.status == ToolCallStatus.ERROR
     assert archived_claim.output["error"]["code"] == "archived_task_immutable"
-    assert invalid_owner_update.status == ToolCallStatus.ERROR
-    assert invalid_owner_update.output["error"]["code"] == "invalid_request"
-    assert "task_claim" in invalid_owner_update.output["error"]["message"]
     assert not_archived_unarchive.output["error"]["code"] == "not_archived"
     assert delete_requires_archived.output["error"]["code"] == "delete_requires_archived"
     assert unarchived.output["task"]["is_archived"] is False
@@ -815,6 +818,50 @@ def test_bound_host_runtime_exposes_task_mutations_and_archived_visibility(tmp_p
         any(task["task_id"] == archived_task_id and task["is_archived"] for task in snapshot["tasks"])
         for snapshot in observed_archived
     )
+
+
+def test_bound_host_runtime_respects_strict_single_in_progress_policy(tmp_path: Path) -> None:
+    runtime = assemble_runtime(RuntimeConfig.for_project(tmp_path))
+    bound = runtime.bind_host(NullHostAdapter())
+    policy = {"task_discipline": {"strict_single_in_progress": True}}
+
+    async def scenario():
+        first = await bound.create_task(session_id="session-host-strict", subject="First task")
+        second = await bound.create_task(session_id="session-host-strict", subject="Second task")
+        third = await bound.create_task(session_id="session-host-strict", subject="Third task")
+
+        updated_first = await bound.update_task(
+            first["task"]["task_id"],
+            session_id="session-host-strict",
+            status="in_progress",
+            runtime_context=policy,
+        )
+        updated_second = await bound.update_task(
+            second["task"]["task_id"],
+            session_id="session-host-strict",
+            status="in_progress",
+            runtime_context=policy,
+        )
+        claimed_third = await bound.claim_task(
+            third["task"]["task_id"],
+            session_id="session-host-strict",
+            owner="planner",
+            runtime_context=policy,
+        )
+        assigned_next = await bound.assign_next_task(
+            session_id="session-host-strict",
+            owner="planner",
+            runtime_context=policy,
+        )
+        return updated_first, updated_second, claimed_third, assigned_next
+
+    updated_first, updated_second, claimed_third, assigned_next = asyncio.run(scenario())
+
+    assert updated_first["task"]["status"] == "in_progress"
+    for result in (updated_second, claimed_third, assigned_next):
+        assert isinstance(result, ExecutionResult)
+        assert result.status == ExecutionStatus.FAILED
+        assert result.metadata["category"] == "multiple_in_progress"
 
 
 def test_bound_host_runtime_exposes_task_list_watch_and_job_queries(tmp_path: Path) -> None:
