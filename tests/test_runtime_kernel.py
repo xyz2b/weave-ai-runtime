@@ -3,9 +3,19 @@ from io import BytesIO
 from pathlib import Path
 from urllib.error import HTTPError
 
+from runtime.builtins import load_builtin_pack
 from runtime.context_window import ModelContextWindowProfile, RouteContextWindowPolicy
 from runtime.contracts import MessageRole
-from runtime.hooks import RuntimeHookPhase
+from runtime.hooks import (
+    HookActivationState,
+    HookHandlerKind,
+    HookHandlerManifest,
+    HookInventoryQuery,
+    HookRegistrationRequest,
+    HookRegistrationScope,
+    HookScopeLifetime,
+    RuntimeHookPhase,
+)
 from runtime.openai_client import OPENAI_PROVIDER_NAME, OPENAI_ROUTE_NAME, _http_error_response
 from runtime.definitions import (
     AgentDefinition,
@@ -20,10 +30,12 @@ from runtime.runtime_kernel import (
     ModelProviderBinding,
     ModelRouteBinding,
     RuntimeConfig,
+    RuntimeDistribution,
     assemble_host_runtime,
     assemble_runtime,
     build_runtime_kernel,
 )
+from runtime.runtime_services import NoopMemoryService
 from runtime.turn_engine import (
     ModelRequest,
     ModelStreamEvent,
@@ -116,6 +128,139 @@ project skill body
     assert kernel.skill_registry.get("project-skill") is not None
     assert kernel.skill_registry.get("debug") is None
     assert any(diag.code == "definition_skipped" for diag in kernel.diagnostics)
+
+
+def test_distribution_profiles_publish_expected_builtin_ownership(tmp_path: Path) -> None:
+    core_config = RuntimeConfig(working_directory=tmp_path, distribution=RuntimeDistribution.CORE)
+    default_config = RuntimeConfig(working_directory=tmp_path, distribution=RuntimeDistribution.DEFAULT)
+    full_config = RuntimeConfig(working_directory=tmp_path, distribution=RuntimeDistribution.FULL)
+
+    core_pack = load_builtin_pack(core_config.selected_first_party_packages())
+    default_pack = load_builtin_pack(default_config.selected_first_party_packages())
+    full_pack = load_builtin_pack(full_config.selected_first_party_packages())
+
+    assert core_config.selected_first_party_packages() == ("runtime-core",)
+    assert default_config.selected_first_party_packages() == (
+        "runtime-core",
+        "runtime-memory",
+        "runtime-team",
+    )
+    assert full_config.selected_first_party_packages() == (
+        "runtime-core",
+        "runtime-memory",
+        "runtime-team",
+        "runtime-compaction",
+        "runtime-isolation",
+        "runtime-openai",
+        "runtime-hosts-reference",
+        "runtime-stores-file",
+        "runtime-builtin-workflows",
+        "runtime-devtools",
+    )
+
+    core_tool_names = {tool.name for tool in core_pack.tools}
+    core_agent_names = {agent.name for agent in core_pack.agents}
+    core_skill_names = {skill.name for skill in core_pack.skills}
+    assert "read" not in core_tool_names
+    assert "team_spawn" not in core_tool_names
+    assert core_agent_names == {"general-purpose", "main-router"}
+    assert core_skill_names == set()
+    assert core_pack.agents[0].metadata["builtin_owner_role"] == "core"
+
+    default_tool_names = {tool.name for tool in default_pack.tools}
+    default_agent_names = {agent.name for agent in default_pack.agents}
+    default_skill_names = {skill.name for skill in default_pack.skills}
+    assert "team_spawn" in default_tool_names
+    assert "read" not in default_tool_names
+    assert default_agent_names == {"general-purpose", "main-router"}
+    assert default_skill_names == {"remember"}
+    assert next(tool for tool in default_pack.tools if tool.name == "team_spawn").metadata["builtin_owner"] == "runtime-team"
+
+    full_tool_names = {tool.name for tool in full_pack.tools}
+    full_agent_names = {agent.name for agent in full_pack.agents}
+    full_skill_names = {skill.name for skill in full_pack.skills}
+    assert "read" in full_tool_names
+    assert "verification" in full_agent_names
+    assert "verify" in full_skill_names
+    assert next(tool for tool in full_pack.tools if tool.name == "read").metadata["builtin_owner"] == "runtime-devtools"
+
+
+def test_runtime_core_distribution_remains_runnable_without_memory_or_devtools(tmp_path: Path) -> None:
+    model_client = FakeModelClient(
+        [
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-core"}),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "core reply"}),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+            ]
+        ]
+    )
+    replacement = AgentDefinition(
+        name="main-router",
+        description="core replacement router",
+        prompt="route from core",
+        origin=DefinitionOrigin(DefinitionSource.BUNDLED, path=Path("<core>")),
+    )
+
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            distribution=RuntimeDistribution.CORE,
+            model_client=model_client,
+            builtins=BuiltinPackConfig(agent_replacements={"main-router": replacement}),
+        )
+    )
+
+    produced = asyncio.run(runtime.run_prompt("Hello core", session_id="session-core"))
+
+    assert produced[-1].text == "core reply"
+    assert runtime.kernel.distribution == RuntimeDistribution.CORE.value
+    assert runtime.kernel.first_party_packages == ("runtime-core",)
+    assert runtime.kernel.agent_registry.get("main-router").description == "core replacement router"
+    assert runtime.kernel.tool_registry.get("read") is None
+    assert runtime.kernel.tool_registry.get("team_spawn") is None
+    assert runtime.kernel.skill_registry.get("remember") is None
+    assert isinstance(runtime.services.memory, NoopMemoryService)
+
+
+def test_runtime_core_distribution_supports_stable_hooks_and_compatibility_diagnostics(
+    tmp_path: Path,
+) -> None:
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            distribution=RuntimeDistribution.CORE,
+        )
+    )
+
+    handle = runtime.register_hook(
+        HookRegistrationRequest(
+            phase=RuntimeHookPhase.PRE_TOOL_USE.value,
+            scope=HookRegistrationScope(
+                lifetime=HookScopeLifetime.SESSION_TEMPLATE,
+                session_id="session-core",
+            ),
+            handler=HookHandlerManifest(
+                kind=HookHandlerKind.CALLBACK,
+                callback=lambda _payload: None,
+            ),
+        )
+    )
+    runtime.services.hook_bus.materialize_session("session-core")
+    inventory = runtime.list_hooks(
+        HookInventoryQuery(
+            session_id="session-core",
+            phase=RuntimeHookPhase.PRE_TOOL_USE.value,
+            activation_state=HookActivationState.ACTIVE,
+        )
+    )
+
+    assert handle.activation_state == HookActivationState.PENDING_ACTIVATION
+    assert inventory[0].phase == RuntimeHookPhase.PRE_TOOL_USE.value
+    assert runtime.services.metadata["compatibility_surfaces"] == {
+        "TaskManager": "compatibility-only",
+        "runtime_context": "compatibility-only",
+    }
 
 
 def test_host_assembly_entrypoint_binds_host(tmp_path: Path) -> None:

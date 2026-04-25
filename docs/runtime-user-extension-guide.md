@@ -408,41 +408,46 @@ config.metadata.setdefault(
 
 `HookBus` 是稳定的事件型扩展总线。
 
-公开 phase 包括：
+stable public phase 包括：
 
 - `SessionStart`
-- `UserPromptSubmit`
+- `SessionEnd`
 - `PreToolUse`
 - `PostToolUse`
 - `PostToolUseFailure`
+- `PreModelRequest`
+- `PostModelResponse`
 - `Stop`
-- `SubagentStop`
-- `SessionEnd`
 - `Notification`
 - `Elicitation`
 - `ElicitationResult`
+
+advanced public phase 包括：
+
+- `UserPromptSubmit`
+- `SubagentStop`
 - `PreCompact`
 - `PostCompact`
 - `PreContextAssemble`
 - `PostContextAssemble`
-- `PreModelRequest`
-- `PostModelResponse`
 - `RecoveryDecision`
 
 可注册来源包括：
 
-- runtime 级模板 hook
-- host API hook
-- session API hook
-- turn API hook
-- skill hooks
+- stable public
+  - runtime 级模板 hook
+  - host API hook
+  - session API hook
+  - skill hooks
+- advanced
+  - turn API hook
 
 用户视角怎么扩：
 
 1. 想给所有 session 默认挂一个 hook，用 `runtime.register_hook(...)` 或 `RuntimeConfig(hooks=...)`。
 2. 想给宿主统一挂策略，用 `bound.register_hook(...)`。
 3. 想只影响当前会话，用 `session.register_hook(...)`。
-4. 想只影响当前 turn，用 `session.register_turn_hook(...)`。
+4. 想只影响当前 turn，用 `session.register_turn_hook(...)`，但把它视为 advanced surface。
 5. 想把 hook 随 skill 一起打包，用 skill frontmatter 的 `hooks`。
 
 ### 3.4 Sidecar / Context Contribution：请求组装前注入上下文

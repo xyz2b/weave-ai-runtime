@@ -22,6 +22,12 @@ from ..definitions import (
 )
 from ..hosts.base import HostFactory
 from ..jobs import JobExecutorBinding
+from ..package_profiles import (
+    DEFAULT_RUNTIME_DISTRIBUTION,
+    RuntimeDistribution,
+    normalize_runtime_distribution,
+    resolve_first_party_package_names,
+)
 from ..teammate_orchestration.models import TeammateOrchestrationConfig
 from ..turn_engine.models import ModelClient, NormalizedModelCapabilities, TranscriptStore
 
@@ -221,6 +227,9 @@ class RuntimeConfig:
     runtime_id: str = "default"
     working_directory: Path = field(default_factory=Path.cwd)
     discovery_sources: tuple[DefinitionSourcePaths, ...] = ()
+    distribution: RuntimeDistribution | str = DEFAULT_RUNTIME_DISTRIBUTION
+    enabled_packages: set[str] = field(default_factory=set)
+    disabled_packages: set[str] = field(default_factory=set)
     builtins: BuiltinPackConfig = field(default_factory=BuiltinPackConfig)
     hooks: Mapping[str, Any] = field(default_factory=dict)
     host_bindings: tuple[HostBinding, ...] = ()
@@ -252,3 +261,16 @@ class RuntimeConfig:
                 DefinitionSourcePaths(DefinitionSource.PROJECT, project_runtime_dir),
             ),
         )
+
+    def resolved_distribution(self) -> RuntimeDistribution:
+        return normalize_runtime_distribution(self.distribution)
+
+    def selected_first_party_packages(self) -> tuple[str, ...]:
+        return resolve_first_party_package_names(
+            distribution=self.resolved_distribution(),
+            enabled_packages=self.enabled_packages,
+            disabled_packages=self.disabled_packages,
+        )
+
+    def package_enabled(self, package_name: str) -> bool:
+        return package_name in self.selected_first_party_packages()

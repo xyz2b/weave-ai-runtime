@@ -5,6 +5,9 @@ from runtime.contracts import MessageRole
 from runtime.elicitation import ElicitationRequest
 from runtime.definitions import ToolDefinition
 from runtime.hooks import (
+    ADVANCED_HOOK_HANDLER_KINDS,
+    ADVANCED_HOOK_SOURCE_KINDS,
+    ADVANCED_PUBLIC_PHASE_CONTRACTS,
     HookActivationState,
     HookBus,
     HookDispatchTraceQuery,
@@ -18,6 +21,11 @@ from runtime.hooks import (
     PostToolUseFailurePayload,
     PreToolUsePayload,
     RuntimeHookPhase,
+    STABLE_PUBLIC_HOOK_HANDLER_KINDS,
+    STABLE_PUBLIC_HOOK_SOURCE_KINDS,
+    STABLE_PUBLIC_PHASE_CONTRACTS,
+    is_advanced_phase,
+    is_stable_public_phase,
 )
 from runtime.registries import ToolRegistry
 from runtime.runtime_kernel import RuntimeConfig, assemble_runtime
@@ -56,6 +64,56 @@ def test_public_phase_registry_rejects_internal_phase() -> None:
     assert handle.activation_state == HookActivationState.REJECTED
     assert inventory[0].activation_state == HookActivationState.REJECTED
     assert inventory[0].phase == "InternalOnlyPhase"
+
+
+def test_stable_and_advanced_hook_catalogs_are_published_separately() -> None:
+    assert set(STABLE_PUBLIC_PHASE_CONTRACTS) == {
+        "SessionStart",
+        "SessionEnd",
+        "PreToolUse",
+        "PostToolUse",
+        "PostToolUseFailure",
+        "PreModelRequest",
+        "PostModelResponse",
+        "Stop",
+        "Notification",
+        "Elicitation",
+        "ElicitationResult",
+    }
+    assert set(ADVANCED_PUBLIC_PHASE_CONTRACTS) == {
+        "UserPromptSubmit",
+        "SubagentStop",
+        "PreCompact",
+        "PostCompact",
+        "PreContextAssemble",
+        "PostContextAssemble",
+        "RecoveryDecision",
+    }
+    assert is_stable_public_phase("PreModelRequest") is True
+    assert is_advanced_phase("PreModelRequest") is False
+    assert is_stable_public_phase("UserPromptSubmit") is False
+    assert is_advanced_phase("UserPromptSubmit") is True
+
+
+def test_callback_is_the_only_stable_public_handler_and_turn_api_is_advanced() -> None:
+    assert STABLE_PUBLIC_HOOK_HANDLER_KINDS == (HookHandlerKind.CALLBACK,)
+    assert ADVANCED_HOOK_HANDLER_KINDS == (
+        HookHandlerKind.HTTP,
+        HookHandlerKind.COMMAND,
+        HookHandlerKind.AGENT,
+        HookHandlerKind.PROMPT,
+    )
+    assert STABLE_PUBLIC_HOOK_SOURCE_KINDS == (
+        HookSourceKind.RUNTIME_CONFIG,
+        HookSourceKind.HOST_API,
+        HookSourceKind.DEFINITION,
+        HookSourceKind.SESSION_API,
+    )
+    assert ADVANCED_HOOK_SOURCE_KINDS == (HookSourceKind.TURN_API,)
+    assert HookHandlerKind.CALLBACK.support_level.value == "stable_public"
+    assert HookHandlerKind.HTTP.support_level.value == "advanced"
+    assert HookSourceKind.SESSION_API.support_level.value == "stable_public"
+    assert HookSourceKind.TURN_API.support_level.value == "advanced"
 
 
 def test_invalid_effect_contracts_and_unresolved_callbacks_are_rejected_before_activation() -> None:

@@ -52,7 +52,7 @@ from ..openai_client import (
     bundled_openai_route_binding,
 )
 from ..registries import AgentRegistry, DefinitionDiscovery, InvocationRegistry, SkillRegistry, ToolRegistry
-from ..runtime_services import DefaultTranscriptService, RuntimeServices
+from ..runtime_services import DefaultTranscriptService, NoopMemoryService, RuntimeServices
 from ..task_discipline import TaskDisciplineSidecar
 from ..task_lists import (
     DefaultTaskListService,
@@ -94,6 +94,8 @@ class RuntimeKernel:
     agent_registry: AgentRegistry
     skill_registry: SkillRegistry
     invocation_registry: InvocationRegistry
+    distribution: str
+    first_party_packages: tuple[str, ...] = ()
     diagnostics: tuple[Diagnostic, ...] = ()
     model_client: Any = None
     transcript_store: Any = None
@@ -1312,6 +1314,7 @@ def _coerce_definition_source(value: Any) -> DefinitionSource:
 
 def build_runtime_kernel(config: RuntimeConfig) -> RuntimeKernel:
     config = _with_bundled_openai_baseline(config)
+    selected_packages = config.selected_first_party_packages()
     tool_registry = ToolRegistry()
     agent_registry = AgentRegistry()
     skill_registry = SkillRegistry()
@@ -1322,7 +1325,7 @@ def build_runtime_kernel(config: RuntimeConfig) -> RuntimeKernel:
     )
     diagnostics: list[Diagnostic] = []
 
-    builtin_pack = load_builtin_pack()
+    builtin_pack = load_builtin_pack(selected_packages)
     _register_builtin_tools(tool_registry, config, builtin_pack.tools, diagnostics)
     _register_builtin_agents(agent_registry, config, builtin_pack.agents, diagnostics)
     _register_builtin_skills(skill_registry, config, builtin_pack.skills, diagnostics)
@@ -1349,6 +1352,8 @@ def build_runtime_kernel(config: RuntimeConfig) -> RuntimeKernel:
         agent_registry=agent_registry,
         skill_registry=skill_registry,
         invocation_registry=invocation_registry,
+        distribution=config.resolved_distribution().value,
+        first_party_packages=selected_packages,
         diagnostics=tuple(diagnostics),
         model_client=_default_model_client(config),
         transcript_store=config.transcript_store,
@@ -1482,7 +1487,11 @@ def _assemble_runtime_stack(kernel: RuntimeKernel) -> RuntimeAssembly:
         team_message_bus=team_message_bus,
         team_workflows=team_workflows,
         system_prompt=kernel.config.system_prompt,
-        metadata=dict(kernel.config.metadata),
+        metadata={
+            **dict(kernel.config.metadata),
+            "distribution": kernel.distribution,
+            "first_party_packages": list(kernel.first_party_packages),
+        },
     )
     _register_job_executors(kernel=kernel, services=services, agent_runtime=agent_runtime)
     _schedule_job_recovery(services.job_service)
@@ -1509,6 +1518,12 @@ def _build_runtime_services(kernel: RuntimeKernel) -> RuntimeServices:
     )
     metadata = dict(kernel.config.metadata)
     metadata["runtime_id"] = kernel.config.runtime_id
+    metadata["distribution"] = kernel.distribution
+    metadata["first_party_packages"] = list(kernel.first_party_packages)
+    metadata["compatibility_surfaces"] = {
+        "TaskManager": "compatibility-only",
+        "runtime_context": "compatibility-only",
+    }
     metadata.setdefault(
         "task_discipline",
         {
@@ -1521,9 +1536,13 @@ def _build_runtime_services(kernel: RuntimeKernel) -> RuntimeServices:
     metadata.setdefault("delegation", default_delegation_policy_metadata())
     services = RuntimeServices(
         transcript=DefaultTranscriptService(transcript_store),
-        memory=MemoryManagerService(
-            project_root=kernel.config.working_directory,
-            memory_config=kernel.config.memory_config,
+        memory=(
+            MemoryManagerService(
+                project_root=kernel.config.working_directory,
+                memory_config=kernel.config.memory_config,
+            )
+            if "runtime-memory" in kernel.first_party_packages
+            else NoopMemoryService()
         ),
         jobs=job_service,
         task_lists=task_list_service,

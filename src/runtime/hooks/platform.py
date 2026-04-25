@@ -17,6 +17,12 @@ class HookPhaseTier(StrEnum):
     INTERNAL_ONLY = "internal_only"
 
 
+class HookSupportLevel(StrEnum):
+    STABLE_PUBLIC = "stable_public"
+    ADVANCED = "advanced"
+    INTERNAL = "internal"
+
+
 class HookEffectClass(StrEnum):
     OBSERVE = "observe"
     TRANSFORM = "transform"
@@ -35,6 +41,12 @@ class HookHandlerKind(StrEnum):
     def external(self) -> bool:
         return self is not HookHandlerKind.CALLBACK
 
+    @property
+    def support_level(self) -> HookSupportLevel:
+        if self is HookHandlerKind.CALLBACK:
+            return HookSupportLevel.STABLE_PUBLIC
+        return HookSupportLevel.ADVANCED
+
 
 class HookSourceKind(StrEnum):
     RUNTIME_CONFIG = "runtime_config"
@@ -43,6 +55,14 @@ class HookSourceKind(StrEnum):
     SESSION_API = "session_api"
     TURN_API = "turn_api"
     COMPAT = "compat"
+
+    @property
+    def support_level(self) -> HookSupportLevel:
+        if self in STABLE_PUBLIC_HOOK_SOURCE_KINDS:
+            return HookSupportLevel.STABLE_PUBLIC
+        if self in ADVANCED_HOOK_SOURCE_KINDS:
+            return HookSupportLevel.ADVANCED
+        return HookSupportLevel.INTERNAL
 
 
 class HookScopeLifetime(StrEnum):
@@ -299,6 +319,7 @@ class HookDispatchTrace:
 class HookPhaseContract:
     phase: str
     tier: HookPhaseTier
+    support_level: HookSupportLevel
     minimum_payload_fields: tuple[str, ...]
     effect_classes: tuple[HookEffectClass, ...]
     effect_fields: tuple[str, ...]
@@ -307,6 +328,7 @@ class HookPhaseContract:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "minimum_payload_fields", tuple(str(item) for item in self.minimum_payload_fields))
+        object.__setattr__(self, "support_level", HookSupportLevel(self.support_level))
         object.__setattr__(
             self,
             "effect_classes",
@@ -319,6 +341,7 @@ _PUBLIC_PHASE_CONTRACTS: tuple[HookPhaseContract, ...] = (
     HookPhaseContract(
         phase="SessionStart",
         tier=HookPhaseTier.KERNEL_PUBLIC,
+        support_level=HookSupportLevel.STABLE_PUBLIC,
         minimum_payload_fields=("session_id", "config_snapshot"),
         effect_classes=(HookEffectClass.OBSERVE, HookEffectClass.SIDECAR),
         effect_fields=("additional_context", "notifications", "metadata"),
@@ -327,6 +350,7 @@ _PUBLIC_PHASE_CONTRACTS: tuple[HookPhaseContract, ...] = (
     HookPhaseContract(
         phase="UserPromptSubmit",
         tier=HookPhaseTier.KERNEL_PUBLIC,
+        support_level=HookSupportLevel.ADVANCED,
         minimum_payload_fields=("session_id", "turn_id", "prompt", "attachments"),
         effect_classes=(HookEffectClass.OBSERVE, HookEffectClass.TRANSFORM, HookEffectClass.SIDECAR),
         effect_fields=("additional_context", "notifications", "metadata"),
@@ -335,6 +359,7 @@ _PUBLIC_PHASE_CONTRACTS: tuple[HookPhaseContract, ...] = (
     HookPhaseContract(
         phase="PreToolUse",
         tier=HookPhaseTier.KERNEL_PUBLIC,
+        support_level=HookSupportLevel.STABLE_PUBLIC,
         minimum_payload_fields=("session_id", "turn_id", "tool_name", "tool_input"),
         effect_classes=(
             HookEffectClass.OBSERVE,
@@ -349,6 +374,7 @@ _PUBLIC_PHASE_CONTRACTS: tuple[HookPhaseContract, ...] = (
     HookPhaseContract(
         phase="PostToolUse",
         tier=HookPhaseTier.KERNEL_PUBLIC,
+        support_level=HookSupportLevel.STABLE_PUBLIC,
         minimum_payload_fields=("session_id", "turn_id", "tool_name", "tool_input", "tool_result"),
         effect_classes=(HookEffectClass.OBSERVE, HookEffectClass.DECIDE, HookEffectClass.SIDECAR),
         effect_fields=("continue_execution", "notifications", "metadata"),
@@ -358,6 +384,7 @@ _PUBLIC_PHASE_CONTRACTS: tuple[HookPhaseContract, ...] = (
     HookPhaseContract(
         phase="PostToolUseFailure",
         tier=HookPhaseTier.KERNEL_PUBLIC,
+        support_level=HookSupportLevel.STABLE_PUBLIC,
         minimum_payload_fields=("session_id", "turn_id", "tool_name", "tool_input", "error_message"),
         effect_classes=(HookEffectClass.OBSERVE, HookEffectClass.SIDECAR),
         effect_fields=("notifications", "metadata"),
@@ -366,6 +393,7 @@ _PUBLIC_PHASE_CONTRACTS: tuple[HookPhaseContract, ...] = (
     HookPhaseContract(
         phase="Stop",
         tier=HookPhaseTier.KERNEL_PUBLIC,
+        support_level=HookSupportLevel.STABLE_PUBLIC,
         minimum_payload_fields=("session_id", "turn_id", "reason"),
         effect_classes=(
             HookEffectClass.OBSERVE,
@@ -388,6 +416,7 @@ _PUBLIC_PHASE_CONTRACTS: tuple[HookPhaseContract, ...] = (
     HookPhaseContract(
         phase="SubagentStop",
         tier=HookPhaseTier.KERNEL_PUBLIC,
+        support_level=HookSupportLevel.ADVANCED,
         minimum_payload_fields=("session_id", "turn_id", "agent_name", "status"),
         effect_classes=(HookEffectClass.OBSERVE, HookEffectClass.SIDECAR),
         effect_fields=("notifications", "metadata"),
@@ -396,6 +425,7 @@ _PUBLIC_PHASE_CONTRACTS: tuple[HookPhaseContract, ...] = (
     HookPhaseContract(
         phase="SessionEnd",
         tier=HookPhaseTier.KERNEL_PUBLIC,
+        support_level=HookSupportLevel.STABLE_PUBLIC,
         minimum_payload_fields=("session_id", "final_status"),
         effect_classes=(HookEffectClass.OBSERVE, HookEffectClass.SIDECAR),
         effect_fields=("notifications", "metadata"),
@@ -404,6 +434,7 @@ _PUBLIC_PHASE_CONTRACTS: tuple[HookPhaseContract, ...] = (
     HookPhaseContract(
         phase="Notification",
         tier=HookPhaseTier.KERNEL_PUBLIC,
+        support_level=HookSupportLevel.STABLE_PUBLIC,
         minimum_payload_fields=("session_id", "message", "level"),
         effect_classes=(HookEffectClass.OBSERVE, HookEffectClass.SIDECAR),
         effect_fields=("notifications", "metadata"),
@@ -412,6 +443,7 @@ _PUBLIC_PHASE_CONTRACTS: tuple[HookPhaseContract, ...] = (
     HookPhaseContract(
         phase="Elicitation",
         tier=HookPhaseTier.KERNEL_PUBLIC,
+        support_level=HookSupportLevel.STABLE_PUBLIC,
         minimum_payload_fields=("session_id", "prompt", "kind"),
         effect_classes=(HookEffectClass.OBSERVE, HookEffectClass.DECIDE, HookEffectClass.SIDECAR),
         effect_fields=("elicitation_result", "notifications", "metadata"),
@@ -421,6 +453,7 @@ _PUBLIC_PHASE_CONTRACTS: tuple[HookPhaseContract, ...] = (
     HookPhaseContract(
         phase="ElicitationResult",
         tier=HookPhaseTier.KERNEL_PUBLIC,
+        support_level=HookSupportLevel.STABLE_PUBLIC,
         minimum_payload_fields=("session_id", "prompt", "response"),
         effect_classes=(HookEffectClass.OBSERVE, HookEffectClass.SIDECAR),
         effect_fields=("notifications", "metadata"),
@@ -429,6 +462,7 @@ _PUBLIC_PHASE_CONTRACTS: tuple[HookPhaseContract, ...] = (
     HookPhaseContract(
         phase="PreCompact",
         tier=HookPhaseTier.KERNEL_PUBLIC,
+        support_level=HookSupportLevel.ADVANCED,
         minimum_payload_fields=("session_id", "token_count"),
         effect_classes=(HookEffectClass.OBSERVE, HookEffectClass.SIDECAR),
         effect_fields=("notifications", "metadata"),
@@ -437,6 +471,7 @@ _PUBLIC_PHASE_CONTRACTS: tuple[HookPhaseContract, ...] = (
     HookPhaseContract(
         phase="PostCompact",
         tier=HookPhaseTier.KERNEL_PUBLIC,
+        support_level=HookSupportLevel.ADVANCED,
         minimum_payload_fields=("session_id", "summary_id"),
         effect_classes=(HookEffectClass.OBSERVE, HookEffectClass.SIDECAR),
         effect_fields=("notifications", "metadata"),
@@ -445,6 +480,7 @@ _PUBLIC_PHASE_CONTRACTS: tuple[HookPhaseContract, ...] = (
     HookPhaseContract(
         phase="PreContextAssemble",
         tier=HookPhaseTier.CONTROL_PLANE_PUBLIC,
+        support_level=HookSupportLevel.ADVANCED,
         minimum_payload_fields=(
             "session_id",
             "turn_id",
@@ -459,6 +495,7 @@ _PUBLIC_PHASE_CONTRACTS: tuple[HookPhaseContract, ...] = (
     HookPhaseContract(
         phase="PostContextAssemble",
         tier=HookPhaseTier.CONTROL_PLANE_PUBLIC,
+        support_level=HookSupportLevel.ADVANCED,
         minimum_payload_fields=(
             "session_id",
             "turn_id",
@@ -474,6 +511,7 @@ _PUBLIC_PHASE_CONTRACTS: tuple[HookPhaseContract, ...] = (
     HookPhaseContract(
         phase="PreModelRequest",
         tier=HookPhaseTier.CONTROL_PLANE_PUBLIC,
+        support_level=HookSupportLevel.STABLE_PUBLIC,
         minimum_payload_fields=(
             "session_id",
             "turn_id",
@@ -494,6 +532,7 @@ _PUBLIC_PHASE_CONTRACTS: tuple[HookPhaseContract, ...] = (
     HookPhaseContract(
         phase="PostModelResponse",
         tier=HookPhaseTier.CONTROL_PLANE_PUBLIC,
+        support_level=HookSupportLevel.STABLE_PUBLIC,
         minimum_payload_fields=(
             "session_id",
             "turn_id",
@@ -510,6 +549,7 @@ _PUBLIC_PHASE_CONTRACTS: tuple[HookPhaseContract, ...] = (
     HookPhaseContract(
         phase="RecoveryDecision",
         tier=HookPhaseTier.CONTROL_PLANE_PUBLIC,
+        support_level=HookSupportLevel.ADVANCED,
         minimum_payload_fields=(
             "session_id",
             "turn_id",
@@ -534,6 +574,37 @@ _PUBLIC_PHASE_CONTRACTS: tuple[HookPhaseContract, ...] = (
 PUBLIC_PHASE_CONTRACTS: dict[str, HookPhaseContract] = {
     contract.phase: contract for contract in _PUBLIC_PHASE_CONTRACTS
 }
+
+STABLE_PUBLIC_PHASE_CONTRACTS: dict[str, HookPhaseContract] = {
+    contract.phase: contract
+    for contract in _PUBLIC_PHASE_CONTRACTS
+    if contract.support_level == HookSupportLevel.STABLE_PUBLIC
+}
+
+ADVANCED_PUBLIC_PHASE_CONTRACTS: dict[str, HookPhaseContract] = {
+    contract.phase: contract
+    for contract in _PUBLIC_PHASE_CONTRACTS
+    if contract.support_level == HookSupportLevel.ADVANCED
+}
+
+
+STABLE_PUBLIC_HOOK_HANDLER_KINDS: tuple[HookHandlerKind, ...] = (HookHandlerKind.CALLBACK,)
+ADVANCED_HOOK_HANDLER_KINDS: tuple[HookHandlerKind, ...] = (
+    HookHandlerKind.HTTP,
+    HookHandlerKind.COMMAND,
+    HookHandlerKind.AGENT,
+    HookHandlerKind.PROMPT,
+)
+
+
+STABLE_PUBLIC_HOOK_SOURCE_KINDS: tuple[HookSourceKind, ...] = (
+    HookSourceKind.RUNTIME_CONFIG,
+    HookSourceKind.HOST_API,
+    HookSourceKind.DEFINITION,
+    HookSourceKind.SESSION_API,
+)
+ADVANCED_HOOK_SOURCE_KINDS: tuple[HookSourceKind, ...] = (HookSourceKind.TURN_API,)
+COMPATIBILITY_HOOK_SOURCE_KINDS: tuple[HookSourceKind, ...] = (HookSourceKind.COMPAT,)
 
 
 SOURCE_PRECEDENCE: dict[HookSourceKind, int] = {
@@ -565,6 +636,7 @@ def phase_contract_for(phase: str) -> HookPhaseContract:
         HookPhaseContract(
             phase=str(phase),
             tier=HookPhaseTier.INTERNAL_ONLY,
+            support_level=HookSupportLevel.INTERNAL,
             minimum_payload_fields=(),
             effect_classes=(),
             effect_fields=(),
@@ -578,7 +650,27 @@ def is_public_phase(phase: str) -> bool:
     return phase_contract_for(phase).tier is not HookPhaseTier.INTERNAL_ONLY
 
 
+def is_stable_public_phase(phase: str) -> bool:
+    return phase_contract_for(phase).support_level == HookSupportLevel.STABLE_PUBLIC
+
+
+def is_advanced_phase(phase: str) -> bool:
+    return phase_contract_for(phase).support_level == HookSupportLevel.ADVANCED
+
+
+def is_stable_public_hook_source(kind: HookSourceKind | str) -> bool:
+    return HookSourceKind(str(kind)) in STABLE_PUBLIC_HOOK_SOURCE_KINDS
+
+
+def is_advanced_hook_source(kind: HookSourceKind | str) -> bool:
+    return HookSourceKind(str(kind)) in ADVANCED_HOOK_SOURCE_KINDS
+
+
 __all__ = [
+    "ADVANCED_HOOK_HANDLER_KINDS",
+    "ADVANCED_HOOK_SOURCE_KINDS",
+    "ADVANCED_PUBLIC_PHASE_CONTRACTS",
+    "COMPATIBILITY_HOOK_SOURCE_KINDS",
     "HOOK_EFFECT_FIELDS",
     "HookActivationState",
     "HookCallback",
@@ -593,6 +685,7 @@ __all__ = [
     "HookInventoryQuery",
     "HookMatch",
     "HookPhaseContract",
+    "HookSupportLevel",
     "HookPhaseTier",
     "HookRegistrationHandle",
     "HookRegistrationRequest",
@@ -602,6 +695,13 @@ __all__ = [
     "HookTraceRegistration",
     "PUBLIC_PHASE_CONTRACTS",
     "SOURCE_PRECEDENCE",
+    "STABLE_PUBLIC_HOOK_HANDLER_KINDS",
+    "STABLE_PUBLIC_HOOK_SOURCE_KINDS",
+    "STABLE_PUBLIC_PHASE_CONTRACTS",
+    "is_advanced_hook_source",
+    "is_advanced_phase",
     "is_public_phase",
+    "is_stable_public_hook_source",
+    "is_stable_public_phase",
     "phase_contract_for",
 ]

@@ -19,16 +19,16 @@
 
 ## 1. `runtime-core`
 
-- [ ] 1.1 Introduce the package-role and distribution-profile model for `runtime-core`, official first-party packages, and the supported `runtime-default` / `runtime-full` distributions.
-- [ ] 1.2 Publish the first-party package taxonomy and dependency rules covering capability, mechanism, adapter, provider, and profile/workflow packages.
-- [ ] 1.3 Update public exports and runtime initialization paths so `runtime-core` remains directly runnable without breaking `runtime-default` or `runtime-full`.
-- [ ] 1.4 Split built-in definitions into core versus official optional packs, keeping runtime-generic tools and the default root-agent boot path in `runtime-core`.
-- [ ] 1.5 Keep `main-router` on the default core boot path and preserve built-in replacement behavior for `main-router` and other bundled core definitions.
-- [ ] 1.6 Reduce the stable public hook catalog to the approved v1 phases and mark remaining lifecycle points as advanced or internal in code and docs.
-- [ ] 1.7 Narrow the stable hook registration story to runtime config, host integrations, skill-owned hooks, and session-facing APIs; keep turn-scoped programmatic APIs advanced-only.
-- [ ] 1.8 Make `callback` the only required public hook handler kind and gate or demote `http`, `command`, `agent`, and `prompt` handlers as advanced or package-specific surfaces.
+- [x] 1.1 Introduce the package-role and distribution-profile model for `runtime-core`, official first-party packages, and the supported `runtime-default` / `runtime-full` distributions.
+- [x] 1.2 Publish the first-party package taxonomy and dependency rules covering capability, mechanism, adapter, provider, and profile/workflow packages.
+- [x] 1.3 Update public exports and runtime initialization paths so `runtime-core` remains directly runnable without breaking `runtime-default` or `runtime-full`.
+- [x] 1.4 Split built-in definitions into core versus official optional packs, keeping runtime-generic tools and the default root-agent boot path in `runtime-core`.
+- [x] 1.5 Keep `main-router` on the default core boot path and preserve built-in replacement behavior for `main-router` and other bundled core definitions.
+- [x] 1.6 Reduce the stable public hook catalog to the approved v1 phases and mark remaining lifecycle points as advanced or internal in code and docs.
+- [x] 1.7 Narrow the stable hook registration story to runtime config, host integrations, skill-owned hooks, and session-facing APIs; keep turn-scoped programmatic APIs advanced-only.
+- [x] 1.8 Make `callback` the only required public hook handler kind and gate or demote `http`, `command`, `agent`, and `prompt` handlers as advanced or package-specific surfaces.
 - [ ] 1.9 Freeze `TaskManager` and shared `runtime_context` as bounded compatibility surfaces and remove any new authoritative dependencies on them from runtime-owned code.
-- [ ] 1.10 Add regression coverage that assembles `runtime-core` alone and verifies root boot, stable hook behavior, built-in replacement, and compatibility diagnostics.
+- [x] 1.10 Add regression coverage that assembles `runtime-core` alone and verifies root boot, stable hook behavior, built-in replacement, and compatibility diagnostics.
 
 ## 2. `runtime-memory`
 
@@ -63,8 +63,8 @@
 
 ## 6. Cross-Package Docs, Diagnostics, and Validation
 
-- [ ] 6.1 Update runtime architecture, integration, extension, and hook documentation to present the converged v1 boundary story: `tool`, `agent`, `skill`, `host`, and approved hooks.
+- [x] 6.1 Update runtime architecture, integration, extension, and hook documentation to present the converged v1 boundary story: `tool`, `agent`, `skill`, `host`, and approved hooks.
 - [ ] 6.2 Update packaging and positioning docs to state that the project is a general AI runtime framework rather than a Claude Code parity effort.
-- [ ] 6.3 Document the first-party package layering diagram, supported distribution composition semantics, and canonical built-in ownership matrix for `runtime-core`, `runtime-default`, and `runtime-full`.
+- [x] 6.3 Document the first-party package layering diagram, supported distribution composition semantics, and canonical built-in ownership matrix for `runtime-core`, `runtime-default`, and `runtime-full`.
 - [ ] 6.4 Add migration notes or structured diagnostics for users relying on moved built-ins, demoted hook phases, advanced-only hook handlers, or package relocation of first-party capabilities.
 - [ ] 6.5 Run the affected regression suites for built-ins, hooks, memory, teammate orchestration, runtime assembly, and supported distribution packaging after the convergence changes land.

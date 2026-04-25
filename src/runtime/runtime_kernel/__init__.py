@@ -1,3 +1,15 @@
+from ..package_profiles import (
+    DEFAULT_RUNTIME_DISTRIBUTION,
+    FIRST_PARTY_PACKAGE_SPECS,
+    FirstPartyPackageRole,
+    FirstPartyPackageSpec,
+    RUNTIME_DISTRIBUTION_SPECS,
+    RuntimeDistribution,
+    RuntimeDistributionSpec,
+    distribution_spec,
+    normalize_runtime_distribution,
+    resolve_first_party_package_names,
+)
 from ..jobs import JobExecutorBinding
 from .config import (
     BuiltinPackConfig,
@@ -10,16 +22,26 @@ from .config import (
 from .kernel import RuntimeAssembly, RuntimeKernel, assemble_host_runtime, assemble_runtime, build_runtime_kernel
 
 __all__ = [
+    "DEFAULT_RUNTIME_DISTRIBUTION",
+    "FIRST_PARTY_PACKAGE_SPECS",
+    "FirstPartyPackageRole",
+    "FirstPartyPackageSpec",
     "BuiltinPackConfig",
     "DefinitionSourcePaths",
     "HostBinding",
     "JobExecutorBinding",
     "ModelProviderBinding",
     "ModelRouteBinding",
+    "RUNTIME_DISTRIBUTION_SPECS",
     "RuntimeConfig",
+    "RuntimeDistribution",
+    "RuntimeDistributionSpec",
     "RuntimeAssembly",
     "RuntimeKernel",
     "assemble_host_runtime",
     "assemble_runtime",
     "build_runtime_kernel",
+    "distribution_spec",
+    "normalize_runtime_distribution",
+    "resolve_first_party_package_names",
 ]

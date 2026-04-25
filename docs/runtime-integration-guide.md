@@ -75,6 +75,7 @@ Runtime 核心流转本身由框架收口，用户通常不应该改 `TurnEngine
 `RuntimeConfig` 是 Runtime 的总装配入口。  
 它负责承载：
 
+- `distribution`
 - 工作目录
 - definitions 发现路径
 - builtins 开关与替换
@@ -96,6 +97,7 @@ Runtime 核心流转本身由框架收口，用户通常不应该改 `TurnEngine
 ┌────────────────────────────────────────────────────────────┐
 │ RuntimeConfig                                              │
 │                                                            │
+│  [分发插槽]  distribution: core / default / full           │
 │  [模型插槽]  model_client / model_routes                   │
 │  [宿主插槽]  host_bindings / bind_host                     │
 │  [能力插槽]  discovery_sources / builtins                  │
@@ -104,6 +106,25 @@ Runtime 核心流转本身由框架收口，用户通常不应该改 `TurnEngine
 │  [目录插槽]  working_directory                             │
 └────────────────────────────────────────────────────────────┘
 ```
+
+关于分发语义，当前应这样理解：
+
+- `runtime-core`
+  - 只保证 kernel、`main-router` root boot path、core built-ins 和稳定扩展契约
+- `runtime-default`
+  - 在 `runtime-core` 上叠加 first-party memory 与 team capability 包
+- `runtime-full`
+  - 在 `runtime-default` 上叠加 devtools、workflow、provider、adapter、mechanism 包
+
+普通接入方默认应该围绕这些稳定边界扩展：
+
+- `tool`
+- `agent`
+- `skill`
+- `host`
+- stable public hooks
+
+而不是把 `TurnEngine`、shared `runtime_context` 或 `TaskManager` compatibility facade 当作 primary extension story。
 
 ### 2.2 Runtime 入口：`RuntimeAssembly`
 
