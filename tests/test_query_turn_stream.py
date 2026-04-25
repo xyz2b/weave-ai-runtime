@@ -1,7 +1,7 @@
 import asyncio
 
 from runtime.compaction import CompactionPolicy, CompactionResult, evaluate_context_pressure
-from runtime.contracts import MessageRole, TextBlock, ToolResultBlock
+from runtime.contracts import MessageRole, PromptContextEnvelope, RuntimePrivateContext, TextBlock, ToolResultBlock
 from runtime.definitions import AgentDefinition, ToolDefinition, ToolTraits
 from runtime.registries import ToolRegistry
 from runtime.runtime_services import RuntimeServices, SidecarContributionResult
@@ -606,6 +606,60 @@ def test_sidecar_prompt_and_private_channels_stay_separate() -> None:
     assert "hook_diagnostics" not in request.system_prompt
     assert request.private_context.extensions["host_hint"] == "still-private"
     assert request.private_context.diagnostics["hook_diagnostics"] == {"matched": True}
+
+
+def test_explicit_context_carriers_override_legacy_runtime_context_inputs() -> None:
+    observed: list[dict[str, object]] = []
+
+    class InspectingSidecar:
+        async def collect(self, **kwargs):
+            observed.append(kwargs)
+            return SidecarContributionResult()
+
+    model_client = BatchedModelClient(
+        [
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-explicit-context"}),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "done"}),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+            ]
+        ]
+    )
+    services = RuntimeServices(hooks=InspectingSidecar(), context_assembler=ContextAssembler())
+    engine = TurnEngine(
+        model_client=model_client,
+        tool_registry=ToolRegistry(),
+        runtime_services=services,
+    )
+    agent = AgentDefinition(name="main-router", description="router", prompt="Answer")
+
+    asyncio.run(
+        engine.run_turn(
+            session_id="session",
+            turn_id="turn",
+            agent=agent,
+            cwd=".",
+            messages=[],
+            base_system_prompt="System",
+            prompt_context=PromptContextEnvelope(
+                session_hints={"topic": "explicit"},
+                compaction_continuation={"cursor": "explicit"},
+            ),
+            private_context=RuntimePrivateContext(extensions={"host_hint": "explicit"}),
+            runtime_context={
+                "prompt_updates": {"topic": "legacy"},
+                "compaction_continuation": {"cursor": "legacy"},
+                "host_hint": "legacy",
+            },
+        )
+    )
+
+    sidecar_call = observed[0]
+    assert sidecar_call["prompt_context"].session_hints == {"topic": "explicit"}
+    assert sidecar_call["prompt_context"].compaction_continuation == {"cursor": "explicit"}
+    assert sidecar_call["private_context"].extensions["host_hint"] == "explicit"
+    assert sidecar_call["runtime_context"]["prompt_updates"] == {"topic": "explicit"}
+    assert sidecar_call["runtime_context"]["compaction_continuation"] == {"cursor": "explicit"}
 
 
 def test_interrupt_aborts_model_stream_and_discards_partial_output() -> None:

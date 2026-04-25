@@ -924,31 +924,41 @@ class DefaultJobService:
 
     def _schedule_watch_notifications(self) -> None:
         with self._lock:
-            watchers = tuple((watcher_id, loop) for watcher_id, (_, _, loop) in self._watchers.items())
-        for watcher_id, loop in watchers:
+            watchers = tuple(self._watchers.items())
+            records = self.store.list()
+        for watcher_id, (scope, _callback, loop) in watchers:
             if loop.is_closed():
                 with self._lock:
                     self._watchers.pop(watcher_id, None)
                 continue
+            snapshot = records if scope is None else tuple(record for record in records if scope.matches(record))
             try:
-                loop.call_soon_threadsafe(self._dispatch_watcher_notification, watcher_id)
+                loop.call_soon_threadsafe(self._dispatch_watcher_notification, watcher_id, snapshot)
             except RuntimeError:
                 with self._lock:
                     self._watchers.pop(watcher_id, None)
 
-    def _dispatch_watcher_notification(self, watcher_id: str) -> None:
-        asyncio.create_task(self._notify_watcher(watcher_id))
-
-    async def _notify_watcher(self, watcher_id: str) -> None:
+    def _dispatch_watcher_notification(
+        self,
+        watcher_id: str,
+        snapshot: tuple[JobRecord, ...],
+    ) -> None:
         with self._lock:
             registration = self._watchers.get(watcher_id)
         if registration is None:
             return
-        scope, callback, _ = registration
+        _scope, callback, _loop = registration
         try:
-            maybe_result = callback(self.list_sync(scope=scope))
+            maybe_result = callback(snapshot)
             if inspect.isawaitable(maybe_result):
-                await maybe_result
+                asyncio.create_task(self._await_watcher_callback(watcher_id, maybe_result))
+        except Exception:
+            with self._lock:
+                self._watchers.pop(watcher_id, None)
+
+    async def _await_watcher_callback(self, watcher_id: str, pending: Any) -> None:
+        try:
+            await pending
         except Exception:
             with self._lock:
                 self._watchers.pop(watcher_id, None)

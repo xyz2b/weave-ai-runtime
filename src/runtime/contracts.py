@@ -312,6 +312,9 @@ def private_context_from_legacy_runtime_context(
     for key in diagnostic_keys:
         diagnostics[key] = raw_context.pop(key)
     raw_context.pop("prompt_updates", None)
+    raw_context.pop("compaction_summary", None)
+    raw_context.pop("compaction_boundary", None)
+    raw_context.pop("compaction_continuation", None)
     return RuntimePrivateContext(
         permission_context=raw_context.pop("permission_context", None),
         policy_state=raw_context.pop("execution_policy_state", None),

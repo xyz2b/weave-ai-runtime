@@ -13,7 +13,9 @@ from ..compaction import latest_compaction_payload
 from ..contracts import (
     MessageAttachment,
     MessageRole,
+    PromptContextEnvelope,
     RuntimeMessage,
+    RuntimePrivateContext,
     coerce_request_override_state,
     private_context_from_legacy_runtime_context,
     SessionCommand,
@@ -121,13 +123,20 @@ class SessionController:
     def runtime_services(self) -> RuntimeServices:
         return self._runtime_services
 
+    def current_prompt_context(self) -> PromptContextEnvelope:
+        return self._session_prompt_context()
+
+    def current_private_context(self) -> RuntimePrivateContext:
+        return self._session_scope_private_context()
+
     def resolve_invocations(self):
         return self._turn_engine.resolve_invocation_catalog(
             session_id=self.state.session_id,
             turn_id=self.state.active_turn_id,
             cwd=self._cwd,
             messages=self.messages,
-            runtime_context=dict(self.state.metadata),
+            prompt_context=self.current_prompt_context(),
+            private_context=self.current_private_context(),
         )
 
     def visible_invocations(
@@ -428,30 +437,12 @@ class SessionController:
             last_terminal = None
             turn_retrieval_trace: dict[str, Any] | None = None
             turn_message_ids: list[str] = [message.message_id for message in ingress_result.normalized_messages]
-            runtime_context = self._base_runtime_private_context()
-            runtime_context.update(
-                {
-                    str(key): _copy_ingress_private_value(value)
-                    for key, value in ingress_result.private_updates.items()
-                }
-            )
-            runtime_context.update(
-                {
-                    "command_type": command.command_type.value,
-                    "query_source": command.command_type.value,
-                    "permission_context": runtime_context.get(
-                        "permission_context",
-                        self.state.metadata.get("permission_context"),
-                    ),
-                    "prompt_updates": dict(ingress_result.prompt_updates),
-                }
-            )
-            continuation = self.state.metadata.get("compaction_continuation")
-            if isinstance(continuation, dict):
-                runtime_context["compaction_continuation"] = dict(continuation)
-            resumable_override = self.state.metadata.get("resumable_request_override")
-            if isinstance(resumable_override, dict):
-                runtime_context["request_override"] = dict(resumable_override)
+            runtime_context = {
+                "command_type": command.command_type.value,
+                "query_source": command.command_type.value,
+            }
+            prompt_context = self._turn_prompt_context(ingress_result.prompt_updates)
+            private_context = self._turn_private_context(ingress_result.private_updates)
             self._session_scope.private_context = self._session_scope_private_context()
             self._session_scope.agent_name = self._agent.name
             self._session_scope.cwd = Path(self._cwd)
@@ -464,6 +455,8 @@ class SessionController:
                 messages=list(self._messages),
                 base_system_prompt=self._system_prompt,
                 attachments=list(_attachments_from_messages(ingress_result.normalized_messages)),
+                prompt_context=prompt_context,
+                private_context=private_context,
                 runtime_context=runtime_context,
                 session_scope=self._session_scope,
             ):
@@ -609,13 +602,60 @@ class SessionController:
             for key, value in self._session_private_context.items()
         }
 
-    def _session_scope_private_context(self):
+    def _session_scope_private_context(self) -> RuntimePrivateContext:
         return private_context_from_legacy_runtime_context(
             {
                 **self._base_runtime_private_context(),
                 "permission_context": self.state.metadata.get("permission_context"),
             }
         )
+
+    def _session_prompt_context(self) -> PromptContextEnvelope:
+        return PromptContextEnvelope(
+            compaction_summary=_copy_ingress_private_value(self.state.metadata.get("compaction_summary"))
+            if isinstance(self.state.metadata.get("compaction_summary"), dict)
+            else None,
+            compaction_boundary=_copy_ingress_private_value(self.state.metadata.get("compaction_boundary"))
+            if isinstance(self.state.metadata.get("compaction_boundary"), dict)
+            else None,
+            compaction_continuation=(
+                _copy_ingress_private_value(self.state.metadata.get("compaction_continuation"))
+                if isinstance(self.state.metadata.get("compaction_continuation"), dict)
+                else None
+            ),
+        )
+
+    def _turn_prompt_context(
+        self,
+        prompt_updates: Mapping[str, Any],
+    ) -> PromptContextEnvelope:
+        base = self._session_prompt_context()
+        session_hints = dict(base.session_hints)
+        session_hints.update(
+            {str(key): _copy_ingress_private_value(value) for key, value in prompt_updates.items()}
+        )
+        return PromptContextEnvelope(
+            memory_fragments=base.memory_fragments,
+            hook_fragments=base.hook_fragments,
+            compaction_fragments=base.compaction_fragments,
+            attachments=base.attachments,
+            session_hints=session_hints,
+            compaction_summary=base.compaction_summary,
+            compaction_boundary=base.compaction_boundary,
+            compaction_continuation=base.compaction_continuation,
+            extensions=base.extensions,
+        )
+
+    def _turn_private_context(
+        self,
+        private_updates: Mapping[str, Any],
+    ) -> RuntimePrivateContext:
+        merged = self._base_runtime_private_context()
+        merged.update(
+            {str(key): _copy_ingress_private_value(value) for key, value in private_updates.items()}
+        )
+        merged["permission_context"] = self.state.metadata.get("permission_context")
+        return private_context_from_legacy_runtime_context(merged)
 
     async def _load_persisted_session_metadata(self) -> None:
         if not hasattr(self._transcript_store, "load_session_metadata"):

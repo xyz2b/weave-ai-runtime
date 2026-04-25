@@ -779,7 +779,7 @@ class TurnEngine:
         *,
         agent: AgentDefinition,
         runtime_context: Mapping[str, object] | None,
-        prompt_updates: Mapping[str, Any] | None,
+        prompt_context: PromptContextEnvelope,
         private_context: RuntimePrivateContext,
         effective_private_context: RuntimePrivateContext,
         runtime_metadata: dict[str, object],
@@ -820,7 +820,7 @@ class TurnEngine:
         merged_runtime_metadata = self._merge_runtime_context(
             runtime_context,
             private_context=effective_private_context,
-            prompt_updates=prompt_updates,
+            prompt_context=prompt_context,
         )
         merged_runtime_metadata.update(route_runtime_updates)
         return (
@@ -976,6 +976,8 @@ class TurnEngine:
         hook_context: list[str] | None = None,
         compaction_fragments: list[str] | None = None,
         attachments: list[MessageAttachment] | None = None,
+        prompt_context: PromptContextEnvelope | None = None,
+        private_context: RuntimePrivateContext | Mapping[str, object] | None = None,
         runtime_context: dict[str, object] | None = None,
         model_client_override: ModelClient | None = None,
         session_scope: SessionScope | None = None,
@@ -991,6 +993,8 @@ class TurnEngine:
             hook_context=hook_context,
             compaction_fragments=compaction_fragments,
             attachments=attachments,
+            prompt_context=prompt_context,
+            private_context=private_context,
             runtime_context=runtime_context,
             model_client_override=model_client_override,
             session_scope=session_scope,
@@ -1010,6 +1014,8 @@ class TurnEngine:
         hook_context: list[str] | None = None,
         compaction_fragments: list[str] | None = None,
         attachments: list[MessageAttachment] | None = None,
+        prompt_context: PromptContextEnvelope | None = None,
+        private_context: RuntimePrivateContext | Mapping[str, object] | None = None,
         runtime_context: dict[str, object] | None = None,
         model_client_override: ModelClient | None = None,
         session_scope: SessionScope | None = None,
@@ -1026,6 +1032,8 @@ class TurnEngine:
             hook_context=hook_context,
             compaction_fragments=compaction_fragments,
             attachments=attachments,
+            prompt_context=prompt_context,
+            private_context=private_context,
             runtime_context=runtime_context,
             model_client_override=model_client_override,
             session_scope=session_scope,
@@ -1065,6 +1073,8 @@ class TurnEngine:
         hook_context: list[str] | None = None,
         compaction_fragments: list[str] | None = None,
         attachments: list[MessageAttachment] | None = None,
+        prompt_context: PromptContextEnvelope | None = None,
+        private_context: RuntimePrivateContext | Mapping[str, object] | None = None,
         runtime_context: dict[str, object] | None = None,
         model_client_override: ModelClient | None = None,
         session_scope: SessionScope | None = None,
@@ -1072,8 +1082,14 @@ class TurnEngine:
         max_iterations = agent.max_turns or 4
         state = TurnLoopState(working_messages=tuple(messages))
         runtime_context = dict(runtime_context or {})
-        prompt_updates = _prompt_updates_from_runtime_context(runtime_context)
-        private_context = private_context_from_legacy_runtime_context(runtime_context)
+        prompt_context = _merge_prompt_context(
+            prompt_context_from_legacy_runtime_context(runtime_context),
+            prompt_context,
+        )
+        private_context = _merge_runtime_private_context(
+            private_context_from_legacy_runtime_context(runtime_context),
+            private_context,
+        )
         if private_context.permission_context is None:
             private_context = replace(
                 private_context,
@@ -1142,7 +1158,7 @@ class TurnEngine:
                 runtime_metadata = self._merge_runtime_context(
                     runtime_context,
                     private_context=effective_private_context,
-                    prompt_updates=prompt_updates,
+                    prompt_context=prompt_context,
                 )
                 (
                     private_context,
@@ -1152,7 +1168,7 @@ class TurnEngine:
                 ) = self._apply_route_runtime_metadata(
                     agent=agent,
                     runtime_context=runtime_context,
-                    prompt_updates=prompt_updates,
+                    prompt_context=prompt_context,
                     private_context=private_context,
                     effective_private_context=effective_private_context,
                     runtime_metadata=runtime_metadata,
@@ -1258,7 +1274,7 @@ class TurnEngine:
                     runtime_metadata = self._merge_runtime_context(
                         runtime_context,
                         private_context=effective_private_context,
-                        prompt_updates=prompt_updates,
+                        prompt_context=prompt_context,
                     )
                 (
                     private_context,
@@ -1268,7 +1284,7 @@ class TurnEngine:
                 ) = self._apply_route_runtime_metadata(
                     agent=agent,
                     runtime_context=runtime_context,
-                    prompt_updates=prompt_updates,
+                    prompt_context=prompt_context,
                     private_context=private_context,
                     effective_private_context=effective_private_context,
                     runtime_metadata=runtime_metadata,
@@ -2415,13 +2431,19 @@ class TurnEngine:
         runtime_context: Mapping[str, object] | None,
         *,
         private_context: RuntimePrivateContext | None = None,
-        prompt_updates: Mapping[str, Any] | None = None,
+        prompt_context: PromptContextEnvelope | None = None,
     ) -> dict[str, object]:
         merged = dict(self._runtime_services.metadata)
         if runtime_context:
             merged.update(runtime_context)
-        if prompt_updates:
-            merged["prompt_updates"] = dict(prompt_updates)
+        if prompt_context is not None:
+            merged["prompt_updates"] = dict(prompt_context.session_hints)
+            if prompt_context.compaction_summary is not None:
+                merged["compaction_summary"] = dict(prompt_context.compaction_summary)
+            if prompt_context.compaction_boundary is not None:
+                merged["compaction_boundary"] = dict(prompt_context.compaction_boundary)
+            if prompt_context.compaction_continuation is not None:
+                merged["compaction_continuation"] = dict(prompt_context.compaction_continuation)
         if private_context is not None:
             merged.update(private_context.compat_metadata())
             if private_context.permission_context is not None:
@@ -3106,15 +3128,90 @@ def _query_source(runtime_context: dict[str, object] | None) -> str | None:
     return None
 
 
-def _prompt_updates_from_runtime_context(
-    runtime_context: Mapping[str, object] | None,
-) -> dict[str, Any]:
-    if runtime_context is None:
-        return {}
-    raw = runtime_context.get("prompt_updates")
-    if not isinstance(raw, Mapping):
-        return {}
-    return {str(key): value for key, value in raw.items()}
+def _merge_prompt_context(
+    compat_prompt_context: PromptContextEnvelope,
+    explicit_prompt_context: PromptContextEnvelope | None,
+) -> PromptContextEnvelope:
+    if explicit_prompt_context is None:
+        return compat_prompt_context
+    session_hints = dict(compat_prompt_context.session_hints)
+    session_hints.update(explicit_prompt_context.session_hints)
+    extensions = dict(compat_prompt_context.extensions)
+    extensions.update(explicit_prompt_context.extensions)
+    return PromptContextEnvelope(
+        memory_fragments=compat_prompt_context.memory_fragments + explicit_prompt_context.memory_fragments,
+        hook_fragments=compat_prompt_context.hook_fragments + explicit_prompt_context.hook_fragments,
+        compaction_fragments=(
+            compat_prompt_context.compaction_fragments + explicit_prompt_context.compaction_fragments
+        ),
+        attachments=compat_prompt_context.attachments + explicit_prompt_context.attachments,
+        session_hints=session_hints,
+        compaction_summary=(
+            explicit_prompt_context.compaction_summary
+            if explicit_prompt_context.compaction_summary is not None
+            else compat_prompt_context.compaction_summary
+        ),
+        compaction_boundary=(
+            explicit_prompt_context.compaction_boundary
+            if explicit_prompt_context.compaction_boundary is not None
+            else compat_prompt_context.compaction_boundary
+        ),
+        compaction_continuation=(
+            explicit_prompt_context.compaction_continuation
+            if explicit_prompt_context.compaction_continuation is not None
+            else compat_prompt_context.compaction_continuation
+        ),
+        extensions=extensions,
+    )
+
+
+def _merge_runtime_private_context(
+    compat_private_context: RuntimePrivateContext,
+    explicit_private_context: RuntimePrivateContext | Mapping[str, object] | None,
+) -> RuntimePrivateContext:
+    if explicit_private_context is None:
+        return compat_private_context
+    if isinstance(explicit_private_context, RuntimePrivateContext):
+        resolved_explicit = explicit_private_context
+    else:
+        resolved_explicit = private_context_from_legacy_runtime_context(explicit_private_context)
+    diagnostics = dict(compat_private_context.diagnostics)
+    diagnostics.update(resolved_explicit.diagnostics)
+    extensions = dict(compat_private_context.extensions)
+    extensions.update(resolved_explicit.extensions)
+    return RuntimePrivateContext(
+        permission_context=(
+            resolved_explicit.permission_context
+            if resolved_explicit.permission_context is not None
+            else compat_private_context.permission_context
+        ),
+        policy_state=(
+            resolved_explicit.policy_state
+            if resolved_explicit.policy_state is not None
+            else compat_private_context.policy_state
+        ),
+        run_id=resolved_explicit.run_id or compat_private_context.run_id,
+        parent_run_id=resolved_explicit.parent_run_id or compat_private_context.parent_run_id,
+        delegation_depth=(
+            resolved_explicit.delegation_depth
+            if resolved_explicit.delegation_depth is not None
+            else compat_private_context.delegation_depth
+        ),
+        requested_model_route=(
+            resolved_explicit.requested_model_route or compat_private_context.requested_model_route
+        ),
+        resolved_model_route=(
+            resolved_explicit.resolved_model_route or compat_private_context.resolved_model_route
+        ),
+        provider_name=resolved_explicit.provider_name or compat_private_context.provider_name,
+        invocation_mode=(
+            resolved_explicit.invocation_mode
+            if resolved_explicit.invocation_mode is not None
+            else compat_private_context.invocation_mode
+        ),
+        diagnostics=diagnostics,
+        extensions=extensions,
+    )
 
 
 def _merge_private_context_updates(

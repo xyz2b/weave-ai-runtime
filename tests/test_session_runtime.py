@@ -19,7 +19,18 @@ from runtime.session_runtime import (
     SessionController,
 )
 from runtime.session_runtime.models import SessionStatus
-from runtime.turn_engine import ModelRequest, ModelStreamEvent, ModelStreamEventType, PromptComposer, TurnEngine
+from runtime.turn_engine import (
+    ModelRequest,
+    ModelStreamEvent,
+    ModelStreamEventType,
+    PromptComposer,
+    TurnEngine,
+    TurnPostEffects,
+    TurnStreamEvent,
+    TurnStreamEventType,
+    TurnTerminal,
+    TurnTerminalReason,
+)
 
 
 class FakeModelClient:
@@ -218,6 +229,54 @@ def test_session_controller_close_is_idempotent(tmp_path: Path) -> None:
 
     assert session_end_statuses == ["completed"]
     assert controller.state.status == SessionStatus.COMPLETED
+
+
+def test_session_controller_passes_explicit_context_carriers_to_turn_engine(tmp_path: Path) -> None:
+    class RecordingTurnEngine:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        async def run_turn_stream(self, **kwargs):
+            self.calls.append(kwargs)
+            yield TurnStreamEvent(
+                event_type=TurnStreamEventType.TERMINAL,
+                iteration=1,
+                terminal=TurnTerminal(
+                    reason=TurnTerminalReason.END_TURN,
+                    post_effects=TurnPostEffects(session_status_hint="ready"),
+                ),
+            )
+
+    engine = RecordingTurnEngine()
+    controller = SessionController(
+        session_id="session-explicit-context",
+        agent=AgentDefinition(name="main-router", description="router", prompt="Route the turn"),
+        turn_engine=engine,  # type: ignore[arg-type]
+        transcript_store=FileTranscriptStore(tmp_path / "transcripts"),
+        cwd=str(tmp_path),
+        system_prompt="System prompt",
+    )
+    controller.enqueue_event(
+        InboundEvent(
+            InboundEventType.USER_PROMPT,
+            "Use explicit carriers",
+            metadata={
+                "prompt_updates": {"topic": "ops"},
+                "private_updates": {"host_hint": "keep-private"},
+            },
+        )
+    )
+
+    asyncio.run(controller.run_until_idle())
+
+    call = engine.calls[0]
+    assert call["runtime_context"] == {
+        "command_type": "user_prompt",
+        "query_source": "user_prompt",
+    }
+    assert call["prompt_context"].session_hints == {"topic": "ops"}
+    assert call["private_context"].extensions["host_hint"] == "keep-private"
+    assert call["private_context"].permission_context is not None
 
 
 def test_session_controller_streams_turn_events_until_idle(tmp_path: Path) -> None:

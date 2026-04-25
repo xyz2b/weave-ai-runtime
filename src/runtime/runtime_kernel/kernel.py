@@ -309,17 +309,14 @@ class RuntimeAssembly:
         private_context: RuntimePrivateContext | dict[str, object] | None = None,
         runtime_context: dict[str, object] | None = None,
     ) -> ResolvedInvocationCatalog:
-        session_runtime_context = dict(session.state.metadata)
-        if runtime_context:
-            session_runtime_context.update(runtime_context)
         return self.resolve_invocations(
             session_id=session.state.session_id,
             turn_id=session.state.active_turn_id,
             cwd=session.cwd,
             messages=session.messages,
-            prompt_context=prompt_context,
-            private_context=private_context,
-            runtime_context=session_runtime_context,
+            prompt_context=prompt_context or session.current_prompt_context(),
+            private_context=private_context or session.current_private_context(),
+            runtime_context=runtime_context,
         )
 
     def visible_invocations(
