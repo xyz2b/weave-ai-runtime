@@ -738,7 +738,7 @@ class RuntimeTeamWorkflowService:
         self._store.create(record)
         self._schedule_deadline(record)
         await self._emit_workflow_event("team.workflow.created", record, payload={"phase": "request"})
-        await self._emit_workflow_request(record)
+        record = await self._emit_workflow_request(record)
         return record
 
     async def create_shutdown_workflow(
@@ -769,7 +769,12 @@ class RuntimeTeamWorkflowService:
         self._store.create(record)
         self._schedule_deadline(record)
         await self._emit_workflow_event("team.workflow.created", record, payload={"phase": "request"})
-        await self._emit_workflow_request(record, recipient_member_id=team.leader_member_id)
+        record = await self._emit_workflow_request(record)
+        if team.leader_member_id != record.responder_member_id:
+            record = await self._emit_workflow_request(
+                record,
+                recipient_member_id=team.leader_member_id,
+            )
         return record
 
     async def wait_for_terminal(self, workflow_id: str) -> TeamWorkflowRecord:
@@ -1174,10 +1179,10 @@ class RuntimeTeamWorkflowService:
         record: TeamWorkflowRecord,
         *,
         recipient_member_id: str | None = None,
-    ) -> None:
+    ) -> TeamWorkflowRecord:
         resolved_recipient = recipient_member_id or record.responder_member_id
         if self._message_bus is None or resolved_recipient is None:
-            return
+            return record
         control_type = f"{record.workflow_kind.value}_request"
         protocol = build_workflow_request_protocol(record)
         try:
@@ -1193,9 +1198,9 @@ class RuntimeTeamWorkflowService:
                 },
             )
         except Exception:
-            return
+            return record
         if envelope.message_id in record.message_ids:
-            return
+            return record
         updated = self._mutate_record(
             record,
             status=record.status,
@@ -1207,6 +1212,7 @@ class RuntimeTeamWorkflowService:
             message_id=envelope.message_id,
         )
         self._store.save(updated)
+        return updated
 
     async def _emit_workflow_response(
         self,
@@ -1222,6 +1228,12 @@ class RuntimeTeamWorkflowService:
         team = self._control_plane.get_team(record.team_id)
         if team is None:
             return
+        sender_member_id = self._response_transport_sender_member_id(
+            team=team,
+            record=record,
+            actor_kind=actor_kind,
+            actor_id=actor_id,
+        )
         control_type = f"{record.workflow_kind.value}_response"
         protocol = build_workflow_response_protocol(
             record,
@@ -1233,7 +1245,7 @@ class RuntimeTeamWorkflowService:
         try:
             envelope = await self._message_bus.send_control_message(
                 team_id=record.team_id,
-                sender_member_id=team.leader_member_id,
+                sender_member_id=sender_member_id,
                 recipient_member_id=team.leader_member_id,
                 control_type=control_type,
                 correlation_id=record.workflow_id,
@@ -1255,6 +1267,33 @@ class RuntimeTeamWorkflowService:
             message_id=envelope.message_id,
         )
         self._store.save(updated)
+
+    def _response_transport_sender_member_id(
+        self,
+        *,
+        team: TeamRecord,
+        record: TeamWorkflowRecord,
+        actor_kind: TeamWorkflowActorKind,
+        actor_id: str | None,
+    ) -> str:
+        if actor_kind in {TeamWorkflowActorKind.LEADER, TeamWorkflowActorKind.TEAMMATE}:
+            candidate = _coerce_optional_string(actor_id)
+            if candidate:
+                member = self._control_plane.get_member(team.team_id, candidate)
+                if member is not None and member.active:
+                    return member.member_id
+        if actor_kind is TeamWorkflowActorKind.RUNTIME:
+            candidate = _coerce_optional_string(actor_id)
+            if candidate:
+                member = self._control_plane.get_member(team.team_id, candidate)
+                if member is not None and member.active:
+                    return member.member_id
+        responder_member_id = _coerce_optional_string(record.responder_member_id)
+        if responder_member_id:
+            responder = self._control_plane.get_member(team.team_id, responder_member_id)
+            if responder is not None and responder.active:
+                return responder.member_id
+        return team.leader_member_id
 
     async def _emit_workflow_event(
         self,

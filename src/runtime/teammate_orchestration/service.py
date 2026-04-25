@@ -14,7 +14,11 @@ from ..definitions import IsolationMode, PermissionBehavior, PermissionMode
 from ..hosts.base import HostRuntime
 from ..permissions import PermissionContext, PermissionOutcome, PermissionRequest
 from ..team_control_plane import TeamRole
-from ..team_workflows import RuntimeTeamWorkflowService, TeamWorkflowStatus
+from ..team_workflows import (
+    RuntimeTeamWorkflowService,
+    TeamWorkflowActorKind,
+    TeamWorkflowStatus,
+)
 from ..tasking import TaskManager, TaskStatus
 from .mailbox import FileBackedTeammateMailbox
 from .models import (
@@ -129,11 +133,13 @@ class PersistentTeammateHostBridge:
                     delegated_outcome,
                 )
         except BaseException:
-            self._orchestrator.exit_permission_wait(
-                team_id=details["team_id"],
-                teammate_id=details["teammate_id"],
-                permission_id=workflow.workflow_id,
-            )
+            current = workflow_service.get(workflow.workflow_id)
+            if current is None or current.terminal:
+                self._orchestrator.exit_permission_wait(
+                    team_id=details["team_id"],
+                    teammate_id=details["teammate_id"],
+                    permission_id=workflow.workflow_id,
+                )
             raise
         self._orchestrator.exit_permission_wait(
             team_id=details["team_id"],
@@ -829,11 +835,13 @@ class PersistentTeammateOrchestrator:
                 if current.status is TeamWorkflowStatus.PENDING:
                     await self.workflow_service.acknowledge_shutdown(
                         workflow_id,
+                        actor_kind=TeamWorkflowActorKind.TEAMMATE,
                         actor_id=teammate_id,
                         payload={"teammate_id": teammate_id},
                     )
                 await self.workflow_service.complete_shutdown(
                     workflow_id,
+                    actor_kind=TeamWorkflowActorKind.TEAMMATE,
                     actor_id=teammate_id,
                     payload={"teammate_id": teammate_id},
                 )

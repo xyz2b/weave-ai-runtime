@@ -364,6 +364,62 @@ def test_shutdown_workflow_completes_before_member_cleanup(tmp_path: Path) -> No
     assert shutdowns[-1].status.value == "completed"
 
 
+def test_shutdown_workflow_is_delivered_to_targeted_teammate_and_leader(tmp_path: Path) -> None:
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            model_client=None,
+            teammate_orchestration=TeammateOrchestrationConfig(enabled=True, heartbeat_interval_ms=10),
+        )
+    )
+    plane = runtime.team_control_plane
+    bus = runtime.team_message_bus
+    workflows = runtime.team_workflows
+    assert plane is not None
+    assert bus is not None
+    assert workflows is not None
+
+    async def scenario():
+        team, _ = await plane.create_team(session_id="leader-session", extensions={}, name="ops")
+        member = await plane.register_member(
+            session_id="leader-session",
+            extensions={},
+            name="alpha",
+            agent_name="main-router",
+            execution_defaults={"cwd": str(tmp_path)},
+        )
+        workflow = await workflows.create_shutdown_workflow(
+            team=team,
+            requester_member_id=team.leader_member_id,
+            requester_name="leader",
+            responder_member_id=member.member_id,
+            responder_name=member.name,
+            request_payload={
+                "reason": "cleanup",
+                "member_id": member.member_id,
+                "member_name": member.name,
+            },
+        )
+        leader_messages = [
+            message
+            for message in bus.store.list_messages(team.team_id, recipient_member_id=team.leader_member_id)
+            if message.metadata.get("control_type") == "shutdown_request"
+        ]
+        teammate_messages = [
+            message
+            for message in bus.store.list_messages(team.team_id, recipient_member_id=member.member_id)
+            if message.metadata.get("control_type") == "shutdown_request"
+        ]
+        return workflow, leader_messages, teammate_messages
+
+    workflow, leader_messages, teammate_messages = asyncio.run(scenario())
+
+    assert leader_messages
+    assert teammate_messages
+    assert leader_messages[-1].correlation_id == workflow.workflow_id
+    assert teammate_messages[-1].correlation_id == workflow.workflow_id
+
+
 def test_permission_workflow_rejection_skips_host_permission_call(tmp_path: Path) -> None:
     runtime = _worker_runtime(
         tmp_path,
@@ -736,7 +792,11 @@ def test_host_bridge_lists_and_resolves_pending_workflows(tmp_path: Path) -> Non
                 request_payload={"permission_name": "bash", "permission_message": "approve?"},
             )
             pending = await bound.list_team_workflows(session_id="leader-session", pending_only=True)
-            updated = await bound.respond_team_workflow(workflow.workflow_id, action="reject")
+            updated = await bound.respond_team_workflow(
+                workflow.workflow_id,
+                action="reject",
+                session_id="leader-session",
+            )
             return pending, updated
 
     pending, updated = asyncio.run(scenario())
@@ -746,6 +806,132 @@ def test_host_bridge_lists_and_resolves_pending_workflows(tmp_path: Path) -> Non
     assert pending[0]["allowed_actions"] == ["approve", "reject"]
     assert updated["workflow_id"] == pending[0]["workflow_id"]
     assert updated["status"] == "rejected"
+
+
+def test_host_workflow_response_requires_explicit_scope(tmp_path: Path) -> None:
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            model_client=None,
+            teammate_orchestration=TeammateOrchestrationConfig(enabled=True, heartbeat_interval_ms=10),
+        )
+    )
+    plane = runtime.team_control_plane
+    workflows = runtime.team_workflows
+    assert plane is not None
+    assert workflows is not None
+    host = ControlledPermissionHost()
+
+    async def scenario():
+        async with runtime.bind_host(host) as bound:
+            team, _ = await plane.create_team(session_id="leader-session", extensions={}, name="ops")
+            member = await plane.register_member(
+                session_id="leader-session",
+                extensions={},
+                name="alpha",
+                agent_name="main-router",
+                execution_defaults={"cwd": str(tmp_path)},
+            )
+            workflow = await workflows.create_permission_workflow(
+                team=team,
+                requester_member_id=member.member_id,
+                requester_name=member.name,
+                responder_member_id=team.leader_member_id,
+                responder_name="leader",
+                request_payload={"permission_name": "bash", "permission_message": "approve?"},
+            )
+            missing_scope = None
+            wrong_scope = None
+            try:
+                await bound.respond_team_workflow(workflow.workflow_id, action="reject")
+            except TeamWorkflowError as exc:
+                missing_scope = exc
+            try:
+                await bound.respond_team_workflow(
+                    workflow.workflow_id,
+                    action="reject",
+                    session_id="other-session",
+                )
+            except TeamWorkflowError as exc:
+                wrong_scope = exc
+            updated = await bound.respond_team_workflow(
+                workflow.workflow_id,
+                action="reject",
+                session_id="leader-session",
+            )
+            return missing_scope, wrong_scope, updated
+
+    missing_scope, wrong_scope, updated = asyncio.run(scenario())
+
+    assert missing_scope is not None
+    assert missing_scope.code == "invalid_workflow_scope"
+    assert wrong_scope is not None
+    assert wrong_scope.code == "invalid_workflow_scope"
+    assert updated["status"] == "rejected"
+
+
+def test_host_workflow_response_preserves_logical_actor_metadata(tmp_path: Path) -> None:
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            model_client=FakeModelClient([]),
+            teammate_orchestration=TeammateOrchestrationConfig(enabled=True, heartbeat_interval_ms=10),
+        )
+    )
+    plane = runtime.team_control_plane
+    workflows = runtime.team_workflows
+    assert plane is not None
+    assert workflows is not None
+    host = ControlledPermissionHost()
+
+    async def scenario():
+        session = runtime.create_session(session_id="leader-session", agent_name="main-router")
+        await session.start()
+        session.state.status = SessionStatus.READY
+        team, _ = await plane.create_team(session_id="leader-session", extensions={}, name="ops")
+        member = await plane.register_member(
+            session_id="leader-session",
+            extensions={},
+            name="alpha",
+            agent_name="main-router",
+            execution_defaults={"cwd": str(tmp_path)},
+        )
+        workflow = await workflows.create_permission_workflow(
+            team=team,
+            requester_member_id=member.member_id,
+            requester_name=member.name,
+            responder_member_id=team.leader_member_id,
+            responder_name="leader",
+            request_payload={"permission_name": "bash", "permission_message": "approve?"},
+        )
+        async with runtime.bind_host(host) as bound:
+            await bound.respond_team_workflow(
+                workflow.workflow_id,
+                action="reject",
+                session_id="leader-session",
+            )
+        command = await _wait_for(
+            lambda: (
+                next(
+                    (
+                        item
+                        for item in session.state.queued_commands
+                        if item.payload.get("metadata", {}).get("source") == "team_workflow_update"
+                    ),
+                    None,
+                )
+                if session.state.queued_commands
+                else None
+            )
+        )
+        return command.payload["metadata"]["private_updates"]
+
+    private_updates = asyncio.run(scenario())
+
+    assert private_updates["team_last_workflow_update"]["actor_kind"] == "host"
+    assert private_updates["team_last_control_message"]["sender_name"] == "controlled"
+    assert private_updates["team_last_control_message"]["sender_role"] == "host"
+    assert private_updates["team_last_control_message"]["transport_sender_role"] == "leader"
 
 
 def test_host_and_model_share_invalid_action_validation(tmp_path: Path) -> None:
@@ -789,7 +975,11 @@ def test_host_and_model_share_invalid_action_validation(tmp_path: Path) -> None:
     async def host_error():
         async with runtime.bind_host(host) as bound:
             try:
-                await bound.respond_team_workflow(workflow.workflow_id, action="complete")
+                await bound.respond_team_workflow(
+                    workflow.workflow_id,
+                    action="complete",
+                    session_id="leader-session",
+                )
             except TeamWorkflowError as exc:
                 return exc
         raise AssertionError("host response unexpectedly succeeded")

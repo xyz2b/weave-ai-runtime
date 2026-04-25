@@ -487,8 +487,11 @@ class RuntimeTeamRunnerManager:
         )
         current = workflow_service.get(workflow.workflow_id)
         if current is not None and str(getattr(current.status, "value", current.status)) == "pending":
+            from .team_workflows import TeamWorkflowActorKind
+
             await workflow_service.acknowledge_shutdown(
                 workflow.workflow_id,
+                actor_kind=TeamWorkflowActorKind.TEAMMATE,
                 actor_id=member.member_id,
                 payload={"teammate_id": member.member_id, "accepted": True},
             )

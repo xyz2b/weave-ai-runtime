@@ -584,6 +584,10 @@ class RuntimeTeamMessageBus:
                 )
             response_protocol = parse_workflow_response_protocol(envelope.metadata)
             if response_protocol is not None:
+                logical_sender = _workflow_response_logical_sender(
+                    envelope=envelope,
+                    response_protocol=response_protocol,
+                )
                 return InboundEvent(
                     event_type=InboundEventType.HOST_EVENT,
                     content="",
@@ -607,8 +611,14 @@ class RuntimeTeamMessageBus:
                                 "team_id": team.team_id,
                                 "message_id": envelope.message_id,
                                 "control_type": control_type,
-                                "sender_member_id": envelope.sender.member_id,
-                                "sender_name": envelope.sender.name,
+                                "sender_member_id": logical_sender["sender_member_id"],
+                                "sender_name": logical_sender["sender_name"],
+                                "sender_role": logical_sender["sender_role"],
+                                "transport_sender_member_id": envelope.sender.member_id,
+                                "transport_sender_name": envelope.sender.name,
+                                "transport_sender_role": envelope.sender.role.value,
+                                "actor_kind": response_protocol.actor_kind.value,
+                                "actor_id": response_protocol.actor_id,
                                 "correlation_id": envelope.correlation_id,
                                 "content": envelope.content,
                                 "payload": _coerce_mapping(envelope.metadata),
@@ -627,6 +637,8 @@ class RuntimeTeamMessageBus:
                                     "message_id": envelope.message_id,
                                     "correlation_id": envelope.correlation_id,
                                     "workflow_id": response_protocol.workflow_id,
+                                    "actor_kind": response_protocol.actor_kind.value,
+                                    "actor_id": response_protocol.actor_id,
                                 },
                             }
                         ],
@@ -784,6 +796,32 @@ def _coerce_mapping(value: object) -> dict[str, Any]:
     if isinstance(value, Mapping):
         return {str(key): inner for key, inner in value.items()}
     return {}
+
+
+def _workflow_response_logical_sender(
+    *,
+    envelope: TeamMessageEnvelope,
+    response_protocol: Any,
+) -> dict[str, Any]:
+    actor_kind = str(getattr(response_protocol, "actor_kind", "") or "")
+    actor_id = _coerce_optional_string(getattr(response_protocol, "actor_id", None))
+    if actor_kind == "host":
+        return {
+            "sender_member_id": None,
+            "sender_name": actor_id or "host",
+            "sender_role": "host",
+        }
+    if actor_kind == "runtime":
+        return {
+            "sender_member_id": actor_id if actor_id == envelope.sender.member_id else None,
+            "sender_name": actor_id or "runtime",
+            "sender_role": "runtime",
+        }
+    return {
+        "sender_member_id": envelope.sender.member_id,
+        "sender_name": envelope.sender.name,
+        "sender_role": envelope.sender.role.value,
+    }
 
 
 def _coerce_optional_string(value: object) -> str | None:
