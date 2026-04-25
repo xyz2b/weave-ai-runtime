@@ -12,6 +12,7 @@ from ..agent_runtime import AgentInvocation
 from ..contracts import MessageRole, RuntimeMessage
 from ..definitions import IsolationMode, PermissionBehavior, PermissionMode
 from ..hosts.base import HostRuntime
+from ..jobs import task_status_to_job_status
 from ..permissions import PermissionContext, PermissionOutcome, PermissionRequest
 from ..team_control_plane import TeamRole
 from ..team_workflows import (
@@ -19,7 +20,7 @@ from ..team_workflows import (
     TeamWorkflowActorKind,
     TeamWorkflowStatus,
 )
-from ..tasking import TaskManager, TaskStatus
+from ..tasking import TaskStatus
 from .mailbox import FileBackedTeammateMailbox
 from .models import (
     MailboxEnvelope,
@@ -649,9 +650,8 @@ class PersistentTeammateOrchestrator:
                 metadata=registration.metadata,
             )
             self._write_snapshot(snapshot)
-            task_id = self._task_manager().create(
-                uuid4().hex,
-                title=f"teammate:{teammate_id}",
+            task_id = self._create_projection_job(
+                summary=f"teammate:{teammate_id}",
                 description=f"{registration.agent_name}:{claimed.kind}",
                 metadata={
                     "session_id": registration.session_id,
@@ -664,8 +664,8 @@ class PersistentTeammateOrchestrator:
                     "kind": "teammate_projection",
                     "teammate_state": snapshot.state.value,
                 },
-            ).task_id
-            self._task_manager().update(
+            )
+            self._update_projection_job(
                 task_id,
                 status=TaskStatus.RUNNING,
                 metadata={
@@ -706,7 +706,7 @@ class PersistentTeammateOrchestrator:
                 )
                 snapshot = snapshot.idle()
                 self._write_snapshot(snapshot)
-                self._task_manager().update(
+                self._update_projection_job(
                     task_id,
                     status=TaskStatus.FAILED,
                     error=str(exc),
@@ -760,7 +760,7 @@ class PersistentTeammateOrchestrator:
             else:
                 snapshot = snapshot.idle()
             self._write_snapshot(snapshot)
-            self._task_manager().update(
+            self._update_projection_job(
                 task_id,
                 status=terminal_task_status,
                 result={
@@ -832,7 +832,7 @@ class PersistentTeammateOrchestrator:
         projection = self._projections.get((team_id, teammate_id))
         task_id = projection.task_id if projection is not None else None
         if task_id is not None:
-            self._task_manager().update(
+            self._update_projection_job(
                 task_id,
                 status=TaskStatus.RUNNING,
                 metadata={
@@ -940,7 +940,7 @@ class PersistentTeammateOrchestrator:
         projection = self._projections.get((team_id, teammate_id))
         task_id = projection.task_id if projection is not None else None
         if task_id is not None:
-            self._task_manager().update(
+            self._update_projection_job(
                 task_id,
                 status=TaskStatus.RUNNING,
                 metadata={
@@ -973,7 +973,7 @@ class PersistentTeammateOrchestrator:
         projection = self._projections.get((team_id, teammate_id))
         task_id = projection.task_id if projection is not None else None
         if task_id is not None:
-            self._task_manager().update(
+            self._update_projection_job(
                 task_id,
                 status=TaskStatus.RUNNING,
                 metadata={
@@ -1192,8 +1192,38 @@ class PersistentTeammateOrchestrator:
             },
         )
 
-    def _task_manager(self) -> TaskManager:
-        return self._runtime_services.task_manager
+    def _create_projection_job(
+        self,
+        *,
+        summary: str,
+        description: str | None = None,
+        metadata: Mapping[str, Any] | None = None,
+    ) -> str:
+        record = self._runtime_services.job_service.create_or_update_compat(
+            uuid4().hex,
+            summary,
+            description=description,
+            metadata=metadata,
+        )
+        return record.job_id
+
+    def _update_projection_job(
+        self,
+        job_id: str,
+        *,
+        status: TaskStatus | None = None,
+        result: Mapping[str, Any] | None | object = None,
+        error: str | None | object = None,
+        metadata: Mapping[str, Any] | None = None,
+    ) -> None:
+        kwargs: dict[str, Any] = {"metadata": metadata}
+        if status is not None:
+            kwargs["status"] = task_status_to_job_status(status)
+        if result is not None:
+            kwargs["result"] = result
+        if error is not None:
+            kwargs["error"] = error
+        self._runtime_services.job_service.update_compat(job_id, **kwargs)
 
     async def _emit_notification(
         self,

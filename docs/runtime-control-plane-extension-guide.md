@@ -209,6 +209,7 @@ team collaboration 的 host-facing bridge 也保持同样的最小化原则：
 注意：
 
 - `TaskManager` 仍然存在，但它现在是 deprecated compatibility facade
+- runtime-owned constructor 应优先接 `RuntimeServices` 或 shared `JobService`；`task_manager` 只保留为 compat projection seam
 - authority record 是 `JobRecord`
 - host / tool surface 看到的是 canonical job payload，而不是 `ManagedTask` internals
 

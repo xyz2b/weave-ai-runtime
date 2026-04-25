@@ -69,9 +69,10 @@ from ..hooks import (
     UserPromptSubmitPayload,
 )
 from ..invocation_catalog import SkillInvocationProvider, build_invocation_resolution_context
+from ..jobs import DefaultJobService
 from ..permissions import PermissionContext
 from ..registries import AgentRegistry, InvocationRegistry, SkillRegistry, ToolRegistry
-from ..runtime_services import DefaultTaskService, RuntimeServices, SidecarContributionResult
+from ..runtime_services import RuntimeServices, SidecarContributionResult
 from ..runtime_kernel.config import (
     ModelProviderBinding,
     ModelRouteBinding,
@@ -675,6 +676,7 @@ class TurnEngine:
         notification_sink=None,
         tool_refresh_callback: ToolRefreshCallback | None = None,
         task_manager: TaskManager | None = None,
+        job_service: DefaultJobService | None = None,
         runtime_services: RuntimeServices | None = None,
         context_control_plane: Any | None = None,
         recovery_policy: Any | None = None,
@@ -690,20 +692,15 @@ class TurnEngine:
         self._agent_registry = agent_registry
         self._skill_registry = skill_registry
         self._invocation_registry = invocation_registry or _default_invocation_registry(skill_registry)
-        self._runtime_services = runtime_services or RuntimeServices(
-            tasks=DefaultTaskService(task_manager or TaskManager())
-        )
+        self._runtime_services = runtime_services or RuntimeServices(jobs=job_service)
         if self._runtime_services.context_assembler is None:
             self._runtime_services.context_assembler = prompt_composer or ContextAssembler()
         elif prompt_composer is not None:
             self._runtime_services.context_assembler = prompt_composer
-        if task_manager is not None and self._runtime_services.task_manager is not task_manager:
-            self._runtime_services.jobs = task_manager.job_service
-            self._runtime_services.tasks = DefaultTaskService(task_manager)
-            self._runtime_services.job_service.bind_runtime(
-                runtime_id=str(self._runtime_services.metadata.get("runtime_id") or "default"),
-                services=self._runtime_services,
-            )
+        if task_manager is not None:
+            self._runtime_services.bind_task_manager(task_manager)
+        elif job_service is not None and self._runtime_services.job_service is not job_service:
+            self._runtime_services.bind_job_service(job_service)
         if any(
             value is not None
             for value in (

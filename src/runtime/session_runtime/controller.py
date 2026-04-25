@@ -842,7 +842,7 @@ class SessionController:
                 agent=self._agent,
                 cwd=self._cwd,
                 messages=tuple(self._messages),
-                task_manager=self._runtime_services.task_manager,
+                job_service=self._runtime_services.job_service,
                 team_id=self._session_team_id(),
             )
         )
@@ -857,7 +857,7 @@ class SessionController:
                 session_id=self.state.session_id,
                 agent=self._agent,
                 cwd=self._cwd,
-                task_manager=self._runtime_services.task_manager,
+                job_service=self._runtime_services.job_service,
                 team_id=self._session_team_id(),
             )
         )

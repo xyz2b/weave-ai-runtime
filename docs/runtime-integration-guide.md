@@ -434,6 +434,7 @@ builtins
 - `job_*`
   - 面向后台执行记录与停止控制
   - 由 runtime-owned `JobService` 提供权威记录
+  - runtime-owned constructor / assembly seam 应优先复用 shared `JobService` 或 `RuntimeServices`
   - `TaskManager` 只保留为 Stage A / Stage B 的 deprecated compatibility projection，不再是 source of truth
   - 当前 builtin surface 为 `job_get`、`job_list`、`job_stop`
   - `job_get` / `job_list` / host `get_job` / `list_jobs` 复用同一个 canonical payload：

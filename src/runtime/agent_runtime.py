@@ -16,8 +16,9 @@ from .execution_policy import (
     enforce_child_delegation_allowed,
     policy_state_from_metadata,
 )
+from .jobs import DefaultJobService
 from .registries import AgentRegistry, SkillRegistry, ToolRegistry
-from .runtime_services import DefaultTaskService, RuntimeServices
+from .runtime_services import RuntimeServices
 from .runtime_kernel.config import ModelProviderBinding, ModelRouteBinding
 from .tasking import TaskManager
 from .tool_runtime import ToolCall, ToolCallStatus, ToolScheduler
@@ -72,6 +73,7 @@ class AgentRuntime:
         tool_registry: ToolRegistry,
         skill_registry: SkillRegistry,
         task_manager: TaskManager | None = None,
+        job_service: DefaultJobService | None = None,
         runtime_services: RuntimeServices | None = None,
         run_store: ChildRunStore | None = None,
         model_providers: dict[str, ModelProviderBinding] | None = None,
@@ -82,16 +84,11 @@ class AgentRuntime:
         self._agent_registry = agent_registry
         self._tool_registry = tool_registry
         self._skill_registry = skill_registry
-        self._runtime_services = runtime_services or RuntimeServices(
-            tasks=DefaultTaskService(task_manager or TaskManager())
-        )
-        if task_manager is not None and self._runtime_services.task_manager is not task_manager:
-            self._runtime_services.jobs = task_manager.job_service
-            self._runtime_services.tasks = DefaultTaskService(task_manager)
-            self._runtime_services.job_service.bind_runtime(
-                runtime_id=str(self._runtime_services.metadata.get("runtime_id") or "default"),
-                services=self._runtime_services,
-            )
+        self._runtime_services = runtime_services or RuntimeServices(jobs=job_service)
+        if task_manager is not None:
+            self._runtime_services.bind_task_manager(task_manager)
+        elif job_service is not None and self._runtime_services.job_service is not job_service:
+            self._runtime_services.bind_job_service(job_service)
         self._run_store = run_store or InMemoryChildRunStore()
         self._execution_service = AgentExecutionService(
             turn_engine=turn_engine,

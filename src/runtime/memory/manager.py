@@ -14,6 +14,7 @@ from uuid import uuid4
 
 from ..contracts import MessageRole, RuntimeMessage
 from ..definitions import AgentDefinition, MemoryScope
+from ..jobs import DefaultJobService, task_status_to_job_status
 from ..runtime_services import SidecarContributionResult
 from ..tasking import TaskManager, TaskStatus
 from .config import (
@@ -112,6 +113,62 @@ def _coerce_optional_string(value: object) -> str | None:
     return normalized or None
 
 
+def _resolve_job_service(
+    *,
+    job_service: DefaultJobService | None = None,
+    task_manager: TaskManager | None = None,
+) -> DefaultJobService | None:
+    if job_service is not None:
+        return job_service
+    if task_manager is not None:
+        return task_manager.job_service
+    return None
+
+
+def _create_compat_job(
+    job_service: DefaultJobService | None,
+    job_id: str,
+    summary: str,
+    *,
+    description: str | None = None,
+    metadata: Mapping[str, Any] | None = None,
+) -> None:
+    if job_service is None:
+        return
+    job_service.create_or_update_compat(
+        job_id,
+        summary,
+        description=description,
+        metadata=metadata,
+    )
+
+
+def _get_compat_job(job_service: DefaultJobService | None, job_id: str) -> Any | None:
+    if job_service is None:
+        return None
+    return job_service.get_sync(job_id)
+
+
+def _update_compat_job(
+    job_service: DefaultJobService | None,
+    job_id: str,
+    *,
+    status: TaskStatus | None = None,
+    result: Mapping[str, Any] | None | object = _MISSING,
+    error: str | None | object = _MISSING,
+    metadata: Mapping[str, Any] | None = None,
+) -> None:
+    if job_service is None:
+        return
+    job_service.update_compat(
+        job_id,
+        status=task_status_to_job_status(status) if status is not None else None,
+        result=result,
+        error=error,
+        metadata=metadata,
+    )
+
+
 @dataclass(slots=True)
 class _ScoredManifestCandidate:
     doc_id: str
@@ -144,7 +201,7 @@ class _BackgroundExtractionPayload:
     agent: AgentDefinition
     cwd: Path
     messages: tuple[RuntimeMessage, ...]
-    task_manager: TaskManager | None = None
+    job_service: DefaultJobService | None = None
 
 
 @dataclass(slots=True)
@@ -152,7 +209,7 @@ class _BackgroundConsolidationPayload:
     session_id: str
     agent: AgentDefinition
     cwd: Path
-    task_manager: TaskManager | None = None
+    job_service: DefaultJobService | None = None
 
 
 @dataclass(slots=True)
@@ -403,6 +460,7 @@ class LongTermMemory:
         agent: AgentDefinition,
         cwd: str | Path,
         messages: Sequence[RuntimeMessage],
+        job_service: DefaultJobService | None = None,
         task_manager: TaskManager | None = None,
         team_id: str | None = None,
     ) -> str | None:
@@ -410,13 +468,14 @@ class LongTermMemory:
         resolved_config = self._resolve_memory_config(context)
         if resolved_config.config.extraction.background_synthesis is False:
             return None
+        resolved_job_service = _resolve_job_service(job_service=job_service, task_manager=task_manager)
         key = self._background_key(session_id=session_id, agent=agent, cwd=cwd)
         payload = _BackgroundExtractionPayload(
             session_id=session_id,
             agent=agent,
             cwd=Path(cwd).resolve(),
             messages=tuple(messages),
-            task_manager=task_manager,
+            job_service=resolved_job_service,
         )
         existing = self._background_pending.get(key)
         if existing is not None:
@@ -427,21 +486,22 @@ class LongTermMemory:
         if task_id is None:
             task_id = uuid4().hex
             self._background_task_ids[key] = task_id
-            if task_manager is not None:
-                task_manager.create(
-                    task_id,
-                    title=f"memory-extraction:{normalize_memory_segment(agent.name, default='agent')}",
-                    metadata=_background_memory_job_metadata(
-                        session_id=session_id,
-                        agent_name=agent.name,
-                        kind="background_memory_extraction",
-                        team_id=team_id,
-                    ),
-                )
-        elif task_manager is not None:
-            task = task_manager.get(task_id)
+            _create_compat_job(
+                resolved_job_service,
+                task_id,
+                f"memory-extraction:{normalize_memory_segment(agent.name, default='agent')}",
+                metadata=_background_memory_job_metadata(
+                    session_id=session_id,
+                    agent_name=agent.name,
+                    kind="background_memory_extraction",
+                    team_id=team_id,
+                ),
+            )
+        else:
+            task = _get_compat_job(resolved_job_service, task_id)
             if task is not None:
-                task_manager.update(
+                _update_compat_job(
+                    resolved_job_service,
                     task_id,
                     metadata={
                         "queued_merge": True,
@@ -470,6 +530,7 @@ class LongTermMemory:
         session_id: str,
         agent: AgentDefinition,
         cwd: str | Path,
+        job_service: DefaultJobService | None = None,
         task_manager: TaskManager | None = None,
         team_id: str | None = None,
     ) -> str | None:
@@ -478,12 +539,13 @@ class LongTermMemory:
         self._refresh_consolidation_manifest(context)
         if resolved_config.config.consolidation.enable_background is False:
             return None
+        resolved_job_service = _resolve_job_service(job_service=job_service, task_manager=task_manager)
         key = self._consolidation_key(context)
         payload = _BackgroundConsolidationPayload(
             session_id=session_id,
             agent=agent,
             cwd=Path(cwd).resolve(),
-            task_manager=task_manager,
+            job_service=resolved_job_service,
         )
         with self._consolidation_state_lock:
             existing = self._consolidation_tasks_by_key.get(key)
@@ -499,21 +561,22 @@ class LongTermMemory:
             if task_id is None:
                 task_id = uuid4().hex
                 self._consolidation_task_ids[key] = task_id
-                if task_manager is not None:
-                    task_manager.create(
-                        task_id,
-                        title=f"memory-consolidation:{context.scope.value}",
-                        metadata=_background_memory_job_metadata(
-                            session_id=session_id,
-                            agent_name=agent.name,
-                            kind="background_memory_consolidation",
-                            team_id=team_id,
-                        ),
-                    )
-            elif task_manager is not None:
-                task = task_manager.get(task_id)
+                _create_compat_job(
+                    resolved_job_service,
+                    task_id,
+                    f"memory-consolidation:{context.scope.value}",
+                    metadata=_background_memory_job_metadata(
+                        session_id=session_id,
+                        agent_name=agent.name,
+                        kind="background_memory_consolidation",
+                        team_id=team_id,
+                    ),
+                )
+            else:
+                task = _get_compat_job(resolved_job_service, task_id)
                 if task is not None:
-                    task_manager.update(
+                    _update_compat_job(
+                        resolved_job_service,
                         task_id,
                         metadata={"queued_merge": True, "trigger_session_id": session_id},
                     )
@@ -1291,9 +1354,10 @@ class LongTermMemory:
     async def _run_background_extraction_queue(self, key: str) -> MemoryTurnResult:
         task_id = self._background_task_ids[key]
         aggregate = MemoryTurnResult()
-        task_manager = self._background_pending[key].task_manager
-        if task_manager is not None:
-            task_manager.update(
+        job_service = self._background_pending[key].job_service
+        if job_service is not None:
+            _update_compat_job(
+                job_service,
                 task_id,
                 status=TaskStatus.RUNNING,
                 metadata={"status": "running"},
@@ -1302,12 +1366,13 @@ class LongTermMemory:
         try:
             while key in self._background_pending:
                 payload = self._background_pending.pop(key)
-                task_manager = payload.task_manager or task_manager
+                job_service = payload.job_service or job_service
                 await asyncio.sleep(0)
                 result = self._execute_background_extraction(payload)
                 aggregate = _merge_turn_results(aggregate, result)
-                if task_manager is not None and key in self._background_pending:
-                    task_manager.update(
+                if job_service is not None and key in self._background_pending:
+                    _update_compat_job(
+                        job_service,
                         task_id,
                         status=TaskStatus.RUNNING,
                         metadata={
@@ -1316,8 +1381,9 @@ class LongTermMemory:
                         },
                     )
 
-            if task_manager is not None:
-                task_manager.update(
+            if job_service is not None:
+                _update_compat_job(
+                    job_service,
                     task_id,
                     status=TaskStatus.COMPLETED,
                     result={
@@ -1325,11 +1391,12 @@ class LongTermMemory:
                         "receipt_count": len(aggregate.receipts),
                     },
                     metadata={"status": "completed"},
-                )
+            )
             return aggregate
         except Exception as exc:  # pragma: no cover - defensive boundary
-            if task_manager is not None:
-                task_manager.update(
+            if job_service is not None:
+                _update_compat_job(
+                    job_service,
                     task_id,
                     status=TaskStatus.FAILED,
                     error=str(exc),
@@ -1401,9 +1468,10 @@ class LongTermMemory:
         aggregate = MemoryTurnResult()
         with self._consolidation_state_lock:
             pending = self._consolidation_pending.get(key)
-        task_manager = pending.task_manager if pending is not None else None
-        if task_manager is not None:
-            task_manager.update(
+        job_service = pending.job_service if pending is not None else None
+        if job_service is not None:
+            _update_compat_job(
+                job_service,
                 task_id,
                 status=TaskStatus.RUNNING,
                 metadata={"status": "running"},
@@ -1414,12 +1482,13 @@ class LongTermMemory:
                 payload = self._consolidation_pending.pop(key, None)
             if payload is None:
                 break
-            task_manager = payload.task_manager or task_manager
+            job_service = payload.job_service or job_service
             try:
                 result = self._execute_background_consolidation(payload)
             except Exception as exc:  # pragma: no cover - defensive boundary
-                if task_manager is not None:
-                    task_manager.update(
+                if job_service is not None:
+                    _update_compat_job(
+                        job_service,
                         task_id,
                         status=TaskStatus.FAILED,
                         error=str(exc),
@@ -1429,17 +1498,19 @@ class LongTermMemory:
             aggregate = _merge_turn_results(aggregate, result)
             with self._consolidation_state_lock:
                 has_pending = key in self._consolidation_pending
-            if task_manager is not None and has_pending:
-                task_manager.update(
+            if job_service is not None and has_pending:
+                _update_compat_job(
+                    job_service,
                     task_id,
                     status=TaskStatus.RUNNING,
                     metadata={"queued_merge": True, "trigger_session_id": payload.session_id},
                 )
 
-        if task_manager is not None and task_manager.get(task_id) is not None:
-            task = task_manager.get(task_id)
-            if task is not None and task.status != TaskStatus.FAILED:
-                task_manager.update(
+        if job_service is not None and _get_compat_job(job_service, task_id) is not None:
+            task = _get_compat_job(job_service, task_id)
+            if task is not None and task.status != task_status_to_job_status(TaskStatus.FAILED):
+                _update_compat_job(
+                    job_service,
                     task_id,
                     status=TaskStatus.COMPLETED,
                     result={
@@ -2536,6 +2607,7 @@ class LongTermMemoryService:
         agent: AgentDefinition,
         cwd: str | Path,
         messages: Sequence[RuntimeMessage],
+        job_service: DefaultJobService | None = None,
         task_manager: TaskManager | None = None,
         team_id: str | None = None,
     ) -> str | None:
@@ -2544,6 +2616,7 @@ class LongTermMemoryService:
             agent=agent,
             cwd=cwd,
             messages=messages,
+            job_service=job_service,
             task_manager=task_manager,
             team_id=team_id,
         )
@@ -2557,6 +2630,7 @@ class LongTermMemoryService:
         session_id: str,
         agent: AgentDefinition,
         cwd: str | Path,
+        job_service: DefaultJobService | None = None,
         task_manager: TaskManager | None = None,
         team_id: str | None = None,
     ) -> str | None:
@@ -2564,6 +2638,7 @@ class LongTermMemoryService:
             session_id=session_id,
             agent=agent,
             cwd=cwd,
+            job_service=job_service,
             task_manager=task_manager,
             team_id=team_id,
         )
@@ -2708,7 +2783,7 @@ def _merge_background_payload(
         agent=incoming.agent,
         cwd=incoming.cwd,
         messages=tuple(merged_messages),
-        task_manager=incoming.task_manager or existing.task_manager,
+        job_service=incoming.job_service or existing.job_service,
     )
 
 

@@ -1,10 +1,12 @@
 import asyncio
 from pathlib import Path
 
+from runtime.agent_runtime import AgentRuntime
 from runtime.builtins.tools import builtin_tools
 from runtime.contracts import RuntimePrivateContext
 from runtime.hosts.base import NullHostAdapter
 from runtime.jobs import (
+    DefaultJobService,
     JobExecutorBinding,
     JobExecutorContext,
     JobRecoveryResult,
@@ -18,6 +20,7 @@ from runtime.registries import AgentRegistry, SkillRegistry, ToolRegistry
 from runtime.runtime_kernel import RuntimeConfig, assemble_runtime
 from runtime.tasking import TaskStatus
 from runtime.tool_runtime import ToolCall, ToolCallStatus, ToolContext, ToolScheduler
+from runtime.turn_engine.engine import TurnEngine
 
 
 class _ImmediateExecutor:
@@ -63,6 +66,17 @@ class _FailingExecutor:
     async def recover(self, record, *, context: JobExecutorContext) -> JobRecoveryResult | None:
         _ = record, context
         return None
+
+
+class _DummyModelClient:
+    async def complete(self, request):
+        _ = request
+        raise AssertionError("unused in job-service seam tests")
+
+    async def stream(self, request):
+        _ = request
+        if False:
+            yield None
 
 
 def _job_tool_context(runtime, tmp_path: Path, *, session_id: str, team_id: str | None = None) -> ToolContext:
@@ -357,6 +371,61 @@ def test_task_manager_is_a_compatibility_projection_over_job_service(tmp_path: P
     assert projected is not None
     assert projected.status is TaskStatus.COMPLETED
     assert projected.result == {"source": "job_service"}
+
+
+def test_runtime_owned_constructors_accept_job_service_seams() -> None:
+    tool_registry = ToolRegistry()
+    agent_registry = AgentRegistry()
+    skill_registry = SkillRegistry()
+
+    engine_jobs = DefaultJobService()
+    turn_engine = TurnEngine(
+        model_client=_DummyModelClient(),
+        tool_registry=tool_registry,
+        agent_registry=agent_registry,
+        skill_registry=skill_registry,
+        job_service=engine_jobs,
+    )
+
+    turn_engine.runtime_services.task_manager.create(
+        "job-engine",
+        title="engine projection",
+        metadata={"session_id": "session-engine"},
+    )
+    engine_record = engine_jobs.get_sync("job-engine")
+
+    agent_jobs = DefaultJobService()
+    agent_turn_engine = TurnEngine(
+        model_client=_DummyModelClient(),
+        tool_registry=ToolRegistry(),
+        agent_registry=AgentRegistry(),
+        skill_registry=SkillRegistry(),
+        job_service=agent_jobs,
+    )
+    agent_runtime = AgentRuntime(
+        turn_engine=agent_turn_engine,
+        agent_registry=AgentRegistry(),
+        tool_registry=ToolRegistry(),
+        skill_registry=SkillRegistry(),
+        job_service=agent_jobs,
+    )
+
+    agent_runtime.runtime_services.task_manager.create(
+        "job-agent",
+        title="agent projection",
+        metadata={"session_id": "session-agent"},
+    )
+    agent_record = agent_jobs.get_sync("job-agent")
+
+    assert turn_engine.runtime_services.job_service is engine_jobs
+    assert turn_engine.runtime_services.task_manager.job_service is engine_jobs
+    assert engine_record is not None
+    assert engine_record.summary == "engine projection"
+    assert agent_runtime.runtime_services.job_service is agent_jobs
+    assert agent_runtime.runtime_services.task_manager.job_service is agent_jobs
+    assert agent_record is not None
+    assert agent_record.summary == "agent projection"
+    assert agent_jobs.executor_registry.get("agent") is not None
 
 
 def test_runtime_config_can_override_builtin_agent_executor(tmp_path: Path) -> None:

@@ -27,7 +27,7 @@
 - [x] 1.6 Reduce the stable public hook catalog to the approved v1 phases and mark remaining lifecycle points as advanced or internal in code and docs.
 - [x] 1.7 Narrow the stable hook registration story to runtime config, host integrations, skill-owned hooks, and session-facing APIs; keep turn-scoped programmatic APIs advanced-only.
 - [x] 1.8 Make `callback` the only required public hook handler kind and gate or demote `http`, `command`, `agent`, and `prompt` handlers as advanced or package-specific surfaces.
-- [ ] 1.9 Freeze `TaskManager` and shared `runtime_context` as bounded compatibility surfaces and remove any new authoritative dependencies on them from runtime-owned code.
+- [x] 1.9 Freeze `TaskManager` and shared `runtime_context` as bounded compatibility surfaces and remove any new authoritative dependencies on them from runtime-owned code.
 - [x] 1.10 Add regression coverage that assembles `runtime-core` alone and verifies root boot, stable hook behavior, built-in replacement, and compatibility diagnostics.
 
 ## 2. `runtime-memory`

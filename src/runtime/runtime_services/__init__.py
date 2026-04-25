@@ -257,17 +257,28 @@ class RuntimeServices:
     def __post_init__(self) -> None:
         manager = self.tasks.manager
         if manager is not None:
-            self.jobs = manager.job_service if self.jobs is None else manager.job_service
+            self.jobs = manager.job_service
         elif self.jobs is None:
             self.jobs = DefaultJobService()
         if self.jobs is None:  # pragma: no cover - defensive boundary
             self.jobs = DefaultJobService()
         if self.tasks.manager is None:
             self.tasks = DefaultTaskService(TaskManager(job_service=self.jobs))
-        self.jobs.bind_runtime(
-            runtime_id=str(self.metadata.get("runtime_id") or "default"),
-            services=self,
-        )
+        self._bind_job_runtime(self.jobs)
+
+    def bind_job_service(self, job_service: DefaultJobService) -> None:
+        previous_kernel = self.jobs.kernel if self.jobs is not None else None
+        self.jobs = job_service
+        manager = self.tasks.manager
+        if manager is None or manager.job_service is not job_service:
+            self.tasks = DefaultTaskService(TaskManager(job_service=job_service))
+        self._bind_job_runtime(job_service, kernel=previous_kernel)
+
+    def bind_task_manager(self, task_manager: TaskManager) -> None:
+        previous_kernel = self.jobs.kernel if self.jobs is not None else None
+        self.jobs = task_manager.job_service
+        self.tasks = DefaultTaskService(task_manager)
+        self._bind_job_runtime(task_manager.job_service, kernel=previous_kernel)
 
     @property
     def task_manager(self) -> TaskManager:
@@ -320,6 +331,14 @@ class RuntimeServices:
     @property
     def notification_sink(self) -> Any:
         return self.host.emit_notification
+
+    def _bind_job_runtime(self, job_service: DefaultJobService, *, kernel: Any | None = None) -> None:
+        resolved_kernel = job_service.kernel if job_service.kernel is not None else kernel
+        job_service.bind_runtime(
+            runtime_id=str(self.metadata.get("runtime_id") or "default"),
+            services=self,
+            kernel=resolved_kernel,
+        )
 
     def bind_execution(
         self,
