@@ -75,13 +75,13 @@ class PersistentTeammateHostBridge:
             return await self._delegate.request_permission(request)
         workflow_service = self._orchestrator.workflow_service
         if workflow_service is None:
-            return await self._delegate.request_permission(request)
+            return await self._delegate_permission_request_with_wait(details=details, request=request)
         leader_member_id = self._leader_member_id(details["team_id"])
         team = self._team_record(details["team_id"])
         requester_name = self._teammate_name(details["team_id"], details["teammate_id"])
         responder_name = self._leader_name(details["team_id"])
         if team is None or leader_member_id is None:
-            return await self._delegate.request_permission(request)
+            return await self._delegate_permission_request_with_wait(details=details, request=request)
         workflow = await workflow_service.create_permission_workflow(
             team=team,
             requester_member_id=details["teammate_id"],
@@ -147,6 +147,40 @@ class PersistentTeammateHostBridge:
             permission_id=workflow.workflow_id,
         )
         return self._terminal_permission_outcome(outcome, request)
+
+    async def _delegate_permission_request_with_wait(
+        self,
+        *,
+        details: Mapping[str, str],
+        request: PermissionRequest,
+    ) -> PermissionOutcome:
+        permission_id = f"hostperm:{uuid4().hex}"
+        self._orchestrator.enter_permission_wait(
+            team_id=details["team_id"],
+            teammate_id=details["teammate_id"],
+            permission_id=permission_id,
+        )
+        await self.emit_notification(
+            RuntimeMessage(
+                message_id=uuid4().hex,
+                role=MessageRole.NOTIFICATION,
+                content=f"Teammate '{details['teammate_id']}' is waiting for permission",
+                metadata={
+                    "teammate_id": details["teammate_id"],
+                    "team_id": details["team_id"],
+                    "permission_id": permission_id,
+                    "source": "teammate_permission_bridge",
+                },
+            )
+        )
+        try:
+            return await self._delegate.request_permission(request)
+        finally:
+            self._orchestrator.exit_permission_wait(
+                team_id=details["team_id"],
+                teammate_id=details["teammate_id"],
+                permission_id=permission_id,
+            )
 
     async def request_elicitation(self, request: Any) -> Any:
         return await self._delegate.request_elicitation(request)

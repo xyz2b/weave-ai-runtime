@@ -244,6 +244,7 @@ hooks:
 - 想让宿主统一注入策略，用 `host API`。
 - 想在一次会话里动态开关能力，用 `session API`。
 - 想只影响当前 turn，优先用 `turn API`。
+- 不要把 hook 写在 agent frontmatter 里当成普通 v1 能力面；agent-owned hooks 现在只按 compatibility-only 处理，并会在装配时给出 warning。
 
 ### 1.7 Hook 注册后如何观察和诊断
 

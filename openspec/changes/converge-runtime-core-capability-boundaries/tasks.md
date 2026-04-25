@@ -42,7 +42,7 @@
 - [ ] 3.1 Move first-party team control and teammate orchestration wiring behind explicit runtime service and assembly contracts while preserving current behavior.
 - [ ] 3.2 Re-home team-owned tools such as `team_create`, `team_spawn`, `team_send`, `team_respond`, and `team_delete` into `runtime-team`.
 - [ ] 3.3 Preserve shared execution reuse, host-facing behavior, observability, and lifecycle projection contracts when teammate orchestration lives outside `runtime-core`.
-- [ ] 3.4 Add regression coverage that `runtime-default` still includes team control and teammate orchestration out of the box.
+- [x] 3.4 Add regression coverage that `runtime-default` still includes team control and teammate orchestration out of the box.
 
 ## 4. `runtime-devtools`
 

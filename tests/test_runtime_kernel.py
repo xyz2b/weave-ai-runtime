@@ -36,6 +36,7 @@ from runtime.runtime_kernel import (
     build_runtime_kernel,
 )
 from runtime.runtime_services import NoopMemoryService
+from runtime.tool_runtime import ToolContext
 from runtime.turn_engine import (
     ModelRequest,
     ModelStreamEvent,
@@ -221,6 +222,83 @@ def test_runtime_core_distribution_remains_runnable_without_memory_or_devtools(t
     assert runtime.kernel.tool_registry.get("team_spawn") is None
     assert runtime.kernel.skill_registry.get("remember") is None
     assert isinstance(runtime.services.memory, NoopMemoryService)
+    assert OPENAI_PROVIDER_NAME not in runtime.kernel.config.model_providers
+    assert OPENAI_ROUTE_NAME not in runtime.kernel.config.model_routes
+    assert runtime.kernel.config.default_model_route is None
+
+
+def test_runtime_default_distribution_wires_team_capability_out_of_the_box(tmp_path: Path) -> None:
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            distribution=RuntimeDistribution.DEFAULT,
+        )
+    )
+
+    team_create = runtime.kernel.tool_registry.get("team_create")
+    assert team_create is not None
+    assert runtime.kernel.first_party_packages == (
+        "runtime-core",
+        "runtime-memory",
+        "runtime-team",
+    )
+    assert runtime.teammates is not None
+    assert runtime.team_control_plane is not None
+    assert runtime.team_message_bus is not None
+    assert runtime.team_workflows is not None
+
+    result = asyncio.run(
+        team_create.execute(
+            {},
+            ToolContext(
+                session_id="leader-session",
+                turn_id="turn-1",
+                agent_name="main-router",
+                cwd=tmp_path,
+                tool_registry=runtime.kernel.tool_registry,
+                agent_registry=runtime.kernel.agent_registry,
+                skill_registry=runtime.kernel.skill_registry,
+                runtime_services=runtime.services,
+            ),
+        )
+    )
+
+    assert result["team_id"] != ""
+    assert result["leader_session_id"] == "leader-session"
+    assert result["created"] is True
+
+
+def test_agent_definition_hooks_emit_warning_and_are_not_registered(tmp_path: Path) -> None:
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            builtins=BuiltinPackConfig(
+                extra_agents=[
+                    AgentDefinition(
+                        name="hook-agent",
+                        description="agent with ignored hooks",
+                        prompt="Use compatibility surfaces.",
+                        hooks={
+                            RuntimeHookPhase.SESSION_START.value: {
+                                "handler": lambda _payload: None,
+                            }
+                        },
+                        origin=DefinitionOrigin(DefinitionSource.BUNDLED, path=Path("<hook-agent>")),
+                    )
+                ]
+            ),
+        )
+    )
+
+    agent = runtime.kernel.agent_registry.get("hook-agent")
+    session = runtime.create_session(session_id="hook-agent-session", agent_name="hook-agent")
+
+    assert agent is not None
+    assert agent.hooks == {}
+    assert agent.metadata["ignored_agent_hooks"] == (RuntimeHookPhase.SESSION_START.value,)
+    assert agent.metadata["hook_surface_status"] == "compatibility-only"
+    assert any(diag.code == "agent_hooks_ignored" for diag in runtime.kernel.diagnostics)
+    assert session.list_hooks(HookInventoryQuery(include_inactive=True)) == ()
 
 
 def test_runtime_core_distribution_supports_stable_hooks_and_compatibility_diagnostics(

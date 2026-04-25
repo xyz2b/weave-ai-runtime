@@ -155,6 +155,11 @@ Tool '<name>' has no execution handler
 3. 正文写该 agent 的系统 prompt。
 4. 用 `agent_name="your-agent"` 创建 session 或执行 prompt。
 
+补充约束：
+
+- agent frontmatter 里的 `hooks` 不属于普通 v1 扩展面；当前 runtime 会把它们视为 compatibility-only，并在装配时发出 warning。
+- 如果你需要稳定公开的 hook 能力，优先放在 `RuntimeConfig(hooks=...)`、host/session API，或 skill frontmatter 的 `hooks` 里。
+
 ### 2.4 Skill：可复用 workflow / prompt envelope
 
 `Skill` 比 `Agent` 更像“可复用工作流片段”。

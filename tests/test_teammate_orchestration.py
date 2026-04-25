@@ -9,6 +9,7 @@ from runtime import (
     MessageRole,
     PermissionBehavior,
     RuntimeConfig,
+    RuntimeDistribution,
     TeammateLifecycleState,
     TeammateOrchestrationConfig,
     assemble_runtime,
@@ -90,11 +91,16 @@ class GatedModelClient(FakeModelClient):
 
 
 def test_runtime_feature_gate_exposes_persistent_teammate_orchestration(tmp_path: Path) -> None:
-    disabled = assemble_runtime(RuntimeConfig(working_directory=tmp_path))
+    disabled = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            distribution=RuntimeDistribution.CORE,
+        )
+    )
     enabled = assemble_runtime(
         RuntimeConfig(
             working_directory=tmp_path,
-            teammate_orchestration=TeammateOrchestrationConfig(enabled=True),
+            distribution=RuntimeDistribution.DEFAULT,
         )
     )
 

@@ -75,7 +75,7 @@ from ..team_message_bus import FileBackedTeamMessageBus, RuntimeTeamMessageBus
 from ..team_workflows import FileBackedTeamWorkflowStore, RuntimeTeamWorkflowService, workflow_record_to_payload
 from ..skill_runtime import SkillExecutionResult, SkillExecutor
 from ..tasking import TaskManager
-from ..teammate_orchestration import PersistentTeammateOrchestrator
+from ..teammate_orchestration import PersistentTeammateOrchestrator, TeammateOrchestrationConfig
 from ..tool_runtime import ToolContext
 from ..turn_engine.composer import ContextAssembler
 from ..turn_engine.engine import TurnEngine, TurnStreamEvent, TurnStreamEventType
@@ -1313,8 +1313,8 @@ def _coerce_definition_source(value: Any) -> DefinitionSource:
 
 
 def build_runtime_kernel(config: RuntimeConfig) -> RuntimeKernel:
-    config = _with_bundled_openai_baseline(config)
     selected_packages = config.selected_first_party_packages()
+    config = _with_bundled_openai_baseline(config, selected_packages=selected_packages)
     tool_registry = ToolRegistry()
     agent_registry = AgentRegistry()
     skill_registry = SkillRegistry()
@@ -1435,8 +1435,8 @@ def _assemble_runtime_stack(kernel: RuntimeKernel) -> RuntimeAssembly:
     team_control_plane = None
     team_message_bus = None
     team_workflows = None
-    teammate_config = kernel.config.teammate_orchestration
-    if teammate_config is not None and teammate_config.enabled:
+    teammate_config = _resolve_teammate_orchestration_config(kernel)
+    if teammate_config is not None:
         teammates = PersistentTeammateOrchestrator(
             config=teammate_config,
             project_root=kernel.config.working_directory,
@@ -1759,7 +1759,13 @@ def _default_model_client(config: RuntimeConfig) -> Any:
     return None
 
 
-def _with_bundled_openai_baseline(config: RuntimeConfig) -> RuntimeConfig:
+def _with_bundled_openai_baseline(
+    config: RuntimeConfig,
+    *,
+    selected_packages: tuple[str, ...],
+) -> RuntimeConfig:
+    if "runtime-openai" not in selected_packages:
+        return config
     model_providers = dict(config.model_providers)
     if OPENAI_PROVIDER_NAME not in model_providers:
         model_providers[OPENAI_PROVIDER_NAME] = bundled_openai_provider_binding()
@@ -1778,6 +1784,20 @@ def _with_bundled_openai_baseline(config: RuntimeConfig) -> RuntimeConfig:
         model_routes=model_routes,
         default_model_route=default_model_route,
     )
+
+
+def _resolve_teammate_orchestration_config(
+    kernel: RuntimeKernel,
+) -> TeammateOrchestrationConfig | None:
+    configured = kernel.config.teammate_orchestration
+    runtime_team_selected = "runtime-team" in kernel.first_party_packages
+    if runtime_team_selected:
+        if configured is None:
+            return TeammateOrchestrationConfig(enabled=True)
+        return replace(configured, enabled=True)
+    if configured is not None and configured.enabled:
+        return configured
+    return None
 
 
 def _helper_session_close_status(
