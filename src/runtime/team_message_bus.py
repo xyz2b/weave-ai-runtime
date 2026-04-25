@@ -739,12 +739,14 @@ class RuntimeTeamMessageBus:
         workflow_id: str,
         workflow_kind: TeamWorkflowKind,
     ) -> bool:
+        if not str(workflow_id).strip():
+            return False
         workflow_service = getattr(self._runtime_services, "team_workflows", None)
         if workflow_service is None or not hasattr(workflow_service, "get"):
-            return True
+            return False
         record = workflow_service.get(workflow_id)
         if record is None:
-            return True
+            return False
         if record.team_id != team.team_id or record.terminal:
             return False
         if workflow_kind is TeamWorkflowKind.PERMISSION:

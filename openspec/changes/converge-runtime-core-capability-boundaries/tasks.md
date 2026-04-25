@@ -32,23 +32,23 @@
 
 ## 2. `runtime-memory`
 
-- [ ] 2.1 Move first-party memory implementation wiring behind explicit runtime service, provider, manager, and assembly contracts while preserving current memory behavior.
-- [ ] 2.2 Re-home memory-owned workflows and skills, especially `remember`, into `runtime-memory` rather than `runtime-core`.
-- [ ] 2.3 Ensure `runtime-default` wires the first-party memory capability automatically without private kernel imports or third-party discovery steps.
-- [ ] 2.4 Add regression coverage that retrieval, post-turn extraction, memory scope behavior, and session availability remain unchanged after the package move.
+- [x] 2.1 Move first-party memory implementation wiring behind explicit runtime service, provider, manager, and assembly contracts while preserving current memory behavior.
+- [x] 2.2 Re-home memory-owned workflows and skills, especially `remember`, into `runtime-memory` rather than `runtime-core`.
+- [x] 2.3 Ensure `runtime-default` wires the first-party memory capability automatically without private kernel imports or third-party discovery steps.
+- [x] 2.4 Add regression coverage that retrieval, post-turn extraction, memory scope behavior, and session availability remain unchanged after the package move.
 
 ## 3. `runtime-team`
 
-- [ ] 3.1 Move first-party team control and teammate orchestration wiring behind explicit runtime service and assembly contracts while preserving current behavior.
-- [ ] 3.2 Re-home team-owned tools such as `team_create`, `team_spawn`, `team_send`, `team_respond`, and `team_delete` into `runtime-team`.
-- [ ] 3.3 Preserve shared execution reuse, host-facing behavior, observability, and lifecycle projection contracts when teammate orchestration lives outside `runtime-core`.
+- [x] 3.1 Move first-party team control and teammate orchestration wiring behind explicit runtime service and assembly contracts while preserving current behavior.
+- [x] 3.2 Re-home team-owned tools such as `team_create`, `team_spawn`, `team_send`, `team_respond`, and `team_delete` into `runtime-team`.
+- [x] 3.3 Preserve shared execution reuse, host-facing behavior, observability, and lifecycle projection contracts when teammate orchestration lives outside `runtime-core`.
 - [x] 3.4 Add regression coverage that `runtime-default` still includes team control and teammate orchestration out of the box.
 
 ## 4. `runtime-devtools`
 
-- [ ] 4.1 Move workspace-, file-, shell-, and web-oriented built-ins such as `read`, `glob`, `grep`, `edit`, `write`, `bash`, `web_fetch`, and `web_search` into `runtime-devtools`.
-- [ ] 4.2 Move specialized coding-oriented agents such as `explore`, `plan`, and `verification` into `runtime-devtools` while preserving the same built-in discovery and replacement rules.
-- [ ] 4.3 Update built-in discovery, visibility, and packaging tests to cover `runtime-core`, `runtime-default`, and `runtime-full` compositions after the devtools split.
+- [x] 4.1 Move workspace-, file-, shell-, and web-oriented built-ins such as `read`, `glob`, `grep`, `edit`, `write`, `bash`, `web_fetch`, and `web_search` into `runtime-devtools`.
+- [x] 4.2 Move specialized coding-oriented agents such as `explore`, `plan`, and `verification` into `runtime-devtools` while preserving the same built-in discovery and replacement rules.
+- [x] 4.3 Update built-in discovery, visibility, and packaging tests to cover `runtime-core`, `runtime-default`, and `runtime-full` compositions after the devtools split.
 - [ ] 4.4 Add migration notes and diagnostics for users who relied on the old default workspace-oriented tool pools now moving behind `runtime-full`.
 
 ## 5. Secondary First-Party Packages

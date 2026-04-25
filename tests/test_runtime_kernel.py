@@ -1,9 +1,11 @@
 import asyncio
+from dataclasses import replace
 from io import BytesIO
 from pathlib import Path
 from urllib.error import HTTPError
 
 from runtime.builtins import load_builtin_pack
+from runtime.builtins.tools import builtin_tools
 from runtime.context_window import ModelContextWindowProfile, RouteContextWindowPolicy
 from runtime.contracts import MessageRole
 from runtime.hooks import (
@@ -176,6 +178,7 @@ def test_distribution_profiles_publish_expected_builtin_ownership(tmp_path: Path
     assert default_agent_names == {"general-purpose", "main-router"}
     assert default_skill_names == {"remember"}
     assert next(tool for tool in default_pack.tools if tool.name == "team_spawn").metadata["builtin_owner"] == "runtime-team"
+    assert next(skill for skill in default_pack.skills if skill.name == "remember").metadata["builtin_owner"] == "runtime-memory"
 
     full_tool_names = {tool.name for tool in full_pack.tools}
     full_agent_names = {agent.name for agent in full_pack.agents}
@@ -184,6 +187,91 @@ def test_distribution_profiles_publish_expected_builtin_ownership(tmp_path: Path
     assert "verification" in full_agent_names
     assert "verify" in full_skill_names
     assert next(tool for tool in full_pack.tools if tool.name == "read").metadata["builtin_owner"] == "runtime-devtools"
+    assert next(agent for agent in full_pack.agents if agent.name == "verification").metadata["builtin_owner"] == "runtime-devtools"
+
+
+def test_distribution_profiles_expose_expected_visible_invocations(tmp_path: Path) -> None:
+    core_root = tmp_path / "core"
+    default_root = tmp_path / "default"
+    full_root = tmp_path / "full"
+    core_root.mkdir()
+    default_root.mkdir()
+    full_root.mkdir()
+
+    core_model = FakeModelClient(
+        [
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-core-visible"}),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "core"}),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+            ]
+        ]
+    )
+    default_model = FakeModelClient(
+        [
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-default-visible"}),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "default"}),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+            ]
+        ]
+    )
+    full_model = FakeModelClient(
+        [
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-full-visible"}),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "full"}),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+            ]
+        ]
+    )
+
+    core_runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=core_root,
+            distribution=RuntimeDistribution.CORE,
+            model_client=core_model,
+        )
+    )
+    default_runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=default_root,
+            distribution=RuntimeDistribution.DEFAULT,
+            model_client=default_model,
+        )
+    )
+    full_runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=full_root,
+            distribution=RuntimeDistribution.FULL,
+            model_client=full_model,
+        )
+    )
+
+    asyncio.run(core_runtime.run_prompt("hello", session_id="core-visible"))
+    asyncio.run(default_runtime.run_prompt("hello", session_id="default-visible"))
+    asyncio.run(full_runtime.run_prompt("hello", session_id="full-visible"))
+
+    core_tools = set(core_model.requests[0].turn_context.available_tools)
+    core_skills = set(core_model.requests[0].turn_context.available_skills)
+    default_tools = set(default_model.requests[0].turn_context.available_tools)
+    default_skills = set(default_model.requests[0].turn_context.available_skills)
+    default_agents = set(default_model.requests[0].turn_context.available_agents)
+    full_tools = set(full_model.requests[0].turn_context.available_tools)
+    full_skills = set(full_model.requests[0].turn_context.available_skills)
+    full_agents = set(full_model.requests[0].turn_context.available_agents)
+
+    assert "team_spawn" not in core_tools
+    assert "remember" not in core_skills
+    assert "read" not in core_tools
+    assert "team_spawn" in default_tools
+    assert "remember" in default_skills
+    assert "read" not in default_tools
+    assert "verification" not in default_agents
+    assert "read" in full_tools
+    assert "remember" in full_skills
+    assert "verification" in full_agents
+    assert "explore" in full_agents
 
 
 def test_runtime_core_distribution_remains_runnable_without_memory_or_devtools(tmp_path: Path) -> None:
@@ -246,6 +334,10 @@ def test_runtime_default_distribution_wires_team_capability_out_of_the_box(tmp_p
     assert runtime.team_control_plane is not None
     assert runtime.team_message_bus is not None
     assert runtime.team_workflows is not None
+    assert runtime.services.teammates is runtime.teammates
+    assert runtime.services.team_control_plane is runtime.team_control_plane
+    assert runtime.services.team_message_bus is runtime.team_message_bus
+    assert runtime.services.team_workflows is runtime.team_workflows
 
     result = asyncio.run(
         team_create.execute(
@@ -266,6 +358,35 @@ def test_runtime_default_distribution_wires_team_capability_out_of_the_box(tmp_p
     assert result["team_id"] != ""
     assert result["leader_session_id"] == "leader-session"
     assert result["created"] is True
+
+
+def test_runtime_full_distribution_keeps_devtools_replacement_rules(tmp_path: Path) -> None:
+    read_replacement = replace(
+        next(tool for tool in builtin_tools() if tool.name == "read"),
+        description="custom devtools read",
+    )
+    verification_replacement = AgentDefinition(
+        name="verification",
+        description="custom verification agent",
+        prompt="verify replacements",
+        origin=DefinitionOrigin(DefinitionSource.BUNDLED, path=Path("<verification>")),
+    )
+
+    kernel = build_runtime_kernel(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            distribution=RuntimeDistribution.FULL,
+            builtins=BuiltinPackConfig(
+                tool_replacements={"read": read_replacement},
+                agent_replacements={"verification": verification_replacement},
+            ),
+        )
+    )
+
+    assert kernel.tool_registry.get("read") is not None
+    assert kernel.tool_registry.get("read").description == "custom devtools read"
+    assert kernel.agent_registry.get("verification") is not None
+    assert kernel.agent_registry.get("verification").description == "custom verification agent"
 
 
 def test_agent_definition_hooks_emit_warning_and_are_not_registered(tmp_path: Path) -> None:

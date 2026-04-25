@@ -31,6 +31,7 @@ from runtime.memory.schema import serialize_memory_artifact
 from runtime.permissions import PermissionContext
 from runtime.registries import AgentRegistry, ToolRegistry
 from runtime.runtime_kernel import BuiltinPackConfig, RuntimeConfig, assemble_runtime
+from runtime.runtime_kernel import RuntimeDistribution
 from runtime.runtime_services import RuntimeServices
 from runtime.session_runtime import (
     InMemoryTranscriptStore,
@@ -278,6 +279,130 @@ def test_main_thread_memory_extraction_persists_and_surfaces_on_next_turn(tmp_pa
 
     fragments = model_client.requests[1].turn_context.memory_fragments
     assert any("The project uses pytest" in fragment for fragment in fragments)
+
+
+def test_runtime_default_distribution_preserves_memory_session_availability_and_retrieval(
+    tmp_path: Path,
+) -> None:
+    project_root = _load_reference_memory_fixture(tmp_path)
+    model_client = FakeModelClient(
+        [
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-runtime-memory"}),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "done"}),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+            ]
+        ]
+    )
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=project_root,
+            distribution=RuntimeDistribution.DEFAULT,
+            model_client=model_client,
+        )
+    )
+
+    produced = asyncio.run(
+        runtime.run_prompt(
+            "How do I run pytest in this repo?",
+            session_id="session-runtime-memory",
+        )
+    )
+
+    agent = runtime.kernel.agent_registry.get("main-router")
+    assert agent is not None
+    resolved = runtime.services.memory.resolve_context(
+        session_id="session-runtime-memory",
+        agent=agent,
+        cwd=project_root,
+    )
+
+    assert produced[-1].text == "done"
+    assert runtime.kernel.skill_registry.get("remember") is not None
+    assert resolved.entrypoint_path.exists()
+    assert resolved.long_term_manifest_path.exists()
+    assert any("Use pytest via `pytest -q`." in fragment for fragment in model_client.requests[0].turn_context.memory_fragments)
+    assert any(
+        "The project uses pytest for unit tests" in fragment
+        for fragment in model_client.requests[0].turn_context.memory_fragments
+    )
+
+
+def test_runtime_default_distribution_preserves_memory_extraction_and_local_scope(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "project"
+    workspace = project_root / "workspace"
+    workspace.mkdir(parents=True)
+    model_client = FakeModelClient(
+        [
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-runtime-local-1"}),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "Noted"}),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+            ],
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-runtime-local-2"}),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "Reminder"}),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+            ],
+        ]
+    )
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=project_root,
+            distribution=RuntimeDistribution.DEFAULT,
+            model_client=model_client,
+            builtins=BuiltinPackConfig(
+                extra_agents=[
+                    AgentDefinition(
+                        name="local-memory",
+                        description="local memory agent",
+                        prompt="route",
+                        memory=MemoryScope.LOCAL,
+                    )
+                ]
+            ),
+        )
+    )
+
+    asyncio.run(
+        runtime.run_prompt(
+            "Remember that the project uses local conventions in this workspace. I prefer concise answers.",
+            session_id="session-runtime-local",
+            agent_name="local-memory",
+            cwd=workspace,
+        )
+    )
+    asyncio.run(
+        runtime.run_prompt(
+            "What should I remember here?",
+            session_id="session-runtime-local",
+            agent_name="local-memory",
+            cwd=workspace,
+        )
+    )
+
+    local_agent = runtime.kernel.agent_registry.get("local-memory")
+    assert local_agent is not None
+    resolved = runtime.services.memory.resolve_context(
+        session_id="session-runtime-local",
+        agent=local_agent,
+        cwd=workspace,
+    )
+    local_memory_root = workspace / ".runtime" / "memory"
+    preference_documents = sorted((local_memory_root / "documents" / "preferences").glob("*.md"))
+    convention_documents = sorted((local_memory_root / "documents" / "conventions").glob("*.md"))
+
+    assert resolved.scope == MemoryScope.LOCAL
+    assert resolved.memory_root == local_memory_root
+    assert len(preference_documents) == 1
+    assert len(convention_documents) == 1
+    assert not list((project_root / ".runtime" / "memory" / "documents").rglob("*.md"))
+    assert any(
+        "project uses local conventions in this workspace" in fragment
+        for fragment in model_client.requests[1].turn_context.memory_fragments
+    )
 
 
 def test_record_turn_with_receipts_routes_fact_taxonomy_to_shared_agent_session_and_drop(tmp_path: Path) -> None:

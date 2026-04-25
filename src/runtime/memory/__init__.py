@@ -20,12 +20,14 @@ from .models import (
     MemoryWriteReceipt,
     ResolvedMemoryScope,
 )
+from .package import MemoryCapabilityComponents, assemble_memory_capability
 from .providers import FileMemoryProvider, MemoryProvider
 
 __all__ = [
     "FileMemoryProvider",
     "LongTermMemory",
     "LongTermMemoryService",
+    "MemoryCapabilityComponents",
     "MemoryConsolidationConfig",
     "MemoryDocument",
     "MemoryEmbeddingShortlistProvider",
@@ -46,4 +48,5 @@ __all__ = [
     "MemoryWriteReceipt",
     "ResolvedMemoryScope",
     "ResolvedMemoryConfig",
+    "assemble_memory_capability",
 ]

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, replace
 
 from ..definitions import AgentDefinition, SkillDefinition, ToolDefinition
@@ -22,17 +23,61 @@ class BuiltinPack:
 
 
 def builtin_package_catalog() -> dict[str, BuiltinPack]:
+    from ..devtools.builtins import devtools_builtin_agents, devtools_builtin_tools
+    from ..memory.builtins import memory_builtin_skills
+    from ..team.builtins import team_builtin_tools
+
     tool_index = {definition.name: definition for definition in builtin_tools()}
     agent_index = {definition.name: definition for definition in builtin_agents()}
     skill_index = {definition.name: definition for definition in builtin_skills()}
     return {
-        package_name: BuiltinPack(
-            packages=(package_name,),
-            tools=_select_tool_definitions(tool_index, spec.builtin_tools, package_name),
-            agents=_select_agent_definitions(agent_index, spec.builtin_agents, package_name),
-            skills=_select_skill_definitions(skill_index, spec.builtin_skills, package_name),
-        )
-        for package_name, spec in FIRST_PARTY_PACKAGE_SPECS.items()
+        "runtime-core": BuiltinPack(
+            packages=("runtime-core",),
+            tools=_select_tool_definitions(
+                tool_index,
+                FIRST_PARTY_PACKAGE_SPECS["runtime-core"].builtin_tools,
+                "runtime-core",
+            ),
+            agents=_select_agent_definitions(
+                agent_index,
+                FIRST_PARTY_PACKAGE_SPECS["runtime-core"].builtin_agents,
+                "runtime-core",
+            ),
+            skills=(),
+        ),
+        "runtime-memory": BuiltinPack(
+            packages=("runtime-memory",),
+            tools=(),
+            agents=(),
+            skills=_annotate_skill_definitions(memory_builtin_skills(), "runtime-memory"),
+        ),
+        "runtime-team": BuiltinPack(
+            packages=("runtime-team",),
+            tools=_annotate_tool_definitions(team_builtin_tools(), "runtime-team"),
+            agents=(),
+            skills=(),
+        ),
+        "runtime-compaction": _empty_builtin_pack("runtime-compaction"),
+        "runtime-isolation": _empty_builtin_pack("runtime-isolation"),
+        "runtime-openai": _empty_builtin_pack("runtime-openai"),
+        "runtime-hosts-reference": _empty_builtin_pack("runtime-hosts-reference"),
+        "runtime-stores-file": _empty_builtin_pack("runtime-stores-file"),
+        "runtime-builtin-workflows": BuiltinPack(
+            packages=("runtime-builtin-workflows",),
+            tools=(),
+            agents=(),
+            skills=_select_skill_definitions(
+                skill_index,
+                FIRST_PARTY_PACKAGE_SPECS["runtime-builtin-workflows"].builtin_skills,
+                "runtime-builtin-workflows",
+            ),
+        ),
+        "runtime-devtools": BuiltinPack(
+            packages=("runtime-devtools",),
+            tools=_annotate_tool_definitions(devtools_builtin_tools(), "runtime-devtools"),
+            agents=_annotate_agent_definitions(devtools_builtin_agents(), "runtime-devtools"),
+            skills=(),
+        ),
     }
 
 
@@ -67,7 +112,7 @@ def _select_tool_definitions(
     names: tuple[str, ...],
     package_name: str,
 ) -> tuple[ToolDefinition, ...]:
-    return tuple(_annotate_builtin_owner(index[name], package_name) for name in names)
+    return _annotate_tool_definitions((index[name] for name in names), package_name)
 
 
 def _select_agent_definitions(
@@ -75,7 +120,7 @@ def _select_agent_definitions(
     names: tuple[str, ...],
     package_name: str,
 ) -> tuple[AgentDefinition, ...]:
-    return tuple(_annotate_builtin_owner(index[name], package_name) for name in names)
+    return _annotate_agent_definitions((index[name] for name in names), package_name)
 
 
 def _select_skill_definitions(
@@ -83,7 +128,37 @@ def _select_skill_definitions(
     names: tuple[str, ...],
     package_name: str,
 ) -> tuple[SkillDefinition, ...]:
-    return tuple(_annotate_builtin_owner(index[name], package_name) for name in names)
+    return _annotate_skill_definitions((index[name] for name in names), package_name)
+
+
+def _annotate_tool_definitions(
+    definitions: Iterable[ToolDefinition],
+    package_name: str,
+) -> tuple[ToolDefinition, ...]:
+    return tuple(_annotate_builtin_owner(definition, package_name) for definition in definitions)
+
+
+def _annotate_agent_definitions(
+    definitions: Iterable[AgentDefinition],
+    package_name: str,
+) -> tuple[AgentDefinition, ...]:
+    return tuple(_annotate_builtin_owner(definition, package_name) for definition in definitions)
+
+
+def _annotate_skill_definitions(
+    definitions: Iterable[SkillDefinition],
+    package_name: str,
+) -> tuple[SkillDefinition, ...]:
+    return tuple(_annotate_builtin_owner(definition, package_name) for definition in definitions)
+
+
+def _empty_builtin_pack(package_name: str) -> BuiltinPack:
+    return BuiltinPack(
+        packages=(package_name,),
+        tools=(),
+        agents=(),
+        skills=(),
+    )
 
 
 def _annotate_builtin_owner(

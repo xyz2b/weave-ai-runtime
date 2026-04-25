@@ -44,7 +44,7 @@ from ..hooks import (
 )
 from ..invocation_catalog import SkillInvocationProvider
 from ..jobs import DefaultJobService, FileJobStore, JobScopeFilter, job_record_to_payload
-from ..memory import MemoryManagerService
+from ..memory import assemble_memory_capability
 from ..openai_client import (
     OPENAI_PROVIDER_NAME,
     OPENAI_ROUTE_NAME,
@@ -70,12 +70,11 @@ from ..session_runtime import (
     SessionController,
     SessionStatus,
 )
-from ..team_control_plane import FileBackedTeamStore, RuntimeTeamControlPlane, RuntimeTeamRunnerManager
-from ..team_message_bus import FileBackedTeamMessageBus, RuntimeTeamMessageBus
-from ..team_workflows import FileBackedTeamWorkflowStore, RuntimeTeamWorkflowService, workflow_record_to_payload
+from ..team import assemble_team_capability
+from ..team_workflows import workflow_record_to_payload
 from ..skill_runtime import SkillExecutionResult, SkillExecutor
 from ..tasking import TaskManager
-from ..teammate_orchestration import PersistentTeammateOrchestrator, TeammateOrchestrationConfig
+from ..teammate_orchestration import TeammateOrchestrationConfig
 from ..tool_runtime import ToolContext
 from ..turn_engine.composer import ContextAssembler
 from ..turn_engine.engine import TurnEngine, TurnStreamEvent, TurnStreamEventType
@@ -236,7 +235,7 @@ class RuntimeAssembly:
     transcript_store: TranscriptStore
     task_manager: TaskManager
     job_service: DefaultJobService
-    teammates: PersistentTeammateOrchestrator | None = None
+    teammates: Any = None
     team_control_plane: Any = None
     team_message_bus: Any = None
     team_workflows: Any = None
@@ -1434,42 +1433,16 @@ def _assemble_runtime_stack(kernel: RuntimeKernel) -> RuntimeAssembly:
     team_workflows = None
     teammate_config = _resolve_teammate_orchestration_config(kernel)
     if teammate_config is not None:
-        teammates = PersistentTeammateOrchestrator(
+        team_capability = assemble_team_capability(
             config=teammate_config,
             project_root=kernel.config.working_directory,
             runtime_services=services,
             execution_core=agent_runtime,
         )
-        services.bind_teammates(teammates)
-        runner_manager = RuntimeTeamRunnerManager(
-            teammates=teammates,
-            runtime_services=services,
-        )
-        team_control_plane = RuntimeTeamControlPlane(
-            store=FileBackedTeamStore(kernel.config.working_directory / ".runtime" / "team_control_plane"),
-            runtime_services=services,
-            runner_manager=runner_manager,
-        )
-        team_workflows = RuntimeTeamWorkflowService(
-            store=FileBackedTeamWorkflowStore(
-                kernel.config.working_directory / ".runtime" / "team_workflows"
-            ),
-            control_plane=team_control_plane,
-            runtime_services=services,
-        )
-        team_message_bus = RuntimeTeamMessageBus(
-            store=FileBackedTeamMessageBus(kernel.config.working_directory / ".runtime" / "team_messages"),
-            control_plane=team_control_plane,
-            runtime_services=services,
-        )
-        team_workflows.bind_message_bus(team_message_bus)
-        services.bind_team_services(
-            control_plane=team_control_plane,
-            message_bus=team_message_bus,
-            workflow_service=team_workflows,
-        )
-        if hasattr(teammates, "bind_workflow_service"):
-            teammates.bind_workflow_service(team_workflows)
+        teammates = team_capability.teammates
+        team_control_plane = team_capability.control_plane
+        team_message_bus = team_capability.message_bus
+        team_workflows = team_capability.workflows
     runtime = RuntimeAssembly(
         kernel=kernel,
         services=services,
@@ -1531,16 +1504,17 @@ def _build_runtime_services(kernel: RuntimeKernel) -> RuntimeServices:
         },
     )
     metadata.setdefault("delegation", default_delegation_policy_metadata())
+    memory_capability = (
+        assemble_memory_capability(
+            project_root=kernel.config.working_directory,
+            memory_config=kernel.config.memory_config,
+        )
+        if "runtime-memory" in kernel.first_party_packages
+        else None
+    )
     services = RuntimeServices(
         transcript=DefaultTranscriptService(transcript_store),
-        memory=(
-            MemoryManagerService(
-                project_root=kernel.config.working_directory,
-                memory_config=kernel.config.memory_config,
-            )
-            if "runtime-memory" in kernel.first_party_packages
-            else NoopMemoryService()
-        ),
+        memory=memory_capability.service if memory_capability is not None else NoopMemoryService(),
         jobs=job_service,
         task_lists=task_list_service,
         task_discipline=TaskDisciplineSidecar(task_lists=task_list_service),
