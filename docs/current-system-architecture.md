@@ -15,6 +15,7 @@
 ## 2. 系统定位
 
 这套系统不是单一的 AI Agent 应用，而是一套可装配的 AI Agent Runtime Framework。
+它当前的产品定位是 **general AI runtime framework**，而不是 Claude Code parity effort。
 
 它的核心价值不在某个默认 agent、某组内置 tools，或者某个 memory 实现，而在于三层稳定骨架：
 
@@ -191,6 +192,12 @@ helper 语义也已经固定：
 - `runtime-full`
   - 在 `runtime-default` 之上叠加 mechanism、adapter、provider、workflow、devtools 包
   - 继续提供完整 first-party built-in 体验
+
+迁移旧默认 built-ins、hook 面和 first-party 包布局时，建议配合阅读 `docs/runtime-migration-notes.md`，并优先观察：
+
+- `runtime.kernel.diagnostics`
+- `runtime.services.metadata["migration"]`
+- `runtime.services.metadata["first_party_package_catalog"]`
 
 当前 builtin ownership matrix 也已经显式化：
 

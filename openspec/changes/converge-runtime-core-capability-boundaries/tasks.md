@@ -49,22 +49,22 @@
 - [x] 4.1 Move workspace-, file-, shell-, and web-oriented built-ins such as `read`, `glob`, `grep`, `edit`, `write`, `bash`, `web_fetch`, and `web_search` into `runtime-devtools`.
 - [x] 4.2 Move specialized coding-oriented agents such as `explore`, `plan`, and `verification` into `runtime-devtools` while preserving the same built-in discovery and replacement rules.
 - [x] 4.3 Update built-in discovery, visibility, and packaging tests to cover `runtime-core`, `runtime-default`, and `runtime-full` compositions after the devtools split.
-- [ ] 4.4 Add migration notes and diagnostics for users who relied on the old default workspace-oriented tool pools now moving behind `runtime-full`.
+- [x] 4.4 Add migration notes and diagnostics for users who relied on the old default workspace-oriented tool pools now moving behind `runtime-full`.
 
 ## 5. Secondary First-Party Packages
 
-- [ ] 5.1 Define the `runtime-compaction` package boundary and move compaction strategies or manager wiring behind the core compaction slot, prompt/private carriers, and context-window contracts.
-- [ ] 5.2 Define the `runtime-isolation` package boundary and move environment-specific isolation adapters behind the core isolation mode, lease contracts, and execution assembly seams.
-- [ ] 5.3 Define provider integration packages such as `runtime-openai` behind the core model/provider contracts so provider selection stays outside `runtime-core`.
-- [ ] 5.4 Extract reference host implementations into `runtime-hosts-reference` while keeping host protocols and bound-host semantics in `runtime-core`.
-- [ ] 5.5 Extract file-backed transcript, job, task-list, team, workflow, and teammate mailbox stores into `runtime-stores-file` while keeping store protocols and injection seams in `runtime-core`.
-- [ ] 5.6 Group reusable first-party workflow skills such as `verify`, `debug`, `stuck`, `batch`, and `simplify` into `runtime-builtin-workflows`, while keeping memory-owned workflows such as `remember` in `runtime-memory`.
-- [ ] 5.7 Execute the secondary package extraction in documented waves: mechanisms first, providers/adapters next, workflow/profile packaging last.
+- [x] 5.1 Define the `runtime-compaction` package boundary and move compaction strategies or manager wiring behind the core compaction slot, prompt/private carriers, and context-window contracts.
+- [x] 5.2 Define the `runtime-isolation` package boundary and move environment-specific isolation adapters behind the core isolation mode, lease contracts, and execution assembly seams.
+- [x] 5.3 Define provider integration packages such as `runtime-openai` behind the core model/provider contracts so provider selection stays outside `runtime-core`.
+- [x] 5.4 Extract reference host implementations into `runtime-hosts-reference` while keeping host protocols and bound-host semantics in `runtime-core`.
+- [x] 5.5 Extract file-backed transcript, job, task-list, team, workflow, and teammate mailbox stores into `runtime-stores-file` while keeping store protocols and injection seams in `runtime-core`.
+- [x] 5.6 Group reusable first-party workflow skills such as `verify`, `debug`, `stuck`, `batch`, and `simplify` into `runtime-builtin-workflows`, while keeping memory-owned workflows such as `remember` in `runtime-memory`.
+- [x] 5.7 Execute the secondary package extraction in documented waves: mechanisms first, providers/adapters next, workflow/profile packaging last.
 
 ## 6. Cross-Package Docs, Diagnostics, and Validation
 
 - [x] 6.1 Update runtime architecture, integration, extension, and hook documentation to present the converged v1 boundary story: `tool`, `agent`, `skill`, `host`, and approved hooks.
-- [ ] 6.2 Update packaging and positioning docs to state that the project is a general AI runtime framework rather than a Claude Code parity effort.
+- [x] 6.2 Update packaging and positioning docs to state that the project is a general AI runtime framework rather than a Claude Code parity effort.
 - [x] 6.3 Document the first-party package layering diagram, supported distribution composition semantics, and canonical built-in ownership matrix for `runtime-core`, `runtime-default`, and `runtime-full`.
-- [ ] 6.4 Add migration notes or structured diagnostics for users relying on moved built-ins, demoted hook phases, advanced-only hook handlers, or package relocation of first-party capabilities.
+- [x] 6.4 Add migration notes or structured diagnostics for users relying on moved built-ins, demoted hook phases, advanced-only hook handlers, or package relocation of first-party capabilities.
 - [x] 6.5 Run the affected regression suites for built-ins, hooks, memory, teammate orchestration, runtime assembly, and supported distribution packaging after the convergence changes land.

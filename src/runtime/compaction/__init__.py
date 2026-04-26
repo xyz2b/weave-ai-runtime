@@ -1,3 +1,4 @@
+from .package import CompactionPackageComponents, assemble_compaction_package
 from .manager import CompactionManager, OrderedCompactionStrategy, ThresholdSummaryCompactionStrategy, evaluate_context_pressure
 from .models import (
     CompactionBoundary,
@@ -22,6 +23,7 @@ __all__ = [
     "CompactionBoundary",
     "CompactionContinuation",
     "CompactionManager",
+    "CompactionPackageComponents",
     "CompactionPolicy",
     "CompactionRequest",
     "CompactionResult",
@@ -30,6 +32,7 @@ __all__ = [
     "ContextPressure",
     "OrderedCompactionStrategy",
     "ThresholdSummaryCompactionStrategy",
+    "assemble_compaction_package",
     "evaluate_context_pressure",
     "latest_compaction_payload",
     "serialize_compaction_boundary",

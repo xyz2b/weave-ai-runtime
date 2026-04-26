@@ -27,6 +27,7 @@ from runtime.definitions import (
     DefinitionSource,
 )
 from runtime.hosts.base import NullHostAdapter
+from runtime.jobs import FileJobStore, InMemoryJobStore
 from runtime.runtime_kernel import (
     BuiltinPackConfig,
     DefinitionSourcePaths,
@@ -39,7 +40,8 @@ from runtime.runtime_kernel import (
     assemble_runtime,
     build_runtime_kernel,
 )
-from runtime.runtime_services import NoopMemoryService
+from runtime.runtime_services import NoopCompactionService, NoopMemoryService
+from runtime.task_lists import FileTaskListStore, InMemoryTaskListStore
 from runtime.tool_runtime import ToolContext
 from runtime.turn_engine import (
     ModelRequest,
@@ -229,11 +231,16 @@ def test_runtime_core_build_does_not_import_optional_package_modules(
     first_party_loading = importlib.import_module("runtime.first_party_loading")
     original_import_module = first_party_loading.import_module
     blocked_modules = {
+        "runtime.compaction.package",
+        "runtime.devtools.builtins",
+        "runtime.hosts.package",
+        "runtime.isolation_package",
         "runtime.memory.builtins",
         "runtime.memory.package",
+        "runtime.openai_package",
+        "runtime.stores_file.package",
         "runtime.team.builtins",
         "runtime.team.assembly",
-        "runtime.devtools.builtins",
         "runtime.builtin_workflows.builtins",
     }
 
@@ -424,6 +431,70 @@ def test_runtime_default_distribution_wires_team_capability_out_of_the_box(tmp_p
     assert result["team_id"] != ""
     assert result["leader_session_id"] == "leader-session"
     assert result["created"] is True
+
+
+def test_non_full_distributions_publish_devtools_migration_diagnostics(tmp_path: Path) -> None:
+    (tmp_path / "core-runtime").mkdir()
+    (tmp_path / "default-runtime").mkdir()
+    core_runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path / "core-runtime",
+            distribution=RuntimeDistribution.CORE,
+        )
+    )
+    default_runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path / "default-runtime",
+            distribution=RuntimeDistribution.DEFAULT,
+        )
+    )
+
+    for runtime in (core_runtime, default_runtime):
+        diagnostic = next(diag for diag in runtime.kernel.diagnostics if diag.code == "runtime_devtools_not_selected")
+        assert diagnostic.details["target_distribution"] == RuntimeDistribution.FULL.value
+        assert diagnostic.details["target_package"] == "runtime-devtools"
+        assert "read" in diagnostic.details["tools"]
+        assert "verification" in diagnostic.details["agents"]
+        assert runtime.services.metadata["migration"]["devtools"]["selected"] is False
+
+
+def test_distribution_profiles_gate_runtime_mechanisms_and_store_defaults(tmp_path: Path) -> None:
+    (tmp_path / "core-profile").mkdir()
+    (tmp_path / "default-profile").mkdir()
+    (tmp_path / "full-profile").mkdir()
+    core_runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path / "core-profile",
+            distribution=RuntimeDistribution.CORE,
+        )
+    )
+    default_runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path / "default-profile",
+            distribution=RuntimeDistribution.DEFAULT,
+        )
+    )
+    full_runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path / "full-profile",
+            distribution=RuntimeDistribution.FULL,
+        )
+    )
+
+    assert isinstance(core_runtime.services.compaction, NoopCompactionService)
+    assert isinstance(default_runtime.services.compaction, NoopCompactionService)
+    assert not isinstance(full_runtime.services.compaction, NoopCompactionService)
+
+    assert isinstance(core_runtime.services.job_service.store, InMemoryJobStore)
+    assert isinstance(core_runtime.services.task_list_service.store, InMemoryTaskListStore)
+    assert isinstance(default_runtime.services.job_service.store, InMemoryJobStore)
+    assert isinstance(default_runtime.services.task_list_service.store, InMemoryTaskListStore)
+    assert isinstance(full_runtime.services.job_service.store, FileJobStore)
+    assert isinstance(full_runtime.services.task_list_service.store, FileTaskListStore)
+
+    assert full_runtime.services.metadata["migration"]["hook_contract"]["stable_handler_kinds"] == ["callback"]
+    assert "runtime-hosts-reference" in full_runtime.services.metadata["first_party_package_catalog"]
+    assert full_runtime.services.metadata["reference_hosts"] == ["cli", "sdk"]
 
 
 def test_runtime_full_distribution_keeps_devtools_replacement_rules(tmp_path: Path) -> None:

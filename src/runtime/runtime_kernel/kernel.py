@@ -37,26 +37,25 @@ from ..errors import RegistryConflictError
 from ..first_party_loading import load_object
 from ..hosts.base import BoundHostRuntime, HostAdapter, NullHostAdapter
 from ..hooks import (
+    ADVANCED_HOOK_HANDLER_KINDS,
+    ADVANCED_PUBLIC_PHASE_CONTRACTS,
     HookDispatchTraceQuery,
     HookInventoryQuery,
     HookRegistrationRequest,
     HookScopeLifetime,
     HookSourceKind,
+    STABLE_PUBLIC_HOOK_HANDLER_KINDS,
+    STABLE_PUBLIC_PHASE_CONTRACTS,
 )
 from ..invocation_catalog import SkillInvocationProvider
-from ..jobs import DefaultJobService, FileJobStore, JobScopeFilter, job_record_to_payload
-from ..openai_client import (
-    OPENAI_PROVIDER_NAME,
-    OPENAI_ROUTE_NAME,
-    bundled_openai_provider_binding,
-    bundled_openai_route_binding,
-)
+from ..jobs import DefaultJobService, InMemoryJobStore, JobScopeFilter, job_record_to_payload
+from ..package_profiles import FIRST_PARTY_PACKAGE_SPECS
 from ..registries import AgentRegistry, DefinitionDiscovery, InvocationRegistry, SkillRegistry, ToolRegistry
-from ..runtime_services import DefaultTranscriptService, NoopMemoryService, RuntimeServices
+from ..runtime_services import DefaultTranscriptService, NoopCompactionService, NoopMemoryService, RuntimeServices
 from ..task_discipline import TaskDisciplineSidecar
 from ..task_lists import (
     DefaultTaskListService,
-    FileTaskListStore,
+    InMemoryTaskListStore,
     TaskDisciplinePolicy,
     TaskListError,
     coerce_private_context,
@@ -82,9 +81,14 @@ from ..execution_policy import DelegationPolicyError, default_delegation_policy_
 
 SKILL_DYNAMIC_ROOTS_KEY = "skill_dynamic_roots"
 _UNSET = object()
-_FIRST_PARTY_CAPABILITY_ASSEMBLERS = {
+_FIRST_PARTY_PACKAGE_ASSEMBLERS = {
     "runtime-memory": "runtime.memory.package:assemble_memory_capability",
     "runtime-team": "runtime.team.assembly:assemble_team_capability",
+    "runtime-compaction": "runtime.compaction.package:assemble_compaction_package",
+    "runtime-isolation": "runtime.isolation_package:assemble_isolation_package",
+    "runtime-openai": "runtime.openai_package:assemble_openai_package",
+    "runtime-stores-file": "runtime.stores_file.package:assemble_file_store_bundle",
+    "runtime-hosts-reference": "runtime.hosts.package:assemble_reference_host_package",
 }
 
 
@@ -1343,6 +1347,12 @@ def build_runtime_kernel(config: RuntimeConfig) -> RuntimeKernel:
     for provider in config.extra_invocation_providers:
         invocation_registry.register_provider(provider)
     diagnostics.extend(invocation_registry.diagnostics())
+    diagnostics.extend(
+        _package_migration_diagnostics(
+            selected_packages=selected_packages,
+            distribution=config.resolved_distribution().value,
+        )
+    )
 
     kernel = RuntimeKernel(
         config=config,
@@ -1435,7 +1445,7 @@ def _assemble_runtime_stack(kernel: RuntimeKernel) -> RuntimeAssembly:
     team_workflows = None
     teammate_config = _resolve_teammate_orchestration_config(kernel)
     if teammate_config is not None:
-        team_capability = _assemble_first_party_capability(
+        team_capability = _assemble_first_party_package(
             "runtime-team",
             config=teammate_config,
             project_root=kernel.config.working_directory,
@@ -1482,21 +1492,43 @@ def _assemble_runtime_stack(kernel: RuntimeKernel) -> RuntimeAssembly:
 
 def _build_runtime_services(kernel: RuntimeKernel) -> RuntimeServices:
     transcript_store = kernel.transcript_store or InMemoryTranscriptStore()
+    file_store_bundle = (
+        _assemble_first_party_package(
+            "runtime-stores-file",
+            project_root=kernel.config.working_directory,
+            teammate_config=kernel.config.teammate_orchestration,
+        )
+        if "runtime-stores-file" in kernel.first_party_packages
+        else None
+    )
     task_list_service = DefaultTaskListService(
-        store=FileTaskListStore(kernel.config.working_directory / ".runtime" / "task_lists")
+        store=(
+            file_store_bundle.task_list_store
+            if file_store_bundle is not None
+            else InMemoryTaskListStore()
+        )
     )
     job_service = DefaultJobService(
-        store=FileJobStore(kernel.config.working_directory / ".runtime" / "jobs"),
+        store=(
+            file_store_bundle.job_store
+            if file_store_bundle is not None
+            else InMemoryJobStore()
+        ),
         metadata={"runtime_id": kernel.config.runtime_id},
     )
     metadata = dict(kernel.config.metadata)
     metadata["runtime_id"] = kernel.config.runtime_id
     metadata["distribution"] = kernel.distribution
     metadata["first_party_packages"] = list(kernel.first_party_packages)
+    metadata["first_party_package_catalog"] = _first_party_package_catalog(kernel.first_party_packages)
     metadata["compatibility_surfaces"] = {
         "TaskManager": "compatibility-only",
         "runtime_context": "compatibility-only",
     }
+    metadata["migration"] = _migration_metadata(
+        selected_packages=kernel.first_party_packages,
+        distribution=kernel.distribution,
+    )
     metadata.setdefault(
         "task_discipline",
         {
@@ -1507,8 +1539,15 @@ def _build_runtime_services(kernel: RuntimeKernel) -> RuntimeServices:
         },
     )
     metadata.setdefault("delegation", default_delegation_policy_metadata())
+    reference_hosts = (
+        _assemble_first_party_package("runtime-hosts-reference")
+        if "runtime-hosts-reference" in kernel.first_party_packages
+        else None
+    )
+    if reference_hosts is not None:
+        metadata["reference_hosts"] = sorted(reference_hosts.host_types)
     memory_capability = (
-        _assemble_first_party_capability(
+        _assemble_first_party_package(
             "runtime-memory",
             project_root=kernel.config.working_directory,
             memory_config=kernel.config.memory_config,
@@ -1516,9 +1555,29 @@ def _build_runtime_services(kernel: RuntimeKernel) -> RuntimeServices:
         if "runtime-memory" in kernel.first_party_packages
         else None
     )
+    compaction_package = (
+        _assemble_first_party_package("runtime-compaction")
+        if "runtime-compaction" in kernel.first_party_packages
+        else None
+    )
+    isolation_package = (
+        _assemble_first_party_package("runtime-isolation")
+        if "runtime-isolation" in kernel.first_party_packages
+        else None
+    )
     services = RuntimeServices(
         transcript=DefaultTranscriptService(transcript_store),
         memory=memory_capability.service if memory_capability is not None else NoopMemoryService(),
+        compaction=(
+            compaction_package.manager
+            if compaction_package is not None
+            else NoopCompactionService()
+        ),
+        isolation=(
+            isolation_package.manager
+            if isolation_package is not None
+            else _assemble_core_isolation_manager()
+        ),
         jobs=job_service,
         task_lists=task_list_service,
         task_discipline=TaskDisciplineSidecar(task_lists=task_list_service),
@@ -1567,12 +1626,106 @@ def _schedule_job_recovery(job_service: DefaultJobService) -> None:
     loop.create_task(job_service.recover_inflight())
 
 
-def _assemble_first_party_capability(package_name: str, /, **kwargs: Any) -> Any:
-    loader_spec = _FIRST_PARTY_CAPABILITY_ASSEMBLERS.get(package_name)
+def _assemble_first_party_package(package_name: str, /, **kwargs: Any) -> Any:
+    loader_spec = _FIRST_PARTY_PACKAGE_ASSEMBLERS.get(package_name)
     if loader_spec is None:
-        raise RuntimeError(f"No capability assembler is registered for {package_name}")
+        raise RuntimeError(f"No first-party package assembler is registered for {package_name}")
     factory = load_object(loader_spec)
     return factory(**kwargs)
+
+
+def _assemble_core_isolation_manager() -> Any:
+    manager_type = load_object("runtime.isolation:IsolationManager")
+    adapter_type = load_object("runtime.isolation:BaseIsolationAdapter")
+    return manager_type(adapters={IsolationMode.NONE: adapter_type()})
+
+
+def _first_party_package_catalog(
+    selected_packages: tuple[str, ...],
+) -> dict[str, dict[str, Any]]:
+    catalog: dict[str, dict[str, Any]] = {}
+    for package_name in selected_packages:
+        spec = FIRST_PARTY_PACKAGE_SPECS[package_name]
+        entry: dict[str, Any] = {
+            "role": spec.role.value,
+            "description": spec.description,
+            "dependencies": list(spec.dependencies),
+        }
+        if spec.builtin_tools:
+            entry["builtin_tools"] = list(spec.builtin_tools)
+        if spec.builtin_agents:
+            entry["builtin_agents"] = list(spec.builtin_agents)
+        if spec.builtin_skills:
+            entry["builtin_skills"] = list(spec.builtin_skills)
+        catalog[package_name] = entry
+    return catalog
+
+
+def _migration_metadata(
+    *,
+    selected_packages: tuple[str, ...],
+    distribution: str,
+) -> dict[str, Any]:
+    stable_phases = sorted(STABLE_PUBLIC_PHASE_CONTRACTS)
+    advanced_phases = sorted(ADVANCED_PUBLIC_PHASE_CONTRACTS)
+    metadata: dict[str, Any] = {
+        "distribution": distribution,
+        "devtools": {
+            "selected": "runtime-devtools" in selected_packages,
+            "target_distribution": "runtime-full",
+            "target_package": "runtime-devtools",
+            "tools": list(FIRST_PARTY_PACKAGE_SPECS["runtime-devtools"].builtin_tools),
+            "agents": list(FIRST_PARTY_PACKAGE_SPECS["runtime-devtools"].builtin_agents),
+        },
+        "hook_contract": {
+            "stable_public_phases": stable_phases,
+            "advanced_public_phases": advanced_phases,
+            "stable_handler_kinds": [kind.value for kind in STABLE_PUBLIC_HOOK_HANDLER_KINDS],
+            "advanced_handler_kinds": [kind.value for kind in ADVANCED_HOOK_HANDLER_KINDS],
+        },
+        "capability_packages": {
+            "remember": "runtime-memory",
+            "team_create": "runtime-team",
+            "team_spawn": "runtime-team",
+            "team_send": "runtime-team",
+            "team_respond": "runtime-team",
+            "team_delete": "runtime-team",
+            "verify": "runtime-builtin-workflows",
+            "debug": "runtime-builtin-workflows",
+            "stuck": "runtime-builtin-workflows",
+            "batch": "runtime-builtin-workflows",
+            "simplify": "runtime-builtin-workflows",
+        },
+    }
+    return metadata
+
+
+def _package_migration_diagnostics(
+    *,
+    selected_packages: tuple[str, ...],
+    distribution: str,
+) -> tuple[Diagnostic, ...]:
+    diagnostics: list[Diagnostic] = []
+    if "runtime-devtools" not in selected_packages:
+        diagnostics.append(
+            Diagnostic(
+                severity=DiagnosticSeverity.WARNING,
+                code="runtime_devtools_not_selected",
+                message=(
+                    "Workspace-oriented tools and coding agents now live in "
+                    "runtime-devtools and are only included automatically in "
+                    "runtime-full."
+                ),
+                details={
+                    "distribution": distribution,
+                    "target_package": "runtime-devtools",
+                    "target_distribution": "runtime-full",
+                    "tools": list(FIRST_PARTY_PACKAGE_SPECS["runtime-devtools"].builtin_tools),
+                    "agents": list(FIRST_PARTY_PACKAGE_SPECS["runtime-devtools"].builtin_agents),
+                },
+            )
+        )
+    return tuple(diagnostics)
 
 
 def _serialize_agent_run_result(
@@ -1787,17 +1940,18 @@ def _with_bundled_openai_baseline(
 ) -> RuntimeConfig:
     if "runtime-openai" not in selected_packages:
         return config
+    openai_package = _assemble_first_party_package("runtime-openai")
     model_providers = dict(config.model_providers)
-    if OPENAI_PROVIDER_NAME not in model_providers:
-        model_providers[OPENAI_PROVIDER_NAME] = bundled_openai_provider_binding()
+    if openai_package.provider_name not in model_providers:
+        model_providers[openai_package.provider_name] = openai_package.provider_binding
 
     model_routes = dict(config.model_routes)
-    if OPENAI_ROUTE_NAME not in model_routes:
-        model_routes[OPENAI_ROUTE_NAME] = bundled_openai_route_binding()
+    if openai_package.route_name not in model_routes:
+        model_routes[openai_package.route_name] = openai_package.route_binding
 
     default_model_route = config.default_model_route
     if default_model_route is None and config.model_client is None and not config.model_routes:
-        default_model_route = OPENAI_ROUTE_NAME
+        default_model_route = openai_package.route_name
 
     return replace(
         config,

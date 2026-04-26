@@ -308,12 +308,13 @@ class PersistentTeammateOrchestrator:
         project_root: Path,
         runtime_services: Any,
         execution_core: SharedExecutionCore | None = None,
+        mailbox: FileBackedTeammateMailbox | None = None,
     ) -> None:
         self._config = config
         self._runtime_services = runtime_services
         self._execution_core = execution_core
         mailbox_root = config.mailbox_root or (Path(project_root) / ".runtime" / "teammates")
-        self._mailbox = FileBackedTeammateMailbox(
+        self._mailbox = mailbox or FileBackedTeammateMailbox(
             mailbox_root,
             default_claim_lease_ms=config.claim_lease_ms,
             default_retry_max_attempts=config.retry_max_attempts,

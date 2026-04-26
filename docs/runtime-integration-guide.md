@@ -8,7 +8,7 @@
 - 一个最小可运行集成应该长什么样。
 - 接入之后，一次请求会怎样流过 Runtime。
 
-这套框架的边界也需要先说清楚：  
+这套框架的边界也需要先说清楚：它现在的定位是 **general AI runtime framework**，而不是 Claude Code parity effort。  
 Runtime 核心流转本身由框架收口，用户通常不应该改 `TurnEngine` 或在外面重写一套 orchestration。  
 用户真正可扩展的部分主要有两类：
 
@@ -115,6 +115,9 @@ Runtime 核心流转本身由框架收口，用户通常不应该改 `TurnEngine
   - 在 `runtime-core` 上叠加 first-party memory 与 team capability 包
 - `runtime-full`
   - 在 `runtime-default` 上叠加 devtools、workflow、provider、adapter、mechanism 包
+
+如果你是从旧默认 built-ins 或旧 hook 面迁移过来，建议同时阅读 `docs/runtime-migration-notes.md`。  
+特别是 `read`、`glob`、`grep`、`edit`、`write`、`bash`、`web_fetch`、`web_search`、`explore`、`plan`、`verification` 现在都属于 `runtime-devtools`，默认只在 `runtime-full` 中自动启用。
 
 普通接入方默认应该围绕这些稳定边界扩展：
 
