@@ -9,7 +9,7 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Mapping
+from typing import TYPE_CHECKING, Any, Mapping, Protocol
 from uuid import uuid4
 
 from .contracts import utc_now
@@ -237,6 +237,146 @@ class TeamControlError(Exception):
         self.code = code
         self.message = message
         self.details = dict(details)
+
+
+class TeamStore(Protocol):
+    def load_team(self, team_id: str) -> TeamRecord | None: ...
+
+    def create_team(self, team: TeamRecord, leader_member: TeamMemberRecord) -> TeamRecord: ...
+
+    def save_team(self, team: TeamRecord) -> TeamRecord: ...
+
+    def active_team_for_leader_session(self, leader_session_id: str) -> TeamRecord | None: ...
+
+    def delete_leader_binding(self, leader_session_id: str) -> None: ...
+
+    def save_member(self, member: TeamMemberRecord) -> TeamMemberRecord: ...
+
+    def load_member(self, team_id: str, member_id: str) -> TeamMemberRecord | None: ...
+
+    def list_members(
+        self,
+        team_id: str,
+        *,
+        active_only: bool = True,
+        include_leader: bool = True,
+    ) -> tuple[TeamMemberRecord, ...]: ...
+
+    def find_member_by_name(self, team_id: str, name: str) -> TeamMemberRecord | None: ...
+
+    def tombstone_team(self, team: TeamRecord) -> TeamRecord: ...
+
+    def remove_member(self, team_id: str, member_id: str) -> TeamMemberRecord | None: ...
+
+    def purge_team(self, team_id: str) -> None: ...
+
+
+class InMemoryTeamStore:
+    def __init__(self) -> None:
+        self._teams: dict[str, TeamRecord] = {}
+        self._members: dict[tuple[str, str], TeamMemberRecord] = {}
+        self._leader_bindings: dict[str, TeamLeaderBinding] = {}
+
+    def load_team(self, team_id: str) -> TeamRecord | None:
+        return self._teams.get(str(team_id))
+
+    def create_team(self, team: TeamRecord, leader_member: TeamMemberRecord) -> TeamRecord:
+        if team.team_id in self._teams:
+            raise FileExistsError(team.team_id)
+        if team.leader_session_id in self._leader_bindings:
+            raise FileExistsError(team.leader_session_id)
+        self._teams[team.team_id] = team
+        self.save_member(leader_member)
+        self._leader_bindings[team.leader_session_id] = TeamLeaderBinding(
+            leader_session_id=team.leader_session_id,
+            team_id=team.team_id,
+        )
+        return team
+
+    def save_team(self, team: TeamRecord) -> TeamRecord:
+        self._teams[team.team_id] = team
+        return team
+
+    def active_team_for_leader_session(self, leader_session_id: str) -> TeamRecord | None:
+        binding = self._leader_bindings.get(str(leader_session_id))
+        if binding is None:
+            return None
+        team = self.load_team(binding.team_id)
+        if team is None or not team.active:
+            self._leader_bindings.pop(str(leader_session_id), None)
+            return None
+        return team
+
+    def delete_leader_binding(self, leader_session_id: str) -> None:
+        self._leader_bindings.pop(str(leader_session_id), None)
+
+    def save_member(self, member: TeamMemberRecord) -> TeamMemberRecord:
+        self._members[(member.team_id, member.member_id)] = member
+        return member
+
+    def load_member(self, team_id: str, member_id: str) -> TeamMemberRecord | None:
+        return self._members.get((str(team_id), str(member_id)))
+
+    def list_members(
+        self,
+        team_id: str,
+        *,
+        active_only: bool = True,
+        include_leader: bool = True,
+    ) -> tuple[TeamMemberRecord, ...]:
+        members = [
+            member
+            for (candidate_team_id, _), member in self._members.items()
+            if candidate_team_id == str(team_id)
+        ]
+        filtered = []
+        for member in sorted(members, key=lambda item: (item.created_at, item.member_id)):
+            if active_only and not member.active:
+                continue
+            if not include_leader and member.role is TeamRole.LEADER:
+                continue
+            filtered.append(member)
+        return tuple(filtered)
+
+    def find_member_by_name(self, team_id: str, name: str) -> TeamMemberRecord | None:
+        normalized = str(name)
+        for member in self.list_members(team_id):
+            if member.name == normalized:
+                return member
+        return None
+
+    def tombstone_team(self, team: TeamRecord) -> TeamRecord:
+        tombstoned = replace(
+            team,
+            status=TeamStatus.DELETED,
+            deleted_at=utc_now(),
+            updated_at=utc_now(),
+        )
+        self.save_team(tombstoned)
+        self.delete_leader_binding(team.leader_session_id)
+        return tombstoned
+
+    def remove_member(self, team_id: str, member_id: str) -> TeamMemberRecord | None:
+        member = self.load_member(team_id, member_id)
+        if member is None:
+            return None
+        removed = member.with_status(TeamMemberStatus.REMOVED)
+        self.save_member(removed)
+        return removed
+
+    def purge_team(self, team_id: str) -> None:
+        normalized_team_id = str(team_id)
+        self._teams.pop(normalized_team_id, None)
+        self._members = {
+            key: value
+            for key, value in self._members.items()
+            if key[0] != normalized_team_id
+        }
+        self._leader_bindings = {
+            key: value
+            for key, value in self._leader_bindings.items()
+            if value.team_id != normalized_team_id
+        }
 
 
 class FileBackedTeamStore:
@@ -544,7 +684,7 @@ class RuntimeTeamControlPlane:
     def __init__(
         self,
         *,
-        store: FileBackedTeamStore,
+        store: TeamStore,
         runtime_services: RuntimeServices,
         runner_manager: RuntimeTeamRunnerManager,
     ) -> None:
@@ -553,7 +693,7 @@ class RuntimeTeamControlPlane:
         self._runner_manager = runner_manager
 
     @property
-    def store(self) -> FileBackedTeamStore:
+    def store(self) -> TeamStore:
         return self._store
 
     @property
@@ -990,8 +1130,10 @@ def _atomic_write_json(path: Path, payload: dict[str, Any], *, replace_existing:
 
 __all__ = [
     "FileBackedTeamStore",
+    "InMemoryTeamStore",
     "RuntimeTeamControlPlane",
     "RuntimeTeamRunnerManager",
+    "TeamStore",
     "TeamActor",
     "TeamControlError",
     "TeamEvent",

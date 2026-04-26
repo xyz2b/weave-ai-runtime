@@ -6,7 +6,7 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Mapping
+from typing import TYPE_CHECKING, Any, Mapping, Protocol
 from uuid import uuid4
 
 from .contracts import utc_now
@@ -170,6 +170,63 @@ class TeamMessageEnvelope:
         )
 
 
+class TeamMessageStore(Protocol):
+    def publish(self, envelope: TeamMessageEnvelope) -> TeamMessageEnvelope: ...
+
+    def save(self, envelope: TeamMessageEnvelope) -> TeamMessageEnvelope: ...
+
+    def load(self, team_id: str, message_id: str) -> TeamMessageEnvelope | None: ...
+
+    def list_messages(
+        self,
+        team_id: str,
+        *,
+        recipient_member_id: str | None = None,
+    ) -> tuple[TeamMessageEnvelope, ...]: ...
+
+
+class InMemoryTeamMessageStore:
+    def __init__(self) -> None:
+        self._messages: dict[tuple[str, str], TeamMessageEnvelope] = {}
+
+    def publish(self, envelope: TeamMessageEnvelope) -> TeamMessageEnvelope:
+        key = (envelope.team_id, envelope.message_id)
+        if key in self._messages:
+            raise FileExistsError(envelope.message_id)
+        self._messages[key] = envelope
+        return envelope
+
+    def save(self, envelope: TeamMessageEnvelope) -> TeamMessageEnvelope:
+        self._messages[(envelope.team_id, envelope.message_id)] = envelope
+        return envelope
+
+    def load(self, team_id: str, message_id: str) -> TeamMessageEnvelope | None:
+        return self._messages.get((str(team_id), str(message_id)))
+
+    def list_messages(
+        self,
+        team_id: str,
+        *,
+        recipient_member_id: str | None = None,
+    ) -> tuple[TeamMessageEnvelope, ...]:
+        messages = [
+            envelope
+            for (candidate_team_id, _), envelope in self._messages.items()
+            if candidate_team_id == str(team_id)
+        ]
+        if recipient_member_id is not None:
+            messages = [
+                envelope
+                for envelope in messages
+                if any(
+                    delivery.recipient_member_id == recipient_member_id
+                    for delivery in envelope.deliveries
+                )
+            ]
+        messages.sort(key=lambda envelope: (envelope.created_at, envelope.message_id))
+        return tuple(messages)
+
+
 class FileBackedTeamMessageBus:
     def __init__(self, root: Path) -> None:
         self._root = Path(root).resolve()
@@ -224,7 +281,7 @@ class RuntimeTeamMessageBus:
     def __init__(
         self,
         *,
-        store: FileBackedTeamMessageBus,
+        store: TeamMessageStore,
         control_plane: RuntimeTeamControlPlane,
         runtime_services: RuntimeServices,
     ) -> None:
@@ -233,7 +290,7 @@ class RuntimeTeamMessageBus:
         self._runtime_services = runtime_services
 
     @property
-    def store(self) -> FileBackedTeamMessageBus:
+    def store(self) -> TeamMessageStore:
         return self._store
 
     async def send_public_message(
@@ -853,9 +910,11 @@ def _atomic_write_json(path: Path, payload: dict[str, Any], *, replace_existing:
 
 __all__ = [
     "FileBackedTeamMessageBus",
+    "InMemoryTeamMessageStore",
     "RuntimeTeamMessageBus",
     "TeamMessageDelivery",
     "TeamMessageEnvelope",
     "TeamMessageKind",
+    "TeamMessageStore",
     "TeamSender",
 ]

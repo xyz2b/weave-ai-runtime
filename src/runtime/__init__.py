@@ -110,7 +110,6 @@ from .hooks import (
     is_stable_public_hook_source,
     is_stable_public_phase,
 )
-from .hosts import CliHostRuntime, SdkHostRuntime
 from .invocation_catalog import (
     McpPromptInvocationProvider,
     PluginCommandInvocationProvider,
@@ -297,6 +296,19 @@ from .turn_engine import (
     TurnStreamEvent,
     TurnStreamEventType,
 )
+
+
+def __getattr__(name: str):
+    if name in {"CliHostRuntime", "SdkHostRuntime"}:
+        from .hosts import CliHostRuntime, SdkHostRuntime
+
+        mapping = {
+            "CliHostRuntime": CliHostRuntime,
+            "SdkHostRuntime": SdkHostRuntime,
+        }
+        return mapping[name]
+    raise AttributeError(name)
+
 
 __all__ = [
     "AgentDefinition",

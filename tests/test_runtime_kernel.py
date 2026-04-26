@@ -1,5 +1,8 @@
 import asyncio
 import importlib
+import os
+import subprocess
+import sys
 from dataclasses import replace
 from io import BytesIO
 from pathlib import Path
@@ -41,7 +44,12 @@ from runtime.runtime_kernel import (
     build_runtime_kernel,
 )
 from runtime.runtime_services import NoopCompactionService, NoopMemoryService
+from runtime.session_runtime import FileTranscriptStore, InMemoryTranscriptStore
 from runtime.task_lists import FileTaskListStore, InMemoryTaskListStore
+from runtime.team_control_plane import InMemoryTeamStore
+from runtime.team_message_bus import InMemoryTeamMessageStore
+from runtime.team_workflows import InMemoryTeamWorkflowStore
+from runtime.teammate_orchestration.mailbox import InMemoryTeammateMailbox
 from runtime.tool_runtime import ToolContext
 from runtime.turn_engine import (
     ModelRequest,
@@ -485,12 +493,20 @@ def test_distribution_profiles_gate_runtime_mechanisms_and_store_defaults(tmp_pa
     assert isinstance(default_runtime.services.compaction, NoopCompactionService)
     assert not isinstance(full_runtime.services.compaction, NoopCompactionService)
 
+    assert isinstance(core_runtime.services.transcript_store, InMemoryTranscriptStore)
+    assert isinstance(default_runtime.services.transcript_store, InMemoryTranscriptStore)
+    assert isinstance(full_runtime.services.transcript_store, FileTranscriptStore)
+
     assert isinstance(core_runtime.services.job_service.store, InMemoryJobStore)
     assert isinstance(core_runtime.services.task_list_service.store, InMemoryTaskListStore)
     assert isinstance(default_runtime.services.job_service.store, InMemoryJobStore)
     assert isinstance(default_runtime.services.task_list_service.store, InMemoryTaskListStore)
     assert isinstance(full_runtime.services.job_service.store, FileJobStore)
     assert isinstance(full_runtime.services.task_list_service.store, FileTaskListStore)
+    assert isinstance(default_runtime.team_control_plane.store, InMemoryTeamStore)
+    assert isinstance(default_runtime.team_message_bus.store, InMemoryTeamMessageStore)
+    assert isinstance(default_runtime.team_workflows.store, InMemoryTeamWorkflowStore)
+    assert isinstance(default_runtime.teammates.mailbox, InMemoryTeammateMailbox)
 
     assert full_runtime.services.metadata["migration"]["hook_contract"]["stable_handler_kinds"] == ["callback"]
     assert "runtime-hosts-reference" in full_runtime.services.metadata["first_party_package_catalog"]
@@ -524,6 +540,60 @@ def test_runtime_full_distribution_keeps_devtools_replacement_rules(tmp_path: Pa
     assert kernel.tool_registry.get("read").description == "custom devtools read"
     assert kernel.agent_registry.get("verification") is not None
     assert kernel.agent_registry.get("verification").description == "custom verification agent"
+
+
+def test_runtime_core_import_surface_does_not_eagerly_load_reference_hosts(tmp_path: Path) -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(repo_root / "src")
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import sys; import runtime.runtime_kernel; print('runtime.hosts.reference' in sys.modules)",
+        ],
+        cwd=repo_root,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    assert result.stdout.strip() == "False"
+
+
+def test_runtime_builtin_workflow_pack_remains_runnable_without_devtools_package(tmp_path: Path) -> None:
+    model_client = FakeModelClient(
+        [
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-verify-core"}),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "verified"}),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+            ]
+        ]
+    )
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            distribution=RuntimeDistribution.CORE,
+            enabled_packages={"runtime-builtin-workflows"},
+            model_client=model_client,
+        )
+    )
+
+    result = asyncio.run(
+        runtime.skill_executor.execute(
+            "verify",
+            arguments=(),
+            session_id="session-verify-core",
+            cwd=tmp_path,
+        )
+    )
+
+    assert runtime.kernel.agent_registry.get("verification") is None
+    assert result.agent_result is not None
+    assert result.agent_result.agent_name == "general-purpose"
+    assert result.agent_result.status == "completed"
 
 
 def test_agent_definition_hooks_emit_warning_and_are_not_registered(tmp_path: Path) -> None:

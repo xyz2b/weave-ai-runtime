@@ -1445,12 +1445,26 @@ def _assemble_runtime_stack(kernel: RuntimeKernel) -> RuntimeAssembly:
     team_workflows = None
     teammate_config = _resolve_teammate_orchestration_config(kernel)
     if teammate_config is not None:
+        team_store_kwargs: dict[str, Any] = {}
+        if "runtime-stores-file" in kernel.first_party_packages:
+            file_store_bundle = _assemble_first_party_package(
+                "runtime-stores-file",
+                project_root=kernel.config.working_directory,
+                teammate_config=teammate_config,
+            )
+            team_store_kwargs = {
+                "team_store": file_store_bundle.team_store,
+                "message_store": file_store_bundle.team_message_store,
+                "workflow_store": file_store_bundle.team_workflow_store,
+                "mailbox": file_store_bundle.teammate_mailbox,
+            }
         team_capability = _assemble_first_party_package(
             "runtime-team",
             config=teammate_config,
             project_root=kernel.config.working_directory,
             runtime_services=services,
             execution_core=agent_runtime,
+            **team_store_kwargs,
         )
         teammates = team_capability.teammates
         team_control_plane = team_capability.control_plane
@@ -1491,7 +1505,6 @@ def _assemble_runtime_stack(kernel: RuntimeKernel) -> RuntimeAssembly:
 
 
 def _build_runtime_services(kernel: RuntimeKernel) -> RuntimeServices:
-    transcript_store = kernel.transcript_store or InMemoryTranscriptStore()
     file_store_bundle = (
         _assemble_first_party_package(
             "runtime-stores-file",
@@ -1500,6 +1513,11 @@ def _build_runtime_services(kernel: RuntimeKernel) -> RuntimeServices:
         )
         if "runtime-stores-file" in kernel.first_party_packages
         else None
+    )
+    transcript_store = (
+        kernel.transcript_store
+        or (file_store_bundle.transcript_store if file_store_bundle is not None else None)
+        or InMemoryTranscriptStore()
     )
     task_list_service = DefaultTaskListService(
         store=(

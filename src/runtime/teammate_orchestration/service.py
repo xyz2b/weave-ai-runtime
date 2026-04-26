@@ -21,7 +21,7 @@ from ..team_workflows import (
     TeamWorkflowStatus,
 )
 from ..tasking import TaskStatus
-from .mailbox import FileBackedTeammateMailbox
+from .mailbox import FileBackedTeammateMailbox, TeammateMailboxStore
 from .models import (
     MailboxEnvelope,
     SharedExecutionCore,
@@ -308,7 +308,7 @@ class PersistentTeammateOrchestrator:
         project_root: Path,
         runtime_services: Any,
         execution_core: SharedExecutionCore | None = None,
-        mailbox: FileBackedTeammateMailbox | None = None,
+        mailbox: TeammateMailboxStore | None = None,
     ) -> None:
         self._config = config
         self._runtime_services = runtime_services
@@ -335,7 +335,7 @@ class PersistentTeammateOrchestrator:
         return self._config
 
     @property
-    def mailbox(self) -> FileBackedTeammateMailbox:
+    def mailbox(self) -> TeammateMailboxStore:
         return self._mailbox
 
     @property

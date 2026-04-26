@@ -5,12 +5,12 @@ from pathlib import Path
 from typing import Any
 
 from ..runtime_services import RuntimeServices
-from ..stores_file import assemble_team_file_store_bundle
 from ..team_config import TeammateOrchestrationConfig
-from ..team_control_plane import RuntimeTeamControlPlane, RuntimeTeamRunnerManager
-from ..team_message_bus import RuntimeTeamMessageBus
-from ..team_workflows import RuntimeTeamWorkflowService
+from ..team_control_plane import InMemoryTeamStore, RuntimeTeamControlPlane, RuntimeTeamRunnerManager, TeamStore
+from ..team_message_bus import InMemoryTeamMessageStore, RuntimeTeamMessageBus, TeamMessageStore
+from ..team_workflows import InMemoryTeamWorkflowStore, RuntimeTeamWorkflowService, TeamWorkflowStore
 from ..teammate_orchestration import PersistentTeammateOrchestrator
+from ..teammate_orchestration.mailbox import InMemoryTeammateMailbox, TeammateMailboxStore
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,17 +31,25 @@ def assemble_team_capability(
     control_plane: RuntimeTeamControlPlane | None = None,
     message_bus: RuntimeTeamMessageBus | None = None,
     workflow_service: RuntimeTeamWorkflowService | None = None,
+    team_store: TeamStore | None = None,
+    message_store: TeamMessageStore | None = None,
+    workflow_store: TeamWorkflowStore | None = None,
+    mailbox: TeammateMailboxStore | None = None,
 ) -> TeamCapabilityComponents:
-    store_bundle = assemble_team_file_store_bundle(
-        project_root=project_root,
-        teammate_config=config,
+    resolved_team_store = team_store or InMemoryTeamStore()
+    resolved_message_store = message_store or InMemoryTeamMessageStore()
+    resolved_workflow_store = workflow_store or InMemoryTeamWorkflowStore()
+    resolved_mailbox = mailbox or InMemoryTeammateMailbox(
+        default_claim_lease_ms=config.claim_lease_ms,
+        default_retry_max_attempts=config.retry_max_attempts,
+        retry_backoff_ms=config.retry_backoff_ms,
     )
     resolved_teammates = teammates or PersistentTeammateOrchestrator(
         config=config,
         project_root=project_root,
         runtime_services=runtime_services,
         execution_core=execution_core,
-        mailbox=store_bundle.teammate_mailbox,
+        mailbox=resolved_mailbox,
     )
     runtime_services.bind_teammates(resolved_teammates)
 
@@ -50,17 +58,17 @@ def assemble_team_capability(
         runtime_services=runtime_services,
     )
     resolved_control_plane = control_plane or RuntimeTeamControlPlane(
-        store=store_bundle.team_store,
+        store=resolved_team_store,
         runtime_services=runtime_services,
         runner_manager=runner_manager,
     )
     resolved_workflows = workflow_service or RuntimeTeamWorkflowService(
-        store=store_bundle.team_workflow_store,
+        store=resolved_workflow_store,
         control_plane=resolved_control_plane,
         runtime_services=runtime_services,
     )
     resolved_message_bus = message_bus or RuntimeTeamMessageBus(
-        store=store_bundle.team_message_store,
+        store=resolved_message_store,
         control_plane=resolved_control_plane,
         runtime_services=runtime_services,
     )

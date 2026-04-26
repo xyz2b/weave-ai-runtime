@@ -16,7 +16,6 @@ def builtin_workflow_skills() -> tuple[SkillDefinition, ...]:
             description="Run a focused verification pass before finalizing work.",
             content="Inspect the latest changes and validate them with the strongest available checks.",
             execution_context=SkillExecutionContext.FORK,
-            agent="verification",
             origin=origin,
         ),
         SkillDefinition(

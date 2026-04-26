@@ -17,6 +17,7 @@ from runtime import (
 from runtime.jobs import JobNotStoppableError, JobScopeFilter, JobStatus
 from runtime.permissions import PermissionOutcome, PermissionRequest
 from runtime.tasking import TaskStatus
+from runtime.teammate_orchestration.mailbox import InMemoryTeammateMailbox
 from runtime.turn_engine import ModelRequest, ModelStreamEvent, ModelStreamEventType
 
 
@@ -90,7 +91,7 @@ class GatedModelClient(FakeModelClient):
             yield event
 
 
-def test_runtime_feature_gate_exposes_persistent_teammate_orchestration(tmp_path: Path) -> None:
+def test_runtime_default_distribution_exposes_team_capability_without_file_store_dependency(tmp_path: Path) -> None:
     disabled = assemble_runtime(
         RuntimeConfig(
             working_directory=tmp_path,
@@ -106,7 +107,7 @@ def test_runtime_feature_gate_exposes_persistent_teammate_orchestration(tmp_path
 
     assert disabled.teammates is None
     assert enabled.teammates is not None
-    assert enabled.teammates.mailbox.root == (tmp_path / ".runtime" / "teammates").resolve()
+    assert isinstance(enabled.teammates.mailbox, InMemoryTeammateMailbox)
 
 
 def test_mailbox_publish_is_atomic_and_claims_are_exclusive(tmp_path: Path) -> None:

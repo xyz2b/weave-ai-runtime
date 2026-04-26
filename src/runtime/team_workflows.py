@@ -7,7 +7,7 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Mapping
+from typing import TYPE_CHECKING, Any, Mapping, Protocol
 from uuid import uuid4
 
 from .contracts import utc_now
@@ -448,6 +448,158 @@ def workflow_record_to_payload(record: TeamWorkflowRecord) -> dict[str, Any]:
     }
 
 
+class TeamWorkflowStore(Protocol):
+    def create(self, record: TeamWorkflowRecord) -> TeamWorkflowRecord: ...
+
+    def save(self, record: TeamWorkflowRecord) -> TeamWorkflowRecord: ...
+
+    def load(self, workflow_id: str) -> TeamWorkflowRecord | None: ...
+
+    def list_all(self) -> tuple[TeamWorkflowRecord, ...]: ...
+
+    def list_pending(self) -> tuple[TeamWorkflowRecord, ...]: ...
+
+    def list_terminal(self) -> tuple[TeamWorkflowRecord, ...]: ...
+
+    def list_for_team(
+        self,
+        team_id: str,
+        *,
+        pending_only: bool | None = None,
+    ) -> tuple[TeamWorkflowRecord, ...]: ...
+
+    def list_for_responder(
+        self,
+        responder_member_id: str,
+        *,
+        pending_only: bool | None = None,
+    ) -> tuple[TeamWorkflowRecord, ...]: ...
+
+    def delete(self, workflow_id: str) -> None: ...
+
+
+class InMemoryTeamWorkflowStore:
+    def __init__(self) -> None:
+        self._records: dict[str, TeamWorkflowRecord] = {}
+        self._team_ids: dict[str, set[str]] = {}
+        self._responder_ids: dict[str, set[str]] = {}
+        self._pending_ids: set[str] = set()
+        self._terminal_ids: set[str] = set()
+
+    def create(self, record: TeamWorkflowRecord) -> TeamWorkflowRecord:
+        if record.workflow_id in self._records:
+            raise FileExistsError(record.workflow_id)
+        self._records[record.workflow_id] = record
+        self._update_indices(record, previous=None)
+        return record
+
+    def save(self, record: TeamWorkflowRecord) -> TeamWorkflowRecord:
+        previous = self._records.get(record.workflow_id)
+        self._records[record.workflow_id] = record
+        self._update_indices(record, previous=previous)
+        return record
+
+    def load(self, workflow_id: str) -> TeamWorkflowRecord | None:
+        return self._records.get(str(workflow_id))
+
+    def list_all(self) -> tuple[TeamWorkflowRecord, ...]:
+        return self._sort_records(self._records.values())
+
+    def list_pending(self) -> tuple[TeamWorkflowRecord, ...]:
+        return self._records_from_ids(self._pending_ids)
+
+    def list_terminal(self) -> tuple[TeamWorkflowRecord, ...]:
+        return self._records_from_ids(self._terminal_ids)
+
+    def list_for_team(
+        self,
+        team_id: str,
+        *,
+        pending_only: bool | None = None,
+    ) -> tuple[TeamWorkflowRecord, ...]:
+        return self._filter_pending(
+            self._records_from_ids(self._team_ids.get(str(team_id), set())),
+            pending_only=pending_only,
+        )
+
+    def list_for_responder(
+        self,
+        responder_member_id: str,
+        *,
+        pending_only: bool | None = None,
+    ) -> tuple[TeamWorkflowRecord, ...]:
+        return self._filter_pending(
+            self._records_from_ids(self._responder_ids.get(str(responder_member_id), set())),
+            pending_only=pending_only,
+        )
+
+    def delete(self, workflow_id: str) -> None:
+        previous = self._records.pop(str(workflow_id), None)
+        if previous is None:
+            return
+        self._update_indices(None, previous=previous)
+
+    def _records_from_ids(self, ids: set[str]) -> tuple[TeamWorkflowRecord, ...]:
+        return self._sort_records(
+            record
+            for workflow_id in sorted(ids)
+            if (record := self._records.get(workflow_id)) is not None
+        )
+
+    def _sort_records(self, records) -> tuple[TeamWorkflowRecord, ...]:
+        return tuple(sorted(records, key=lambda item: (item.created_at, item.workflow_id)))
+
+    def _filter_pending(
+        self,
+        records: tuple[TeamWorkflowRecord, ...],
+        *,
+        pending_only: bool | None,
+    ) -> tuple[TeamWorkflowRecord, ...]:
+        if pending_only is None:
+            return records
+        if pending_only:
+            return tuple(record for record in records if not record.terminal)
+        return tuple(record for record in records if record.terminal)
+
+    def _update_indices(
+        self,
+        record: TeamWorkflowRecord | None,
+        *,
+        previous: TeamWorkflowRecord | None,
+    ) -> None:
+        if previous is not None:
+            self._remove_team_index(previous.team_id, previous.workflow_id)
+            if previous.responder_member_id:
+                self._remove_responder_index(previous.responder_member_id, previous.workflow_id)
+            self._pending_ids.discard(previous.workflow_id)
+            self._terminal_ids.discard(previous.workflow_id)
+        if record is None:
+            return
+        self._team_ids.setdefault(record.team_id, set()).add(record.workflow_id)
+        if record.responder_member_id:
+            self._responder_ids.setdefault(record.responder_member_id, set()).add(record.workflow_id)
+        if record.terminal:
+            self._terminal_ids.add(record.workflow_id)
+        else:
+            self._pending_ids.add(record.workflow_id)
+
+    def _remove_team_index(self, team_id: str, workflow_id: str) -> None:
+        ids = self._team_ids.get(team_id)
+        if ids is None:
+            return
+        ids.discard(workflow_id)
+        if not ids:
+            self._team_ids.pop(team_id, None)
+
+    def _remove_responder_index(self, responder_member_id: str, workflow_id: str) -> None:
+        ids = self._responder_ids.get(responder_member_id)
+        if ids is None:
+            return
+        ids.discard(workflow_id)
+        if not ids:
+            self._responder_ids.pop(responder_member_id, None)
+
+
 class FileBackedTeamWorkflowStore:
     def __init__(self, root: Path) -> None:
         self._root = Path(root).resolve()
@@ -612,7 +764,7 @@ class RuntimeTeamWorkflowService:
     def __init__(
         self,
         *,
-        store: FileBackedTeamWorkflowStore,
+        store: TeamWorkflowStore,
         control_plane: RuntimeTeamControlPlane,
         runtime_services: RuntimeServices,
         permission_timeout: timedelta = timedelta(minutes=5),
@@ -629,7 +781,7 @@ class RuntimeTeamWorkflowService:
         self._terminal_waiters: dict[str, list[asyncio.Future[TeamWorkflowRecord]]] = {}
 
     @property
-    def store(self) -> FileBackedTeamWorkflowStore:
+    def store(self) -> TeamWorkflowStore:
         return self._store
 
     def bind_message_bus(self, message_bus: RuntimeTeamMessageBus) -> None:
@@ -1507,6 +1659,7 @@ def _atomic_write_json(path: Path, payload: dict[str, Any], *, replace_existing:
 
 __all__ = [
     "FileBackedTeamWorkflowStore",
+    "InMemoryTeamWorkflowStore",
     "RuntimeTeamWorkflowService",
     "TeamWorkflowActorKind",
     "TeamWorkflowError",
@@ -1516,6 +1669,7 @@ __all__ = [
     "TeamWorkflowRequestProtocol",
     "TeamWorkflowResponseProtocol",
     "TeamWorkflowStatus",
+    "TeamWorkflowStore",
     "TeamWorkflowTransition",
     "TERMINAL_WORKFLOW_STATUSES",
     "allowed_workflow_actions",
