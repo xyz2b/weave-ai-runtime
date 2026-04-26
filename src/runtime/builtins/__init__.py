@@ -33,6 +33,9 @@ _OPTIONAL_BUILTIN_LOADERS: dict[str, dict[str, str]] = {
     "runtime-builtin-workflows": {
         "skills": "runtime.builtin_workflows.builtins:builtin_workflow_skills",
     },
+    "runtime-planning": {
+        "agents": "runtime.planning.builtins:planning_builtin_agents",
+    },
     "runtime-devtools": {
         "tools": "runtime.devtools.builtins:devtools_builtin_tools",
         "agents": "runtime.devtools.builtins:devtools_builtin_agents",
@@ -142,6 +145,13 @@ def _builtin_pack_for_package(package_name: str) -> BuiltinPack:
             tools=(),
             agents=(),
             skills=_load_optional_skill_definitions("runtime-builtin-workflows"),
+        )
+    if package_name == "runtime-planning":
+        return BuiltinPack(
+            packages=("runtime-planning",),
+            tools=(),
+            agents=_load_optional_agent_definitions("runtime-planning"),
+            skills=(),
         )
     if package_name == "runtime-devtools":
         return BuiltinPack(

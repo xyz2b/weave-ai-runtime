@@ -119,6 +119,13 @@ FIRST_PARTY_PACKAGE_SPECS: dict[str, FirstPartyPackageSpec] = {
         dependencies=("runtime-core",),
         builtin_skills=("verify", "debug", "stuck", "batch", "simplify"),
     ),
+    "runtime-planning": FirstPartyPackageSpec(
+        name="runtime-planning",
+        role=FirstPartyPackageRole.PROFILE_WORKFLOW,
+        description="First-party planning profile and workflow agent package.",
+        dependencies=("runtime-core",),
+        builtin_agents=("planner", "coordinator", "worker"),
+    ),
     "runtime-devtools": FirstPartyPackageSpec(
         name="runtime-devtools",
         role=FirstPartyPackageRole.PROFILE_WORKFLOW,
@@ -154,6 +161,7 @@ RUNTIME_DISTRIBUTION_SPECS: dict[RuntimeDistribution, RuntimeDistributionSpec] =
             "runtime-hosts-reference",
             "runtime-stores-file",
             "runtime-builtin-workflows",
+            "runtime-planning",
             "runtime-devtools",
         ),
     ),

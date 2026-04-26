@@ -1695,6 +1695,16 @@ def _migration_metadata(
             "tools": list(FIRST_PARTY_PACKAGE_SPECS["runtime-devtools"].builtin_tools),
             "agents": list(FIRST_PARTY_PACKAGE_SPECS["runtime-devtools"].builtin_agents),
         },
+        "planning_profiles": {
+            "selected": "runtime-planning" in selected_packages,
+            "target_distribution": "runtime-full",
+            "target_package": "runtime-planning",
+            "agents": list(FIRST_PARTY_PACKAGE_SPECS["runtime-planning"].builtin_agents),
+            "shared_primitives_owner": "runtime-core",
+            "shared_primitives": ["task_*", "job_*"],
+            "helper_agent": "plan",
+            "helper_package": "runtime-devtools",
+        },
         "hook_contract": {
             "stable_public_phases": stable_phases,
             "advanced_public_phases": advanced_phases,
@@ -1740,6 +1750,28 @@ def _package_migration_diagnostics(
                     "target_distribution": "runtime-full",
                     "tools": list(FIRST_PARTY_PACKAGE_SPECS["runtime-devtools"].builtin_tools),
                     "agents": list(FIRST_PARTY_PACKAGE_SPECS["runtime-devtools"].builtin_agents),
+                },
+            )
+        )
+    if "runtime-planning" not in selected_packages:
+        diagnostics.append(
+            Diagnostic(
+                severity=DiagnosticSeverity.WARNING,
+                code="runtime_planning_not_selected",
+                message=(
+                    "Official shared-planning profiles now live in runtime-planning and are only "
+                    "included automatically in runtime-full; core task/job primitives remain in "
+                    "runtime-core."
+                ),
+                details={
+                    "distribution": distribution,
+                    "target_package": "runtime-planning",
+                    "target_distribution": "runtime-full",
+                    "agents": list(FIRST_PARTY_PACKAGE_SPECS["runtime-planning"].builtin_agents),
+                    "shared_primitives_owner": "runtime-core",
+                    "shared_primitives": ["task_*", "job_*"],
+                    "helper_agent": "plan",
+                    "helper_package": "runtime-devtools",
                 },
             )
         )

@@ -170,6 +170,7 @@ def test_distribution_profiles_publish_expected_builtin_ownership(tmp_path: Path
         "runtime-hosts-reference",
         "runtime-stores-file",
         "runtime-builtin-workflows",
+        "runtime-planning",
         "runtime-devtools",
     )
 
@@ -197,9 +198,24 @@ def test_distribution_profiles_publish_expected_builtin_ownership(tmp_path: Path
     full_skill_names = {skill.name for skill in full_pack.skills}
     assert "read" in full_tool_names
     assert "verification" in full_agent_names
+    assert "planner" in full_agent_names
+    assert "coordinator" in full_agent_names
+    assert "worker" in full_agent_names
     assert "verify" in full_skill_names
     assert next(tool for tool in full_pack.tools if tool.name == "read").metadata["builtin_owner"] == "runtime-devtools"
     assert next(agent for agent in full_pack.agents if agent.name == "verification").metadata["builtin_owner"] == "runtime-devtools"
+    planner = next(agent for agent in full_pack.agents if agent.name == "planner")
+    coordinator = next(agent for agent in full_pack.agents if agent.name == "coordinator")
+    worker = next(agent for agent in full_pack.agents if agent.name == "worker")
+    plan = next(agent for agent in full_pack.agents if agent.name == "plan")
+    assert planner.metadata["builtin_owner"] == "runtime-planning"
+    assert coordinator.metadata["builtin_owner"] == "runtime-planning"
+    assert worker.metadata["builtin_owner"] == "runtime-planning"
+    assert planner.tools == ("task_*",)
+    assert coordinator.tools == ("task_*", "job_*", "agent")
+    assert worker.tools == ("*",)
+    assert worker.disallowed_tools == ("task_*", "job_*")
+    assert plan.metadata["builtin_owner"] == "runtime-devtools"
 
 
 def test_core_builtin_catalog_excludes_optional_package_definitions() -> None:
@@ -246,6 +262,7 @@ def test_runtime_core_build_does_not_import_optional_package_modules(
         "runtime.memory.builtins",
         "runtime.memory.package",
         "runtime.openai_package",
+        "runtime.planning.builtins",
         "runtime.stores_file.package",
         "runtime.team.builtins",
         "runtime.team.assembly",
@@ -349,10 +366,16 @@ def test_distribution_profiles_expose_expected_visible_invocations(tmp_path: Pat
     assert "remember" in default_skills
     assert "read" not in default_tools
     assert "verification" not in default_agents
+    assert "planner" not in default_agents
+    assert "coordinator" not in default_agents
+    assert "worker" not in default_agents
     assert "read" in full_tools
     assert "remember" in full_skills
     assert "verification" in full_agents
     assert "explore" in full_agents
+    assert "planner" in full_agents
+    assert "coordinator" in full_agents
+    assert "worker" in full_agents
 
 
 def test_runtime_core_distribution_remains_runnable_without_memory_or_devtools(tmp_path: Path) -> None:
@@ -441,7 +464,7 @@ def test_runtime_default_distribution_wires_team_capability_out_of_the_box(tmp_p
     assert result["created"] is True
 
 
-def test_non_full_distributions_publish_devtools_migration_diagnostics(tmp_path: Path) -> None:
+def test_non_full_distributions_publish_devtools_and_planning_migration_diagnostics(tmp_path: Path) -> None:
     (tmp_path / "core-runtime").mkdir()
     (tmp_path / "default-runtime").mkdir()
     core_runtime = assemble_runtime(
@@ -458,12 +481,22 @@ def test_non_full_distributions_publish_devtools_migration_diagnostics(tmp_path:
     )
 
     for runtime in (core_runtime, default_runtime):
-        diagnostic = next(diag for diag in runtime.kernel.diagnostics if diag.code == "runtime_devtools_not_selected")
-        assert diagnostic.details["target_distribution"] == RuntimeDistribution.FULL.value
-        assert diagnostic.details["target_package"] == "runtime-devtools"
-        assert "read" in diagnostic.details["tools"]
-        assert "verification" in diagnostic.details["agents"]
+        devtools_diagnostic = next(
+            diag for diag in runtime.kernel.diagnostics if diag.code == "runtime_devtools_not_selected"
+        )
+        planning_diagnostic = next(
+            diag for diag in runtime.kernel.diagnostics if diag.code == "runtime_planning_not_selected"
+        )
+        assert devtools_diagnostic.details["target_distribution"] == RuntimeDistribution.FULL.value
+        assert devtools_diagnostic.details["target_package"] == "runtime-devtools"
+        assert "read" in devtools_diagnostic.details["tools"]
+        assert "verification" in devtools_diagnostic.details["agents"]
+        assert planning_diagnostic.details["target_distribution"] == RuntimeDistribution.FULL.value
+        assert planning_diagnostic.details["target_package"] == "runtime-planning"
+        assert "planner" in planning_diagnostic.details["agents"]
+        assert planning_diagnostic.details["shared_primitives_owner"] == "runtime-core"
         assert runtime.services.metadata["migration"]["devtools"]["selected"] is False
+        assert runtime.services.metadata["migration"]["planning_profiles"]["selected"] is False
 
 
 def test_distribution_profiles_gate_runtime_mechanisms_and_store_defaults(tmp_path: Path) -> None:
@@ -510,6 +543,8 @@ def test_distribution_profiles_gate_runtime_mechanisms_and_store_defaults(tmp_pa
 
     assert full_runtime.services.metadata["migration"]["hook_contract"]["stable_handler_kinds"] == ["callback"]
     assert "runtime-hosts-reference" in full_runtime.services.metadata["first_party_package_catalog"]
+    assert "runtime-planning" in full_runtime.services.metadata["first_party_package_catalog"]
+    assert full_runtime.services.metadata["migration"]["planning_profiles"]["selected"] is True
     assert full_runtime.services.metadata["reference_hosts"] == ["cli", "sdk"]
 
 
@@ -540,6 +575,58 @@ def test_runtime_full_distribution_keeps_devtools_replacement_rules(tmp_path: Pa
     assert kernel.tool_registry.get("read").description == "custom devtools read"
     assert kernel.agent_registry.get("verification") is not None
     assert kernel.agent_registry.get("verification").description == "custom verification agent"
+
+
+def test_runtime_planning_package_can_be_explicitly_enabled_and_disabled(tmp_path: Path) -> None:
+    core_with_planning = RuntimeConfig(
+        working_directory=tmp_path / "core-with-planning",
+        distribution=RuntimeDistribution.CORE,
+        enabled_packages={"runtime-planning"},
+    )
+    full_without_planning = RuntimeConfig(
+        working_directory=tmp_path / "full-without-planning",
+        distribution=RuntimeDistribution.FULL,
+        disabled_packages={"runtime-planning"},
+    )
+
+    core_with_planning_pack = load_builtin_pack(core_with_planning.selected_first_party_packages())
+    full_without_planning_pack = load_builtin_pack(full_without_planning.selected_first_party_packages())
+
+    assert core_with_planning.selected_first_party_packages() == ("runtime-core", "runtime-planning")
+    assert "planner" in {agent.name for agent in core_with_planning_pack.agents}
+    assert "coordinator" in {agent.name for agent in core_with_planning_pack.agents}
+    assert "worker" in {agent.name for agent in core_with_planning_pack.agents}
+    assert full_without_planning.selected_first_party_packages() == (
+        "runtime-core",
+        "runtime-memory",
+        "runtime-team",
+        "runtime-compaction",
+        "runtime-isolation",
+        "runtime-openai",
+        "runtime-hosts-reference",
+        "runtime-stores-file",
+        "runtime-builtin-workflows",
+        "runtime-devtools",
+    )
+    assert "planner" not in {agent.name for agent in full_without_planning_pack.agents}
+    assert "coordinator" not in {agent.name for agent in full_without_planning_pack.agents}
+    assert "worker" not in {agent.name for agent in full_without_planning_pack.agents}
+
+
+def test_runtime_core_preserves_task_and_job_primitives_without_planning_package() -> None:
+    core_pack = load_builtin_pack(("runtime-core",))
+
+    core_tool_names = {tool.name for tool in core_pack.tools}
+    core_agent_names = {agent.name for agent in core_pack.agents}
+
+    assert "task_create" in core_tool_names
+    assert "task_list" in core_tool_names
+    assert "job_get" in core_tool_names
+    assert "job_list" in core_tool_names
+    assert "job_stop" in core_tool_names
+    assert "planner" not in core_agent_names
+    assert "coordinator" not in core_agent_names
+    assert "worker" not in core_agent_names
 
 
 def test_runtime_core_import_surface_does_not_eagerly_load_reference_hosts(tmp_path: Path) -> None:
