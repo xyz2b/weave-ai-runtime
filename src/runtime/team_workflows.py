@@ -938,14 +938,19 @@ class RuntimeTeamWorkflowService:
         future: asyncio.Future[TeamWorkflowRecord] = asyncio.get_running_loop().create_future()
         self._terminal_waiters.setdefault(workflow_id, []).append(future)
         try:
-            return await future
+            resolved = await future
+            if resolved is not None:
+                return resolved
+            refreshed = self._store.load(workflow_id)
+            if refreshed is None:
+                raise TeamWorkflowError("not_found", f"Workflow '{workflow_id}' was not found", workflow_id=workflow_id)
+            return refreshed
         finally:
             waiters = self._terminal_waiters.get(workflow_id)
-            if waiters is None:
-                return
-            self._terminal_waiters[workflow_id] = [item for item in waiters if item is not future]
-            if not self._terminal_waiters[workflow_id]:
-                self._terminal_waiters.pop(workflow_id, None)
+            if waiters is not None:
+                self._terminal_waiters[workflow_id] = [item for item in waiters if item is not future]
+                if not self._terminal_waiters[workflow_id]:
+                    self._terminal_waiters.pop(workflow_id, None)
 
     async def respond_model(
         self,

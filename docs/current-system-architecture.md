@@ -721,6 +721,7 @@ v1 的稳定 public contract 是：
   - `team_create`
   - `team_spawn`
   - `team_send`
+  - `team_respond`
   - `team_delete`
 - addressing
   - `to="leader"` -> 当前 team leader
@@ -729,6 +730,21 @@ v1 的稳定 public contract 是：
 - authority
   - 只有 leader 能 `team_create` / `team_spawn` / `team_delete`
   - leader 和 teammate 都能 `team_send`
+  - `team_respond` 必须引用一个存在且未终态的 `workflow_id`，并且 action 必须是该 workflow 当前允许的 typed response
+
+workflow 协议层现在也已经从 transport 层显式拆开：
+
+- `RuntimeTeamWorkflowService`
+  - 持有 durable workflow record、deadline、timeout / forced-close、responder validation 与 terminal outcome
+  - `permission` 与 `shutdown` 复用同一个 request/response + stable `workflow_id` 协议形状
+  - `src/runtime/team_workflows.py` 提供集中式 schema / parse / serialize helper
+- `RuntimeTeamMessageBus`
+  - 只负责投递 direct / broadcast / control envelope
+  - workflow envelope 复用同一个 `workflow_id` 作为 correlation id，但 transport 不是 workflow authority source of truth
+- ingress / ordering
+  - 需要 leader 决策的 workflow request 会被合成为 runtime-generated input，附带 `workflow_id`、kind、requester、allowed actions 等 private metadata
+  - 非 actionable 的 acknowledgement / terminal update 仍优先走 private 或 replay-only 路径
+  - lifecycle-critical workflow，尤其 `shutdown`，在 leader ingress 上优先于普通 teammate chatter
 
 ## 14. 当前成熟度判断
 

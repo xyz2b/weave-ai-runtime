@@ -5,6 +5,7 @@ from pathlib import Path
 from runtime import (
     AgentDefinition,
     BuiltinPackConfig,
+    FileBackedTeamWorkflowStore,
     PermissionBehavior,
     PermissionOutcome,
     RuntimeConfig,
@@ -12,6 +13,9 @@ from runtime import (
     TeamControlError,
     TeamWorkflowActorKind,
     TeamWorkflowError,
+    TeamWorkflowKind,
+    TeamWorkflowRecord,
+    TeamWorkflowStatus,
     TeammateOrchestrationConfig,
     assemble_runtime,
     build_workflow_request_protocol,
@@ -200,6 +204,68 @@ def test_permission_workflow_blocks_host_until_approved(tmp_path: Path) -> None:
     assert record.status.value == "completed"
 
 
+def test_file_backed_workflow_store_persists_and_indexes_records(tmp_path: Path) -> None:
+    store = FileBackedTeamWorkflowStore(tmp_path / "workflow-store")
+    pending = TeamWorkflowRecord(
+        workflow_id="wf-pending",
+        team_id="team-1",
+        workflow_kind=TeamWorkflowKind.PERMISSION,
+        requester_member_id="member-1",
+        requester_name="worker",
+        responder_member_id="leader-1",
+        responder_name="leader",
+        request_payload={"permission_name": "bash"},
+    )
+    terminal = TeamWorkflowRecord(
+        workflow_id="wf-terminal",
+        team_id="team-1",
+        workflow_kind=TeamWorkflowKind.SHUTDOWN,
+        requester_member_id="leader-1",
+        requester_name="leader",
+        responder_member_id="member-1",
+        responder_name="worker",
+        status=TeamWorkflowStatus.COMPLETED,
+        request_payload={"reason": "cleanup"},
+        response_payload={"teammate_id": "member-1"},
+        terminal_at=pending.created_at,
+    )
+    other = TeamWorkflowRecord(
+        workflow_id="wf-other",
+        team_id="team-2",
+        workflow_kind=TeamWorkflowKind.PERMISSION,
+        requester_member_id="member-2",
+        requester_name="worker-2",
+        responder_member_id="leader-2",
+        responder_name="leader-2",
+        request_payload={"permission_name": "read"},
+    )
+
+    store.create(pending)
+    store.create(terminal)
+    store.create(other)
+
+    reloaded = FileBackedTeamWorkflowStore(store.root)
+
+    assert reloaded.load(pending.workflow_id) == pending
+    assert [record.workflow_id for record in reloaded.list_for_team("team-1", pending_only=True)] == [
+        pending.workflow_id
+    ]
+    assert [record.workflow_id for record in reloaded.list_for_team("team-1", pending_only=False)] == [
+        terminal.workflow_id
+    ]
+    assert [record.workflow_id for record in reloaded.list_for_responder("leader-1", pending_only=True)] == [
+        pending.workflow_id
+    ]
+    assert [record.workflow_id for record in reloaded.list_for_responder("member-1", pending_only=False)] == [
+        terminal.workflow_id
+    ]
+    assert {record.workflow_id for record in reloaded.list_pending()} == {
+        pending.workflow_id,
+        other.workflow_id,
+    }
+    assert {record.workflow_id for record in reloaded.list_terminal()} == {terminal.workflow_id}
+
+
 def test_team_respond_resolves_pending_permission_workflow(tmp_path: Path) -> None:
     runtime = assemble_runtime(
         RuntimeConfig(
@@ -325,6 +391,87 @@ def test_workflow_protocol_round_trip_and_unauthorized_response_is_rejected(tmp_
     assert parsed_response.status.value == "rejected"
 
 
+def test_terminal_and_timed_out_workflows_reject_follow_up_responses(tmp_path: Path) -> None:
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            model_client=None,
+            teammate_orchestration=TeammateOrchestrationConfig(enabled=True, heartbeat_interval_ms=10),
+        )
+    )
+    plane = runtime.team_control_plane
+    workflows = runtime.team_workflows
+    assert plane is not None
+    assert workflows is not None
+
+    async def scenario():
+        team, _ = await plane.create_team(session_id="leader-session", extensions={}, name="ops")
+        member = await plane.register_member(
+            session_id="leader-session",
+            extensions={},
+            name="alpha",
+            agent_name="main-router",
+            execution_defaults={"cwd": str(tmp_path)},
+        )
+        rejected = await workflows.create_permission_workflow(
+            team=team,
+            requester_member_id=member.member_id,
+            requester_name=member.name,
+            responder_member_id=team.leader_member_id,
+            responder_name="leader",
+            request_payload={"permission_name": "bash", "permission_message": "approve?"},
+        )
+        first_terminal = await workflows.respond_host(workflow_id=rejected.workflow_id, action="reject")
+        duplicate_error = None
+        try:
+            await workflows.respond_host(workflow_id=rejected.workflow_id, action="approve")
+        except TeamWorkflowError as exc:
+            duplicate_error = exc
+
+        timed_out = await workflows.create_permission_workflow(
+            team=team,
+            requester_member_id=member.member_id,
+            requester_name=member.name,
+            responder_member_id=team.leader_member_id,
+            responder_name="leader",
+            request_payload={"permission_name": "bash", "permission_message": "approve later"},
+            timeout=timedelta(milliseconds=20),
+        )
+        await _wait_for(
+            lambda: (
+                (record := workflows.get(timed_out.workflow_id)) is not None
+                and record.status is TeamWorkflowStatus.TIMED_OUT
+            )
+        )
+        timed_out_error = None
+        try:
+            await workflows.respond_host(workflow_id=timed_out.workflow_id, action="approve")
+        except TeamWorkflowError as exc:
+            timed_out_error = exc
+
+        return (
+            first_terminal,
+            workflows.get(rejected.workflow_id),
+            duplicate_error,
+            workflows.get(timed_out.workflow_id),
+            timed_out_error,
+        )
+
+    first_terminal, rejected, duplicate_error, timed_out, timed_out_error = asyncio.run(scenario())
+
+    assert duplicate_error is not None
+    assert duplicate_error.code == "terminal_workflow"
+    assert rejected is not None
+    assert rejected.status is TeamWorkflowStatus.REJECTED
+    assert rejected.response_payload == {"leader_decision": "reject"}
+    assert rejected.terminal_at == first_terminal.terminal_at
+    assert timed_out_error is not None
+    assert timed_out_error.code == "terminal_workflow"
+    assert timed_out is not None
+    assert timed_out.status is TeamWorkflowStatus.TIMED_OUT
+    assert timed_out.response_payload == {"deadline_expired": True}
+
+
 def test_shutdown_workflow_completes_before_member_cleanup(tmp_path: Path) -> None:
     runtime = assemble_runtime(
         RuntimeConfig(
@@ -362,6 +509,66 @@ def test_shutdown_workflow_completes_before_member_cleanup(tmp_path: Path) -> No
     assert shutdowns
     assert shutdowns[-1].terminal is True
     assert shutdowns[-1].status.value == "completed"
+
+
+def test_idle_shutdown_persists_stopped_snapshot_before_cleanup(tmp_path: Path) -> None:
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            model_client=None,
+            teammate_orchestration=TeammateOrchestrationConfig(enabled=True, heartbeat_interval_ms=10),
+        )
+    )
+    plane = runtime.team_control_plane
+    workflows = runtime.team_workflows
+    teammates = runtime.teammates
+    assert plane is not None
+    assert workflows is not None
+    assert teammates is not None
+    captured: dict[str, object] = {}
+    original_remove_teammate = teammates.remove_teammate
+
+    async def capture_remove_teammate(*, team_id: str, teammate_id: str) -> None:
+        snapshot = teammates.snapshot(team_id, teammate_id)
+        captured["snapshot"] = snapshot
+        if snapshot is not None and snapshot.shutdown_workflow_id is not None:
+            captured["workflow"] = workflows.get(snapshot.shutdown_workflow_id)
+        await original_remove_teammate(team_id=team_id, teammate_id=teammate_id)
+
+    teammates.remove_teammate = capture_remove_teammate  # type: ignore[method-assign]
+
+    async def scenario():
+        team, _ = await plane.create_team(session_id="leader-session", extensions={}, name="ops")
+        member = await plane.register_member(
+            session_id="leader-session",
+            extensions={},
+            name="alpha",
+            agent_name="main-router",
+            execution_defaults={"cwd": str(tmp_path)},
+        )
+        removed = await plane.remove_member(
+            session_id="leader-session",
+            extensions={},
+            member_id=member.member_id,
+        )
+        shutdowns = [
+            record
+            for record in workflows.list_workflows(team_id=team.team_id, pending_only=False)
+            if record.workflow_kind is TeamWorkflowKind.SHUTDOWN
+        ]
+        return removed, shutdowns[-1]
+
+    removed, shutdown = asyncio.run(scenario())
+
+    snapshot = captured.get("snapshot")
+    assert snapshot is not None
+    assert snapshot.state.value == "stopped"
+    assert snapshot.current_work_attached is False
+    assert snapshot.shutdown_workflow_id == shutdown.workflow_id
+    assert captured.get("workflow") is not None
+    assert captured["workflow"].status is TeamWorkflowStatus.COMPLETED
+    assert shutdown.status is TeamWorkflowStatus.COMPLETED
+    assert removed.status.value == "removed"
 
 
 def test_shutdown_workflow_is_delivered_to_targeted_teammate_and_leader(tmp_path: Path) -> None:
@@ -759,6 +966,101 @@ def test_shutdown_workflow_is_prioritized_and_preserves_private_envelope(tmp_pat
     assert metadata["team_last_control_message"]["payload"]["protocol_kind"] == "request"
 
 
+def test_team_deletion_waits_for_active_shutdown_timeout_and_persists_terminal_record(tmp_path: Path) -> None:
+    runtime = _worker_runtime(
+        tmp_path,
+        model_batches=[
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-worker-1"}),
+                ModelStreamEvent(
+                    ModelStreamEventType.TOOL_CALL,
+                    {
+                        "tool_name": "sleep",
+                        "tool_input": {"seconds": 0.2},
+                        "call_id": "call-sleep-1",
+                    },
+                ),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "tool_use"}),
+            ],
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-worker-2"}),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "done"}),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+            ],
+        ],
+    )
+    plane = runtime.team_control_plane
+    bus = runtime.team_message_bus
+    workflows = runtime.team_workflows
+    teammates = runtime.teammates
+    assert plane is not None
+    assert bus is not None
+    assert workflows is not None
+    assert teammates is not None
+    workflows._shutdown_timeout = timedelta(milliseconds=20)  # noqa: SLF001
+    captured: dict[str, object] = {}
+    original_remove_teammate = teammates.remove_teammate
+
+    async def capture_remove_teammate(*, team_id: str, teammate_id: str) -> None:
+        snapshot = teammates.snapshot(team_id, teammate_id)
+        captured["snapshot"] = snapshot
+        if snapshot is not None and snapshot.shutdown_workflow_id is not None:
+            captured["workflow"] = workflows.get(snapshot.shutdown_workflow_id)
+        await original_remove_teammate(team_id=team_id, teammate_id=teammate_id)
+
+    teammates.remove_teammate = capture_remove_teammate  # type: ignore[method-assign]
+
+    async def scenario():
+        team, _ = await plane.create_team(session_id="leader-session", extensions={}, name="ops")
+        member = await plane.register_member(
+            session_id="leader-session",
+            extensions={},
+            name="alpha",
+            agent_name="worker",
+            execution_defaults={"cwd": str(tmp_path)},
+        )
+        await bus.send_public_message(
+            session_id="leader-session",
+            extensions={},
+            to="alpha",
+            message="pause for shutdown",
+        )
+        await _wait_for(
+            lambda: (
+                (snapshot := teammates.snapshot(team.team_id, member.member_id)) is not None
+                and snapshot.current_work_attached
+            )
+        )
+        deleted = await plane.delete_team(session_id="leader-session", extensions={})
+        shutdowns = [
+            record
+            for record in workflows.list_workflows(team_id=team.team_id, pending_only=False)
+            if record.workflow_kind is TeamWorkflowKind.SHUTDOWN
+        ]
+        return team.team_id, deleted, shutdowns[-1]
+
+    team_id, deleted, shutdown = asyncio.run(scenario())
+
+    snapshot = captured.get("snapshot")
+    assert deleted.status.value == "deleted"
+    assert snapshot is not None
+    assert snapshot.state.value == "stopping"
+    assert snapshot.current_work_attached is True
+    assert captured.get("workflow") is not None
+    assert captured["workflow"].status is TeamWorkflowStatus.FORCED_CLOSED
+    assert shutdown.status is TeamWorkflowStatus.FORCED_CLOSED
+
+    restarted = _worker_runtime(tmp_path, model_batches=[])
+    assert restarted.team_workflows is not None
+    recovered_shutdowns = [
+        record
+        for record in restarted.team_workflows.list_workflows(team_id=team_id, pending_only=False)
+        if record.workflow_kind is TeamWorkflowKind.SHUTDOWN
+    ]
+    assert recovered_shutdowns
+    assert recovered_shutdowns[-1].status is TeamWorkflowStatus.FORCED_CLOSED
+
+
 def test_host_bridge_lists_and_resolves_pending_workflows(tmp_path: Path) -> None:
     runtime = assemble_runtime(
         RuntimeConfig(
@@ -806,6 +1108,62 @@ def test_host_bridge_lists_and_resolves_pending_workflows(tmp_path: Path) -> Non
     assert pending[0]["allowed_actions"] == ["approve", "reject"]
     assert updated["workflow_id"] == pending[0]["workflow_id"]
     assert updated["status"] == "rejected"
+
+
+def test_workflows_continue_without_host_integration(tmp_path: Path) -> None:
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            model_client=None,
+            teammate_orchestration=TeammateOrchestrationConfig(enabled=True, heartbeat_interval_ms=10),
+        )
+    )
+    plane = runtime.team_control_plane
+    workflows = runtime.team_workflows
+    assert plane is not None
+    assert workflows is not None
+
+    async def scenario():
+        team, _ = await plane.create_team(session_id="leader-session", extensions={}, name="ops")
+        member = await plane.register_member(
+            session_id="leader-session",
+            extensions={},
+            name="alpha",
+            agent_name="main-router",
+            execution_defaults={"cwd": str(tmp_path)},
+        )
+        workflow = await workflows.create_permission_workflow(
+            team=team,
+            requester_member_id=member.member_id,
+            requester_name=member.name,
+            responder_member_id=team.leader_member_id,
+            responder_name="leader",
+            request_payload={"permission_name": "bash", "permission_message": "approve?"},
+        )
+        leader = plane.get_member(team.team_id, team.leader_member_id)
+        assert leader is not None
+        pending = await runtime.list_team_workflows(session_id="leader-session", pending_only=True)
+        return team, leader, workflow, pending
+
+    team, leader, workflow, pending = asyncio.run(scenario())
+
+    assert pending
+    assert pending[0]["workflow_id"] == workflow.workflow_id
+    scheduler = ToolScheduler(runtime.kernel.tool_registry)
+    result = asyncio.run(
+        scheduler.run(
+            [ToolCall("1", "team_respond", {"workflow_id": workflow.workflow_id, "action": "reject"})],
+            _tool_context(
+                runtime,
+                session_id="leader-session",
+                cwd=tmp_path,
+                metadata=plane.team_private_context(team, leader),
+            ),
+        )
+    )
+
+    assert result[0].status.value == "success"
+    assert result[0].output["status"] == "rejected"
 
 
 def test_host_workflow_response_requires_explicit_scope(tmp_path: Path) -> None:

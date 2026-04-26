@@ -933,7 +933,7 @@ config.default_model_route = "research"
 
 ### 8.5 Built-in `team_*` Contract
 
-打开 team mode 后，runtime 会默认带上 4 个 v1 built-in：
+打开 team mode 后，runtime 会默认带上 5 个 v1 built-in：
 
 - `team_create`
   - leader-only
@@ -948,11 +948,26 @@ config.default_model_route = "research"
   - `to=\"leader\"` -> leader
   - `to=\"*\"` -> 当前 team 中除发送者外的所有 active member
   - 其他 `to` 值 -> 当前 team 内按 teammate `name` 解析
+- `team_respond`
+  - 通过 `workflow_id` + typed `action` 解析 pending team control workflow
+  - runtime 会校验 workflow 是否存在、是否已终态、当前 action 是否允许，以及 caller 是否满足该 workflow 的 authority 规则
+  - leader 负责 `permission` workflow；targeted teammate 或 leader 可以 `acknowledge` / `complete` `shutdown` workflow
 - `team_delete`
   - leader-only
-  - 删除 team，并清理 leader binding 与 teammate runner state
+  - 删除 team，并在必要时等待 teammate shutdown workflow graceful complete 或 timeout-driven forced cleanup 后再清理 leader binding 与 teammate runner state
 
 v1 不接受 caller-supplied `team_id`；所有 team_* 调用都从 active team binding 和 runtime-private context 解析 team scope。
+
+workflow authority 和 transport 现在也已经拆开：
+
+- `RuntimeTeamWorkflowService`
+  - 是 permission / shutdown workflow 的 authoritative state owner
+  - 用 shared request/response-plus-ID contract 跟踪 deadline、response history、allowed actions 和 terminal outcome
+- `RuntimeTeamMessageBus`
+  - 继续负责 envelope transport 与 correlation
+  - raw workflow payload 默认不作为 transcript-visible API surface
+- protocol helper
+  - request / response schema 的构造、解析、summary 统一收口在 `src/runtime/team_workflows.py`
 
 ### 8.6 Leader Ingress Default
 
@@ -965,7 +980,15 @@ leader 接收 teammate collaboration message 时，默认策略是：
 - `RUNNING`
   - 进入 ingress queue，但默认不打断当前 turn
 
-control-plane envelope（例如 permission / shutdown 一类）默认走 `local_only` 或 `replay_only` ingress outcome，并通过 `private_updates` / host replay 输出暴露，而不是直接写进 transcript-visible history。
+普通 control-plane update（例如 acknowledgement 或 terminal workflow update）默认走 `local_only` 或 `replay_only` ingress outcome，并通过 `private_updates` / host replay 输出暴露，而不是直接写进 transcript-visible history。
+
+需要 leader 动作的 workflow request 会额外走一条 runtime-owned ingress path：
+
+- actionable workflow 会生成 transcript-visible 的 runtime-generated input summary，而不是把 raw envelope 直接塞进对话历史
+- leader turn 的 private metadata 会暴露 `workflow_id`、workflow kind、requester identity 和 allowed actions，供 `team_respond` 使用
+- permission gating 顺序是：teammate privileged step -> pending permission workflow -> leader typed decision -> optional host permission resolution -> final workflow outcome
+- graceful shutdown 顺序是：request -> acknowledge -> complete；如果 deadline 先到，则 workflow 进入 timeout / forced-close 终态，然后再执行 forced cleanup
+- `shutdown` workflow request 的 ingress priority 高于普通 teammate chatter，避免 teardown 被低优先级消息阻塞
 
 ## 9. 接入方最容易踩错的地方
 
