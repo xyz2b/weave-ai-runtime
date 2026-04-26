@@ -50,10 +50,10 @@
 
 - [x] 6.1 Migrate background memory extraction to create or update shared job records while preserving memory-owned batching and merge state.
 - [x] 6.2 Migrate background memory consolidation to create or update shared job records while preserving consolidation-specific sidecar data.
-- [ ] 6.3 Add regression tests for background memory job lifecycle projection, deduplicated queue behavior, and recovery-oriented visibility.
+- [x] 6.3 Add regression tests for background memory job lifecycle projection, deduplicated queue behavior, and recovery-oriented visibility.
 - [x] 6.4 Migrate teammate active execution projections to shared job records without changing teammate identity or mailbox ownership semantics.
 - [x] 6.5 Map teammate waiting-permission, running, completed, failed, and stopped execution-facing states onto the shared job plane while keeping teammate state authoritative.
-- [ ] 6.6 Add regression tests for teammate job projection lifecycle, waiting-permission updates, terminal transitions, and mailbox recovery invariants.
+- [x] 6.6 Add regression tests for teammate job projection lifecycle, waiting-permission updates, terminal transitions, and mailbox recovery invariants.
 
 ## 7. Extensibility, Stage B Freeze, And Follow-up Cleanup
 

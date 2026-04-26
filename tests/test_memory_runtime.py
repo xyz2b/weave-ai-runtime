@@ -17,7 +17,13 @@ from runtime.definitions import (
 )
 from runtime.execution_policy import build_root_execution_policy, resolve_agent_execution_policy
 from runtime.hooks import RuntimeHookPhase
-from runtime.jobs import JobNotStoppableError, JobScopeFilter, JobStatus
+from runtime.jobs import (
+    DefaultJobService,
+    FileJobStore,
+    JobNotStoppableError,
+    JobScopeFilter,
+    JobStatus,
+)
 from runtime.memory import (
     MemoryEntry,
     MemoryManager,
@@ -2207,6 +2213,113 @@ def test_background_extraction_queue_coalesces_and_merges_trailing_runs(tmp_path
     )
     assert len(preferences) == 1
     assert len(agent_notes) == 1
+
+
+def test_background_memory_jobs_project_shared_state_and_survive_restart(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    store_root = project_root / ".runtime" / "jobs"
+    agent = AgentDefinition(name="main-router", description="router", prompt="route")
+
+    def build_services() -> RuntimeServices:
+        return RuntimeServices(
+            memory=MemoryManagerService(project_root=project_root),
+            context_assembler=ContextAssembler(),
+            jobs=DefaultJobService(store=FileJobStore(store_root)),
+        )
+
+    async def scenario():
+        services = build_services()
+        observed: list[list[tuple[str, JobStatus]]] = []
+        unsubscribe = await services.job_service.watch(
+            scope=JobScopeFilter(team_id="team-alpha"),
+            callback=lambda snapshot: observed.append(
+                [(record.job_id, record.status) for record in snapshot]
+            ),
+        )
+        await services.memory.start_session(
+            session_id="session-memory-projection",
+            agent=agent,
+            cwd=project_root,
+        )
+        first_task_id = await services.memory.schedule_background_extraction(
+            session_id="session-memory-projection",
+            agent=agent,
+            cwd=project_root,
+            messages=(
+                _user_message("msg-pref-1", "I prefer concise answers."),
+                RuntimeMessage(
+                    message_id="msg-agent-1",
+                    role=MessageRole.ASSISTANT,
+                    content="When verifying small Python changes, start with `pytest -q` before broader checks.",
+                ),
+            ),
+            task_manager=services.task_manager,
+            team_id="team-alpha",
+        )
+        second_task_id = await services.memory.schedule_background_extraction(
+            session_id="session-memory-projection",
+            agent=agent,
+            cwd=project_root,
+            messages=(
+                _user_message("msg-pref-1", "I prefer concise answers."),
+                _user_message("msg-pref-2", "I prefer concise answers."),
+                RuntimeMessage(
+                    message_id="msg-agent-1",
+                    role=MessageRole.ASSISTANT,
+                    content="When verifying small Python changes, start with `pytest -q` before broader checks.",
+                ),
+                RuntimeMessage(
+                    message_id="msg-agent-2",
+                    role=MessageRole.ASSISTANT,
+                    content="For the agent, start with `pytest -q` before broader validation.",
+                ),
+            ),
+            task_manager=services.task_manager,
+            team_id="team-alpha",
+        )
+        assert first_task_id == second_task_id
+
+        result = await services.memory.wait_for_background_extraction(str(first_task_id))
+        completed = await services.job_service.get(
+            str(first_task_id),
+            scope=JobScopeFilter(team_id="team-alpha"),
+        )
+        unsubscribe()
+        return str(first_task_id), result, completed, observed
+
+    task_id, result, completed, observed = asyncio.run(scenario())
+
+    assert completed is not None
+    assert completed.executor_kind == "memory"
+    assert completed.status is JobStatus.COMPLETED
+    assert completed.metadata["kind"] == "background_memory_extraction"
+    assert completed.metadata["status"] == "completed"
+    assert completed.metadata["queued_merge"] is True
+    assert completed.result == {
+        "persisted_count": len(result.persisted_documents),
+        "receipt_count": len(result.receipts),
+    }
+    assert observed[0] == []
+    assert any(snapshot and snapshot[0][1] is JobStatus.RUNNING for snapshot in observed[1:])
+    assert any(snapshot and snapshot[0][1] is JobStatus.COMPLETED for snapshot in observed[1:])
+
+    restarted = build_services()
+    recovered = asyncio.run(
+        restarted.job_service.get(
+            task_id,
+            scope=JobScopeFilter(team_id="team-alpha"),
+        )
+    )
+    visible = restarted.task_manager.list_visible(team_id="team-alpha")
+
+    assert recovered is not None
+    assert recovered.status is JobStatus.COMPLETED
+    assert recovered.result == completed.result
+    assert recovered.started_at == completed.started_at
+    assert recovered.ended_at == completed.ended_at
+    assert [task.task_id for task in visible] == [task_id]
+    assert visible[0].status == TaskStatus.COMPLETED
 
 
 def test_record_turn_with_receipts_merges_provenance_for_existing_project_convention(tmp_path: Path) -> None:

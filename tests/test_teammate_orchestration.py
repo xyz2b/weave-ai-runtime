@@ -655,9 +655,18 @@ def test_teammate_identity_permission_bridge_and_idle_projection_consistency(tmp
         assert waiting_projection.lifecycle_state == TeammateLifecycleState.WAITING_PERMISSION
         assert waiting_projection.current_run_id == waiting_snapshot.current_run_id
         task = runtime.task_manager.get(waiting_projection.task_id)
+        waiting_record = await runtime.job_service.get(
+            waiting_projection.task_id,
+            scope=JobScopeFilter(team_id="team-alpha"),
+        )
         assert task is not None
+        assert waiting_record is not None
         assert task.status == TaskStatus.RUNNING
+        assert waiting_record.status is JobStatus.RUNNING
         assert task.metadata["teammate_state"] == TeammateLifecycleState.WAITING_PERMISSION.value
+        assert waiting_record.metadata["teammate_state"] == TeammateLifecycleState.WAITING_PERMISSION.value
+        assert waiting_record.metadata["waiting_permission_id"] == waiting_snapshot.waiting_permission_id
+        assert waiting_record.sidecar_refs[0].ref == f"team-alpha/tm-worker/{waiting_snapshot.current_message_id}"
         assert host.requests[0].context is not None
         assert host.requests[0].context.metadata["teammate_id"] == "tm-worker"
         assert host.notifications[-1].role == MessageRole.NOTIFICATION
@@ -693,6 +702,10 @@ def test_teammate_identity_permission_bridge_and_idle_projection_consistency(tmp
         after_second = teammates.snapshot("team-alpha", "tm-worker")
         second_projection = teammates.projection("team-alpha", "tm-worker")
         second_task_record = runtime.task_manager.get(second_projection.task_id)
+        second_job_record = await runtime.job_service.get(
+            second_projection.task_id,
+            scope=JobScopeFilter(team_id="team-alpha"),
+        )
         return (
             first_run_id,
             first_permission_id,
@@ -701,6 +714,7 @@ def test_teammate_identity_permission_bridge_and_idle_projection_consistency(tmp
             after_second,
             second_projection,
             second_task_record,
+            second_job_record,
         )
 
     (
@@ -711,6 +725,7 @@ def test_teammate_identity_permission_bridge_and_idle_projection_consistency(tmp
         after_second,
         second_projection,
         second_task_record,
+        second_job_record,
     ) = asyncio.run(scenario())
 
     assert first_result.status == "completed"
@@ -723,8 +738,13 @@ def test_teammate_identity_permission_bridge_and_idle_projection_consistency(tmp
     assert second_projection is not None
     assert second_projection.lifecycle_state == TeammateLifecycleState.IDLE
     assert second_task_record is not None
+    assert second_job_record is not None
     assert second_task_record.status == TaskStatus.COMPLETED
+    assert second_job_record.status is JobStatus.COMPLETED
     assert second_task_record.metadata["teammate_state"] == TeammateLifecycleState.IDLE.value
+    assert second_job_record.metadata["teammate_state"] == TeammateLifecycleState.IDLE.value
+    assert second_job_record.metadata["mailbox_terminal_state"] == "done"
+    assert second_job_record.error is None
     assert [task.metadata["teammate_id"] for task in runtime.task_manager.list()] == [
         "tm-worker",
         "tm-worker",
@@ -735,6 +755,126 @@ def test_teammate_identity_permission_bridge_and_idle_projection_consistency(tmp
         "Teammate 'tm-worker' is waiting for permission",
         "Teammate 'tm-worker' completed mailbox item",
     ]
+
+
+def test_teammate_recovery_reconciles_orphaned_job_projection_state(tmp_path: Path) -> None:
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            teammate_orchestration=TeammateOrchestrationConfig(
+                enabled=True,
+                claim_lease_ms=25,
+                retry_max_attempts=2,
+            ),
+        )
+    )
+    teammates = runtime.teammates
+    assert teammates is not None
+    teammates.register_teammate(
+        team_id="team-alpha",
+        teammate_id="tm-waiting",
+        agent_name="worker",
+        session_id="session-waiting",
+        working_directory=tmp_path,
+        retry_max_attempts=2,
+    )
+
+    message = teammates.publish_work_item(
+        team_id="team-alpha",
+        teammate_id="tm-waiting",
+        prompt="resume me",
+    )
+    claim = teammates.mailbox.claim_next(
+        "team-alpha",
+        "tm-waiting",
+        claimer_identity="worker-a",
+        now=datetime.now(timezone.utc),
+    )
+    assert claim is not None
+    waiting_snapshot = teammates.snapshot("team-alpha", "tm-waiting").activate(
+        message_id=message.message_id,
+        run_id="run-waiting",
+        claim_id=str(claim.claim_id),
+    ).waiting_permission("perm-lost")
+    teammates._write_snapshot(waiting_snapshot)  # noqa: SLF001
+    runtime.task_manager.create(
+        "job-waiting-projection",
+        title="teammate:tm-waiting",
+        description="worker:task",
+        metadata={
+            "session_id": "session-waiting",
+            "team_id": "team-alpha",
+            "teammate_id": "tm-waiting",
+            "run_id": "run-waiting",
+            "message_id": message.message_id,
+            "claim_id": str(claim.claim_id),
+            "projection_kind": "teammate",
+            "kind": "teammate_projection",
+            "teammate_state": TeammateLifecycleState.WAITING_PERMISSION.value,
+            "waiting_permission_id": "perm-lost",
+        },
+    )
+    runtime.task_manager.update(
+        "job-waiting-projection",
+        status=TaskStatus.RUNNING,
+        metadata={
+            "session_id": "session-waiting",
+            "team_id": "team-alpha",
+            "teammate_id": "tm-waiting",
+            "run_id": "run-waiting",
+            "message_id": message.message_id,
+            "claim_id": str(claim.claim_id),
+            "projection_kind": "teammate",
+            "kind": "teammate_projection",
+            "teammate_state": TeammateLifecycleState.WAITING_PERMISSION.value,
+            "waiting_permission_id": "perm-lost",
+        },
+    )
+
+    restarted = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            teammate_orchestration=TeammateOrchestrationConfig(
+                enabled=True,
+                claim_lease_ms=25,
+                retry_max_attempts=2,
+            ),
+        )
+    )
+    restarted_teammates = restarted.teammates
+    assert restarted_teammates is not None
+
+    recovery = asyncio.run(
+        restarted_teammates.recover(team_id="team-alpha", teammate_id="tm-waiting")
+    )
+    projection = restarted_teammates.projection("team-alpha", "tm-waiting")
+    record = asyncio.run(
+        restarted.job_service.get(
+            "job-waiting-projection",
+            scope=JobScopeFilter(team_id="team-alpha"),
+        )
+    )
+    requeued = restarted_teammates.mailbox.claim_next(
+        "team-alpha",
+        "tm-waiting",
+        claimer_identity="worker-b",
+        now=datetime.now(timezone.utc),
+    )
+
+    assert recovery[0].action == "retry"
+    assert recovery[0].reason == "lost_permission_wait"
+    assert projection is not None
+    assert projection.task_id == "job-waiting-projection"
+    assert projection.task_status == TaskStatus.FAILED
+    assert projection.lifecycle_state == TeammateLifecycleState.IDLE
+    assert record is not None
+    assert record.status is JobStatus.FAILED
+    assert record.metadata["teammate_state"] == TeammateLifecycleState.IDLE.value
+    assert record.metadata["mailbox_terminal_state"] == "retry"
+    assert record.metadata["waiting_permission_id"] is None
+    assert record.error == "lost_permission_wait"
+    assert requeued is not None
+    assert requeued.attempt == 2
 
 
 def test_teammate_projection_stop_is_rejected_without_corrupting_terminal_projection(tmp_path: Path) -> None:

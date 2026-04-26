@@ -12,7 +12,7 @@ from ..agent_runtime import AgentInvocation
 from ..contracts import MessageRole, RuntimeMessage
 from ..definitions import IsolationMode, PermissionBehavior, PermissionMode
 from ..hosts.base import HostRuntime
-from ..jobs import task_status_to_job_status
+from ..jobs import JobScopeFilter, task_status_to_job_status
 from ..permissions import PermissionContext, PermissionOutcome, PermissionRequest
 from ..team_control_plane import TeamRole
 from ..team_workflows import (
@@ -476,6 +476,8 @@ class PersistentTeammateOrchestrator:
         )
         for resolved_team_id, resolved_teammate_id in targets:
             key = (resolved_team_id, resolved_teammate_id)
+            recovered_task_id: str | None = None
+            recovered_task_status: TaskStatus | None = None
             snapshot = self._mailbox.read_state(resolved_team_id, resolved_teammate_id)
             if snapshot is None:
                 continue
@@ -488,6 +490,19 @@ class PersistentTeammateOrchestrator:
                 TeammateLifecycleState.WAITING_PERMISSION,
                 TeammateLifecycleState.STARTING,
             }:
+                recovered_task_id = self._reconcile_recovered_projection_job(
+                    team_id=resolved_team_id,
+                    teammate_id=resolved_teammate_id,
+                    session_id=snapshot.session_id,
+                    message_id=snapshot.current_message_id,
+                    claim_id=snapshot.current_claim_id,
+                    run_id=snapshot.current_run_id,
+                    teammate_state=TeammateLifecycleState.IDLE,
+                    reason="recovery_reset_idle",
+                    mailbox_terminal_state=None,
+                )
+                if recovered_task_id is not None:
+                    recovered_task_status = TaskStatus.FAILED
                 snapshot = snapshot.idle()
                 self._write_snapshot(snapshot)
                 recovered.append(
@@ -530,6 +545,19 @@ class PersistentTeammateOrchestrator:
                             reason="lost_permission_wait",
                         )
                     )
+                    recovered_task_id = self._reconcile_recovered_projection_job(
+                        team_id=resolved_team_id,
+                        teammate_id=resolved_teammate_id,
+                        session_id=snapshot.session_id,
+                        message_id=envelope.message_id,
+                        claim_id=envelope.claim_id,
+                        run_id=envelope.current_run_id or snapshot.current_run_id,
+                        teammate_state=TeammateLifecycleState.IDLE,
+                        reason="lost_permission_wait",
+                        mailbox_terminal_state=archived.terminal_state.value if archived.terminal_state is not None else None,
+                    )
+                    if recovered_task_id is not None:
+                        recovered_task_status = TaskStatus.FAILED
                     if snapshot.current_message_id == envelope.message_id:
                         snapshot = snapshot.idle()
                         self._write_snapshot(snapshot)
@@ -567,11 +595,29 @@ class PersistentTeammateOrchestrator:
                         reason="stale_claim",
                     )
                 )
+                recovered_task_id = self._reconcile_recovered_projection_job(
+                    team_id=resolved_team_id,
+                    teammate_id=resolved_teammate_id,
+                    session_id=snapshot.session_id,
+                    message_id=envelope.message_id,
+                    claim_id=envelope.claim_id,
+                    run_id=envelope.current_run_id or snapshot.current_run_id,
+                    teammate_state=TeammateLifecycleState.IDLE,
+                    reason="stale_claim",
+                    mailbox_terminal_state=archived.terminal_state.value if archived.terminal_state is not None else None,
+                )
+                if recovered_task_id is not None:
+                    recovered_task_status = TaskStatus.FAILED
                 if snapshot.current_message_id == envelope.message_id:
                     snapshot = snapshot.idle()
                     self._write_snapshot(snapshot)
             if snapshot.state == TeammateLifecycleState.IDLE:
-                self._set_projection(snapshot, task_id=None, task_status=None, progress_status="idle")
+                self._set_projection(
+                    snapshot,
+                    task_id=recovered_task_id,
+                    task_status=recovered_task_status,
+                    progress_status="idle",
+                )
             elif snapshot.state == TeammateLifecycleState.STOPPING:
                 self._set_projection(snapshot, task_id=None, task_status=None, progress_status="stopping")
             self._recovered_targets.add(key)
@@ -1225,6 +1271,68 @@ class PersistentTeammateOrchestrator:
         if error is not None:
             kwargs["error"] = error
         self._runtime_services.job_service.update_compat(job_id, **kwargs)
+
+    def _find_projection_job(
+        self,
+        *,
+        team_id: str,
+        teammate_id: str,
+        message_id: str | None,
+        claim_id: str | None,
+    ) -> Any | None:
+        records = self._runtime_services.job_service.list_sync(
+            scope=JobScopeFilter(team_id=team_id, projection_kind="teammate")
+        )
+        for record in reversed(records):
+            if str(record.metadata.get("teammate_id") or "") != teammate_id:
+                continue
+            if message_id is not None and str(record.metadata.get("message_id") or "") != str(message_id):
+                continue
+            if claim_id is not None and str(record.metadata.get("claim_id") or "") != str(claim_id):
+                continue
+            return record
+        return None
+
+    def _reconcile_recovered_projection_job(
+        self,
+        *,
+        team_id: str,
+        teammate_id: str,
+        session_id: str | None,
+        message_id: str | None,
+        claim_id: str | None,
+        run_id: str | None,
+        teammate_state: TeammateLifecycleState,
+        reason: str,
+        mailbox_terminal_state: str | None,
+    ) -> str | None:
+        record = self._find_projection_job(
+            team_id=team_id,
+            teammate_id=teammate_id,
+            message_id=message_id,
+            claim_id=claim_id,
+        )
+        if record is None:
+            return None
+        self._update_projection_job(
+            record.job_id,
+            status=TaskStatus.FAILED,
+            error=reason,
+            metadata={
+                "session_id": session_id,
+                "team_id": team_id,
+                "teammate_id": teammate_id,
+                "run_id": run_id,
+                "message_id": message_id,
+                "claim_id": claim_id,
+                "projection_kind": "teammate",
+                "kind": "teammate_projection",
+                "teammate_state": teammate_state.value,
+                "waiting_permission_id": None,
+                "mailbox_terminal_state": mailbox_terminal_state,
+            },
+        )
+        return record.job_id
 
     async def _emit_notification(
         self,
