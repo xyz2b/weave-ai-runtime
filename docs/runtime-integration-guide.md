@@ -115,9 +115,20 @@ Runtime 核心流转本身由框架收口，用户通常不应该改 `TurnEngine
   - 在 `runtime-core` 上叠加 first-party memory 与 team capability 包
 - `runtime-full`
   - 在 `runtime-default` 上叠加 devtools、workflow、provider、adapter、mechanism 包
+  - 当前代码里还没有独立 `runtime-planning` 包；如果后续补上，它最自然属于 profile / workflow 这一层，而不是新的 core primitive 层
 
 如果你是从旧默认 built-ins 或旧 hook 面迁移过来，建议同时阅读 `docs/runtime-migration-notes.md`。  
 特别是 `read`、`glob`、`grep`、`edit`、`write`、`bash`、`web_fetch`、`web_search`、`explore`、`plan`、`verification` 现在都属于 `runtime-devtools`，默认只在 `runtime-full` 中自动启用。
+
+这里有一个容易混淆但必须先分清的边界：
+
+- `plan`
+  - 当前真实存在的 bundled agent
+  - 属于 `runtime-devtools`
+  - 更接近 read-only planning helper
+- `planner` / `coordinator` / `worker`
+  - 当前文档已经在用的角色化 profile 词汇
+  - 更适合被理解成推荐的 first-party planning UX 命名，而不是已经独立装配完成的包或 built-in
 
 普通接入方默认应该围绕这些稳定边界扩展：
 
@@ -486,6 +497,16 @@ builtins
 - user-defined agent 只要拿到 `task_*`，就应能参与同一套 shared planning contract。
 - host 即使完全不做 task UI，runtime 语义也应成立。
 - task discipline 是 runtime-owned policy，可选启用，但不应依赖某个特定 host 或 agent prompt 才成立。
+
+如果后续真的要把官方 planning UX 收口成单独包，最自然的边界也应该是：
+
+- `runtime-core`
+  - 继续拥有 `TaskListService`
+  - 继续拥有 `task_*` / `job_*`
+  - 继续拥有 host task/job bridge 与 readiness/orchestration 语义
+- higher-level planning profile pack
+  - 只拥有 `planner` / `coordinator` / `worker` 这类 first-party role UX
+  - 不重新定义 shared planning primitive 的权威语义
 
 如果要定义最小稳定 contract，建议把下面几类能力当作 framework guarantee，而不是 profile 细节：
 

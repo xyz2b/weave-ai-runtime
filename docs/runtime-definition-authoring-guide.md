@@ -319,9 +319,13 @@ You are a focused reviewer. Find regressions, unsafe edits, and missing tests.
 
 如果你在定义 worker / reviewer / verifier 这类 agent，当前主要应围绕这些字段写。
 
+这里的 `worker` 只是角色化命名示例。当前不要自动假设 runtime 已经内置了一个同名 official bundled agent，除非相关 first-party package 明确把它装配出来。
+
 ### 5.3 Agent 的推荐写法
 
 #### 5.3.1 实现型 worker
+
+下面这个 `worker` 例子是 authoring 示例，不代表当前 runtime 默认 bundled 同名 agent：
 
 ```md
 ---
@@ -581,4 +585,3 @@ printf 'hello'
   - 讲 host、hook bus、permission、elicitation、sidecar 等流程接入点
 - `docs/current-system-architecture.md`
   - 讲系统骨架和分层
-

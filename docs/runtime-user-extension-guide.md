@@ -221,6 +221,15 @@ bundled > user > project
 
 现在 builtin pack 已把 planning task list 和 background job control 明确拆开，所以定义 agent 时最好直接按职责配 tool pool，而不是给所有 agent 一把大锤。
 
+这里先明确一个边界，避免把“profile 命名”和“当前 bundled agent 名字”混在一起：
+
+- 当前真正已经 bundled 的 planning helper 是 `plan`
+  - 属于 `runtime-devtools`
+  - 更接近只读分析 / 步骤拆解助手
+- 本节使用的 `planner` / `coordinator` / `worker`
+  - 更适合作为推荐的官方 profile 命名来理解
+  - 当前不应自动假设它们已经作为独立 package-owned built-ins 随 runtime 落地
+
 规划型 agent：
 
 - 适合做任务拆解、状态维护、进度同步。
@@ -292,6 +301,8 @@ owner、dependency edge 和 retirement 都应走专门的 task lifecycle / orche
 - `planner` / `coordinator` 只是消费这个 primitive 的官方 profile
 - user-defined agent 是否参与 task workflow，由 `tools` 和 prompt 决定，而不是由 builtin agent 类型决定
 
+如果后续把这些官方 profile 真的收口成单独包，最自然的落点也仍然应是 higher-level profile / workflow 层，而不是把 `TaskListService`、`task_*`、`job_*` 从 core 移走。
+
 对 framework author 来说，下面几条最好视为硬边界：
 
 - 不要把 task-list workflow 绑定到某一个 builtin agent 上。
@@ -355,6 +366,8 @@ owner、dependency edge 和 retirement 都应走专门的 task lifecycle / orche
 - `task_discipline`
 - `child_run_continuation`
 - `delegation`
+
+这里尤其要注意：`task_discipline` 当前应被理解为 runtime-owned control-plane policy，而不是某个 planner profile 私有 metadata。即使后续补出独立 planning UX 包，这条策略在第一阶段也更适合继续留在 core。
 
 其中 `delegation` 是 child execution 的正式策略入口：
 

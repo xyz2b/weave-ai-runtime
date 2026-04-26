@@ -175,6 +175,7 @@ helper 语义也已经固定：
   - mechanism：`runtime-compaction`、`runtime-isolation`
   - adapter / provider：`runtime-hosts-reference`、`runtime-stores-file`、`runtime-openai`
   - profile / workflow：`runtime-devtools`、`runtime-builtin-workflows`
+  - planning profile gap：文档已经把 `planner` / `coordinator` / `worker` 当作推荐官方 profile 心智模型，但当前代码还没有独立 `runtime-planning` 包；现阶段 `plan` 仍属于 `runtime-devtools`
 - 支持的分发名
   - `runtime-core`
   - `runtime-default`
@@ -192,6 +193,7 @@ helper 语义也已经固定：
 - `runtime-full`
   - 在 `runtime-default` 之上叠加 mechanism、adapter、provider、workflow、devtools 包
   - 继续提供完整 first-party built-in 体验
+  - 当前还没有独立 planning profile 包进入分发组合；如果后续补上，最自然的落点仍是 profile / workflow 层，而不是把 `task_*` / `job_*` primitive 从 `runtime-core` 搬出去
 
 迁移旧默认 built-ins、hook 面和 first-party 包布局时，建议配合阅读 `docs/runtime-migration-notes.md`，并优先观察：
 
@@ -213,6 +215,17 @@ helper 语义也已经固定：
 - `runtime-devtools`
   - tools: `read`、`glob`、`grep`、`edit`、`write`、`bash`、`web_fetch`、`web_search`
   - agents: `explore`、`plan`、`verification`
+
+这里还需要特别区分两层语义：
+
+- 当前真正已经随包落地的 planning helper
+  - `plan`
+  - 属于 `runtime-devtools`
+  - 更接近只读分析 / 执行步骤拆解助手
+- 文档里已经反复使用的 planning profile 词汇
+  - `planner`、`coordinator`、`worker`
+  - 当前更适合作为推荐的官方 profile 命名来理解
+  - 它们消费的 shared planning primitive 仍应视为 `runtime-core` 所有，而不是某个上层 agent 的私有能力
 
 ### 4.2 会话层
 
