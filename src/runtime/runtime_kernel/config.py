@@ -28,7 +28,7 @@ from ..package_profiles import (
     normalize_runtime_distribution,
     resolve_first_party_package_names,
 )
-from ..teammate_orchestration.models import TeammateOrchestrationConfig
+from ..team_config import TeammateOrchestrationConfig
 from ..turn_engine.models import ModelClient, NormalizedModelCapabilities, TranscriptStore
 
 if TYPE_CHECKING:

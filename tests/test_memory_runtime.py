@@ -7,7 +7,7 @@ from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from runtime.builtins.tools import builtin_tools
+from runtime.builtins import load_builtin_pack
 from runtime.contracts import MessageRole, RuntimeMessage
 from runtime.definitions import (
     AgentDefinition,
@@ -1903,7 +1903,7 @@ def test_builtin_file_tools_exclude_reserved_memory_paths(tmp_path: Path) -> Non
     (project_root / "README.md").write_text("Run pytest from the repo root.\n", encoding="utf-8")
 
     tool_registry = ToolRegistry()
-    for definition in builtin_tools():
+    for definition in load_builtin_pack(("runtime-core", "runtime-devtools")).tools:
         tool_registry.register(definition)
 
     agent_registry = AgentRegistry()

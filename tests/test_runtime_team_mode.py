@@ -570,8 +570,10 @@ def test_permission_bridge_routes_correlated_team_control_messages(tmp_path: Pat
     runtime.bind_host(host)
     plane = runtime.team_control_plane
     bus = runtime.team_message_bus
+    workflows = runtime.team_workflows
     assert plane is not None
     assert bus is not None
+    assert workflows is not None
 
     async def scenario():
         team, _ = await plane.create_team(session_id="leader-session", extensions={}, name="ops")
@@ -588,8 +590,17 @@ def test_permission_bridge_routes_correlated_team_control_messages(tmp_path: Pat
             to="alpha",
             message="run the privileged step",
         )
+        workflow = None
+        for _ in range(500):
+            pending = workflows.list_workflows(team_id=team.team_id, pending_only=True)
+            if pending:
+                workflow = pending[0]
+                break
+            await asyncio.sleep(0.01)
+        assert workflow is not None
+        await workflows.respond_host(workflow_id=workflow.workflow_id, action="approve")
         while not host.requests:
-            await asyncio.sleep(0)
+            await asyncio.sleep(0.01)
         host.allow_event.set()
         await plane.runner_manager.wait_for_idle(team_id=team.team_id, member_id=member.member_id)
         return team, member
@@ -605,10 +616,14 @@ def test_permission_bridge_routes_correlated_team_control_messages(tmp_path: Pat
     assert [envelope.metadata["control_type"] for envelope in control_messages] == [
         "permission_request",
         "permission_response",
+        "permission_response",
     ]
-    assert {envelope.correlation_id for envelope in control_messages} == {
-        control_messages[0].correlation_id,
-    }
+    assert [envelope.metadata.get("status") for envelope in control_messages] == [
+        None,
+        "waiting_host",
+        "completed",
+    ]
+    assert {envelope.correlation_id for envelope in control_messages} == {control_messages[0].correlation_id}
     assert control_messages[0].sender.member_id == member.member_id
-    assert control_messages[1].sender.member_id == team.leader_member_id
+    assert all(envelope.sender.member_id == team.leader_member_id for envelope in control_messages[1:])
     assert any(event.event_type == "team.message.routed" for event in host.team_events)

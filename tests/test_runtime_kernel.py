@@ -1,4 +1,5 @@
 import asyncio
+import importlib
 from dataclasses import replace
 from io import BytesIO
 from pathlib import Path
@@ -6,6 +7,7 @@ from urllib.error import HTTPError
 
 from runtime.builtins import load_builtin_pack
 from runtime.builtins.tools import builtin_tools
+from runtime.devtools.builtins import devtools_builtin_tools
 from runtime.context_window import ModelContextWindowProfile, RouteContextWindowPolicy
 from runtime.contracts import MessageRole
 from runtime.hooks import (
@@ -190,6 +192,70 @@ def test_distribution_profiles_publish_expected_builtin_ownership(tmp_path: Path
     assert next(agent for agent in full_pack.agents if agent.name == "verification").metadata["builtin_owner"] == "runtime-devtools"
 
 
+def test_core_builtin_catalog_excludes_optional_package_definitions() -> None:
+    core_tool_names = {tool.name for tool in builtin_tools()}
+    from runtime.builtins.agents import builtin_agents
+    from runtime.builtins.skills import builtin_skills
+
+    assert core_tool_names == {
+        "agent",
+        "skill",
+        "task_create",
+        "task_get",
+        "task_update",
+        "task_archive",
+        "task_unarchive",
+        "task_delete",
+        "task_claim",
+        "task_release",
+        "task_assign_next",
+        "task_block",
+        "task_unblock",
+        "task_list",
+        "job_get",
+        "job_list",
+        "job_stop",
+        "ask_user",
+        "sleep",
+    }
+    assert {agent.name for agent in builtin_agents()} == {"general-purpose", "main-router"}
+    assert builtin_skills() == ()
+
+
+def test_runtime_core_build_does_not_import_optional_package_modules(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    first_party_loading = importlib.import_module("runtime.first_party_loading")
+    original_import_module = first_party_loading.import_module
+    blocked_modules = {
+        "runtime.memory.builtins",
+        "runtime.memory.package",
+        "runtime.team.builtins",
+        "runtime.team.assembly",
+        "runtime.devtools.builtins",
+        "runtime.builtin_workflows.builtins",
+    }
+
+    def guarded_import_module(name: str, package: str | None = None):
+        if name in blocked_modules:
+            raise AssertionError(f"runtime-core should not import optional package module {name}")
+        return original_import_module(name, package)
+
+    monkeypatch.setattr(first_party_loading, "import_module", guarded_import_module)
+
+    pack = load_builtin_pack(("runtime-core",))
+    kernel = build_runtime_kernel(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            distribution=RuntimeDistribution.CORE,
+        )
+    )
+
+    assert pack.packages == ("runtime-core",)
+    assert kernel.first_party_packages == ("runtime-core",)
+
+
 def test_distribution_profiles_expose_expected_visible_invocations(tmp_path: Path) -> None:
     core_root = tmp_path / "core"
     default_root = tmp_path / "default"
@@ -362,7 +428,7 @@ def test_runtime_default_distribution_wires_team_capability_out_of_the_box(tmp_p
 
 def test_runtime_full_distribution_keeps_devtools_replacement_rules(tmp_path: Path) -> None:
     read_replacement = replace(
-        next(tool for tool in builtin_tools() if tool.name == "read"),
+        next(tool for tool in devtools_builtin_tools() if tool.name == "read"),
         description="custom devtools read",
     )
     verification_replacement = AgentDefinition(

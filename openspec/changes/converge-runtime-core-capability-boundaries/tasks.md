@@ -67,4 +67,4 @@
 - [ ] 6.2 Update packaging and positioning docs to state that the project is a general AI runtime framework rather than a Claude Code parity effort.
 - [x] 6.3 Document the first-party package layering diagram, supported distribution composition semantics, and canonical built-in ownership matrix for `runtime-core`, `runtime-default`, and `runtime-full`.
 - [ ] 6.4 Add migration notes or structured diagnostics for users relying on moved built-ins, demoted hook phases, advanced-only hook handlers, or package relocation of first-party capabilities.
-- [ ] 6.5 Run the affected regression suites for built-ins, hooks, memory, teammate orchestration, runtime assembly, and supported distribution packaging after the convergence changes land.
+- [x] 6.5 Run the affected regression suites for built-ins, hooks, memory, teammate orchestration, runtime assembly, and supported distribution packaging after the convergence changes land.

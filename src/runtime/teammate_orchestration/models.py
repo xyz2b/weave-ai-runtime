@@ -9,6 +9,7 @@ from typing import Any, Mapping, Protocol
 from ..contracts import utc_now
 from ..definitions import IsolationMode, PermissionMode
 from ..tasking import TaskStatus
+from ..team_config import TeammateOrchestrationConfig
 
 SCHEMA_VERSION = 1
 
@@ -450,16 +451,6 @@ class TeammateProjection:
     progress_status: str | None = None
     latest_notification: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass(frozen=True, slots=True)
-class TeammateOrchestrationConfig:
-    enabled: bool = False
-    mailbox_root: Path | None = None
-    claim_lease_ms: int = 30_000
-    heartbeat_interval_ms: int = 5_000
-    retry_max_attempts: int = 3
-    retry_backoff_ms: int = 0
 
 
 @dataclass(frozen=True, slots=True)

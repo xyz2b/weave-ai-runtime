@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from typing import Any
-
 from ..definitions import (
     DefinitionOrigin,
     DefinitionSource,
@@ -9,29 +7,22 @@ from ..definitions import (
     ToolCallStatus,
     ToolClassifierInput,
     ToolDefinition,
-    ToolExecutionSemantics,
     ToolFailureClassifier,
     ToolFailureMode,
     ToolFailurePolicy,
     ToolPresentationEmphasis,
-    ToolResultSummary,
-    ToolResultSummaryStatus,
     ToolRiskLevel,
     ToolTraits,
     ToolUsePresentation,
 )
+from .definition_helpers import static_semantics
 from .tool_impls import (
     agent_tool,
     ask_permission,
     ask_user_tool,
-    bash_tool,
-    edit_file_tool,
-    glob_tool,
-    grep_tool,
     job_get_tool,
     job_list_tool,
     job_stop_tool,
-    read_file_tool,
     skill_tool,
     sleep_tool,
     task_archive_tool,
@@ -45,379 +36,16 @@ from .tool_impls import (
     task_release_tool,
     task_unblock_tool,
     task_unarchive_tool,
-    team_create_tool,
-    team_delete_tool,
-    team_respond_tool,
-    team_send_tool,
-    team_spawn_tool,
     task_update_tool,
     validate_agent_tool,
-    validate_team_create_tool,
-    validate_team_respond_tool,
-    validate_team_send_tool,
-    validate_team_spawn_tool,
-    validate_bash_tool,
-    validate_edit_tool,
-    validate_read_tool,
     validate_skill_registry_entry,
     validate_sleep_tool,
-    validate_url_tool,
-    validate_web_search,
-    validate_write_tool,
-    web_fetch_tool,
-    web_search_tool,
-    write_file_tool,
 )
-
-
-def _static_semantics(
-    *,
-    read_only: bool = False,
-    concurrency_safe: bool = False,
-    interrupt_behavior: InterruptBehavior = InterruptBehavior.BLOCK,
-    failure_policy: ToolFailurePolicy | None = None,
-    tool_use_presentation=None,
-    tool_result_summary=None,
-    classifier_input=None,
-) -> ToolExecutionSemantics:
-    return ToolExecutionSemantics(
-        is_read_only=lambda _tool_input, _context: read_only,
-        is_concurrency_safe=lambda _tool_input, _context: concurrency_safe,
-        interrupt_behavior=lambda _tool_input, _context: interrupt_behavior,
-        failure_policy=lambda _tool_input, _context: failure_policy or ToolFailurePolicy(),
-        render_tool_use_message=tool_use_presentation or (lambda _tool_input, _context: None),
-        render_tool_result_summary=tool_result_summary or (lambda _tool_input, _context: None),
-        to_classifier_input=classifier_input or (lambda _tool_input, _context: None),
-    )
-
-
-def _file_semantics(
-    *,
-    operation: str,
-    read_only: bool,
-    concurrency_safe: bool,
-    summary: str,
-    risk_level: ToolRiskLevel,
-    failure_policy: ToolFailurePolicy | None = None,
-) -> ToolExecutionSemantics:
-    return _static_semantics(
-        read_only=read_only,
-        concurrency_safe=concurrency_safe,
-        failure_policy=failure_policy,
-        tool_use_presentation=lambda tool_input, _context: ToolUsePresentation(
-            title=summary,
-            subtitle=tool_input.get("file_path"),
-            emphasis=(
-                ToolPresentationEmphasis.LOW
-                if read_only
-                else ToolPresentationEmphasis.NORMAL
-            ),
-        ),
-        tool_result_summary=lambda tool_input, _context: ToolResultSummary(
-            title=summary,
-            summary=tool_input.get("file_path", summary),
-            status=(
-                ToolResultSummaryStatus.SUCCESS
-                if read_only
-                else ToolResultSummaryStatus.SUCCESS
-            ),
-        ),
-        classifier_input=lambda tool_input, _context: ToolClassifierInput(
-            operation=operation,
-            summary=f"{summary}: {tool_input.get('file_path', '')}".strip(": "),
-            target_paths=(
-                (str(tool_input["file_path"]),)
-                if tool_input.get("file_path") is not None
-                else ()
-            ),
-            risk_level=risk_level,
-            side_effects=not read_only,
-            tags=("filesystem", operation),
-        ),
-    )
 
 
 def builtin_tools() -> tuple[ToolDefinition, ...]:
     origin = DefinitionOrigin(DefinitionSource.BUNDLED)
     return (
-        ToolDefinition(
-            name="read",
-            aliases=("Read",),
-            description="Read files from the workspace without modifying them.",
-            search_hint="read files",
-            input_schema={
-                "type": "object",
-                "properties": {
-                    "file_path": {"type": "string"},
-                    "offset": {"type": "integer", "minimum": 0},
-                    "limit": {"type": "integer", "minimum": 1},
-                },
-                "required": ["file_path"],
-                "additionalProperties": False,
-            },
-            traits=ToolTraits(read_only=True, concurrency_safe=True),
-            semantics=_file_semantics(
-                operation="read_file",
-                read_only=True,
-                concurrency_safe=True,
-                summary="Read file",
-                risk_level=ToolRiskLevel.READ,
-            ),
-            validate_input=validate_read_tool,
-            execute=read_file_tool,
-            origin=origin,
-        ),
-        ToolDefinition(
-            name="glob",
-            aliases=("Glob",),
-            description="Match filesystem paths using glob patterns.",
-            search_hint="search file paths",
-            input_schema={
-                "type": "object",
-                "properties": {
-                    "pattern": {"type": "string"},
-                    "root": {"type": "string"},
-                },
-                "required": ["pattern"],
-                "additionalProperties": False,
-            },
-            traits=ToolTraits(read_only=True, concurrency_safe=True),
-            semantics=_static_semantics(
-                read_only=True,
-                concurrency_safe=True,
-                tool_use_presentation=lambda tool_input, _context: ToolUsePresentation(
-                    title="Match paths",
-                    subtitle=tool_input.get("pattern"),
-                    emphasis=ToolPresentationEmphasis.LOW,
-                ),
-                classifier_input=lambda tool_input, _context: ToolClassifierInput(
-                    operation="glob",
-                    summary=f"Match paths: {tool_input['pattern']}",
-                    risk_level=ToolRiskLevel.READ,
-                    side_effects=False,
-                    tags=("filesystem", "glob"),
-                ),
-            ),
-            execute=glob_tool,
-            origin=origin,
-        ),
-        ToolDefinition(
-            name="grep",
-            aliases=("Grep",),
-            description="Search file contents using regular expressions.",
-            search_hint="search file contents",
-            input_schema={
-                "type": "object",
-                "properties": {
-                    "pattern": {"type": "string"},
-                    "path": {"type": "string"},
-                    "case_sensitive": {"type": "boolean"},
-                },
-                "required": ["pattern"],
-                "additionalProperties": False,
-            },
-            traits=ToolTraits(read_only=True, concurrency_safe=True),
-            semantics=_static_semantics(
-                read_only=True,
-                concurrency_safe=True,
-                tool_use_presentation=lambda tool_input, _context: ToolUsePresentation(
-                    title="Search files",
-                    subtitle=tool_input.get("pattern"),
-                    emphasis=ToolPresentationEmphasis.LOW,
-                ),
-                classifier_input=lambda tool_input, _context: ToolClassifierInput(
-                    operation="grep",
-                    summary=f"Search files: {tool_input['pattern']}",
-                    target_paths=(
-                        (str(tool_input["path"]),) if tool_input.get("path") is not None else ()
-                    ),
-                    risk_level=ToolRiskLevel.READ,
-                    side_effects=False,
-                    tags=("filesystem", "search"),
-                ),
-            ),
-            execute=grep_tool,
-            origin=origin,
-        ),
-        ToolDefinition(
-            name="edit",
-            aliases=("Edit",),
-            description="Apply targeted edits to an existing file.",
-            input_schema={
-                "type": "object",
-                "properties": {
-                    "file_path": {"type": "string"},
-                    "old_string": {"type": "string"},
-                    "new_string": {"type": "string"},
-                    "replace_all": {"type": "boolean"},
-                },
-                "required": ["file_path", "old_string", "new_string"],
-                "additionalProperties": False,
-            },
-            semantics=_file_semantics(
-                operation="edit_file",
-                read_only=False,
-                concurrency_safe=False,
-                summary="Edit file",
-                risk_level=ToolRiskLevel.WRITE,
-                failure_policy=ToolFailurePolicy(
-                    failure_mode=ToolFailureMode.ERROR_RESULT,
-                    result_classifier=ToolFailureClassifier.EXCEPTION_ONLY,
-                    surfaced_status=ToolCallStatus.ERROR,
-                ),
-            ),
-            validate_input=validate_edit_tool,
-            check_permissions=ask_permission,
-            execute=edit_file_tool,
-            origin=origin,
-        ),
-        ToolDefinition(
-            name="write",
-            aliases=("Write",),
-            description="Write a full file payload to disk.",
-            input_schema={
-                "type": "object",
-                "properties": {
-                    "file_path": {"type": "string"},
-                    "content": {"type": "string"},
-                },
-                "required": ["file_path", "content"],
-                "additionalProperties": False,
-            },
-            traits=ToolTraits(destructive=True),
-            semantics=_file_semantics(
-                operation="write_file",
-                read_only=False,
-                concurrency_safe=False,
-                summary="Write file",
-                risk_level=ToolRiskLevel.WRITE,
-                failure_policy=ToolFailurePolicy(
-                    failure_mode=ToolFailureMode.ERROR_RESULT,
-                    result_classifier=ToolFailureClassifier.EXCEPTION_ONLY,
-                    surfaced_status=ToolCallStatus.ERROR,
-                ),
-            ),
-            validate_input=validate_write_tool,
-            check_permissions=ask_permission,
-            execute=write_file_tool,
-            origin=origin,
-        ),
-        ToolDefinition(
-            name="bash",
-            aliases=("Bash",),
-            description="Run a shell command in the current environment.",
-            input_schema={
-                "type": "object",
-                "properties": {
-                    "command": {"type": "string"},
-                    "cwd": {"type": "string"},
-                    "shell": {"type": "string", "enum": ["bash", "powershell"]},
-                    "timeout_ms": {"type": "integer", "minimum": 1},
-                },
-                "required": ["command"],
-                "additionalProperties": False,
-            },
-            semantics=_static_semantics(
-                read_only=False,
-                concurrency_safe=False,
-                failure_policy=ToolFailurePolicy(
-                    failure_mode=ToolFailureMode.FATAL,
-                    result_classifier=ToolFailureClassifier.NONZERO_EXIT_OR_EXCEPTION,
-                    cancel_running_siblings=True,
-                    block_queued_siblings=True,
-                    abort_model_stream=True,
-                    surfaced_status=ToolCallStatus.ERROR,
-                ),
-                tool_use_presentation=lambda tool_input, _context: ToolUsePresentation(
-                    title="Run shell command",
-                    subtitle=tool_input.get("command"),
-                    emphasis=ToolPresentationEmphasis.HIGH,
-                ),
-                classifier_input=lambda tool_input, _context: ToolClassifierInput(
-                    operation="bash",
-                    summary=f"Execute shell command: {tool_input['command']}",
-                    target_paths=(
-                        (str(tool_input["cwd"]),) if tool_input.get("cwd") is not None else ()
-                    ),
-                    risk_level=ToolRiskLevel.EXEC,
-                    side_effects=True,
-                    tags=("shell", "exec"),
-                ),
-            ),
-            validate_input=validate_bash_tool,
-            check_permissions=ask_permission,
-            execute=bash_tool,
-            origin=origin,
-        ),
-        ToolDefinition(
-            name="web_fetch",
-            aliases=("WebFetch",),
-            description="Fetch a single remote resource and return its content.",
-            input_schema={
-                "type": "object",
-                "properties": {
-                    "url": {"type": "string"},
-                    "timeout_ms": {"type": "integer", "minimum": 1},
-                },
-                "required": ["url"],
-                "additionalProperties": False,
-            },
-            traits=ToolTraits(read_only=True, concurrency_safe=True),
-            semantics=_static_semantics(
-                read_only=True,
-                concurrency_safe=True,
-                tool_use_presentation=lambda tool_input, _context: ToolUsePresentation(
-                    title="Fetch URL",
-                    subtitle=tool_input.get("url"),
-                    emphasis=ToolPresentationEmphasis.LOW,
-                ),
-                classifier_input=lambda tool_input, _context: ToolClassifierInput(
-                    operation="web_fetch",
-                    summary=f"Fetch URL: {tool_input['url']}",
-                    target_urls=(str(tool_input["url"]),),
-                    risk_level=ToolRiskLevel.NETWORK,
-                    side_effects=False,
-                    tags=("network", "fetch"),
-                ),
-            ),
-            validate_input=validate_url_tool,
-            execute=web_fetch_tool,
-            origin=origin,
-        ),
-        ToolDefinition(
-            name="web_search",
-            aliases=("WebSearch",),
-            description="Search the web for recent information.",
-            input_schema={
-                "type": "object",
-                "properties": {
-                    "query": {"type": "string"},
-                    "limit": {"type": "integer", "minimum": 1, "maximum": 10},
-                },
-                "required": ["query"],
-                "additionalProperties": False,
-            },
-            traits=ToolTraits(read_only=True, concurrency_safe=True),
-            semantics=_static_semantics(
-                read_only=True,
-                concurrency_safe=True,
-                tool_use_presentation=lambda tool_input, _context: ToolUsePresentation(
-                    title="Search web",
-                    subtitle=tool_input.get("query"),
-                    emphasis=ToolPresentationEmphasis.LOW,
-                ),
-                classifier_input=lambda tool_input, _context: ToolClassifierInput(
-                    operation="web_search",
-                    summary=f"Search web: {tool_input['query']}",
-                    risk_level=ToolRiskLevel.NETWORK,
-                    side_effects=False,
-                    tags=("network", "search"),
-                ),
-            ),
-            validate_input=validate_web_search,
-            execute=web_search_tool,
-            origin=origin,
-        ),
         ToolDefinition(
             name="agent",
             aliases=("Agent",),
@@ -496,7 +124,7 @@ def builtin_tools() -> tuple[ToolDefinition, ...]:
                 ],
                 "additionalProperties": True,
             },
-            semantics=_static_semantics(
+            semantics=static_semantics(
                 read_only=False,
                 concurrency_safe=False,
                 tool_use_presentation=lambda tool_input, _context: ToolUsePresentation(
@@ -533,7 +161,7 @@ def builtin_tools() -> tuple[ToolDefinition, ...]:
                 "required": ["skill"],
                 "additionalProperties": False,
             },
-            semantics=_static_semantics(
+            semantics=static_semantics(
                 read_only=False,
                 concurrency_safe=False,
                 tool_use_presentation=lambda tool_input, _context: ToolUsePresentation(
@@ -555,242 +183,6 @@ def builtin_tools() -> tuple[ToolDefinition, ...]:
             origin=origin,
         ),
         ToolDefinition(
-            name="team_create",
-            aliases=("TeamCreate",),
-            description="Create or reuse the caller's active runtime-owned team.",
-            input_schema={
-                "type": "object",
-                "properties": {
-                    "name": {"type": "string"},
-                },
-                "additionalProperties": False,
-            },
-            output_schema={
-                "type": "object",
-                "properties": {
-                    "team_id": {"type": "string"},
-                    "leader_session_id": {"type": "string"},
-                    "name": {"type": ["string", "null"]},
-                    "created": {"type": "boolean"},
-                },
-                "required": ["team_id", "leader_session_id", "name", "created"],
-                "additionalProperties": True,
-            },
-            semantics=_static_semantics(
-                read_only=False,
-                concurrency_safe=False,
-                tool_use_presentation=lambda _tool_input, _context: ToolUsePresentation(
-                    title="Create team",
-                    emphasis=ToolPresentationEmphasis.NORMAL,
-                ),
-                classifier_input=lambda _tool_input, _context: ToolClassifierInput(
-                    operation="team_create",
-                    summary="Create or reuse team",
-                    risk_level=ToolRiskLevel.WRITE,
-                    side_effects=True,
-                    tags=("team", "lifecycle"),
-                ),
-            ),
-            validate_input=validate_team_create_tool,
-            execute=team_create_tool,
-            runtime_execution_class="privileged",
-            origin=origin,
-        ),
-        ToolDefinition(
-            name="team_spawn",
-            aliases=("TeamSpawn",),
-            description="Spawn a persistent teammate in the caller's active runtime-owned team.",
-            input_schema={
-                "type": "object",
-                "properties": {
-                    "name": {"type": "string"},
-                    "agent": {"type": "string"},
-                    "cwd": {"type": "string"},
-                    "model": {"type": "string"},
-                    "model_route": {"type": "string"},
-                    "permission_mode": {
-                        "type": "string",
-                        "enum": [
-                            "default",
-                            "plan",
-                            "acceptEdits",
-                            "bypassPermissions",
-                            "dontAsk",
-                            "auto",
-                            "bubble",
-                        ],
-                    },
-                    "isolation": {"type": "string", "enum": ["none", "worktree", "remote"]},
-                    "max_turns": {"type": "integer", "minimum": 1},
-                },
-                "required": ["name", "agent"],
-                "additionalProperties": False,
-            },
-            output_schema={
-                "type": "object",
-                "properties": {
-                    "team_id": {"type": "string"},
-                    "member_id": {"type": "string"},
-                    "name": {"type": "string"},
-                    "agent": {"type": "string"},
-                    "status": {"type": "string"},
-                },
-                "required": ["team_id", "member_id", "name", "agent", "status"],
-                "additionalProperties": True,
-            },
-            semantics=_static_semantics(
-                read_only=False,
-                concurrency_safe=False,
-                tool_use_presentation=lambda tool_input, _context: ToolUsePresentation(
-                    title="Spawn teammate",
-                    subtitle=tool_input.get("name"),
-                    emphasis=ToolPresentationEmphasis.NORMAL,
-                ),
-                classifier_input=lambda tool_input, _context: ToolClassifierInput(
-                    operation="team_spawn",
-                    summary=f"Spawn teammate: {tool_input['name']}",
-                    risk_level=ToolRiskLevel.DELEGATE,
-                    side_effects=True,
-                    tags=("team", "delegate"),
-                ),
-            ),
-            validate_input=validate_team_spawn_tool,
-            execute=team_spawn_tool,
-            runtime_execution_class="privileged",
-            origin=origin,
-        ),
-        ToolDefinition(
-            name="team_send",
-            aliases=("TeamSend",),
-            description="Send a structured message to the leader, a teammate, or the whole active team.",
-            input_schema={
-                "type": "object",
-                "properties": {
-                    "to": {"type": "string"},
-                    "message": {"type": "string"},
-                },
-                "required": ["to", "message"],
-                "additionalProperties": False,
-            },
-            output_schema={
-                "type": "object",
-                "properties": {
-                    "team_id": {"type": "string"},
-                    "message_id": {"type": "string"},
-                    "to": {"type": "string"},
-                    "delivery_count": {"type": "integer", "minimum": 0},
-                    "queued": {"type": "boolean"},
-                },
-                "required": ["team_id", "message_id", "to", "delivery_count", "queued"],
-                "additionalProperties": True,
-            },
-            semantics=_static_semantics(
-                read_only=False,
-                concurrency_safe=False,
-                tool_use_presentation=lambda tool_input, _context: ToolUsePresentation(
-                    title="Send team message",
-                    subtitle=tool_input.get("to"),
-                    emphasis=ToolPresentationEmphasis.NORMAL,
-                ),
-                classifier_input=lambda tool_input, _context: ToolClassifierInput(
-                    operation="team_send",
-                    summary=f"Send team message: {tool_input['to']}",
-                    risk_level=ToolRiskLevel.WRITE,
-                    side_effects=True,
-                    tags=("team", "message"),
-                ),
-            ),
-            validate_input=validate_team_send_tool,
-            execute=team_send_tool,
-            runtime_execution_class="privileged",
-            origin=origin,
-        ),
-        ToolDefinition(
-            name="team_delete",
-            aliases=("TeamDelete",),
-            description="Delete the caller's active runtime-owned team and tear down teammate state.",
-            input_schema={
-                "type": "object",
-                "properties": {},
-                "additionalProperties": False,
-            },
-            output_schema={
-                "type": "object",
-                "properties": {
-                    "team_id": {"type": "string"},
-                    "deleted": {"type": "boolean"},
-                },
-                "required": ["team_id", "deleted"],
-                "additionalProperties": True,
-            },
-            semantics=_static_semantics(
-                read_only=False,
-                concurrency_safe=False,
-                tool_use_presentation=lambda _tool_input, _context: ToolUsePresentation(
-                    title="Delete team",
-                    emphasis=ToolPresentationEmphasis.NORMAL,
-                ),
-                classifier_input=lambda _tool_input, _context: ToolClassifierInput(
-                    operation="team_delete",
-                    summary="Delete active team",
-                    risk_level=ToolRiskLevel.WRITE,
-                    side_effects=True,
-                    tags=("team", "lifecycle"),
-                ),
-            ),
-            execute=team_delete_tool,
-            runtime_execution_class="privileged",
-            origin=origin,
-        ),
-        ToolDefinition(
-            name="team_respond",
-            aliases=("TeamRespond",),
-            description="Resolve a pending team control workflow with a typed response action.",
-            input_schema={
-                "type": "object",
-                "properties": {
-                    "workflow_id": {"type": "string"},
-                    "action": {"type": "string"},
-                    "payload": {"type": "object"},
-                },
-                "required": ["workflow_id", "action"],
-                "additionalProperties": False,
-            },
-            output_schema={
-                "type": "object",
-                "properties": {
-                    "workflow_id": {"type": "string"},
-                    "team_id": {"type": "string"},
-                    "workflow_kind": {"type": "string"},
-                    "status": {"type": "string"},
-                    "allowed_actions": {"type": "array", "items": {"type": "string"}},
-                    "terminal": {"type": "boolean"},
-                },
-                "required": ["workflow_id", "team_id", "workflow_kind", "status", "allowed_actions", "terminal"],
-                "additionalProperties": True,
-            },
-            semantics=_static_semantics(
-                read_only=False,
-                concurrency_safe=False,
-                tool_use_presentation=lambda tool_input, _context: ToolUsePresentation(
-                    title="Respond to workflow",
-                    subtitle=tool_input.get("workflow_id"),
-                    emphasis=ToolPresentationEmphasis.NORMAL,
-                ),
-                classifier_input=lambda tool_input, _context: ToolClassifierInput(
-                    operation="team_respond",
-                    summary=f"Respond to team workflow: {tool_input['workflow_id']}",
-                    risk_level=ToolRiskLevel.WRITE,
-                    side_effects=True,
-                    tags=("team", "workflow"),
-                ),
-            ),
-            validate_input=validate_team_respond_tool,
-            execute=team_respond_tool,
-            runtime_execution_class="privileged",
-            origin=origin,
-        ),
-        ToolDefinition(
             name="task_create",
             description="Create a planning task in the resolved shared task list.",
             input_schema={
@@ -807,7 +199,7 @@ def builtin_tools() -> tuple[ToolDefinition, ...]:
                 "required": ["subject"],
                 "additionalProperties": False,
             },
-            semantics=_static_semantics(
+            semantics=static_semantics(
                 read_only=False,
                 concurrency_safe=False,
                 classifier_input=lambda tool_input, _context: ToolClassifierInput(
@@ -832,7 +224,7 @@ def builtin_tools() -> tuple[ToolDefinition, ...]:
                 "additionalProperties": False,
             },
             traits=ToolTraits(read_only=True, concurrency_safe=True),
-            semantics=_static_semantics(
+            semantics=static_semantics(
                 read_only=True,
                 concurrency_safe=True,
                 classifier_input=lambda tool_input, _context: ToolClassifierInput(
@@ -866,7 +258,7 @@ def builtin_tools() -> tuple[ToolDefinition, ...]:
                 "required": ["task_id"],
                 "additionalProperties": False,
             },
-            semantics=_static_semantics(
+            semantics=static_semantics(
                 read_only=False,
                 concurrency_safe=False,
                 classifier_input=lambda tool_input, _context: ToolClassifierInput(
@@ -890,7 +282,7 @@ def builtin_tools() -> tuple[ToolDefinition, ...]:
                 "required": ["task_id"],
                 "additionalProperties": False,
             },
-            semantics=_static_semantics(
+            semantics=static_semantics(
                 read_only=False,
                 concurrency_safe=False,
                 classifier_input=lambda tool_input, _context: ToolClassifierInput(
@@ -914,7 +306,7 @@ def builtin_tools() -> tuple[ToolDefinition, ...]:
                 "required": ["task_id"],
                 "additionalProperties": False,
             },
-            semantics=_static_semantics(
+            semantics=static_semantics(
                 read_only=False,
                 concurrency_safe=False,
                 classifier_input=lambda tool_input, _context: ToolClassifierInput(
@@ -938,7 +330,7 @@ def builtin_tools() -> tuple[ToolDefinition, ...]:
                 "required": ["task_id"],
                 "additionalProperties": False,
             },
-            semantics=_static_semantics(
+            semantics=static_semantics(
                 read_only=False,
                 concurrency_safe=False,
                 classifier_input=lambda tool_input, _context: ToolClassifierInput(
@@ -967,7 +359,7 @@ def builtin_tools() -> tuple[ToolDefinition, ...]:
                 "required": ["task_id"],
                 "additionalProperties": False,
             },
-            semantics=_static_semantics(
+            semantics=static_semantics(
                 read_only=False,
                 concurrency_safe=False,
                 classifier_input=lambda tool_input, _context: ToolClassifierInput(
@@ -993,7 +385,7 @@ def builtin_tools() -> tuple[ToolDefinition, ...]:
                 "required": ["task_id"],
                 "additionalProperties": False,
             },
-            semantics=_static_semantics(
+            semantics=static_semantics(
                 read_only=False,
                 concurrency_safe=False,
                 classifier_input=lambda tool_input, _context: ToolClassifierInput(
@@ -1020,7 +412,7 @@ def builtin_tools() -> tuple[ToolDefinition, ...]:
                 },
                 "additionalProperties": False,
             },
-            semantics=_static_semantics(
+            semantics=static_semantics(
                 read_only=False,
                 concurrency_safe=False,
                 classifier_input=lambda _tool_input, _context: ToolClassifierInput(
@@ -1047,7 +439,7 @@ def builtin_tools() -> tuple[ToolDefinition, ...]:
                 "required": ["blocker_task_id", "blocked_task_id"],
                 "additionalProperties": False,
             },
-            semantics=_static_semantics(
+            semantics=static_semantics(
                 read_only=False,
                 concurrency_safe=False,
                 classifier_input=lambda tool_input, _context: ToolClassifierInput(
@@ -1077,7 +469,7 @@ def builtin_tools() -> tuple[ToolDefinition, ...]:
                 "required": ["blocker_task_id", "blocked_task_id"],
                 "additionalProperties": False,
             },
-            semantics=_static_semantics(
+            semantics=static_semantics(
                 read_only=False,
                 concurrency_safe=False,
                 classifier_input=lambda tool_input, _context: ToolClassifierInput(
@@ -1106,7 +498,7 @@ def builtin_tools() -> tuple[ToolDefinition, ...]:
                 "additionalProperties": False,
             },
             traits=ToolTraits(read_only=True, concurrency_safe=True),
-            semantics=_static_semantics(
+            semantics=static_semantics(
                 read_only=True,
                 concurrency_safe=True,
                 classifier_input=lambda _tool_input, _context: ToolClassifierInput(
@@ -1131,7 +523,7 @@ def builtin_tools() -> tuple[ToolDefinition, ...]:
                 "additionalProperties": False,
             },
             traits=ToolTraits(read_only=True, concurrency_safe=True),
-            semantics=_static_semantics(
+            semantics=static_semantics(
                 read_only=True,
                 concurrency_safe=True,
                 classifier_input=lambda tool_input, _context: ToolClassifierInput(
@@ -1155,7 +547,7 @@ def builtin_tools() -> tuple[ToolDefinition, ...]:
                 "additionalProperties": False,
             },
             traits=ToolTraits(read_only=True, concurrency_safe=True),
-            semantics=_static_semantics(
+            semantics=static_semantics(
                 read_only=True,
                 concurrency_safe=True,
                 classifier_input=lambda _tool_input, _context: ToolClassifierInput(
@@ -1180,7 +572,7 @@ def builtin_tools() -> tuple[ToolDefinition, ...]:
                 "additionalProperties": False,
             },
             traits=ToolTraits(destructive=True),
-            semantics=_static_semantics(
+            semantics=static_semantics(
                 read_only=False,
                 concurrency_safe=False,
                 failure_policy=ToolFailurePolicy(
@@ -1232,7 +624,7 @@ def builtin_tools() -> tuple[ToolDefinition, ...]:
                 "additionalProperties": False,
             },
             traits=ToolTraits(interrupt_behavior=InterruptBehavior.CANCEL),
-            semantics=_static_semantics(
+            semantics=static_semantics(
                 read_only=True,
                 concurrency_safe=True,
                 interrupt_behavior=InterruptBehavior.CANCEL,

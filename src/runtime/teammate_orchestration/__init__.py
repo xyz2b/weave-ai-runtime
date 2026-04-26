@@ -6,12 +6,12 @@ from .models import (
     SharedExecutionCore,
     TeammateExecutionRequest,
     TeammateLifecycleState,
-    TeammateOrchestrationConfig,
     TeammateProjection,
     TeammateRecoveryResult,
     TeammateRegistration,
     TeammateStateSnapshot,
 )
+from ..team_config import TeammateOrchestrationConfig
 
 __all__ = [
     "FileBackedTeammateMailbox",

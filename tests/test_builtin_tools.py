@@ -1,7 +1,7 @@
 import asyncio
 from pathlib import Path
 
-from runtime.builtins.tools import builtin_tools
+from runtime.builtins import load_builtin_pack
 from runtime.definitions import (
     AgentDefinition,
     PermissionBehavior,
@@ -36,7 +36,7 @@ class FakeResponse:
 
 def _build_runtime(tmp_path: Path) -> tuple[ToolRegistry, ToolScheduler, ToolContext]:
     tool_registry = ToolRegistry()
-    for definition in builtin_tools():
+    for definition in load_builtin_pack(("runtime-core", "runtime-devtools")).tools:
         tool_registry.register(definition)
 
     agent_registry = AgentRegistry()

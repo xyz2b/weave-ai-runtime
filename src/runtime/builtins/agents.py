@@ -29,25 +29,4 @@ def builtin_agents() -> tuple[AgentDefinition, ...]:
             tools=("*",),
             origin=origin,
         ),
-        AgentDefinition(
-            name="explore",
-            description="Investigate the codebase and summarize findings.",
-            prompt="You are an exploration agent focused on gathering accurate context.",
-            tools=("read", "glob", "grep", "web_fetch", "web_search"),
-            origin=origin,
-        ),
-        AgentDefinition(
-            name="plan",
-            description="Break a larger task into defensible execution steps.",
-            prompt="You are a planning agent. Produce concrete, ordered next steps.",
-            tools=("read", "glob", "grep"),
-            origin=origin,
-        ),
-        AgentDefinition(
-            name="verification",
-            description="Run tests, validations, and quality checks.",
-            prompt="You are a verification agent. Focus on tests and regressions.",
-            tools=("read", "glob", "grep", "bash"),
-            origin=origin,
-        ),
     )

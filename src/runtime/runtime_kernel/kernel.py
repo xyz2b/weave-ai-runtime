@@ -34,6 +34,7 @@ from ..definitions import (
 )
 from ..diagnostics import Diagnostic, DiagnosticSeverity
 from ..errors import RegistryConflictError
+from ..first_party_loading import load_object
 from ..hosts.base import BoundHostRuntime, HostAdapter, NullHostAdapter
 from ..hooks import (
     HookDispatchTraceQuery,
@@ -44,7 +45,6 @@ from ..hooks import (
 )
 from ..invocation_catalog import SkillInvocationProvider
 from ..jobs import DefaultJobService, FileJobStore, JobScopeFilter, job_record_to_payload
-from ..memory import assemble_memory_capability
 from ..openai_client import (
     OPENAI_PROVIDER_NAME,
     OPENAI_ROUTE_NAME,
@@ -70,11 +70,9 @@ from ..session_runtime import (
     SessionController,
     SessionStatus,
 )
-from ..team import assemble_team_capability
-from ..team_workflows import workflow_record_to_payload
 from ..skill_runtime import SkillExecutionResult, SkillExecutor
 from ..tasking import TaskManager
-from ..teammate_orchestration import TeammateOrchestrationConfig
+from ..team_config import TeammateOrchestrationConfig
 from ..tool_runtime import ToolContext
 from ..turn_engine.composer import ContextAssembler
 from ..turn_engine.engine import TurnEngine, TurnStreamEvent, TurnStreamEventType
@@ -84,6 +82,10 @@ from ..execution_policy import DelegationPolicyError, default_delegation_policy_
 
 SKILL_DYNAMIC_ROOTS_KEY = "skill_dynamic_roots"
 _UNSET = object()
+_FIRST_PARTY_CAPABILITY_ASSEMBLERS = {
+    "runtime-memory": "runtime.memory.package:assemble_memory_capability",
+    "runtime-team": "runtime.team.assembly:assemble_team_capability",
+}
 
 
 @dataclass(slots=True)
@@ -908,7 +910,7 @@ class RuntimeAssembly:
             if team is not None:
                 resolved_team_id = team.team_id
         records = service.list_workflows(team_id=resolved_team_id, pending_only=pending_only)
-        return tuple(workflow_record_to_payload(record) for record in records)
+        return tuple(_serialize_team_workflow_record(record) for record in records)
 
     async def respond_team_workflow(
         self,
@@ -927,7 +929,7 @@ class RuntimeAssembly:
             host_name=host_name,
             payload=payload,
         )
-        return workflow_record_to_payload(record)
+        return _serialize_team_workflow_record(record)
 
     def create_session(
         self,
@@ -1433,7 +1435,8 @@ def _assemble_runtime_stack(kernel: RuntimeKernel) -> RuntimeAssembly:
     team_workflows = None
     teammate_config = _resolve_teammate_orchestration_config(kernel)
     if teammate_config is not None:
-        team_capability = assemble_team_capability(
+        team_capability = _assemble_first_party_capability(
+            "runtime-team",
             config=teammate_config,
             project_root=kernel.config.working_directory,
             runtime_services=services,
@@ -1505,7 +1508,8 @@ def _build_runtime_services(kernel: RuntimeKernel) -> RuntimeServices:
     )
     metadata.setdefault("delegation", default_delegation_policy_metadata())
     memory_capability = (
-        assemble_memory_capability(
+        _assemble_first_party_capability(
+            "runtime-memory",
             project_root=kernel.config.working_directory,
             memory_config=kernel.config.memory_config,
         )
@@ -1561,6 +1565,14 @@ def _schedule_job_recovery(job_service: DefaultJobService) -> None:
         asyncio.run(job_service.recover_inflight())
         return
     loop.create_task(job_service.recover_inflight())
+
+
+def _assemble_first_party_capability(package_name: str, /, **kwargs: Any) -> Any:
+    loader_spec = _FIRST_PARTY_CAPABILITY_ASSEMBLERS.get(package_name)
+    if loader_spec is None:
+        raise RuntimeError(f"No capability assembler is registered for {package_name}")
+    factory = load_object(loader_spec)
+    return factory(**kwargs)
 
 
 def _serialize_agent_run_result(
@@ -1678,11 +1690,49 @@ def _serialize_job(task: Any) -> dict[str, Any]:
     }
 
 
+def _serialize_team_workflow_record(record: Any) -> dict[str, Any]:
+    workflow_kind = getattr(record, "workflow_kind", None)
+    status = getattr(record, "status", None)
+    return {
+        "workflow_id": getattr(record, "workflow_id", ""),
+        "team_id": getattr(record, "team_id", ""),
+        "workflow_kind": getattr(workflow_kind, "value", workflow_kind),
+        "requester_member_id": getattr(record, "requester_member_id", ""),
+        "requester_name": getattr(record, "requester_name", None),
+        "responder_member_id": getattr(record, "responder_member_id", None),
+        "responder_name": getattr(record, "responder_name", None),
+        "leader_session_id": getattr(record, "leader_session_id", None),
+        "status": getattr(status, "value", status),
+        "allowed_actions": list(getattr(record, "allowed_actions", ()) or ()),
+        "request_payload": dict(getattr(record, "request_payload", {}) or {}),
+        "response_payload": (
+            None
+            if getattr(record, "response_payload", None) is None
+            else dict(getattr(record, "response_payload", {}) or {})
+        ),
+        "message_ids": list(getattr(record, "message_ids", ()) or ()),
+        "created_at": _serialize_optional_datetime(getattr(record, "created_at", None)),
+        "updated_at": _serialize_optional_datetime(getattr(record, "updated_at", None)),
+        "deadline_at": _serialize_optional_datetime(getattr(record, "deadline_at", None)),
+        "terminal_at": _serialize_optional_datetime(getattr(record, "terminal_at", None)),
+        "terminal": bool(getattr(record, "terminal", False)),
+        "metadata": dict(getattr(record, "metadata", {}) or {}),
+    }
+
+
 def _coerce_optional_string(value: Any) -> str | None:
     if value is None:
         return None
     stringified = str(value).strip()
     return stringified or None
+
+
+def _serialize_optional_datetime(value: Any) -> str | None:
+    if value is None:
+        return None
+    if hasattr(value, "isoformat"):
+        return value.isoformat().replace("+00:00", "Z")
+    return str(value)
 
 
 def _resolve_invocation_cwd(base_cwd: Path, requested_cwd: str | None) -> Path:

@@ -2,15 +2,16 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass, replace
+from typing import Any
 
 from ..definitions import AgentDefinition, SkillDefinition, ToolDefinition
+from ..first_party_loading import load_object
 from ..package_profiles import (
     DEFAULT_RUNTIME_DISTRIBUTION,
     FIRST_PARTY_PACKAGE_SPECS,
     resolve_first_party_package_names,
 )
 from .agents import builtin_agents
-from .skills import builtin_skills
 from .tools import builtin_tools
 
 
@@ -22,62 +23,34 @@ class BuiltinPack:
     skills: tuple[SkillDefinition, ...]
 
 
-def builtin_package_catalog() -> dict[str, BuiltinPack]:
-    from ..devtools.builtins import devtools_builtin_agents, devtools_builtin_tools
-    from ..memory.builtins import memory_builtin_skills
-    from ..team.builtins import team_builtin_tools
+_OPTIONAL_BUILTIN_LOADERS: dict[str, dict[str, str]] = {
+    "runtime-memory": {
+        "skills": "runtime.memory.builtins:memory_builtin_skills",
+    },
+    "runtime-team": {
+        "tools": "runtime.team.builtins:team_builtin_tools",
+    },
+    "runtime-builtin-workflows": {
+        "skills": "runtime.builtin_workflows.builtins:builtin_workflow_skills",
+    },
+    "runtime-devtools": {
+        "tools": "runtime.devtools.builtins:devtools_builtin_tools",
+        "agents": "runtime.devtools.builtins:devtools_builtin_agents",
+    },
+}
 
-    tool_index = {definition.name: definition for definition in builtin_tools()}
-    agent_index = {definition.name: definition for definition in builtin_agents()}
-    skill_index = {definition.name: definition for definition in builtin_skills()}
+
+def builtin_package_catalog(
+    package_names: tuple[str, ...] | list[str] | None = None,
+) -> dict[str, BuiltinPack]:
+    selected = (
+        tuple(FIRST_PARTY_PACKAGE_SPECS)
+        if package_names is None
+        else tuple(package_names)
+    )
     return {
-        "runtime-core": BuiltinPack(
-            packages=("runtime-core",),
-            tools=_select_tool_definitions(
-                tool_index,
-                FIRST_PARTY_PACKAGE_SPECS["runtime-core"].builtin_tools,
-                "runtime-core",
-            ),
-            agents=_select_agent_definitions(
-                agent_index,
-                FIRST_PARTY_PACKAGE_SPECS["runtime-core"].builtin_agents,
-                "runtime-core",
-            ),
-            skills=(),
-        ),
-        "runtime-memory": BuiltinPack(
-            packages=("runtime-memory",),
-            tools=(),
-            agents=(),
-            skills=_annotate_skill_definitions(memory_builtin_skills(), "runtime-memory"),
-        ),
-        "runtime-team": BuiltinPack(
-            packages=("runtime-team",),
-            tools=_annotate_tool_definitions(team_builtin_tools(), "runtime-team"),
-            agents=(),
-            skills=(),
-        ),
-        "runtime-compaction": _empty_builtin_pack("runtime-compaction"),
-        "runtime-isolation": _empty_builtin_pack("runtime-isolation"),
-        "runtime-openai": _empty_builtin_pack("runtime-openai"),
-        "runtime-hosts-reference": _empty_builtin_pack("runtime-hosts-reference"),
-        "runtime-stores-file": _empty_builtin_pack("runtime-stores-file"),
-        "runtime-builtin-workflows": BuiltinPack(
-            packages=("runtime-builtin-workflows",),
-            tools=(),
-            agents=(),
-            skills=_select_skill_definitions(
-                skill_index,
-                FIRST_PARTY_PACKAGE_SPECS["runtime-builtin-workflows"].builtin_skills,
-                "runtime-builtin-workflows",
-            ),
-        ),
-        "runtime-devtools": BuiltinPack(
-            packages=("runtime-devtools",),
-            tools=_annotate_tool_definitions(devtools_builtin_tools(), "runtime-devtools"),
-            agents=_annotate_agent_definitions(devtools_builtin_agents(), "runtime-devtools"),
-            skills=(),
-        ),
+        package_name: _builtin_pack_for_package(package_name)
+        for package_name in selected
     }
 
 
@@ -87,10 +60,10 @@ def load_builtin_pack(package_names: tuple[str, ...] | list[str] | None = None) 
         if package_names is not None
         else resolve_first_party_package_names(distribution=DEFAULT_RUNTIME_DISTRIBUTION)
     )
-    catalog = builtin_package_catalog()
-    unknown = sorted(set(resolved_packages) - set(catalog))
+    unknown = sorted(set(resolved_packages) - set(FIRST_PARTY_PACKAGE_SPECS))
     if unknown:
         raise ValueError(f"Unknown builtin package(s): {', '.join(unknown)}")
+    catalog = builtin_package_catalog(resolved_packages)
     tools: list[ToolDefinition] = []
     agents: list[AgentDefinition] = []
     skills: list[SkillDefinition] = []
@@ -107,28 +80,92 @@ def load_builtin_pack(package_names: tuple[str, ...] | list[str] | None = None) 
     )
 
 
-def _select_tool_definitions(
-    index: dict[str, ToolDefinition],
-    names: tuple[str, ...],
+def _load_optional_tool_definitions(package_name: str) -> tuple[ToolDefinition, ...]:
+    expected = FIRST_PARTY_PACKAGE_SPECS[package_name].builtin_tools
+    definitions = _load_optional_definitions(package_name, kind="tools")
+    _validate_definition_names(definitions, expected_names=expected, package_name=package_name, kind="tool")
+    return _annotate_tool_definitions(definitions, package_name)
+
+
+def _load_optional_agent_definitions(package_name: str) -> tuple[AgentDefinition, ...]:
+    expected = FIRST_PARTY_PACKAGE_SPECS[package_name].builtin_agents
+    definitions = _load_optional_definitions(package_name, kind="agents")
+    _validate_definition_names(definitions, expected_names=expected, package_name=package_name, kind="agent")
+    return _annotate_agent_definitions(definitions, package_name)
+
+
+def _load_optional_skill_definitions(package_name: str) -> tuple[SkillDefinition, ...]:
+    expected = FIRST_PARTY_PACKAGE_SPECS[package_name].builtin_skills
+    definitions = _load_optional_definitions(package_name, kind="skills")
+    _validate_definition_names(definitions, expected_names=expected, package_name=package_name, kind="skill")
+    return _annotate_skill_definitions(definitions, package_name)
+
+
+def _load_optional_definitions(
     package_name: str,
-) -> tuple[ToolDefinition, ...]:
-    return _annotate_tool_definitions((index[name] for name in names), package_name)
+    *,
+    kind: str,
+) -> tuple[ToolDefinition, ...] | tuple[AgentDefinition, ...] | tuple[SkillDefinition, ...]:
+    loaders = _OPTIONAL_BUILTIN_LOADERS.get(package_name, {})
+    loader_spec = loaders.get(kind)
+    if loader_spec is None:
+        return ()
+    factory = load_object(loader_spec)
+    return tuple(factory())
 
 
-def _select_agent_definitions(
-    index: dict[str, AgentDefinition],
-    names: tuple[str, ...],
+def _builtin_pack_for_package(package_name: str) -> BuiltinPack:
+    if package_name == "runtime-core":
+        return BuiltinPack(
+            packages=("runtime-core",),
+            tools=_annotate_tool_definitions(builtin_tools(), "runtime-core"),
+            agents=_annotate_agent_definitions(builtin_agents(), "runtime-core"),
+            skills=(),
+        )
+    if package_name == "runtime-memory":
+        return BuiltinPack(
+            packages=("runtime-memory",),
+            tools=(),
+            agents=(),
+            skills=_load_optional_skill_definitions("runtime-memory"),
+        )
+    if package_name == "runtime-team":
+        return BuiltinPack(
+            packages=("runtime-team",),
+            tools=_load_optional_tool_definitions("runtime-team"),
+            agents=(),
+            skills=(),
+        )
+    if package_name == "runtime-builtin-workflows":
+        return BuiltinPack(
+            packages=("runtime-builtin-workflows",),
+            tools=(),
+            agents=(),
+            skills=_load_optional_skill_definitions("runtime-builtin-workflows"),
+        )
+    if package_name == "runtime-devtools":
+        return BuiltinPack(
+            packages=("runtime-devtools",),
+            tools=_load_optional_tool_definitions("runtime-devtools"),
+            agents=_load_optional_agent_definitions("runtime-devtools"),
+            skills=(),
+        )
+    return _empty_builtin_pack(package_name)
+
+
+def _validate_definition_names(
+    definitions: Iterable[Any],
+    *,
+    expected_names: tuple[str, ...],
     package_name: str,
-) -> tuple[AgentDefinition, ...]:
-    return _annotate_agent_definitions((index[name] for name in names), package_name)
-
-
-def _select_skill_definitions(
-    index: dict[str, SkillDefinition],
-    names: tuple[str, ...],
-    package_name: str,
-) -> tuple[SkillDefinition, ...]:
-    return _annotate_skill_definitions((index[name] for name in names), package_name)
+    kind: str,
+) -> None:
+    actual_names = tuple(getattr(definition, "name", None) for definition in definitions)
+    if actual_names != expected_names:
+        raise ValueError(
+            f"Builtin {kind} definitions for {package_name} do not match the published package profile: "
+            f"expected {expected_names}, got {actual_names}"
+        )
 
 
 def _annotate_tool_definitions(

@@ -144,6 +144,7 @@ from .permissions import (
     PermissionTarget,
 )
 from .runtime_services import RuntimeServices
+from .team_config import TeammateOrchestrationConfig
 from .team_control_plane import (
     FileBackedTeamStore,
     RuntimeTeamControlPlane,
@@ -269,7 +270,6 @@ from .teammate_orchestration import (
     TeammateExecutionRequest,
     TeammateLifecycleState,
     TeammateMailboxPaths,
-    TeammateOrchestrationConfig,
     TeammateProjection,
     TeammateRecoveryResult,
     TeammateRegistration,

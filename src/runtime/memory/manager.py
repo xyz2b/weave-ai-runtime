@@ -6,6 +6,7 @@ import json
 import os
 import re
 import threading
+import time
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -42,6 +43,14 @@ from .models import (
     normalize_memory_segment,
 )
 from .providers import FileMemoryProvider, MemoryProvider
+from .session_artifacts import (
+    ensure_session_artifacts,
+    record_session_compaction,
+    record_session_memory_deltas,
+    refresh_session_artifacts,
+    serialize_write_receipts,
+    update_session_status,
+)
 
 _STOPWORDS = {
     "a",
@@ -85,6 +94,7 @@ _DEFAULT_CAPTURE_ROUTING_TARGETS = {
     "topic_memory": "long_term.topics",
     "workflow_command": "long_term.conventions",
 }
+_INVALID_CONSOLIDATION_LOCK_STALE_AFTER_SECONDS = 1.0
 _MISSING = object()
 
 
@@ -371,6 +381,98 @@ class LongTermMemory:
             "tool_call_threshold": refresh.tool_call_threshold,
             "turn_threshold": refresh.turn_threshold,
         }
+
+    def ensure_session_artifacts(
+        self,
+        *,
+        session_id: str,
+        agent: AgentDefinition,
+        cwd: str | Path,
+        status: str,
+    ) -> None:
+        ensure_session_artifacts(
+            context=self.resolve_context(session_id=session_id, agent=agent, cwd=cwd),
+            session_id=session_id,
+            status=status,
+        )
+
+    def update_session_status(
+        self,
+        *,
+        session_id: str,
+        agent: AgentDefinition,
+        cwd: str | Path,
+        status: str,
+    ) -> None:
+        update_session_status(
+            context=self.resolve_context(session_id=session_id, agent=agent, cwd=cwd),
+            session_id=session_id,
+            status=status,
+        )
+
+    def record_session_compaction(
+        self,
+        *,
+        session_id: str,
+        agent: AgentDefinition,
+        cwd: str | Path,
+    ) -> None:
+        record_session_compaction(
+            context=self.resolve_context(session_id=session_id, agent=agent, cwd=cwd),
+            session_id=session_id,
+        )
+
+    def refresh_session_artifacts(
+        self,
+        *,
+        session_id: str,
+        agent: AgentDefinition,
+        cwd: str | Path,
+        turn_id: str | None,
+        messages: Sequence[RuntimeMessage],
+        session_messages: Sequence[RuntimeMessage],
+        status: str,
+        prior_status: str | None,
+        terminal: Any,
+    ) -> None:
+        refresh_session_artifacts(
+            context=self.resolve_context(session_id=session_id, agent=agent, cwd=cwd),
+            session_id=session_id,
+            agent_name=agent.name,
+            turn_id=turn_id,
+            messages=messages,
+            session_messages=session_messages,
+            status=status,
+            prior_status=prior_status,
+            refresh_thresholds=self.session_summary_thresholds(
+                session_id=session_id,
+                agent=agent,
+                cwd=cwd,
+            ),
+            terminal=terminal,
+        )
+
+    def record_session_memory_deltas(
+        self,
+        *,
+        session_id: str,
+        agent: AgentDefinition,
+        cwd: str | Path,
+        persisted: Sequence[MemoryDocument],
+        receipts: Sequence[MemoryWriteReceipt],
+    ) -> None:
+        record_session_memory_deltas(
+            context=self.resolve_context(session_id=session_id, agent=agent, cwd=cwd),
+            session_id=session_id,
+            persisted=persisted,
+            receipts=receipts,
+        )
+
+    def serialize_write_receipts(
+        self,
+        receipts: Sequence[MemoryWriteReceipt],
+    ) -> tuple[dict[str, object], ...]:
+        return serialize_write_receipts(receipts)
 
     def _resolve_memory_config(self, context: ResolvedMemoryScope) -> ResolvedMemoryConfig:
         return resolve_memory_config(memory_root=context.memory_root, override=self.memory_config)
@@ -1562,7 +1664,18 @@ class LongTermMemory:
                 )
             except FileExistsError:
                 existing = self._read_consolidation_lock(context)
-                if existing is not None or attempt == 1:
+                if existing is not None:
+                    return None
+                try:
+                    lock_age_seconds = time.time() - context.consolidation_lock_path.stat().st_mtime
+                except FileNotFoundError:
+                    continue
+                # A concurrently-created lock can appear before its JSON payload is fully written.
+                # Treat very recent invalid files as active rather than deleting another runner's lock.
+                if (
+                    lock_age_seconds < _INVALID_CONSOLIDATION_LOCK_STALE_AFTER_SECONDS
+                    or attempt == 1
+                ):
                     return None
                 try:
                     context.consolidation_lock_path.unlink()
@@ -2702,6 +2815,97 @@ class LongTermMemoryService:
         cwd: str | Path,
     ) -> dict[str, int]:
         return self.manager.session_summary_thresholds(session_id=session_id, agent=agent, cwd=cwd)
+
+    def ensure_session_artifacts(
+        self,
+        *,
+        session_id: str,
+        agent: AgentDefinition,
+        cwd: str | Path,
+        status: str,
+    ) -> None:
+        self.manager.ensure_session_artifacts(
+            session_id=session_id,
+            agent=agent,
+            cwd=cwd,
+            status=status,
+        )
+
+    def update_session_status(
+        self,
+        *,
+        session_id: str,
+        agent: AgentDefinition,
+        cwd: str | Path,
+        status: str,
+    ) -> None:
+        self.manager.update_session_status(
+            session_id=session_id,
+            agent=agent,
+            cwd=cwd,
+            status=status,
+        )
+
+    def record_session_compaction(
+        self,
+        *,
+        session_id: str,
+        agent: AgentDefinition,
+        cwd: str | Path,
+    ) -> None:
+        self.manager.record_session_compaction(
+            session_id=session_id,
+            agent=agent,
+            cwd=cwd,
+        )
+
+    def refresh_session_artifacts(
+        self,
+        *,
+        session_id: str,
+        agent: AgentDefinition,
+        cwd: str | Path,
+        turn_id: str | None,
+        messages: Sequence[RuntimeMessage],
+        session_messages: Sequence[RuntimeMessage],
+        status: str,
+        prior_status: str | None,
+        terminal: Any,
+    ) -> None:
+        self.manager.refresh_session_artifacts(
+            session_id=session_id,
+            agent=agent,
+            cwd=cwd,
+            turn_id=turn_id,
+            messages=messages,
+            session_messages=session_messages,
+            status=status,
+            prior_status=prior_status,
+            terminal=terminal,
+        )
+
+    def record_session_memory_deltas(
+        self,
+        *,
+        session_id: str,
+        agent: AgentDefinition,
+        cwd: str | Path,
+        persisted: Sequence[MemoryDocument],
+        receipts: Sequence[MemoryWriteReceipt],
+    ) -> None:
+        self.manager.record_session_memory_deltas(
+            session_id=session_id,
+            agent=agent,
+            cwd=cwd,
+            persisted=persisted,
+            receipts=receipts,
+        )
+
+    def serialize_write_receipts(
+        self,
+        receipts: Sequence[MemoryWriteReceipt],
+    ) -> tuple[dict[str, object], ...]:
+        return self.manager.serialize_write_receipts(receipts)
 
     def context_for_scope(
         self,

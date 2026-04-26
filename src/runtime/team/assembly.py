@@ -5,10 +5,11 @@ from pathlib import Path
 from typing import Any
 
 from ..runtime_services import RuntimeServices
+from ..team_config import TeammateOrchestrationConfig
 from ..team_control_plane import FileBackedTeamStore, RuntimeTeamControlPlane, RuntimeTeamRunnerManager
 from ..team_message_bus import FileBackedTeamMessageBus, RuntimeTeamMessageBus
 from ..team_workflows import FileBackedTeamWorkflowStore, RuntimeTeamWorkflowService
-from ..teammate_orchestration import PersistentTeammateOrchestrator, TeammateOrchestrationConfig
+from ..teammate_orchestration import PersistentTeammateOrchestrator
 
 
 @dataclass(frozen=True, slots=True)
