@@ -13,6 +13,7 @@ from runtime.builtins.tools import builtin_tools
 from runtime.devtools.builtins import devtools_builtin_tools
 from runtime.context_window import ModelContextWindowProfile, RouteContextWindowPolicy
 from runtime.contracts import MessageRole
+from runtime.execution_policy import _narrow_tool_pool
 from runtime.hooks import (
     HookActivationState,
     HookHandlerKind,
@@ -213,9 +214,32 @@ def test_distribution_profiles_publish_expected_builtin_ownership(tmp_path: Path
     assert worker.metadata["builtin_owner"] == "runtime-planning"
     assert planner.tools == ("task_*",)
     assert coordinator.tools == ("task_*", "job_*", "agent")
-    assert worker.tools == ("*",)
-    assert worker.disallowed_tools == ("task_*", "job_*")
+    assert worker.tools == ("agent", "ask_user", "skill", "sleep")
+    assert worker.disallowed_tools == ()
     assert plan.metadata["builtin_owner"] == "runtime-devtools"
+
+
+def test_runtime_planning_worker_profile_requires_explicit_optional_tool_composition(tmp_path: Path) -> None:
+    full_pack = load_builtin_pack(
+        RuntimeConfig(working_directory=tmp_path, distribution=RuntimeDistribution.FULL).selected_first_party_packages()
+    )
+    worker = next(agent for agent in full_pack.agents if agent.name == "worker")
+
+    effective_tools = {
+        tool.name
+        for tool in _narrow_tool_pool(
+            base_pool=full_pack.tools,
+            allowed_tools=worker.tools or None,
+            disallowed_tools=worker.disallowed_tools or None,
+        )
+    }
+
+    assert effective_tools == {"agent", "ask_user", "skill", "sleep"}
+    assert "bash" not in effective_tools
+    assert "read" not in effective_tools
+    assert "team_spawn" not in effective_tools
+    assert "task_list" not in effective_tools
+    assert "job_list" not in effective_tools
 
 
 def test_core_builtin_catalog_excludes_optional_package_definitions() -> None:

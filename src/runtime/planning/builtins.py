@@ -4,7 +4,7 @@ from ..definitions import AgentDefinition, DefinitionOrigin, DefinitionSource
 
 _PLANNER_TOOL_SELECTORS = ("task_*",)
 _COORDINATOR_TOOL_SELECTORS = ("task_*", "job_*", "agent")
-_WORKER_DISALLOWED_TOOL_SELECTORS = ("task_*", "job_*")
+_WORKER_TOOL_SELECTORS = ("agent", "ask_user", "skill", "sleep")
 
 
 def _planning_profile_metadata(
@@ -59,18 +59,18 @@ def planning_builtin_agents() -> tuple[AgentDefinition, ...]:
         ),
         AgentDefinition(
             name="worker",
-            description="Execute assigned work without owning the shared planning task list by default.",
+            description="Execute assigned work with core runtime execution surfaces while leaving shared planning ownership to other profiles by default.",
             prompt=(
                 "You are the official execution-focused worker profile. Carry out concrete work, "
                 "report progress clearly, and leave shared task-list ownership to planner or "
-                "coordinator roles unless explicitly instructed otherwise."
+                "coordinator roles unless explicitly instructed otherwise. Optional workspace, "
+                "team, or broader orchestration tools should be layered through ordinary agent "
+                "customization when a deployment needs them."
             ),
-            tools=("*",),
-            disallowed_tools=_WORKER_DISALLOWED_TOOL_SELECTORS,
+            tools=_WORKER_TOOL_SELECTORS,
             metadata=_planning_profile_metadata(
                 kind="worker",
-                tool_selectors=("*",),
-                disallowed_tool_selectors=_WORKER_DISALLOWED_TOOL_SELECTORS,
+                tool_selectors=_WORKER_TOOL_SELECTORS,
             ),
             origin=origin,
         ),

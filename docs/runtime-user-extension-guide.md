@@ -227,8 +227,8 @@ bundled > user > project
   - 属于 `runtime-devtools`
   - 更接近只读分析 / 步骤拆解助手
 - 本节使用的 `planner` / `coordinator` / `worker`
-  - 更适合作为推荐的官方 profile 命名来理解
-  - 当前不应自动假设它们已经作为独立 package-owned built-ins 随 runtime 落地
+  - 已由 `runtime-planning` 作为官方 package-owned built-ins 发布
+  - 在 `runtime-full` 中会自动装配；在 `runtime-default` 中仍需显式启用 `runtime-planning`
 
 规划型 agent：
 
@@ -301,7 +301,7 @@ owner、dependency edge 和 retirement 都应走专门的 task lifecycle / orche
 - `planner` / `coordinator` 只是消费这个 primitive 的官方 profile
 - user-defined agent 是否参与 task workflow，由 `tools` 和 prompt 决定，而不是由 builtin agent 类型决定
 
-如果后续把这些官方 profile 真的收口成单独包，最自然的落点也仍然应是 higher-level profile / workflow 层，而不是把 `TaskListService`、`task_*`、`job_*` 从 core 移走。
+这些官方 profile 现在已经收口到 `runtime-planning`，而且它们仍然应该停留在 higher-level profile / workflow 层，而不是把 `TaskListService`、`task_*`、`job_*` 从 core 移走。
 
 对 framework author 来说，下面几条最好视为硬边界：
 
@@ -367,7 +367,7 @@ owner、dependency edge 和 retirement 都应走专门的 task lifecycle / orche
 - `child_run_continuation`
 - `delegation`
 
-这里尤其要注意：`task_discipline` 当前应被理解为 runtime-owned control-plane policy，而不是某个 planner profile 私有 metadata。即使后续补出独立 planning UX 包，这条策略在第一阶段也更适合继续留在 core。
+这里尤其要注意：`task_discipline` 当前应被理解为 runtime-owned control-plane policy，而不是某个 planner profile 私有 metadata。即使 `runtime-planning` 已经作为独立 planning UX 包落地，这条策略在第一阶段也更适合继续留在 core。
 
 其中 `delegation` 是 child execution 的正式策略入口：
 

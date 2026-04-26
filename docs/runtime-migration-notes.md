@@ -17,13 +17,13 @@
 - capability：`runtime-memory`、`runtime-team`
 - mechanism：`runtime-compaction`、`runtime-isolation`
 - adapter / provider：`runtime-hosts-reference`、`runtime-stores-file`、`runtime-openai`
-- profile / workflow：`runtime-devtools`、`runtime-builtin-workflows`
+- profile / workflow：`runtime-devtools`、`runtime-builtin-workflows`、`runtime-planning`
 
 当前还需要额外记住一条事实：
 
-- 文档已经把 `planner` / `coordinator` / `worker` 当作推荐官方 profile 词汇
-- 但代码里还没有独立 `runtime-planning` 包
-- 当前真实已装配的 planning helper 仍然是 `runtime-devtools` 里的 `plan`
+- `planner` / `coordinator` / `worker` 已经由独立 `runtime-planning` 包发布
+- `runtime-full` 会自动装配它们，`runtime-default` 不会
+- 现有的只读 planning helper `plan` 仍然保留在 `runtime-devtools`
 
 ## 2. Workspace / Devtools Built-ins
 
@@ -55,17 +55,18 @@
   - 属于 `runtime-devtools`
   - 更接近只读分析、执行步骤拆解、实现前规划助手
 - `planner`
-  - 当前更适合作为“共享 task-list 维护者”这一官方 profile 心智模型来理解
+  - `runtime-planning` 中的官方 shared task-list 维护 profile
 - `coordinator`
-  - 当前更适合作为“同时消费 `task_*` 与 `job_*` 的协调者”这一官方 profile 心智模型来理解
+  - `runtime-planning` 中的官方 `task_* + job_*` 协调 profile
 - `worker`
-  - 当前更适合作为“参与协作但不默认拥有 shared task list”这一官方 profile 心智模型来理解
+  - `runtime-planning` 中的官方执行型 profile
+  - 默认不拥有 shared task list，也不会自动拿到 optional devtools 或 team 工具
 
 这意味着：
 
 - 现在没有“从旧 `plan` 自动迁移到某个已落地 `planner` 包”的硬迁移步骤
 - 需要只读分析 helper 时，继续把 `plan` 当作 `runtime-devtools` built-in 看待
-- 需要 shared plan workflow 时，优先按 `planner` / `coordinator` / `worker` 的角色边界自行配置 agent，而不是把 `plan` 当成 shared planning control plane
+- 需要 shared plan workflow 时，优先使用 `runtime-planning` 提供的 `planner` / `coordinator` / `worker`，再按需要做 agent replacement 或 project override
 
 ## 3. Hook Surface Tightening
 
@@ -117,11 +118,11 @@
 - reference host implementations -> `runtime-hosts-reference`
 - file-backed transcript / job / task-list / team / workflow / mailbox stores -> `runtime-stores-file`
 
-关于 planning 这一块，当前还没有新的 package ownership 变更已经落地：
+关于 planning 这一块，当前 package ownership 已经显式落地：
 
 - shared planning primitive 仍应理解为 `runtime-core` 所有
 - `plan` 仍应理解为 `runtime-devtools` 所有
-- `planner` / `coordinator` / `worker` 目前仍是推荐 profile 命名，不是现成的包级 builtin 所有权条目
+- `planner` / `coordinator` / `worker` 现在由 `runtime-planning` 所有
 
 运行时会把当前已选 package 和其 builtin 所有权摘要写进：
 
@@ -131,7 +132,7 @@
 
 - 如果你依赖 workspace tools，先切到 `runtime-full` 再逐步收窄
 - 如果你依赖 `plan`，继续把它视为 `runtime-devtools` helper；不要把它误当成 shared planning contract 本身
-- 如果你要构建 shared plan workflow，优先围绕 `task_*` / `job_*` 与自定义 agent profile 组合，而不是等待某个尚未落地的独立 planning 包替你定义 core primitive
+- 如果你要构建 shared plan workflow，优先启用 `runtime-planning`，再围绕 `task_*` / `job_*` 与自定义 agent profile 做收窄或扩展
 - 如果你暴露 hooks 给第三方，优先只承诺 stable phases + `callback`
 - 如果你在 host、store、provider 侧做定制，优先通过 package-level seams 注入，而不是 patch `runtime-core`
 - 如果你需要定位当前 runtime 的边界状态，先看 `runtime.kernel.diagnostics` 和 `runtime.services.metadata`
