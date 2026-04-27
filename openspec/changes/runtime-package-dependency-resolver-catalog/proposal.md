@@ -6,7 +6,7 @@ This gap is downstream of external registration and should stay separate from it
 
 ## What Changes
 
-- Introduce a local runtime package catalog that can hold more than one registered package candidate and feed deterministic dependency resolution before assembly.
+- Introduce a local runtime package catalog that normalizes official first-party manifests and accepted external registrations into package candidates, and can hold more than one local candidate per package name before deterministic dependency resolution.
 - Define package candidate identity, dependency constraints, compatibility diagnostics, and resolution outcomes separately from the package contribution assembly contract.
 - Resolve distribution baselines and explicit package requests into a single manifest graph before the runtime performs dependency ordering and contribution application.
 - Surface structured diagnostics for missing packages, conflicting constraints, cyclic dependencies, and incompatible candidate selections.

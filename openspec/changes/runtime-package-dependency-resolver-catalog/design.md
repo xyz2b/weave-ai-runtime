@@ -36,9 +36,11 @@ Alternatives considered:
 
 - combine registration and resolution in one implicit step: rejected because it hides too many failure modes behind one operation
 
+The runtime-owned resolution inputs will extend, rather than bypass, today’s distribution defaults and first-party `enabled_packages` / `disabled_packages` toggles so current callers keep a compatibility path while external package requests become explicit.
+
 ### 2. The catalog wraps manifests instead of replacing them
 
-The resolver will introduce a package-candidate descriptor around `RuntimePackageManifest` rather than forcing manifest contribution assembly to carry all catalog metadata directly. Candidate descriptors can hold source, version, compatibility metadata, and dependency constraints while the manifest remains the assembly contract.
+The resolver will introduce a package-candidate descriptor around `RuntimePackageManifest` rather than forcing manifest contribution assembly to carry all catalog metadata directly. Official first-party manifests and accepted external registrations are first normalized into these descriptors at the catalog boundary. Candidate descriptors can then hold source, version, compatibility metadata, and dependency constraints while the manifest remains the assembly contract.
 
 Why this decision:
 
@@ -88,8 +90,8 @@ Alternatives considered:
 
 ## Migration Plan
 
-1. Introduce a local package-candidate descriptor and catalog container around existing manifests.
-2. Seed the catalog with the current official first-party packages as one fixed candidate per package name.
+1. Introduce a local package-candidate descriptor and catalog container around existing manifests and accepted external registrations.
+2. Seed the catalog with the current official first-party packages and admitted external registrations as one fixed candidate per package name.
 3. Resolve runtime distribution requests and explicit package requests into a concrete manifest graph before existing dependency ordering runs.
 4. Surface resolution diagnostics and resolved-graph metadata in runtime assembly outputs and docs.
 

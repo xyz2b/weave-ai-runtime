@@ -21,7 +21,6 @@ The next architectural gap is therefore external registration, not dependency so
 ### Modified Capabilities
 - `runtime-kernel`: Kernel package discovery expands from official first-party manifests only to an explicit merged registration set that may include external package manifests.
 - `query-runtime-assembly`: Assembled runtime metadata reports registered external packages and registration diagnostics separately from first-party package defaults.
-- `runtime-package-owner-layer-boundaries`: External packages are held to the same protocol-only owner-layer rules as first-party packages and do not get package-specific core escape hatches.
 
 ## Impact
 
