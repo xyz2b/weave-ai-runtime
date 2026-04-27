@@ -73,6 +73,10 @@ from ..jobs import DefaultJobService
 from ..permissions import PermissionContext
 from ..registries import AgentRegistry, InvocationRegistry, SkillRegistry, ToolRegistry
 from ..runtime_services import RuntimeServices, SidecarContributionResult
+from ..runtime_package_protocols import (
+    ContextContributorExecutionEntry,
+    ContextContributorPromptChannel,
+)
 from ..runtime_kernel.config import (
     ModelProviderBinding,
     ModelRouteBinding,
@@ -536,6 +540,23 @@ class _SidecarJoinResult:
     diagnostics: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass(frozen=True, slots=True)
+class _RegisteredContributorJoinResult:
+    memory_fragments: tuple[str, ...] = ()
+    hook_fragments: tuple[str, ...] = ()
+    private_updates: dict[str, Any] = field(default_factory=dict)
+    diagnostics: dict[str, Any] = field(default_factory=dict)
+
+
+class _InvalidContextContributorOutput(TypeError):
+    def __init__(self, value: Any) -> None:
+        self.returned_type = type(value).__name__
+        super().__init__(
+            "context contributor collect() must return SidecarContributionResult or a sequence "
+            "of prompt fragments"
+        )
+
+
 _SIDECAR_DIAGNOSTIC_KEYS = frozenset({"memory_retrieval", "memory_diagnostics"})
 _SIDECAR_PROMPT_ONLY_KEYS = frozenset({"prompt_updates"})
 
@@ -556,6 +577,7 @@ class _PreTurnSidecarSupervisor:
         self._agent = agent
         self._cwd = cwd
         self.generation = 0
+        self._registry_task: asyncio.Task[_RegisteredContributorJoinResult] | None = None
         self._memory_task: asyncio.Task[_SidecarJoinResult] | None = None
         self._hook_task: asyncio.Task[_SidecarJoinResult] | None = None
         self._task_discipline_task: asyncio.Task[_SidecarJoinResult] | None = None
@@ -580,6 +602,18 @@ class _PreTurnSidecarSupervisor:
             "private_context": private_context,
             "runtime_context": dict(runtime_context or {}),
         }
+        execution_plan = self._engine._runtime_services.context_contributor_execution_plan()
+        if execution_plan and any(
+            not bool(entry.binding.metadata.get("compatibility_only"))
+            for entry in execution_plan
+        ):
+            self._registry_task = asyncio.create_task(
+                self._engine._collect_registered_context_contributors(
+                    execution_plan=execution_plan,
+                    **task_kwargs,
+                )
+            )
+            return
         self._memory_task = asyncio.create_task(
             self._engine._collect_control_plane_fragments_with_context(
                 self._engine._runtime_services.memory,
@@ -617,6 +651,14 @@ class _PreTurnSidecarSupervisor:
     async def join(
         self,
     ) -> tuple[tuple[str, ...], tuple[str, ...], dict[str, Any], dict[str, Any]]:
+        if self._registry_task is not None:
+            result = await self._resolve_registered(self._registry_task)
+            return (
+                result.memory_fragments,
+                result.hook_fragments,
+                result.private_updates,
+                result.diagnostics,
+            )
         memory_result = await self._resolve(self._memory_task)
         hook_result = await self._resolve(self._hook_task)
         task_discipline_result = await self._resolve(self._task_discipline_task)
@@ -636,7 +678,12 @@ class _PreTurnSidecarSupervisor:
     async def close(self) -> None:
         tasks = tuple(
             task
-            for task in (self._memory_task, self._hook_task, self._task_discipline_task)
+            for task in (
+                self._registry_task,
+                self._memory_task,
+                self._hook_task,
+                self._task_discipline_task,
+            )
             if task is not None
         )
         self.cancel()
@@ -645,7 +692,12 @@ class _PreTurnSidecarSupervisor:
         await asyncio.gather(*tasks, return_exceptions=True)
 
     def cancel(self) -> None:
-        for task in (self._memory_task, self._hook_task, self._task_discipline_task):
+        for task in (
+            self._registry_task,
+            self._memory_task,
+            self._hook_task,
+            self._task_discipline_task,
+        ):
             if task is not None and not task.done():
                 task.cancel()
 
@@ -656,6 +708,17 @@ class _PreTurnSidecarSupervisor:
             return await task
         except asyncio.CancelledError:
             return _SidecarJoinResult()
+
+    async def _resolve_registered(
+        self,
+        task: asyncio.Task[_RegisteredContributorJoinResult] | None,
+    ) -> _RegisteredContributorJoinResult:
+        if task is None:
+            return _RegisteredContributorJoinResult()
+        try:
+            return await task
+        except asyncio.CancelledError:
+            return _RegisteredContributorJoinResult()
 
 
 class TurnEngine:
@@ -2332,8 +2395,12 @@ class TurnEngine:
                 private_updates=dict(collected.private_updates),
                 diagnostics=dict(collected.diagnostics),
             )
-        if not collected:
+        if collected is None or collected == ():
             return _SidecarJoinResult()
+        if isinstance(collected, Mapping) or isinstance(collected, (str, bytes, bytearray)):
+            raise _InvalidContextContributorOutput(collected)
+        if not isinstance(collected, Sequence):
+            raise _InvalidContextContributorOutput(collected)
         return _SidecarJoinResult(
             prompt_fragments=tuple(str(fragment) for fragment in collected),
         )
@@ -2374,6 +2441,117 @@ class TurnEngine:
             private_updates=private_updates,
             diagnostics=diagnostics,
         )
+
+    async def _collect_registered_context_contributors(
+        self,
+        *,
+        execution_plan: Sequence[ContextContributorExecutionEntry],
+        **kwargs: Any,
+    ) -> _RegisteredContributorJoinResult:
+        base_prompt_context = kwargs.get("prompt_context") or PromptContextEnvelope()
+        base_private_context = kwargs.get("private_context") or RuntimePrivateContext()
+        base_runtime_context = _clone_sidecar_compat_runtime_context(kwargs.get("runtime_context"))
+        memory_fragments: list[str] = []
+        hook_fragments: list[str] = []
+        private_updates: dict[str, Any] = {}
+        diagnostics: dict[str, Any] = {}
+        failure_records: list[dict[str, Any]] = []
+
+        for entry in execution_plan:
+            prompt_context = replace(
+                base_prompt_context,
+                memory_fragments=base_prompt_context.memory_fragments + tuple(memory_fragments),
+                hook_fragments=base_prompt_context.hook_fragments + tuple(hook_fragments),
+            )
+            private_context = _merge_private_context_updates(
+                base_private_context,
+                private_updates=private_updates,
+                diagnostics=diagnostics,
+            )
+            runtime_context = self._merge_runtime_context(
+                base_runtime_context,
+                private_context=private_context,
+                prompt_context=prompt_context,
+            )
+            contributor_kwargs = {
+                **kwargs,
+                "prompt_context": prompt_context,
+                "private_context": private_context,
+                "runtime_context": runtime_context,
+            }
+            try:
+                contribution = await self._collect_registered_context_contribution(
+                    entry=entry,
+                    contributor_kwargs=contributor_kwargs,
+                )
+            except asyncio.CancelledError:
+                raise
+            except asyncio.TimeoutError:
+                failure_records.append(
+                    _context_contributor_failure_record(
+                        entry,
+                        code="context_contributor_timeout",
+                        error="TimeoutError",
+                        message=(
+                            f"context contributor timed out after {entry.binding.timeout_seconds} seconds"
+                        ),
+                    )
+                )
+                continue
+            except _InvalidContextContributorOutput as exc:
+                failure_records.append(
+                    _context_contributor_failure_record(
+                        entry,
+                        code="context_contributor_invalid_output",
+                        error=type(exc).__name__,
+                        message=str(exc),
+                        returned_type=exc.returned_type,
+                    )
+                )
+                continue
+            except Exception as exc:
+                failure_records.append(
+                    _context_contributor_failure_record(
+                        entry,
+                        code="context_contributor_failed",
+                        error=type(exc).__name__,
+                        message=str(exc),
+                    )
+                )
+                continue
+
+            if entry.stage.prompt_channel == ContextContributorPromptChannel.MEMORY:
+                memory_fragments.extend(contribution.prompt_fragments)
+            else:
+                hook_fragments.extend(contribution.prompt_fragments)
+            private_updates.update(contribution.private_updates)
+            _merge_sidecar_diagnostics(diagnostics, contribution.diagnostics)
+
+        if failure_records:
+            _merge_sidecar_diagnostics(
+                diagnostics,
+                {"context_contributor_diagnostics": tuple(failure_records)},
+            )
+        return _RegisteredContributorJoinResult(
+            memory_fragments=tuple(memory_fragments),
+            hook_fragments=tuple(hook_fragments),
+            private_updates=private_updates,
+            diagnostics=diagnostics,
+        )
+
+    async def _collect_registered_context_contribution(
+        self,
+        *,
+        entry: ContextContributorExecutionEntry,
+        contributor_kwargs: Mapping[str, Any],
+    ) -> _SidecarJoinResult:
+        coroutine = self._collect_control_plane_fragments_with_context(
+            entry.binding.contributor,
+            **dict(contributor_kwargs),
+        )
+        if entry.binding.timeout_seconds is None:
+            return await coroutine
+        return await asyncio.wait_for(coroutine, timeout=entry.binding.timeout_seconds)
 
     async def _prepare_compaction(
         self,
@@ -3369,6 +3547,48 @@ def _split_sidecar_private_updates(
             continue
         private_updates[normalized_key] = value
     return private_updates, diagnostics
+
+
+def _merge_sidecar_diagnostics(
+    target: dict[str, Any],
+    incoming: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    if incoming is None:
+        return target
+    for key, value in incoming.items():
+        normalized_key = str(key)
+        if normalized_key == "context_contributor_diagnostics" and normalized_key in target:
+            existing = tuple(target.get(normalized_key, ()) or ())
+            target[normalized_key] = existing + tuple(value or ())
+            continue
+        target[normalized_key] = value
+    return target
+
+
+def _context_contributor_failure_record(
+    entry: ContextContributorExecutionEntry,
+    *,
+    code: str,
+    error: str,
+    message: str,
+    returned_type: str | None = None,
+) -> dict[str, Any]:
+    record = {
+        "code": code,
+        "contributor": entry.binding.name,
+        "stage": entry.stage.name.value,
+        "owner": {
+            "package_name": entry.binding.owner.package_name,
+            "package_role": entry.binding.owner.package_role,
+            "surface": entry.binding.owner.surface,
+            "metadata": dict(entry.binding.owner.metadata),
+        },
+        "error": error,
+        "message": message,
+    }
+    if returned_type is not None:
+        record["returned_type"] = returned_type
+    return record
 
 
 def _clone_sidecar_compat_runtime_context(

@@ -1593,6 +1593,7 @@ def _assemble_runtime_stack(kernel: RuntimeKernel) -> RuntimeAssembly:
             "first_party_packages": list(kernel.first_party_packages),
             "package_runtime_contributions": [manifest.name for manifest, _ in runtime_package_contributions],
             "package_lookup": dict(services.metadata.get("package_lookup", {})),
+            "context_contributors": dict(services.metadata.get("context_contributors", {})),
             "compatibility_surfaces": dict(services.metadata.get("compatibility_surfaces", {})),
             "compatibility_projections": dict(services.metadata.get("compatibility_projections", {})),
             "invocation_provider_paths": dict(services.metadata.get("invocation_provider_paths", {})),
@@ -1658,6 +1659,11 @@ def _build_runtime_services(kernel: RuntimeKernel) -> RuntimeServices:
         "TaskManager": "compatibility-only",
         "runtime_context": "compatibility-only",
         "RuntimeConfig.extra_invocation_providers": "bounded-compatibility",
+        "RuntimeServices.memory.collect": "compatibility-only",
+        "RuntimeServices.hooks.collect": "compatibility-only",
+        "RuntimeServices.task_discipline.collect": "compatibility-only",
+        "RuntimeServices.compaction.prepare_turn": "dedicated-control-plane",
+        "RuntimeServices.compaction.collect": "dedicated-control-plane",
         "RuntimeServices.teammates": "compatibility-only",
         "RuntimeServices.team_control_plane": "compatibility-only",
         "RuntimeServices.team_message_bus": "compatibility-only",
@@ -2015,9 +2021,26 @@ def _package_lookup_metadata() -> dict[str, Any]:
             "job_service": "RuntimeServices.job_service",
             "task_list_service": "RuntimeServices.task_list_service",
         },
+        "canonical_context_contributors": {
+            "package_contributions": "PackageContribution.context_contributors",
+            "registry": "RuntimeServices.context_contributor_execution_plan",
+            "stage_catalog": [
+                "memory",
+                "hooks",
+                "task_policy",
+            ],
+        },
         "canonical_invocation_providers": {
             "package_contributions": "PackageContribution.invocation_providers",
             "builtins": "builtin_skill_baseline",
+        },
+        "compatibility_context_contributors": {
+            "RuntimeServices.memory.collect": "compatibility-only",
+            "RuntimeServices.hooks.collect": "compatibility-only",
+            "RuntimeServices.task_discipline.collect": "compatibility-only",
+        },
+        "dedicated_control_plane_paths": {
+            "compaction": "RuntimeServices.compaction.prepare_turn / RuntimeServices.compaction.collect",
         },
         "compatibility_invocation_providers": {
             "embedder_config": "RuntimeConfig.extra_invocation_providers",

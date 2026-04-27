@@ -43,7 +43,17 @@
 
 ### 1.2 Sidecar / Context Contribution Hook
 
-这是 `RuntimeServices.hooks.collect()` 这一类 request 构造前的上下文接入点。
+现在 request 构造前的 canonical 上下文接入点是
+`PackageContribution.context_contributors -> RuntimeServices.context_contributor_execution_plan()`。
+runtime 会按 runtime-owned stage catalog 执行这些 contributor：
+
+- `memory`
+- `hooks`
+- `task_policy`
+
+`RuntimeServices.hooks.collect()`、`RuntimeServices.memory.collect()` 和
+`RuntimeServices.task_discipline.collect()` 仍可工作，但只应视为 compatibility adapter surface。
+`CompactionManager` 继续走专用的 `prepare_turn() / collect()` 控制面路径，而不是被折叠进 generic contributor abstraction。
 
 特点：
 
@@ -64,9 +74,9 @@ HookBus
   -> 事件型 hook
   -> 对某个 phase 的响应
 
-RuntimeServices.hooks.collect()
-  -> sidecar 型 hook
-  -> 在 request 构造前贡献上下文
+PackageContribution.context_contributors
+  -> sidecar 型 context contributor
+  -> 经 runtime-owned stage 执行并在 request 构造前贡献上下文
 ```
 
 ## 2. 控制面接入总图
@@ -86,8 +96,8 @@ flowchart TB
     end
 
     subgraph Sidecars["Context Contributions"]
-        SidecarHooks["hooks.collect()"]
-        Memory["memory.collect()"]
+        PackageContext["PackageContribution.context_contributors"]
+        LegacySlots["legacy collect() adapters"]
         Compaction["compaction.prepare_turn() / collect()"]
     end
 
@@ -106,8 +116,8 @@ flowchart TB
     Services --> HookBus
     HookBus --> HookPhases
 
-    Services --> SidecarHooks
-    Services --> Memory
+    Services --> PackageContext
+    Services --> LegacySlots
     Services --> Compaction
 
     Services --> Perms
@@ -510,9 +520,11 @@ hooks:
 
 ## 7. Sidecar 型上下文接入规范
 
-### 7.1 `RuntimeServices.hooks.collect()` 不是 HookBus
+### 7.1 package-contributed context contributor 不是 HookBus
 
-这是 request 构造前的 sidecar 接口。
+这是 request 构造前的 sidecar 接口。canonical path 是
+`PackageContribution.context_contributors`，由 runtime stage catalog 按
+`memory -> hooks -> task_policy` 执行。
 
 它的目标不是处理事件，而是在每轮请求前贡献上下文：
 
@@ -536,12 +548,12 @@ hooks:
 
 1. session/base context
 2. ingress updates
-3. sidecar contributions
+3. staged context contributor contributions
 4. request-scoped overrides
 
 这意味着：
 
-- sidecar 是 request shaping 的正式一环
+- package-contributed context contributor 是 request shaping 的正式一环
 - 但不是唯一真相来源
 
 ### 7.3 Prompt / Private 必须分通道
@@ -629,7 +641,8 @@ Runtime 会在后续 request 装配时调用 refresh callback。
   -> HookBus
 
 我要在 request 构造前贡献上下文
-  -> RuntimeServices.hooks.collect()
+  -> PackageContribution.context_contributors
+  -> legacy `RuntimeServices.{hooks,memory,task_discipline}.collect()` 只作 compatibility adapter
 
 我要让工具执行后刷新能力图
   -> tool_refresh_callback

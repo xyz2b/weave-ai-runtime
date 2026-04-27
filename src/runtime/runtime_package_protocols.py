@@ -24,6 +24,17 @@ class PackageLifecyclePhase(StrEnum):
     SESSION_CLOSE = "session_close"
 
 
+class ContextContributorStage(StrEnum):
+    MEMORY = "memory"
+    HOOKS = "hooks"
+    TASK_POLICY = "task_policy"
+
+
+class ContextContributorPromptChannel(StrEnum):
+    MEMORY = "memory"
+    HOOKS = "hooks"
+
+
 class RuntimeCapabilityKey(StrEnum):
     MEMORY_SERVICE = "runtime.memory.service"
     COMPACTION_MANAGER = "runtime.compaction.manager"
@@ -167,6 +178,73 @@ class JobExecutorContribution:
 
 
 @dataclass(frozen=True, slots=True)
+class ContextContributorBinding:
+    name: str
+    stage: ContextContributorStage | str
+    contributor: Any
+    owner: PackageOwnership
+    order: int = 0
+    timeout_seconds: float | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "name", _require_non_empty(self.name, "name"))
+        object.__setattr__(self, "stage", ContextContributorStage(self.stage))
+        object.__setattr__(self, "order", int(self.order))
+        if self.contributor is None:
+            raise ValueError("ContextContributorBinding.contributor must not be None")
+        if self.timeout_seconds is not None:
+            normalized_timeout = float(self.timeout_seconds)
+            if normalized_timeout < 0:
+                raise ValueError("ContextContributorBinding.timeout_seconds must be >= 0")
+            object.__setattr__(self, "timeout_seconds", normalized_timeout)
+        object.__setattr__(self, "metadata", dict(self.metadata))
+
+
+@dataclass(frozen=True, slots=True)
+class ContextContributorStageDefinition:
+    name: ContextContributorStage | str
+    order: int
+    prompt_channel: ContextContributorPromptChannel | str
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "name", ContextContributorStage(self.name))
+        object.__setattr__(self, "order", int(self.order))
+        object.__setattr__(self, "prompt_channel", ContextContributorPromptChannel(self.prompt_channel))
+        object.__setattr__(self, "metadata", dict(self.metadata))
+
+
+@dataclass(frozen=True, slots=True)
+class ContextContributorExecutionEntry:
+    binding: ContextContributorBinding
+    stage: ContextContributorStageDefinition
+    sequence: int
+
+
+DEFAULT_CONTEXT_CONTRIBUTOR_STAGES = (
+    ContextContributorStageDefinition(
+        name=ContextContributorStage.MEMORY,
+        order=100,
+        prompt_channel=ContextContributorPromptChannel.MEMORY,
+        metadata={"description": "retrieval-style prompt context before generic hook guidance"},
+    ),
+    ContextContributorStageDefinition(
+        name=ContextContributorStage.HOOKS,
+        order=200,
+        prompt_channel=ContextContributorPromptChannel.HOOKS,
+        metadata={"description": "generic request-time guidance and prompt-visible sidecars"},
+    ),
+    ContextContributorStageDefinition(
+        name=ContextContributorStage.TASK_POLICY,
+        order=300,
+        prompt_channel=ContextContributorPromptChannel.HOOKS,
+        metadata={"description": "runtime-owned policy reminders and task discipline sidecars"},
+    ),
+)
+
+
+@dataclass(frozen=True, slots=True)
 class InvocationProviderFactoryContext:
     manifest: "RuntimePackageManifest"
     owner: PackageOwnership
@@ -235,6 +313,7 @@ class PackageContribution:
     builtin_agents: tuple[AgentDefinition, ...] = ()
     builtin_skills: tuple[SkillDefinition, ...] = ()
     invocation_providers: tuple[InvocationProviderContribution, ...] = ()
+    context_contributors: tuple[ContextContributorBinding, ...] = ()
     capabilities: tuple[CapabilityBinding, ...] = ()
     lifecycle_participants: tuple[PackageLifecycleParticipant, ...] = ()
     host_facets: tuple[HostFacetBinding, ...] = ()
@@ -251,6 +330,7 @@ class PackageContribution:
         object.__setattr__(self, "builtin_agents", tuple(self.builtin_agents))
         object.__setattr__(self, "builtin_skills", tuple(self.builtin_skills))
         object.__setattr__(self, "invocation_providers", tuple(self.invocation_providers))
+        object.__setattr__(self, "context_contributors", tuple(self.context_contributors))
         object.__setattr__(self, "capabilities", tuple(self.capabilities))
         object.__setattr__(self, "lifecycle_participants", tuple(self.lifecycle_participants))
         object.__setattr__(self, "host_facets", tuple(self.host_facets))
@@ -369,6 +449,97 @@ class CapabilityRegistry:
 
     def bindings(self) -> tuple[CapabilityBinding, ...]:
         return tuple(self._bindings[key] for key in sorted(self._bindings))
+
+
+@dataclass(slots=True)
+class ContextContributorRegistry:
+    _stages: dict[str, ContextContributorStageDefinition] = field(
+        default_factory=lambda: {
+            stage.name.value: stage for stage in DEFAULT_CONTEXT_CONTRIBUTOR_STAGES
+        }
+    )
+    _bindings: dict[str, tuple[int, ContextContributorBinding]] = field(default_factory=dict)
+    _sequence: int = 0
+
+    def register_stage(
+        self,
+        definition: ContextContributorStageDefinition,
+        *,
+        override: bool = False,
+    ) -> ContextContributorStageDefinition | None:
+        key = definition.name.value
+        previous = self._stages.get(key)
+        if previous is not None and not override:
+            raise ValueError(f"Context contributor stage '{key}' is already registered")
+        self._stages[key] = definition
+        return previous
+
+    def stage(self, name: ContextContributorStage | str) -> ContextContributorStageDefinition:
+        normalized = ContextContributorStage(name).value
+        try:
+            return self._stages[normalized]
+        except KeyError as exc:  # pragma: no cover - defensive boundary
+            raise KeyError(f"Unknown context contributor stage '{normalized}'") from exc
+
+    def stage_catalog(self) -> tuple[ContextContributorStageDefinition, ...]:
+        return tuple(sorted(self._stages.values(), key=lambda entry: (entry.order, entry.name.value)))
+
+    def register(
+        self,
+        binding: ContextContributorBinding,
+        *,
+        override: bool = True,
+    ) -> ContextContributorBinding | None:
+        stage = self.stage(binding.stage)
+        previous_record = self._bindings.get(binding.name)
+        if previous_record is not None and not override:
+            raise ValueError(f"Context contributor '{binding.name}' is already registered")
+        self._bindings[binding.name] = (self._sequence, binding)
+        self._sequence += 1
+        _ = stage
+        return None if previous_record is None else previous_record[1]
+
+    def binding(self, name: str) -> ContextContributorBinding | None:
+        record = self._bindings.get(_require_non_empty(name, "name"))
+        return None if record is None else record[1]
+
+    def bindings(
+        self,
+        stage: ContextContributorStage | str | None = None,
+    ) -> tuple[ContextContributorBinding, ...]:
+        return tuple(
+            entry.binding
+            for entry in self.execution_plan(stage=stage)
+        )
+
+    def execution_plan(
+        self,
+        stage: ContextContributorStage | str | None = None,
+    ) -> tuple[ContextContributorExecutionEntry, ...]:
+        normalized_stage = ContextContributorStage(stage) if stage is not None else None
+        records: list[ContextContributorExecutionEntry] = []
+        for sequence, binding in self._bindings.values():
+            stage_definition = self.stage(binding.stage)
+            if normalized_stage is not None and stage_definition.name != normalized_stage:
+                continue
+            records.append(
+                ContextContributorExecutionEntry(
+                    binding=binding,
+                    stage=stage_definition,
+                    sequence=sequence,
+                )
+            )
+        return tuple(
+            sorted(
+                records,
+                key=lambda record: (
+                    record.stage.order,
+                    record.binding.order,
+                    record.sequence,
+                    record.binding.name,
+                ),
+            )
+        )
 
 
 @dataclass(slots=True)
@@ -539,6 +710,13 @@ def _require_non_empty(value: Any, field_name: str) -> str:
 __all__ = [
     "CapabilityBinding",
     "CapabilityRegistry",
+    "ContextContributorBinding",
+    "ContextContributorExecutionEntry",
+    "ContextContributorPromptChannel",
+    "ContextContributorRegistry",
+    "ContextContributorStage",
+    "ContextContributorStageDefinition",
+    "DEFAULT_CONTEXT_CONTRIBUTOR_STAGES",
     "HostFacetBinding",
     "HostFacetRegistry",
     "HostFacetResolution",

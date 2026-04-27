@@ -31,6 +31,7 @@ from runtime.runtime_kernel import (
 from runtime.runtime_package_manifests import official_runtime_package_manifests
 from runtime.runtime_package_protocols import (
     CapabilityBinding,
+    ContextContributorBinding,
     HostFacetBinding,
     IngressReceiptHandlerBinding,
     InvocationProviderContribution,
@@ -39,6 +40,7 @@ from runtime.runtime_package_protocols import (
     PackageLifecycleParticipant,
     PackageLifecyclePhase,
     PackageOwnership,
+    ContextContributorStage,
     RuntimeCapabilityKey,
     RuntimeHostFacetKey,
     RuntimePackageManifest,
@@ -89,6 +91,10 @@ def test_runtime_services_apply_package_contribution_registers_protocol_surfaces
     observed_phases: list[str] = []
     observed_receipts: list[str] = []
 
+    class ExampleContributor:
+        async def collect(self, **_kwargs):
+            return ("example context",)
+
     async def handle_cleanup(**kwargs):
         observed_phases.append(kwargs["phase"].value)
 
@@ -104,6 +110,19 @@ def test_runtime_services_apply_package_contribution_registers_protocol_surfaces
         order=10,
     )
     contribution = PackageContribution(
+        context_contributors=(
+            ContextContributorBinding(
+                name="runtime.example.context",
+                stage=ContextContributorStage.HOOKS,
+                contributor=ExampleContributor(),
+                owner=PackageOwnership(
+                    package_name="runtime-example",
+                    package_role="capability",
+                    surface="context_contributor",
+                ),
+                order=5,
+            ),
+        ),
         capabilities=(
             CapabilityBinding(
                 key="runtime.example.service",
@@ -144,13 +163,21 @@ def test_runtime_services_apply_package_contribution_registers_protocol_surfaces
 
     assert services.require_capability("runtime.example.service") == {"service": "example"}
     assert services.capability_registry.owner("runtime.example.service").package_name == "runtime-example"
+    plan = services.context_contributor_execution_plan()
+    assert [(entry.binding.name, entry.stage.name.value) for entry in plan] == [
+        ("runtime.example.context", ContextContributorStage.HOOKS.value),
+    ]
     assert services.lifecycle_participants(PackageLifecyclePhase.SESSION_CLOSE) == (participant,)
     facet = services.resolve_host_facet("runtime.example.facet")
     assert facet.available is True
     assert facet.facet == {"facet": "example"}
     assert services.metadata["package_capability_owners"]["runtime.example.service"]["package_name"] == "runtime-example"
+    assert services.metadata["package_context_contributor_owners"]["runtime.example.context"]["stage"] == (
+        ContextContributorStage.HOOKS.value
+    )
     assert services.metadata["package_ingress_receipt_owners"]["runtime.example.receipt"]["package_name"] == "runtime-example"
     assert services.metadata["package_contributions"][0]["package_name"] == "runtime-example"
+    assert services.metadata["package_contributions"][0]["context_contributors"] == ["runtime.example.context"]
     assert asyncio.run(services.dispatch_lifecycle_phase(PackageLifecyclePhase.SESSION_CLOSE)) == ()
     asyncio.run(
         services.execute_ingress_completion_receipt(
@@ -246,6 +273,45 @@ def test_manifest_backed_team_runtime_registers_capabilities_and_host_facet(tmp_
     assert facet.available is True
     listed = asyncio.run(facet.facet.list_workflows(team_id=None, session_id=None, pending_only=True))
     assert listed == ()
+
+
+def test_runtime_context_contributor_registry_exposes_canonical_stage_catalog(tmp_path: Path) -> None:
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            distribution=RuntimeDistribution.DEFAULT,
+        )
+    )
+
+    stage_names = [stage["name"] for stage in runtime.services.metadata["context_contributors"]["stages"]]
+    assert stage_names == ["memory", "hooks", "task_policy"]
+
+    bindings = runtime.services.metadata["context_contributors"]["bindings"]
+    binding_names = [entry["name"] for entry in bindings]
+    assert "runtime-memory.collect" in binding_names
+    assert "runtime-core.task_discipline.collect" in binding_names
+
+    lookup = runtime.services.metadata["package_lookup"]
+    assert lookup["canonical_context_contributors"] == {
+        "package_contributions": "PackageContribution.context_contributors",
+        "registry": "RuntimeServices.context_contributor_execution_plan",
+        "stage_catalog": ["memory", "hooks", "task_policy"],
+    }
+    assert lookup["compatibility_context_contributors"] == {
+        "RuntimeServices.memory.collect": "compatibility-only",
+        "RuntimeServices.hooks.collect": "compatibility-only",
+        "RuntimeServices.task_discipline.collect": "compatibility-only",
+    }
+    assert lookup["dedicated_control_plane_paths"] == {
+        "compaction": "RuntimeServices.compaction.prepare_turn / RuntimeServices.compaction.collect",
+    }
+    assert runtime.services.metadata["compatibility_surfaces"]["RuntimeServices.memory.collect"] == (
+        "compatibility-only"
+    )
+    assert runtime.services.metadata["compatibility_surfaces"]["RuntimeServices.compaction.prepare_turn"] == (
+        "dedicated-control-plane"
+    )
+    assert runtime.metadata["context_contributors"] == runtime.services.metadata["context_contributors"]
 
 
 def test_runtime_team_compatibility_projections_delegate_to_canonical_capabilities(tmp_path: Path) -> None:

@@ -16,6 +16,10 @@ from ..permissions import PermissionEngine
 from ..runtime_package_protocols import (
     CapabilityBinding,
     CapabilityRegistry,
+    ContextContributorBinding,
+    ContextContributorExecutionEntry,
+    ContextContributorRegistry,
+    ContextContributorStage,
     HostFacetBinding,
     HostFacetRegistry,
     HostFacetResolution,
@@ -25,6 +29,7 @@ from ..runtime_package_protocols import (
     PackageLifecycleParticipant,
     PackageLifecyclePhase,
     PackageLifecycleRegistry,
+    PackageOwnership,
     RuntimeCapabilityKey,
     RuntimeHostFacetKey,
     RuntimePackageManifest,
@@ -39,6 +44,10 @@ _COMPATIBILITY_CAPABILITY_PROJECTIONS = {
     "team_message_bus": RuntimeCapabilityKey.TEAM_MESSAGE_BUS.value,
     "team_workflows": RuntimeCapabilityKey.TEAM_WORKFLOWS.value,
 }
+
+_LEGACY_MEMORY_CONTEXT_SURFACE = "RuntimeServices.memory.collect"
+_LEGACY_HOOK_CONTEXT_SURFACE = "RuntimeServices.hooks.collect"
+_LEGACY_TASK_DISCIPLINE_CONTEXT_SURFACE = "RuntimeServices.task_discipline.collect"
 
 
 @dataclass(frozen=True, slots=True)
@@ -257,6 +266,7 @@ class RuntimeServices:
     hooks: ContextContributionService = field(default_factory=NoopHookService)
     hook_bus: HookBus = field(default_factory=HookBus)
     capability_registry: CapabilityRegistry = field(default_factory=CapabilityRegistry)
+    context_contributors: ContextContributorRegistry = field(default_factory=ContextContributorRegistry)
     lifecycle_registry: PackageLifecycleRegistry = field(default_factory=PackageLifecycleRegistry)
     host_facets: HostFacetRegistry = field(default_factory=HostFacetRegistry)
     ingress_receipts: IngressReceiptRegistry = field(default_factory=IngressReceiptRegistry)
@@ -303,6 +313,7 @@ class RuntimeServices:
         if self.jobs is None:  # pragma: no cover - defensive boundary
             self.jobs = DefaultJobService()
         self._bind_job_runtime(self.jobs)
+        self._sync_context_contributor_metadata()
 
     def bind_job_service(self, job_service: DefaultJobService) -> None:
         previous_kernel = self.jobs.kernel if self.jobs is not None else None
@@ -448,6 +459,41 @@ class RuntimeServices:
     def bind_capability(self, binding: CapabilityBinding, *, override: bool = True) -> CapabilityBinding | None:
         return self.capability_registry.bind(binding, override=override)
 
+    def register_context_contributor(
+        self,
+        binding: ContextContributorBinding,
+        *,
+        override: bool = True,
+    ) -> ContextContributorBinding | None:
+        previous = self.context_contributors.register(binding, override=override)
+        self._sync_context_contributor_metadata()
+        return previous
+
+    def context_contributor_execution_plan(self) -> tuple[ContextContributorExecutionEntry, ...]:
+        registered = list(self.context_contributors.execution_plan())
+        sequence = len(registered)
+        for binding in self._legacy_context_contributor_bindings():
+            stage = self.context_contributors.stage(binding.stage)
+            registered.append(
+                ContextContributorExecutionEntry(
+                    binding=binding,
+                    stage=stage,
+                    sequence=sequence,
+                )
+            )
+            sequence += 1
+        return tuple(
+            sorted(
+                registered,
+                key=lambda entry: (
+                    entry.stage.order,
+                    entry.binding.order,
+                    entry.sequence,
+                    entry.binding.name,
+                ),
+            )
+        )
+
     def resolve_capability(self, key: str, default: Any = None) -> Any:
         return self.capability_registry.resolve(key, default)
 
@@ -530,6 +576,25 @@ class RuntimeServices:
                 "package_role": capability.owner.package_role,
                 "surface": capability.owner.surface,
             }
+        for binding in contribution.context_contributors:
+            self.register_context_contributor(binding, override=True)
+            self.metadata.setdefault("package_context_contributor_owners", {})[binding.name] = {
+                "package_name": binding.owner.package_name,
+                "package_role": binding.owner.package_role,
+                "surface": binding.owner.surface,
+                "stage": binding.stage.value,
+                "order": binding.order,
+            }
+            compatibility_surface = str(binding.metadata.get("compatibility_surface") or "").strip()
+            if compatibility_surface:
+                self.metadata.setdefault("context_contributor_surface_owners", {})[
+                    compatibility_surface
+                ] = {
+                    "binding": binding.name,
+                    "package_name": binding.owner.package_name,
+                    "package_role": binding.owner.package_role,
+                    "stage": binding.stage.value,
+                }
         for participant in contribution.lifecycle_participants:
             self.register_lifecycle_participant(participant)
         for facet in contribution.host_facets:
@@ -551,6 +616,7 @@ class RuntimeServices:
             "package_role": manifest.role,
             "stage": stage,
             "invocation_providers": [binding.name for binding in contribution.invocation_providers],
+            "context_contributors": [binding.name for binding in contribution.context_contributors],
             "capabilities": [binding.key for binding in contribution.capabilities],
             "lifecycle_participants": [participant.name for participant in contribution.lifecycle_participants],
             "host_facets": [facet.name for facet in contribution.host_facets],
@@ -562,6 +628,7 @@ class RuntimeServices:
             "diagnostics": [getattr(diagnostic, "code", None) for diagnostic in contribution.diagnostics],
         }
         self.metadata.setdefault("package_contributions", []).append(entry)
+        self._sync_context_contributor_metadata()
 
     def begin_runtime_lifecycle(
         self,
@@ -644,6 +711,162 @@ class RuntimeServices:
                 failures.append(failure)
                 self.metadata.setdefault("lifecycle_participant_failures", []).append(failure)
         return tuple(failures)
+
+    def _sync_context_contributor_metadata(self) -> None:
+        compatibility_surfaces = self.metadata.setdefault("compatibility_surfaces", {})
+        compatibility_surfaces.setdefault(_LEGACY_MEMORY_CONTEXT_SURFACE, "compatibility-only")
+        compatibility_surfaces.setdefault(_LEGACY_HOOK_CONTEXT_SURFACE, "compatibility-only")
+        compatibility_surfaces.setdefault(
+            _LEGACY_TASK_DISCIPLINE_CONTEXT_SURFACE,
+            "compatibility-only",
+        )
+        compatibility_surfaces.setdefault(
+            "RuntimeServices.compaction.prepare_turn",
+            "dedicated-control-plane",
+        )
+        compatibility_surfaces.setdefault(
+            "RuntimeServices.compaction.collect",
+            "dedicated-control-plane",
+        )
+        self.metadata["context_contributors"] = {
+            "stages": [
+                {
+                    "name": stage.name.value,
+                    "order": stage.order,
+                    "prompt_channel": stage.prompt_channel.value,
+                    "metadata": dict(stage.metadata),
+                }
+                for stage in self.context_contributors.stage_catalog()
+            ],
+            "bindings": [
+                {
+                    "name": entry.binding.name,
+                    "stage": entry.stage.name.value,
+                    "stage_order": entry.stage.order,
+                    "prompt_channel": entry.stage.prompt_channel.value,
+                    "order": entry.binding.order,
+                    "timeout_seconds": entry.binding.timeout_seconds,
+                    "owner": self._serialize_package_owner(entry.binding.owner),
+                    "metadata": dict(entry.binding.metadata),
+                }
+                for entry in self.context_contributor_execution_plan()
+            ],
+            "compatibility_surfaces": {
+                _LEGACY_MEMORY_CONTEXT_SURFACE: compatibility_surfaces[_LEGACY_MEMORY_CONTEXT_SURFACE],
+                _LEGACY_HOOK_CONTEXT_SURFACE: compatibility_surfaces[_LEGACY_HOOK_CONTEXT_SURFACE],
+                _LEGACY_TASK_DISCIPLINE_CONTEXT_SURFACE: compatibility_surfaces[
+                    _LEGACY_TASK_DISCIPLINE_CONTEXT_SURFACE
+                ],
+            },
+            "dedicated_services": {
+                "compaction": {
+                    "surface": "RuntimeServices.compaction.prepare_turn",
+                    "status": compatibility_surfaces["RuntimeServices.compaction.prepare_turn"],
+                }
+            },
+        }
+
+    def _legacy_context_contributor_bindings(self) -> tuple[ContextContributorBinding, ...]:
+        bindings: list[ContextContributorBinding] = []
+        if not self._context_contributor_surface_claimed(_LEGACY_MEMORY_CONTEXT_SURFACE):
+            memory = self.memory
+            if memory is not None and hasattr(memory, "collect") and not isinstance(memory, NoopMemoryService):
+                bindings.append(
+                    ContextContributorBinding(
+                        name="compat.memory.collect",
+                        stage=ContextContributorStage.MEMORY,
+                        contributor=memory,
+                        owner=self._legacy_context_contributor_owner(
+                            surface=_LEGACY_MEMORY_CONTEXT_SURFACE,
+                            capability_key=RuntimeCapabilityKey.MEMORY_SERVICE.value,
+                            default_package_name="runtime-core",
+                            default_package_role="core",
+                        ),
+                        metadata={
+                            "compatibility_only": True,
+                            "compatibility_surface": _LEGACY_MEMORY_CONTEXT_SURFACE,
+                        },
+                    )
+                )
+        if not self._context_contributor_surface_claimed(_LEGACY_HOOK_CONTEXT_SURFACE):
+            hooks = self.hooks
+            if hooks is not None and hasattr(hooks, "collect") and not isinstance(hooks, NoopHookService):
+                bindings.append(
+                    ContextContributorBinding(
+                        name="compat.hooks.collect",
+                        stage=ContextContributorStage.HOOKS,
+                        contributor=hooks,
+                        owner=self._legacy_context_contributor_owner(
+                            surface=_LEGACY_HOOK_CONTEXT_SURFACE,
+                            default_package_name="runtime-core",
+                            default_package_role="core",
+                        ),
+                        metadata={
+                            "compatibility_only": True,
+                            "compatibility_surface": _LEGACY_HOOK_CONTEXT_SURFACE,
+                        },
+                    )
+                )
+        if not self._context_contributor_surface_claimed(_LEGACY_TASK_DISCIPLINE_CONTEXT_SURFACE):
+            task_discipline = self.task_discipline
+            if (
+                task_discipline is not None
+                and hasattr(task_discipline, "collect")
+                and not isinstance(task_discipline, NoopHookService)
+            ):
+                bindings.append(
+                    ContextContributorBinding(
+                        name="compat.task_discipline.collect",
+                        stage=ContextContributorStage.TASK_POLICY,
+                        contributor=task_discipline,
+                        owner=self._legacy_context_contributor_owner(
+                            surface=_LEGACY_TASK_DISCIPLINE_CONTEXT_SURFACE,
+                            default_package_name="runtime-core",
+                            default_package_role="core",
+                        ),
+                        metadata={
+                            "compatibility_only": True,
+                            "compatibility_surface": _LEGACY_TASK_DISCIPLINE_CONTEXT_SURFACE,
+                        },
+                    )
+                )
+        return tuple(bindings)
+
+    def _context_contributor_surface_claimed(self, surface: str) -> bool:
+        for entry in self.context_contributors.execution_plan():
+            if entry.binding.metadata.get("compatibility_surface") == surface:
+                return True
+        return False
+
+    def _legacy_context_contributor_owner(
+        self,
+        *,
+        surface: str,
+        capability_key: str | None = None,
+        default_package_name: str,
+        default_package_role: str,
+    ) -> PackageOwnership:
+        owner = (
+            self.capability_registry.owner(capability_key)
+            if capability_key is not None
+            else None
+        )
+        if owner is not None:
+            return owner
+        return PackageOwnership(
+            package_name=default_package_name,
+            package_role=default_package_role,
+            surface="compatibility_context_contributor",
+            metadata={"compatibility_surface": surface},
+        )
+
+    def _serialize_package_owner(self, owner: PackageOwnership) -> dict[str, Any]:
+        return {
+            "package_name": owner.package_name,
+            "package_role": owner.package_role,
+            "surface": owner.surface,
+            "metadata": dict(owner.metadata),
+        }
 
 
 async def _maybe_await(value: Any) -> Any:

@@ -4,6 +4,11 @@ from runtime.compaction import CompactionPolicy, CompactionResult, evaluate_cont
 from runtime.contracts import MessageRole, PromptContextEnvelope, RuntimePrivateContext, TextBlock, ToolResultBlock
 from runtime.definitions import AgentDefinition, ToolDefinition, ToolTraits
 from runtime.registries import ToolRegistry
+from runtime.runtime_package_protocols import (
+    ContextContributorBinding,
+    ContextContributorStage,
+    PackageOwnership,
+)
 from runtime.runtime_services import RuntimeServices, SidecarContributionResult
 from runtime.turn_engine import (
     ContextAssembler,
@@ -606,6 +611,243 @@ def test_sidecar_prompt_and_private_channels_stay_separate() -> None:
     assert "hook_diagnostics" not in request.system_prompt
     assert request.private_context.extensions["host_hint"] == "still-private"
     assert request.private_context.diagnostics["hook_diagnostics"] == {"matched": True}
+
+
+def test_package_context_contributors_execute_in_stage_order_and_merge_prompt_private_channels() -> None:
+    observed: list[str] = []
+
+    class MemoryContributor:
+        async def collect(self, **kwargs):
+            observed.append("memory")
+            assert kwargs["prompt_context"].memory_fragments == ()
+            return SidecarContributionResult(
+                prompt_fragments=("Memory line",),
+                private_updates={"memory_private": True},
+            )
+
+    class HookEarlyContributor:
+        async def collect(self, **kwargs):
+            observed.append("hook-early")
+            assert kwargs["prompt_context"].memory_fragments == ("Memory line",)
+            return SidecarContributionResult(
+                prompt_fragments=("Hook early",),
+                private_updates={"hook_order": "early"},
+            )
+
+    class HookLateContributor:
+        async def collect(self, **kwargs):
+            observed.append("hook-late")
+            assert kwargs["prompt_context"].hook_fragments == ("Hook early",)
+            return SidecarContributionResult(
+                prompt_fragments=("Hook late",),
+                private_updates={"hook_order": "late"},
+            )
+
+    class TaskPolicyContributor:
+        async def collect(self, **kwargs):
+            observed.append("task-policy")
+            assert kwargs["prompt_context"].hook_fragments == ("Hook early", "Hook late")
+            return SidecarContributionResult(
+                prompt_fragments=("Task reminder",),
+                private_updates={"private_only": "kept"},
+            )
+
+    model_client = BatchedModelClient(
+        [
+            [
+                ModelStreamEvent(
+                    ModelStreamEventType.MESSAGE_START,
+                    {"request_id": "req-package-context-order"},
+                ),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "done"}),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+            ]
+        ]
+    )
+    services = RuntimeServices(context_assembler=ContextAssembler())
+    owner = PackageOwnership(package_name="runtime-test", package_role="capability", surface="context_contributor")
+    services.register_context_contributor(
+        ContextContributorBinding(
+            name="runtime-test.memory",
+            stage=ContextContributorStage.MEMORY,
+            contributor=MemoryContributor(),
+            owner=owner,
+        )
+    )
+    services.register_context_contributor(
+        ContextContributorBinding(
+            name="runtime-test.hook-early",
+            stage=ContextContributorStage.HOOKS,
+            contributor=HookEarlyContributor(),
+            owner=owner,
+            order=10,
+        )
+    )
+    services.register_context_contributor(
+        ContextContributorBinding(
+            name="runtime-test.hook-late",
+            stage=ContextContributorStage.HOOKS,
+            contributor=HookLateContributor(),
+            owner=owner,
+            order=20,
+        )
+    )
+    services.register_context_contributor(
+        ContextContributorBinding(
+            name="runtime-test.task-policy",
+            stage=ContextContributorStage.TASK_POLICY,
+            contributor=TaskPolicyContributor(),
+            owner=owner,
+        )
+    )
+    engine = TurnEngine(
+        model_client=model_client,
+        tool_registry=ToolRegistry(),
+        runtime_services=services,
+    )
+    agent = AgentDefinition(name="main-router", description="router", prompt="Answer")
+
+    asyncio.run(
+        engine.run_turn(
+            session_id="session",
+            turn_id="turn",
+            agent=agent,
+            cwd=".",
+            messages=[],
+            base_system_prompt="System",
+        )
+    )
+
+    request = model_client.requests[0]
+    assert observed == ["memory", "hook-early", "hook-late", "task-policy"]
+    assert request.turn_context.memory_fragments == ("Memory line",)
+    assert request.turn_context.hook_context == ("Hook early", "Hook late", "Task reminder")
+    assert request.private_context.extensions["memory_private"] is True
+    assert request.private_context.extensions["hook_order"] == "late"
+    assert request.private_context.extensions["private_only"] == "kept"
+
+
+def test_package_context_contributor_failures_degrade_and_keep_private_diagnostics_hidden() -> None:
+    class GoodPromptContributor:
+        async def collect(self, **_kwargs):
+            return ("Visible line",)
+
+    class PrivateDiagnosticContributor:
+        async def collect(self, **_kwargs):
+            return SidecarContributionResult(
+                private_updates={"private_flag": True},
+                diagnostics={"custom_diagnostics": {"channel": "private"}},
+            )
+
+    class FailingContributor:
+        async def collect(self, **_kwargs):
+            raise RuntimeError("boom")
+
+    class InvalidContributor:
+        async def collect(self, **_kwargs):
+            return {"bad": "shape"}
+
+    class SlowContributor:
+        async def collect(self, **_kwargs):
+            await asyncio.sleep(0.02)
+            return ("Too slow",)
+
+    model_client = BatchedModelClient(
+        [
+            [
+                ModelStreamEvent(
+                    ModelStreamEventType.MESSAGE_START,
+                    {"request_id": "req-package-context-failures"},
+                ),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "done"}),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+            ]
+        ]
+    )
+    services = RuntimeServices(context_assembler=ContextAssembler())
+    owner = PackageOwnership(package_name="runtime-test", package_role="capability", surface="context_contributor")
+    services.register_context_contributor(
+        ContextContributorBinding(
+            name="runtime-test.good",
+            stage=ContextContributorStage.HOOKS,
+            contributor=GoodPromptContributor(),
+            owner=owner,
+            order=0,
+        )
+    )
+    services.register_context_contributor(
+        ContextContributorBinding(
+            name="runtime-test.failing",
+            stage=ContextContributorStage.HOOKS,
+            contributor=FailingContributor(),
+            owner=owner,
+            order=10,
+        )
+    )
+    services.register_context_contributor(
+        ContextContributorBinding(
+            name="runtime-test.invalid",
+            stage=ContextContributorStage.HOOKS,
+            contributor=InvalidContributor(),
+            owner=owner,
+            order=20,
+        )
+    )
+    services.register_context_contributor(
+        ContextContributorBinding(
+            name="runtime-test.slow",
+            stage=ContextContributorStage.TASK_POLICY,
+            contributor=SlowContributor(),
+            owner=owner,
+            timeout_seconds=0.001,
+        )
+    )
+    services.register_context_contributor(
+        ContextContributorBinding(
+            name="runtime-test.private",
+            stage=ContextContributorStage.TASK_POLICY,
+            contributor=PrivateDiagnosticContributor(),
+            owner=owner,
+            order=50,
+        )
+    )
+    engine = TurnEngine(
+        model_client=model_client,
+        tool_registry=ToolRegistry(),
+        runtime_services=services,
+    )
+    agent = AgentDefinition(name="main-router", description="router", prompt="Answer")
+
+    asyncio.run(
+        engine.run_turn(
+            session_id="session",
+            turn_id="turn",
+            agent=agent,
+            cwd=".",
+            messages=[],
+            base_system_prompt="System",
+        )
+    )
+
+    request = model_client.requests[0]
+    assert "Visible line" in request.system_prompt
+    assert "custom_diagnostics" not in request.system_prompt
+    assert "private_flag" not in request.system_prompt
+    assert "Too slow" not in request.system_prompt
+    assert request.private_context.extensions["private_flag"] is True
+    assert request.private_context.diagnostics["custom_diagnostics"] == {"channel": "private"}
+    diagnostics = request.private_context.diagnostics["context_contributor_diagnostics"]
+    assert {entry["code"] for entry in diagnostics} == {
+        "context_contributor_failed",
+        "context_contributor_invalid_output",
+        "context_contributor_timeout",
+    }
+    assert {entry["contributor"] for entry in diagnostics} == {
+        "runtime-test.failing",
+        "runtime-test.invalid",
+        "runtime-test.slow",
+    }
+    assert {entry["owner"]["package_name"] for entry in diagnostics} == {"runtime-test"}
 
 
 def test_explicit_context_carriers_override_legacy_runtime_context_inputs() -> None:

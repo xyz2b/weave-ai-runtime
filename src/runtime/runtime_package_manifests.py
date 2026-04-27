@@ -7,6 +7,8 @@ from .first_party_loading import load_object
 from .package_profiles import FIRST_PARTY_PACKAGE_SPECS
 from .runtime_package_protocols import (
     CapabilityBinding,
+    ContextContributorBinding,
+    ContextContributorStage,
     HostFacetBinding,
     IngressReceiptHandlerBinding,
     InvocationProviderContribution,
@@ -97,22 +99,70 @@ def package_manifest(package_name: str) -> RuntimePackageManifest:
 
 
 def assemble_runtime_core_package(context: PackageContext) -> PackageContribution:
-    if context.stage != PackageAssemblyStage.BUILTINS:
+    if context.stage == PackageAssemblyStage.BUILTINS:
+        builtin_tool_factory = load_object("runtime.builtins.tools:builtin_tools")
+        builtin_agent_factory = load_object("runtime.builtins.agents:builtin_agents")
+        return PackageContribution(
+            builtin_tools=_annotated_definitions(
+                builtin_tool_factory(),
+                package_name=context.manifest.name,
+                package_role=context.manifest.role,
+            ),
+            builtin_agents=_annotated_definitions(
+                builtin_agent_factory(),
+                package_name=context.manifest.name,
+                package_role=context.manifest.role,
+            ),
+        )
+    if context.stage != PackageAssemblyStage.RUNTIME:
         return PackageContribution()
-    builtin_tool_factory = load_object("runtime.builtins.tools:builtin_tools")
-    builtin_agent_factory = load_object("runtime.builtins.agents:builtin_agents")
-    return PackageContribution(
-        builtin_tools=_annotated_definitions(
-            builtin_tool_factory(),
-            package_name=context.manifest.name,
-            package_role=context.manifest.role,
-        ),
-        builtin_agents=_annotated_definitions(
-            builtin_agent_factory(),
-            package_name=context.manifest.name,
-            package_role=context.manifest.role,
-        ),
-    )
+    from .runtime_services import NoopHookService
+
+    services = context.require_resource("runtime_services")
+    contributors: list[ContextContributorBinding] = []
+    if (
+        getattr(services, "hooks", None) is not None
+        and hasattr(services.hooks, "collect")
+        and not isinstance(services.hooks, NoopHookService)
+    ):
+        contributors.append(
+            ContextContributorBinding(
+                name="runtime-core.hooks.collect",
+                stage=ContextContributorStage.HOOKS,
+                contributor=services.hooks,
+                owner=context.ownership(
+                    "context_contributor",
+                    component="hooks",
+                    stage=ContextContributorStage.HOOKS.value,
+                ),
+                metadata={
+                    "adapter": "RuntimeServices.hooks.collect",
+                    "compatibility_surface": "RuntimeServices.hooks.collect",
+                },
+            )
+        )
+    if (
+        getattr(services, "task_discipline", None) is not None
+        and hasattr(services.task_discipline, "collect")
+        and not isinstance(services.task_discipline, NoopHookService)
+    ):
+        contributors.append(
+            ContextContributorBinding(
+                name="runtime-core.task_discipline.collect",
+                stage=ContextContributorStage.TASK_POLICY,
+                contributor=services.task_discipline,
+                owner=context.ownership(
+                    "context_contributor",
+                    component="task_discipline",
+                    stage=ContextContributorStage.TASK_POLICY.value,
+                ),
+                metadata={
+                    "adapter": "RuntimeServices.task_discipline.collect",
+                    "compatibility_surface": "RuntimeServices.task_discipline.collect",
+                },
+            )
+        )
+    return PackageContribution(context_contributors=tuple(contributors))
 
 
 def assemble_runtime_memory_package(context: PackageContext) -> PackageContribution:
@@ -127,6 +177,21 @@ def assemble_runtime_memory_package(context: PackageContext) -> PackageContribut
         memory_config=getattr(context.config, "memory_config", None),
     )
     return PackageContribution(
+        context_contributors=(
+            ContextContributorBinding(
+                name="runtime-memory.collect",
+                stage=ContextContributorStage.MEMORY,
+                contributor=components.service,
+                owner=context.ownership(
+                    "context_contributor",
+                    component="collect",
+                    stage=ContextContributorStage.MEMORY.value,
+                ),
+                metadata={
+                    "compatibility_surface": "RuntimeServices.memory.collect",
+                },
+            ),
+        ),
         capabilities=(
             CapabilityBinding(
                 key=RuntimeCapabilityKey.MEMORY_SERVICE.value,

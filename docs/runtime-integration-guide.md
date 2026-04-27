@@ -20,7 +20,7 @@ Runtime 核心流转本身由框架收口，用户通常不应该改 `TurnEngine
   - `host`
   - permission / elicitation
   - hook bus
-  - sidecar context contribution
+  - package-contributed context contributors
   - tool capability refresh
 
 本文基于截至 `2026-04-21` 的仓库实现、`openspec/changes/archive/` 的演化轨迹，以及 `docs/current-system-architecture.md`、`docs/runtime-control-plane-extension-guide.md`、`docs/layered-memory-runtime-v2.md` 和对应 OpenSpec 规格中已经收敛的契约整理。
@@ -240,8 +240,14 @@ Runtime 核心流转本身由框架收口，用户通常不应该改 `TurnEngine
 - canonical control-plane services
   - `RuntimeServices.job_service`
   - `RuntimeServices.task_list_service`
+- canonical request-time context path
+  - `PackageContribution.context_contributors`
+  - `RuntimeServices.context_contributor_execution_plan()`
 - retained compatibility wrappers
   - `TaskManager`
+  - `RuntimeServices.memory.collect()`
+  - `RuntimeServices.hooks.collect()`
+  - `RuntimeServices.task_discipline.collect()`
   - `RuntimeServices.team_*`
   - `RuntimeAssembly.team_*`
   - `BoundHostRuntime.list_team_workflows()`
@@ -826,7 +832,7 @@ sequenceDiagram
     alt admit_turn
         Session->>Session: record normalized messages
         Session->>Turn: run_turn_stream()
-        Turn->>Sidecars: prefetch sidecars
+        Turn->>Sidecars: prefetch staged context contributors
         Turn->>Turn: build active context
         Turn->>Turn: resolve invocation catalog
         Turn->>Model: stream / complete request
@@ -988,7 +994,26 @@ config.default_model_route = "research"
 runtime 会按固定顺序注册 provider：built-in skill baseline -> package contribution -> `RuntimeConfig.extra_invocation_providers`。package contribution tier 内部再按 contribution `order`、package dependency order、contribution name 稳定排序。
 当前官方 distributions 还没有内置的 package-contributed non-skill provider；这条路径已经是 canonical package-owned surface，后续 first-party / external package 都应优先走这里。
 
-### 8.4 Runtime-Owned Team Mode
+### 8.4 Request-Time Context Contributors
+
+如果你要在 request 构造前补充 collect-style context，canonical path 是
+`PackageContribution.context_contributors`。runtime 当前发布的 stage catalog 是：
+
+- `memory`
+- `hooks`
+- `task_policy`
+
+这条路径复用统一的 prompt/private carrier contract：
+
+- prompt-visible fragment 进入 prompt channel
+- runtime-private update 进入 `RuntimePrivateContext`
+- failing / timeout / invalid contributor 会被确定性省略，并在 private diagnostics 中留下 owner-aware 记录
+
+legacy `RuntimeServices.memory.collect()`、`RuntimeServices.hooks.collect()`、
+`RuntimeServices.task_discipline.collect()` 仍可用于兼容旧接入，但不应再作为新的 primary integration point。
+`CompactionManager` 继续走专用 `prepare_turn() / collect()` 路径，因为它拥有 main-loop continuation 语义，而不只是 append-only context collection。
+
+### 8.5 Runtime-Owned Team Mode
 
 如果你要做多 agent 协作，不要直接把它理解成“再起一个执行引擎”。  
 当前更合适的接入点仍然是 `teammate_orchestration`，但打开之后会一起装配三层 runtime-owned 协作面：
