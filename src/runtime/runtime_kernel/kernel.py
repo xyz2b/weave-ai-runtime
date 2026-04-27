@@ -141,6 +141,15 @@ class _ResolvedPackageInvocationProvider:
     package_index: int
     contribution_index: int
 
+    @property
+    def registration_key(self) -> tuple[int, int, int, str]:
+        return (
+            self.contribution.order,
+            self.package_index,
+            self.contribution_index,
+            self.contribution.name,
+        )
+
 
 class _SessionSkillViewResolver:
     def __init__(
@@ -1877,10 +1886,10 @@ def _resolve_package_invocation_providers(
     records: list[_ResolvedPackageInvocationProvider] = []
     for package_index, (manifest, contribution) in enumerate(package_service_contributions):
         ordered_contributions = sorted(
-            contribution.invocation_providers,
-            key=lambda binding: (binding.order, binding.name),
+            enumerate(contribution.invocation_providers),
+            key=lambda item: (item[1].order, item[1].name, item[0]),
         )
-        for contribution_index, binding in enumerate(ordered_contributions):
+        for contribution_index, (_, binding) in enumerate(ordered_contributions):
             provider = binding.build_provider(
                 InvocationProviderFactoryContext(
                     manifest=manifest,
@@ -1911,7 +1920,7 @@ def _resolve_package_invocation_providers(
                     contribution_index=contribution_index,
                 )
             )
-    return tuple(records)
+    return tuple(sorted(records, key=lambda record: record.registration_key))
 
 
 def _resolve_capability_from_contributions(

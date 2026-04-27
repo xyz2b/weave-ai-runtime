@@ -590,8 +590,10 @@ Invocation catalog 不只接 skill。
 runtime 会按固定顺序注册 provider：
 
 - built-in skill baseline
-- package contribution
+- package contribution（再按 contribution `order`、package dependency order、contribution name 稳定排序）
 - `RuntimeConfig.extra_invocation_providers`
+
+当前官方 distributions 还没有内置的 package-contributed non-skill provider；如果你要给 package 增加这类能力源，应该直接走这条 canonical path。
 
 调试时可看：
 

@@ -64,6 +64,8 @@ Provider registration order will be:
 - package-contributed providers second
 - config-supplied providers last
 
+Within the package-contributed tier, registrations are ordered by `InvocationProviderContribution.order`, then by package dependency order, and then by contribution name so cross-package overrides stay deterministic.
+
 If a later provider reuses the same `provider.name`, the invocation registry will replace the earlier provider and emit a provider-replacement diagnostic. After registration is complete, invocation-definition conflicts inside the surviving provider set remain owned by `InvocationRegistry`'s existing definition conflict rules.
 
 Why this decision:
@@ -116,7 +118,7 @@ Alternatives considered:
 
 1. Add invocation-provider contributions to the package protocol and runtime package manifest helpers.
 2. Register package-contributed providers during kernel build alongside the built-in skill provider baseline and config-supplied providers.
-3. Update docs and diagnostics to describe package-contributed providers as the canonical package-owned path into the unified invocation catalog.
+3. Update docs and diagnostics to describe package-contributed providers as the canonical package-owned path into the unified invocation catalog, while documenting that current official distributions do not yet ship a non-skill provider through that path.
 4. Add regression coverage for deterministic provider ordering, shadowing diagnostics, and unchanged path or policy-aware catalog resolution.
 
 Rollback is low-risk because `extra_invocation_providers` remains available and package-owned providers can temporarily be re-registered through config if needed.

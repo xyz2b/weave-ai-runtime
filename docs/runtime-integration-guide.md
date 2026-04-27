@@ -985,7 +985,8 @@ config.default_model_route = "research"
 如果你在做宿主侧覆盖、兼容接入，或者不想引入 package manifest，再接 `extra_invocation_providers`。
 
 这让更多能力源可以进入统一 invocation catalog，而不是让 host 再自己造一套能力列表。  
-runtime 会按固定顺序注册 provider：built-in skill baseline -> package contribution -> `RuntimeConfig.extra_invocation_providers`。
+runtime 会按固定顺序注册 provider：built-in skill baseline -> package contribution -> `RuntimeConfig.extra_invocation_providers`。package contribution tier 内部再按 contribution `order`、package dependency order、contribution name 稳定排序。
+当前官方 distributions 还没有内置的 package-contributed non-skill provider；这条路径已经是 canonical package-owned surface，后续 first-party / external package 都应优先走这里。
 
 ### 8.4 Runtime-Owned Team Mode
 

@@ -793,6 +793,111 @@ def test_package_and_config_invocation_providers_share_replacement_and_conflict_
     assert conflict.details["ignored"] == str(tmp_path / "z-package-shared.py")
 
 
+def test_package_invocation_provider_order_is_deterministic_across_packages(tmp_path: Path) -> None:
+    original = runtime_kernel_module.official_runtime_package_manifests
+
+    def assemble_lower_order_package(context):
+        if context.stage != PackageAssemblyStage.SERVICES:
+            return PackageContribution()
+        return PackageContribution(
+            invocation_providers=(
+                InvocationProviderContribution(
+                    name="shared-provider",
+                    provider=StaticInvocationProvider(
+                        "shared-provider",
+                        (
+                            _invocation_definition(
+                                "lower-order-command",
+                                target_name="package.lower",
+                                origin_path=str(tmp_path / "lower-order.py"),
+                            ),
+                        ),
+                    ),
+                    owner=context.ownership("invocation_provider", provider_name="shared-provider"),
+                    order=0,
+                ),
+            )
+        )
+
+    def assemble_higher_order_package(context):
+        if context.stage != PackageAssemblyStage.SERVICES:
+            return PackageContribution()
+        return PackageContribution(
+            invocation_providers=(
+                InvocationProviderContribution(
+                    name="shared-provider",
+                    provider=StaticInvocationProvider(
+                        "shared-provider",
+                        (
+                            _invocation_definition(
+                                "higher-order-command",
+                                target_name="package.higher",
+                                origin_path=str(tmp_path / "higher-order.py"),
+                            ),
+                        ),
+                    ),
+                    owner=context.ownership("invocation_provider", provider_name="shared-provider"),
+                    order=50,
+                ),
+            )
+        )
+
+    def build_kernel(package_order: tuple[str, str]):
+        manifests = {
+            "pkg-lower": RuntimePackageManifest(
+                name="pkg-lower",
+                role="capability",
+                dependencies=("runtime-core",),
+                assembly_entrypoint=assemble_lower_order_package,
+                metadata={"invocation_providers": ["shared-provider"]},
+            ),
+            "pkg-higher": RuntimePackageManifest(
+                name="pkg-higher",
+                role="capability",
+                dependencies=("runtime-core",),
+                assembly_entrypoint=assemble_higher_order_package,
+                metadata={"invocation_providers": ["shared-provider"]},
+            ),
+        }
+
+        def patched_manifests(selected_packages):
+            return (
+                *original(("runtime-core",)),
+                *(manifests[name] for name in package_order),
+            )
+
+        runtime_kernel_module.official_runtime_package_manifests = patched_manifests
+        try:
+            return build_runtime_kernel(
+                RuntimeConfig(
+                    working_directory=tmp_path,
+                    distribution=RuntimeDistribution.CORE,
+                )
+            )
+        finally:
+            runtime_kernel_module.official_runtime_package_manifests = original
+
+    forward = build_kernel(("pkg-lower", "pkg-higher"))
+    reversed_order = build_kernel(("pkg-higher", "pkg-lower"))
+
+    for kernel in (forward, reversed_order):
+        registrations = kernel.invocation_registry.registrations()
+        assert [(entry.name, entry.origin) for entry in registrations] == [
+            ("skills", "builtin"),
+            ("shared-provider", "package"),
+        ]
+        shared_provider = next(entry for entry in registrations if entry.name == "shared-provider")
+        assert shared_provider.order == 50
+        assert shared_provider.owner is not None
+        assert shared_provider.owner.package_name == "pkg-higher"
+        assert {definition.name for definition in kernel.invocation_registry.definitions()} == {
+            "higher-order-command"
+        }
+        replacement = next(diag for diag in kernel.diagnostics if diag.code == "invocation_provider_replaced")
+        assert replacement.details["replaced_owner"]["package_name"] == "pkg-lower"
+        assert replacement.details["replacement_owner"]["package_name"] == "pkg-higher"
+
+
 def test_session_start_waits_for_async_runtime_recovery_participants(tmp_path: Path) -> None:
     original = runtime_kernel_module.official_runtime_package_manifests
     observed: list[str] = []

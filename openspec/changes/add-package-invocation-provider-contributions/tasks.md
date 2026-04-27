@@ -12,7 +12,7 @@
 
 ## 3. First-Party Adoption
 
-- [x] 3.1 Identify first-party invocation sources that currently require config or kernel-specific registration and migrate them to package-contributed providers where appropriate.
+- [x] 3.1 Identify first-party invocation sources that currently require config or kernel-specific registration and migrate them to package-contributed providers where appropriate; document explicitly when no current official non-skill provider requires migration yet.
 - [x] 3.2 Ensure package-contributed providers can construct any required provider objects without introducing a new top-level package assembly stage.
 - [x] 3.3 Record provider ownership and registration origin in runtime diagnostics or metadata for debugging and migration visibility.
 
