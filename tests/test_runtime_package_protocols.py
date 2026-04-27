@@ -186,8 +186,10 @@ def test_manifest_backed_team_runtime_registers_capabilities_and_host_facet(tmp_
 
     assert runtime.services.require_capability(RuntimeCapabilityKey.TEAM_CONTROL_PLANE.value) is runtime.team_control_plane
     assert runtime.services.require_capability(RuntimeCapabilityKey.TEAM_WORKFLOWS.value) is runtime.team_workflows
+    assert runtime.services.metadata["compatibility_projections"]["teammates"] == RuntimeCapabilityKey.TEAMMATES.value
     assert runtime.services.metadata["compatibility_projections"]["team_control_plane"] == RuntimeCapabilityKey.TEAM_CONTROL_PLANE.value
     assert runtime.services.metadata["package_lookup"]["canonical_capabilities"] == {
+        "teammates": RuntimeCapabilityKey.TEAMMATES.value,
         "team_control_plane": RuntimeCapabilityKey.TEAM_CONTROL_PLANE.value,
         "team_message_bus": RuntimeCapabilityKey.TEAM_MESSAGE_BUS.value,
         "team_workflows": RuntimeCapabilityKey.TEAM_WORKFLOWS.value,
@@ -196,6 +198,8 @@ def test_manifest_backed_team_runtime_registers_capabilities_and_host_facet(tmp_
         "team_workflows": RuntimeHostFacetKey.TEAM_WORKFLOWS.value,
     }
     assert "TaskManager" in runtime.services.metadata["package_lookup"]["compatibility_wrappers"]
+    assert "RuntimeServices.teammates" in runtime.services.metadata["package_lookup"]["compatibility_wrappers"]
+    assert "RuntimeAssembly.teammates" in runtime.services.metadata["package_lookup"]["compatibility_wrappers"]
     assert runtime.metadata["package_lookup"] == runtime.services.metadata["package_lookup"]
     assert {
         participant.name
@@ -316,6 +320,110 @@ def test_bound_host_workflow_helpers_preserve_bounded_absent_package_behavior(tm
     assert listed == ()
     assert missing is not None
     assert missing.code == "not_available"
+
+
+def test_bound_host_workflow_helpers_delegate_through_host_facet_without_capability(tmp_path: Path) -> None:
+    class FacetWorkflowRecord:
+        def __init__(
+            self,
+            *,
+            workflow_id: str = "workflow-facet",
+            team_id: str = "team-facet",
+            leader_session_id: str | None = "leader-facet",
+            status: str = "pending",
+            response_payload: dict[str, str] | None = None,
+        ) -> None:
+            self.workflow_id = workflow_id
+            self.team_id = team_id
+            self.workflow_kind = "permission"
+            self.requester_member_id = "member-1"
+            self.requester_name = "member"
+            self.responder_member_id = "leader-1"
+            self.responder_name = "leader"
+            self.leader_session_id = leader_session_id
+            self.status = status
+            self.allowed_actions = ("approve", "reject")
+            self.request_payload = {"permission_name": "bash"}
+            self.response_payload = response_payload
+            self.message_ids = ()
+            self.created_at = None
+            self.updated_at = None
+            self.deadline_at = None
+            self.terminal_at = None
+            self.terminal = status != "pending"
+            self.metadata = {}
+
+    class FacetOnlyWorkflowHostFacet:
+        def __init__(self) -> None:
+            self.respond_calls: list[tuple[str, str, str | None, dict[str, str] | None]] = []
+
+        async def list_workflows(
+            self,
+            *,
+            team_id: str | None = None,
+            session_id: str | None = None,
+            pending_only: bool | None = True,
+        ) -> tuple[FacetWorkflowRecord, ...]:
+            _ = pending_only
+            return (
+                FacetWorkflowRecord(
+                    team_id=team_id or "team-facet",
+                    leader_session_id=session_id or "leader-facet",
+                ),
+            )
+
+        async def respond(
+            self,
+            workflow_id: str,
+            *,
+            action: str,
+            host_name: str | None = None,
+            payload: dict[str, str] | None = None,
+        ) -> FacetWorkflowRecord:
+            self.respond_calls.append((workflow_id, action, host_name, payload))
+            return FacetWorkflowRecord(
+                workflow_id=workflow_id,
+                status="rejected",
+                response_payload={"action": action, "host": host_name or "unknown"},
+            )
+
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            distribution=RuntimeDistribution.CORE,
+        )
+    )
+    facet = FacetOnlyWorkflowHostFacet()
+    runtime.services.register_host_facet(
+        HostFacetBinding(
+            name=RuntimeHostFacetKey.TEAM_WORKFLOWS.value,
+            facet=facet,
+            owner=PackageOwnership(
+                package_name="runtime-example",
+                package_role="capability",
+                surface="host_facet",
+            ),
+        )
+    )
+
+    async def scenario():
+        async with runtime.bind_host(NullHostAdapter(name="compat")) as bound:
+            listed = await bound.list_team_workflows(session_id="leader-facet", pending_only=True)
+            updated = await bound.respond_team_workflow(
+                "workflow-facet",
+                action="reject",
+                session_id="leader-facet",
+            )
+            return listed, updated
+
+    listed, updated = asyncio.run(scenario())
+
+    assert runtime.services.resolve_capability(RuntimeCapabilityKey.TEAM_WORKFLOWS.value) is None
+    assert listed[0]["workflow_id"] == "workflow-facet"
+    assert listed[0]["leader_session_id"] == "leader-facet"
+    assert updated["workflow_id"] == "workflow-facet"
+    assert updated["status"] == "rejected"
+    assert facet.respond_calls == [("workflow-facet", "reject", "compat", None)]
 
 
 def test_non_participating_runtime_reports_host_facet_not_available(tmp_path: Path) -> None:

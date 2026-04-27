@@ -1623,9 +1623,11 @@ def _build_runtime_services(kernel: RuntimeKernel) -> RuntimeServices:
     metadata["compatibility_surfaces"] = {
         "TaskManager": "compatibility-only",
         "runtime_context": "compatibility-only",
+        "RuntimeServices.teammates": "compatibility-only",
         "RuntimeServices.team_control_plane": "compatibility-only",
         "RuntimeServices.team_message_bus": "compatibility-only",
         "RuntimeServices.team_workflows": "compatibility-only",
+        "RuntimeAssembly.teammates": "compatibility-only",
         "RuntimeAssembly.team_control_plane": "compatibility-only",
         "RuntimeAssembly.team_message_bus": "compatibility-only",
         "RuntimeAssembly.team_workflows": "compatibility-only",
@@ -1815,6 +1817,7 @@ def _package_manifest_catalog(
 def _package_lookup_metadata() -> dict[str, Any]:
     return {
         "canonical_capabilities": {
+            "teammates": RuntimeCapabilityKey.TEAMMATES.value,
             "team_control_plane": RuntimeCapabilityKey.TEAM_CONTROL_PLANE.value,
             "team_message_bus": RuntimeCapabilityKey.TEAM_MESSAGE_BUS.value,
             "team_workflows": RuntimeCapabilityKey.TEAM_WORKFLOWS.value,
@@ -1830,7 +1833,9 @@ def _package_lookup_metadata() -> dict[str, Any]:
         "canonical_post_ingress_path": "completion_receipts",
         "compatibility_wrappers": [
             "TaskManager",
+            "RuntimeServices.teammates",
             "RuntimeServices.team_*",
+            "RuntimeAssembly.teammates",
             "RuntimeAssembly.team_*",
             "BoundHostRuntime.list_team_workflows",
             "BoundHostRuntime.respond_team_workflow",

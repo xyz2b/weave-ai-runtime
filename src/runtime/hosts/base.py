@@ -324,11 +324,16 @@ class BoundHostRuntime:
 
     async def list_team_workflows(self, *args: Any, **kwargs: Any) -> Any:
         self._bind_host()
-        resolved_team_id = self._resolve_team_workflow_scope(
+        resolved_team_id, resolved_session_id = self._resolve_team_workflow_scope(
             team_id=kwargs.pop("team_id", None),
             session_id=kwargs.pop("session_id", None),
         )
-        return await self.runtime.list_team_workflows(team_id=resolved_team_id, *args, **kwargs)
+        return await self.runtime.list_team_workflows(
+            team_id=resolved_team_id,
+            session_id=resolved_session_id,
+            *args,
+            **kwargs,
+        )
 
     async def respond_team_workflow(self, *args: Any, **kwargs: Any) -> Any:
         self._bind_host()
@@ -336,13 +341,17 @@ class BoundHostRuntime:
             raise TypeError("respond_team_workflow requires a workflow_id")
         workflow_id = args[0]
         remaining_args = args[1:]
-        resolved_team_id = self._resolve_team_workflow_scope(
+        resolved_team_id, resolved_session_id = self._resolve_team_workflow_scope(
             team_id=kwargs.pop("team_id", None),
             session_id=kwargs.pop("session_id", None),
         )
-        workflow = self._resolve_scoped_team_workflow(workflow_id, team_id=resolved_team_id)
+        workflow = await self._resolve_scoped_team_workflow(
+            workflow_id,
+            team_id=resolved_team_id,
+            session_id=resolved_session_id,
+        )
         return await self.runtime.respond_team_workflow(
-            workflow.workflow_id,
+            workflow["workflow_id"],
             *remaining_args,
             host_name=kwargs.pop("host_name", self.host.name),
             **kwargs,
@@ -463,7 +472,7 @@ class BoundHostRuntime:
         *,
         team_id: Any,
         session_id: Any,
-    ) -> str:
+    ) -> tuple[str | None, str | None]:
         from ..team_workflows import TeamWorkflowError
 
         resolved_team_id = str(team_id).strip() if team_id is not None and str(team_id).strip() else None
@@ -477,7 +486,9 @@ class BoundHostRuntime:
             )
         if resolved_session_id is not None:
             plane = self._resolve_runtime_capability(RuntimeCapabilityKey.TEAM_CONTROL_PLANE.value)
-            team = plane.active_team_for_leader_session(resolved_session_id) if plane is not None else None
+            if plane is None or not hasattr(plane, "active_team_for_leader_session"):
+                return resolved_team_id, resolved_session_id
+            team = plane.active_team_for_leader_session(resolved_session_id)
             if team is None:
                 raise TeamWorkflowError(
                     "invalid_workflow_scope",
@@ -493,29 +504,71 @@ class BoundHostRuntime:
                     active_team_id=team.team_id,
                 )
             resolved_team_id = team.team_id
-        assert resolved_team_id is not None
-        return resolved_team_id
+        return resolved_team_id, resolved_session_id
 
-    def _resolve_scoped_team_workflow(self, workflow_id: Any, *, team_id: str) -> Any:
+    async def _resolve_scoped_team_workflow(
+        self,
+        workflow_id: Any,
+        *,
+        team_id: str | None,
+        session_id: str | None,
+    ) -> dict[str, Any]:
         from ..team_workflows import TeamWorkflowError
 
         service = self._resolve_runtime_capability(RuntimeCapabilityKey.TEAM_WORKFLOWS.value)
-        if service is None or not hasattr(service, "get"):
+        facet = (
+            self.services.resolve_team_workflow_host_facet()
+            if self.services is not None and hasattr(self.services, "resolve_team_workflow_host_facet")
+            else None
+        )
+        if (
+            (service is None or not hasattr(service, "get"))
+            and (facet is None or facet.available is False or facet.facet is None)
+        ):
             raise TeamWorkflowError(
                 "not_available",
                 "Runtime team workflow service is not available in the active distribution",
                 team_id=team_id,
             )
         normalized_workflow_id = str(workflow_id).strip()
-        record = service.get(normalized_workflow_id)
-        if record is None or record.team_id != team_id:
+        records = await self.runtime.list_team_workflows(
+            team_id=team_id,
+            session_id=session_id,
+            pending_only=None,
+        )
+        for record in records:
+            if str(record.get("workflow_id") or "") == normalized_workflow_id:
+                return record
+        if service is not None and hasattr(service, "get"):
+            record = service.get(normalized_workflow_id)
+            if record is not None and (team_id is None or record.team_id == team_id):
+                return {"workflow_id": record.workflow_id, "team_id": record.team_id}
+        if facet is not None and facet.available and facet.facet is not None:
+            scope_details = {"workflow_id": normalized_workflow_id}
+            if team_id is not None:
+                scope_details["team_id"] = team_id
+            if session_id is not None:
+                scope_details["session_id"] = session_id
             raise TeamWorkflowError(
                 "not_found",
                 f"Workflow '{normalized_workflow_id}' was not found in the requested team scope",
-                workflow_id=normalized_workflow_id,
-                team_id=team_id,
+                **scope_details,
             )
-        return record
+        # Fall back to canonical capability lookup when the workflow package is present
+        # but the workflow is absent from the requested scope.
+        record = service.get(normalized_workflow_id) if service is not None else None
+        if record is None or (team_id is not None and record.team_id != team_id):
+            scope_details = {"workflow_id": normalized_workflow_id}
+            if team_id is not None:
+                scope_details["team_id"] = team_id
+            if session_id is not None:
+                scope_details["session_id"] = session_id
+            raise TeamWorkflowError(
+                "not_found",
+                f"Workflow '{normalized_workflow_id}' was not found in the requested team scope",
+                **scope_details,
+            )
+        return {"workflow_id": record.workflow_id, "team_id": record.team_id}
 
     def _register_managed_session(self, session: Any, *, owner: str) -> None:
         session_id = getattr(getattr(session, "state", None), "session_id", None)
