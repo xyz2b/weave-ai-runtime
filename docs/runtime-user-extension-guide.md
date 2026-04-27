@@ -176,6 +176,31 @@ Tool '<name>' has no execution handler
 - “能力通过什么 contract 接上 runtime”
 - 而不是“代码物理上放在什么目录里”
 
+同时要把 stable core protocol catalog 和 package capability 分开看。当前 runtime 会把 stable core protocol 单独发布到：
+
+- `runtime.services.metadata["core_protocol_catalog"]`
+- `runtime.metadata["core_protocol_catalog"]`
+
+对扩展方最重要的是先判断自己碰到的是哪一种 seam：
+
+- `config-owned`
+  - `TranscriptStore`
+  - 首选 bind path: `RuntimeConfig.transcript_store`
+- `service-owned`
+  - `JobService`
+  - `TaskListService`
+  - `PermissionService`
+  - `ElicitationService`
+- `registry-owned`
+  - context contributors
+  - invocation providers
+  - 首选 bind path: `PackageContribution.context_contributors` / `PackageContribution.invocation_providers`
+- `host-bound`
+  - `HostRuntime`
+  - 首选 bind path: `RuntimeAssembly.bind_host()`
+
+如果一个 surface 只出现在 `package_lookup` 或 `compatibility_surfaces` 里，而不在 `core_protocol_catalog` 里，就不要把它误当成 stable core protocol。典型例子包括 `runtime.team.*` capability、`RuntimeServices.team_*` projection、`TaskManager` facade，以及 `HostRuntime.emit_team_event()` 这类 bounded compatibility sink。
+
 对扩展方的直接含义是：
 
 - 如果只是加一个可执行能力，继续优先写 tool / agent / skill

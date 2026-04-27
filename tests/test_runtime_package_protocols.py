@@ -28,6 +28,7 @@ from runtime.runtime_kernel import (
     assemble_runtime,
     build_runtime_kernel,
 )
+from runtime.runtime_core_protocol_catalog import CORE_PROTOCOL_CATALOG_SCHEMA_VERSION
 from runtime.runtime_package_manifests import official_runtime_package_manifests
 from runtime.runtime_package_protocols import (
     CapabilityBinding,
@@ -275,6 +276,66 @@ def test_manifest_backed_team_runtime_registers_capabilities_and_host_facet(tmp_
     assert listed == ()
 
 
+def test_runtime_core_protocol_catalog_is_published_separately_from_package_lookup(tmp_path: Path) -> None:
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            distribution=RuntimeDistribution.DEFAULT,
+        )
+    )
+
+    catalog = runtime.services.metadata["core_protocol_catalog"]
+    protocols = catalog["protocols"]
+
+    assert catalog["schema_version"] == CORE_PROTOCOL_CATALOG_SCHEMA_VERSION
+    assert catalog["published_metadata_paths"] == [
+        "runtime.services.metadata['core_protocol_catalog']",
+        "runtime.metadata['core_protocol_catalog']",
+    ]
+    assert catalog["adjacent_metadata"]["package_lookup"] == (
+        "source of truth for package-specific canonical keys and wrapper status"
+    )
+    assert runtime.metadata["core_protocol_catalog"] == catalog
+    assert set(protocols) == {
+        "runtime.transcript.store",
+        "runtime.job.service",
+        "runtime.task-list.service",
+        "runtime.permission.service",
+        "runtime.elicitation.service",
+        "runtime.context-contributors.registry",
+        "runtime.invocation-provider.registry",
+        "runtime.host.binding",
+    }
+
+    transcript = protocols["runtime.transcript.store"]
+    assert transcript["canonical_name"] == "TranscriptStore"
+    assert transcript["binding_boundary"] == "config-owned"
+    assert transcript["canonical_binding_surface"] == "RuntimeConfig.transcript_store"
+    assert transcript["discovery_surface"] == "RuntimeServices.transcript_store / RuntimeAssembly.transcript_store"
+
+    context_contributors = protocols["runtime.context-contributors.registry"]
+    assert context_contributors["compatibility_status"] == "stable-with-compatibility"
+    assert context_contributors["retained_surfaces"] == [
+        {"surface": "RuntimeServices.memory.collect", "status": "compatibility-only"},
+        {"surface": "RuntimeServices.hooks.collect", "status": "compatibility-only"},
+        {"surface": "RuntimeServices.task_discipline.collect", "status": "compatibility-only"},
+    ]
+
+    invocation_registry = protocols["runtime.invocation-provider.registry"]
+    assert invocation_registry["canonical_binding_surface"] == "PackageContribution.invocation_providers"
+    assert invocation_registry["retained_surfaces"] == [
+        {
+            "surface": "RuntimeConfig.extra_invocation_providers",
+            "status": "bounded-compatibility",
+        }
+    ]
+
+    assert RuntimeCapabilityKey.TEAM_CONTROL_PLANE.value not in protocols
+    assert runtime.services.metadata["package_lookup"]["canonical_capabilities"]["team_control_plane"] == (
+        RuntimeCapabilityKey.TEAM_CONTROL_PLANE.value
+    )
+
+
 def test_runtime_context_contributor_registry_exposes_canonical_stage_catalog(tmp_path: Path) -> None:
     runtime = assemble_runtime(
         RuntimeConfig(
@@ -312,6 +373,40 @@ def test_runtime_context_contributor_registry_exposes_canonical_stage_catalog(tm
         "dedicated-control-plane"
     )
     assert runtime.metadata["context_contributors"] == runtime.services.metadata["context_contributors"]
+
+
+def test_runtime_core_protocol_catalog_keeps_package_capabilities_and_wrappers_out_of_core_entries(
+    tmp_path: Path,
+) -> None:
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            distribution=RuntimeDistribution.FULL,
+        )
+    )
+
+    protocols = runtime.services.metadata["core_protocol_catalog"]["protocols"]
+    retained_surfaces = {
+        surface["surface"]
+        for entry in protocols.values()
+        for surface in entry.get("retained_surfaces", [])
+    }
+
+    assert RuntimeCapabilityKey.TEAM_CONTROL_PLANE.value not in protocols
+    assert RuntimeCapabilityKey.TEAM_MESSAGE_BUS.value not in protocols
+    assert RuntimeCapabilityKey.TEAM_WORKFLOWS.value not in protocols
+    assert RuntimeHostFacetKey.TEAM_WORKFLOWS.value not in protocols
+    assert "TaskManager" not in {entry["canonical_name"] for entry in protocols.values()}
+    assert "RuntimeServices.teammates" not in retained_surfaces
+    assert "RuntimeAssembly.teammates" not in retained_surfaces
+    assert "BoundHostRuntime.list_team_workflows" not in retained_surfaces
+    assert runtime.services.metadata["compatibility_surfaces"]["RuntimeServices.teammates"] == (
+        "compatibility-only"
+    )
+    assert "RuntimeServices.teammates" in runtime.services.metadata["package_lookup"]["compatibility_wrappers"]
+    assert "BoundHostRuntime.list_team_workflows" in runtime.services.metadata["package_lookup"][
+        "compatibility_wrappers"
+    ]
 
 
 def test_package_context_contributor_order_is_deterministic_across_packages(tmp_path: Path) -> None:

@@ -279,6 +279,31 @@ helper 语义也已经固定：
 
 这些 key 才是 runtime-owned path 的 authoritative discovery contract；残留的顶层 team slot、workflow helper method 只是对同一能力的 compatibility wrapper。
 
+另外，runtime 现在会把 stable core protocol catalog 单独发布到：
+
+- `runtime.services.metadata["core_protocol_catalog"]`
+- `runtime.metadata["core_protocol_catalog"]`
+
+这个 catalog 只描述 stable core protocol，不混入 package-owned capability、host facet 或 compatibility wrapper。当前 canonical binding story 固定为：
+
+- `TranscriptStore`
+  - `config-owned`
+  - canonical bind: `RuntimeConfig.transcript_store`
+  - discovery: `RuntimeServices.transcript_store` / `RuntimeAssembly.transcript_store`
+- `JobService`、`TaskListService`、`PermissionService`、`ElicitationService`
+  - `service-owned`
+  - discovery: `RuntimeServices.job_service`、`RuntimeServices.task_list_service`、`RuntimeServices.permissions`、`RuntimeServices.elicitation`
+- request-time context contributors、invocation providers
+  - `registry-owned`
+  - canonical bind: `PackageContribution.context_contributors` / `PackageContribution.invocation_providers`
+  - discovery: `RuntimeServices.context_contributor_execution_plan()` / `RuntimeAssembly.resolve_invocations()`
+- `HostRuntime`
+  - `host-bound`
+  - canonical bind: `RuntimeAssembly.bind_host()`
+  - discovery: `RuntimeServices.host`
+
+`package_lookup` 继续是 package-specific canonical key / wrapper status 的 source of truth；`compatibility_surfaces` 继续只记录 retained helper surface，例如 `TaskManager`、`RuntimeServices.memory.collect()` 与 `HostRuntime.emit_team_event()`。
+
 ### 4.2 会话层
 
 会话层围绕 `SessionController` 展开。

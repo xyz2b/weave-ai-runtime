@@ -222,12 +222,31 @@ Runtime 核心流转本身由框架收口，用户通常不应该改 `TurnEngine
 
 当前 runtime metadata 也会显式标这些边界：
 
+- `runtime.services.metadata["core_protocol_catalog"]`：stable core protocol catalog，包含 schema version、owner、binding boundary、canonical binding surface、discovery surface 与 compatibility status
 - `runtime.services.metadata["package_lookup"]`：canonical capability / host-facet / lifecycle / receipt path
 - `runtime.services.metadata["invocation_provider_paths"]`：built-in baseline、package canonical path、config compatibility path
 - `runtime.services.metadata["invocation_provider_registrations"]`：当前 runtime 里实际生效的 provider 注册顺序、owner、origin 与 registration metadata
+- `runtime.metadata["core_protocol_catalog"]`：`RuntimeAssembly` 侧同步暴露的 stable core protocol catalog
 - `runtime.metadata["package_lookup"]`：`RuntimeAssembly` 侧同步暴露的 owner-layer lookup guidance
 - `runtime.services.metadata["compatibility_surfaces"]`：仍保留但非 canonical 的 wrapper / projection
 - `runtime.services.metadata["compatibility_projections"]`：当前 projection 仍映射到哪些 capability key
+
+其中 stable core protocol catalog 当前固定覆盖下面几类 runtime-owned seam：
+
+- `TranscriptStore`
+  - `config-owned`
+  - canonical bind: `RuntimeConfig.transcript_store`
+  - discovery: `RuntimeServices.transcript_store` / `RuntimeAssembly.transcript_store`
+- `JobService`、`TaskListService`、`PermissionService`、`ElicitationService`
+  - `service-owned`
+  - discovery: `RuntimeServices.job_service`、`RuntimeServices.task_list_service`、`RuntimeServices.permissions`、`RuntimeServices.elicitation`
+- context contributors、invocation providers
+  - `registry-owned`
+  - canonical bind: `PackageContribution.context_contributors` / `PackageContribution.invocation_providers`
+- `HostRuntime`
+  - `host-bound`
+  - canonical bind: `RuntimeAssembly.bind_host()`
+  - `HostRuntime.emit_team_event()` 继续只算 bounded compatibility sink，不算新的 canonical host extension path
 
 其中 package-owned team / workflow lookup 当前应按下面的 machine-readable contract 理解：
 

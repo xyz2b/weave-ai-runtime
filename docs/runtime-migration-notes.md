@@ -185,9 +185,23 @@
 
 这些信息现在也会直接写进：
 
+- `runtime.services.metadata["core_protocol_catalog"]`
+- `runtime.metadata["core_protocol_catalog"]`
 - `runtime.services.metadata["package_lookup"]`
 - `runtime.metadata["package_lookup"]`
 - `runtime.services.metadata["compatibility_surfaces"]`
+
+迁移时可以直接按这个分层理解：
+
+- `core_protocol_catalog`
+  - stable core protocol source of truth
+  - 只覆盖 `TranscriptStore`、`JobService`、`TaskListService`、`PermissionService`、`ElicitationService`、context contributors、invocation providers、`HostRuntime`
+- `package_lookup`
+  - package-specific canonical capability key、host facet key、wrapper exit criteria 的 source of truth
+- `compatibility_surfaces`
+  - retained compatibility helper / projection 的 source of truth
+
+这意味着 `runtime.team.control_plane`、`runtime.team.workflows`、`TaskManager`、`RuntimeServices.team_*`、`BoundHostRuntime.list_team_workflows()` 仍然重要，但它们不属于 stable core protocol catalog 本身；它们要么继续在 `package_lookup` 里表达 canonical package path，要么继续在 `compatibility_surfaces` 里表达 wrapper status。
 
 ## 4.6 Explicit Non-Goals
 

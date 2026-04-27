@@ -51,6 +51,7 @@ from ..invocation_catalog import SkillInvocationProvider
 from ..jobs import DefaultJobService, InMemoryJobStore, JobScopeFilter, job_record_to_payload
 from ..package_profiles import FIRST_PARTY_PACKAGE_SPECS
 from ..runtime_package_manifests import official_runtime_package_manifests
+from ..runtime_core_protocol_catalog import build_stable_core_protocol_catalog
 from ..runtime_package_protocols import (
     InvocationProviderContribution,
     InvocationProviderFactoryContext,
@@ -1592,6 +1593,7 @@ def _assemble_runtime_stack(kernel: RuntimeKernel) -> RuntimeAssembly:
             "distribution": kernel.distribution,
             "first_party_packages": list(kernel.first_party_packages),
             "package_runtime_contributions": [manifest.name for manifest, _ in runtime_package_contributions],
+            "core_protocol_catalog": dict(services.metadata.get("core_protocol_catalog", {})),
             "package_lookup": dict(services.metadata.get("package_lookup", {})),
             "context_contributors": dict(services.metadata.get("context_contributors", {})),
             "compatibility_surfaces": dict(services.metadata.get("compatibility_surfaces", {})),
@@ -1676,6 +1678,7 @@ def _build_runtime_services(kernel: RuntimeKernel) -> RuntimeServices:
         "BoundHostRuntime.respond_team_workflow": "compatibility-wrapper",
         "HostRuntime.emit_team_event": "bounded-compatibility",
     }
+    metadata["core_protocol_catalog"] = build_stable_core_protocol_catalog()
     metadata["package_lookup"] = _package_lookup_metadata()
     metadata["invocation_provider_paths"] = _invocation_provider_paths_metadata()
     metadata["invocation_provider_registrations"] = [

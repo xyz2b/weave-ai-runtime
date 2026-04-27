@@ -44,6 +44,7 @@ from runtime.runtime_kernel import (
     assemble_runtime,
     build_runtime_kernel,
 )
+from runtime.runtime_core_protocol_catalog import CORE_PROTOCOL_CATALOG_SCHEMA_VERSION
 from runtime.runtime_services import NoopCompactionService, NoopMemoryService
 from runtime.session_runtime import FileTranscriptStore, InMemoryTranscriptStore
 from runtime.task_lists import FileTaskListStore, InMemoryTaskListStore
@@ -572,6 +573,37 @@ def test_distribution_profiles_gate_runtime_mechanisms_and_store_defaults(tmp_pa
     assert full_runtime.services.metadata["reference_hosts"] == ["cli", "sdk"]
 
 
+def test_supported_distributions_publish_same_stable_core_protocol_catalog(tmp_path: Path) -> None:
+    (tmp_path / "core-catalog").mkdir()
+    (tmp_path / "default-catalog").mkdir()
+    (tmp_path / "full-catalog").mkdir()
+
+    core_runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path / "core-catalog",
+            distribution=RuntimeDistribution.CORE,
+        )
+    )
+    default_runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path / "default-catalog",
+            distribution=RuntimeDistribution.DEFAULT,
+        )
+    )
+    full_runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path / "full-catalog",
+            distribution=RuntimeDistribution.FULL,
+        )
+    )
+
+    core_catalog = core_runtime.metadata["core_protocol_catalog"]
+
+    assert core_catalog["schema_version"] == CORE_PROTOCOL_CATALOG_SCHEMA_VERSION
+    assert default_runtime.metadata["core_protocol_catalog"] == core_catalog
+    assert full_runtime.metadata["core_protocol_catalog"] == core_catalog
+
+
 def test_runtime_full_distribution_keeps_devtools_replacement_rules(tmp_path: Path) -> None:
     read_replacement = replace(
         next(tool for tool in devtools_builtin_tools() if tool.name == "read"),
@@ -778,6 +810,11 @@ def test_runtime_core_distribution_supports_stable_hooks_and_compatibility_diagn
         "TaskManager": "compatibility-only",
         "runtime_context": "compatibility-only",
         "RuntimeConfig.extra_invocation_providers": "bounded-compatibility",
+        "RuntimeServices.memory.collect": "compatibility-only",
+        "RuntimeServices.hooks.collect": "compatibility-only",
+        "RuntimeServices.task_discipline.collect": "compatibility-only",
+        "RuntimeServices.compaction.prepare_turn": "dedicated-control-plane",
+        "RuntimeServices.compaction.collect": "dedicated-control-plane",
         "RuntimeServices.teammates": "compatibility-only",
         "RuntimeServices.team_control_plane": "compatibility-only",
         "RuntimeServices.team_message_bus": "compatibility-only",
