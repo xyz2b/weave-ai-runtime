@@ -215,7 +215,9 @@ Runtime 核心流转本身由框架收口，用户通常不应该改 `TurnEngine
 
 - 不是“某段代码从 `runtime-core/` 挪到别的目录”
 - 而是“这段能力能否通过 manifest + contribution + lookup contract 独立接入”
-- `emit_team_event()`（可选 structured sink）
+- capability lookup / host-facet lookup / lifecycle participant 才是 package-owned runtime behavior 的 canonical path
+- 当前残留的 team 顶层 helper、`RuntimeServices.team_*`、workflow helper method 都只应视为 compatibility wrapper
+- `emit_team_event()` 目前只应视为 bounded compatibility sink，而不是推荐继续扩展的新 package event contract
 
 这意味着：
 
@@ -1069,6 +1071,7 @@ leader 接收 teammate collaboration message 时，默认策略是：
 
 `runtime_context` 当前更多是 compat bridge，而不是建议新增依赖的正式扩展面。
 如果必须兼容 legacy caller 或 sidecar，也应把它当作单向 bridge 或只读 snapshot，而不是新的 authoritative private state carrier。
+从边界收敛角度看，`runtime_context` 和 `TaskManager` 也都属于 owner-layer leak 的 compat 面：新的 package-owned integration 不应再把 authoritative coordination 或 private state 写回这两条路径。
 
 ## 10. 一张接入路线图
 

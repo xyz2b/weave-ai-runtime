@@ -270,6 +270,14 @@ helper 语义也已经固定：
   - owned built-ins 通过 manifest-backed contribution 注册
 
 为保持迁移平滑，`RuntimeServices` 上少量 package-specific 字段仍然存在，但它们现在应视为 compatibility projection，而不是 primary discovery contract。
+对 team 相关 surface，这条约束要理解得更具体一些：
+
+- `RuntimeCapabilityKey.TEAM_CONTROL_PLANE`
+- `RuntimeCapabilityKey.TEAM_MESSAGE_BUS`
+- `RuntimeCapabilityKey.TEAM_WORKFLOWS`
+- `RuntimeHostFacetKey.TEAM_WORKFLOWS`
+
+这些 key 才是 runtime-owned path 的 authoritative discovery contract；残留的顶层 team slot、workflow helper method 只是对同一能力的 compatibility wrapper。
 
 ### 4.2 会话层
 
@@ -287,6 +295,13 @@ helper 语义也已经固定：
 - 触发 session memory 刷新与 consolidation 调度
 
 这一层已经不直接理解模型调用细节，而是把 admitted turn 委托给 `TurnEngine`。
+同样，package-owned session replay 也不应再通过 controller 私有 special case 接入，而应挂到 `SESSION_OPEN` lifecycle participant：
+
+- `SessionController` 先恢复 transcript / persisted metadata / resumable private state
+- 再 dispatch `SESSION_OPEN`
+- 最后由 controller 自己完成 ready transition 与 waiting-session drain / replay follow-up
+
+也就是说，package 可以参与 session open phase，但不拥有 session open 的排序和状态迁移。
 
 ### 4.3 单轮执行层
 
@@ -817,6 +832,7 @@ workflow 协议层现在也已经从 transport 层显式拆开：
 - 新代码优先写 `PromptContextEnvelope` / `RuntimePrivateContext`
 - 共享 `runtime_context` 只应作为 legacy 输入桥接或只读 compat snapshot
 - 任何新增 shared `runtime_context` authoritative write 都应视为 rollout blocker
+- `TaskManager` 和共享 `runtime_context` 都应被视为 owner-layer boundary leak 的 compat path，而不只是普通旧 API
 
 ## 15. 历史演化主线
 

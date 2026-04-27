@@ -154,6 +154,7 @@
 - package-owned startup / recovery / session behavior -> lifecycle participant
 
 当前少量 `RuntimeServices` package-specific 字段仍会保留一段时间，但它们现在只应视为 compatibility projection。
+这也包括残留的 team 顶层 helper / workflow helper：canonical discovery path 已经是 capability lookup 与 host facet discovery，新的 runtime-owned primary path 不应再把这些 wrapper 当 source of truth。
 
 ## 4.6 Explicit Non-Goals
 
@@ -178,4 +179,5 @@
 - 如果你要构建 shared plan workflow，优先启用 `runtime-planning`，再围绕 `task_*` / `job_*` 与自定义 agent profile 做收窄或扩展
 - 如果你暴露 hooks 给第三方，优先只承诺 stable phases + `callback`
 - 如果你在 host、store、provider 侧做定制，优先通过 package-level seams 注入，而不是 patch `runtime-core`
+- 如果你还在使用 team helper，优先改到 `runtime.team.control_plane` / `runtime.team.workflows` capability 或 `runtime.team.workflows` host facet，再把旧 helper 当 compatibility wrapper 看待
 - 如果你需要定位当前 runtime 的边界状态，先看 `runtime.kernel.diagnostics` 和 `runtime.services.metadata`
