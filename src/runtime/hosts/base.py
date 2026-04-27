@@ -9,6 +9,7 @@ from ..definitions import PermissionBehavior
 from ..elicitation import ElicitationRequest, ElicitationResponse
 from ..hooks import HookDispatchTraceQuery, HookInventoryQuery, HookRegistrationRequest, HookSourceKind
 from ..permissions import PermissionOutcome, PermissionRequest, coerce_permission_outcome
+from ..runtime_package_protocols import RuntimeCapabilityKey
 if TYPE_CHECKING:
     from ..contracts import RuntimeMessage
     from ..turn_engine.engine import TurnStreamEvent
@@ -33,6 +34,7 @@ class HostRuntime(Protocol):
 
     async def emit_turn_event(self, session_id: str, event: "TurnStreamEvent") -> None: ...
 
+    # Team event egress remains a bounded compatibility sink for package-owned host events.
     async def emit_team_event(self, event: Any) -> None: ...
 
 
@@ -449,6 +451,13 @@ class BoundHostRuntime:
         if self.services is not None and hasattr(self.services, "bind_host"):
             self.services.bind_host(self.host)
 
+    def _resolve_runtime_capability(self, key: str) -> Any:
+        if self.services is not None and hasattr(self.services, "resolve_capability"):
+            return self.services.resolve_capability(key)
+        if self.runtime is not None and hasattr(self.runtime, "resolve_capability"):
+            return self.runtime.resolve_capability(key)
+        return None
+
     def _resolve_team_workflow_scope(
         self,
         *,
@@ -467,11 +476,7 @@ class BoundHostRuntime:
                 "Host workflow operations require a team_id or session_id scope",
             )
         if resolved_session_id is not None:
-            plane = (
-                self.services.resolve_team_control_plane()
-                if self.services is not None and hasattr(self.services, "resolve_team_control_plane")
-                else getattr(self.runtime, "team_control_plane", None)
-            )
+            plane = self._resolve_runtime_capability(RuntimeCapabilityKey.TEAM_CONTROL_PLANE.value)
             team = plane.active_team_for_leader_session(resolved_session_id) if plane is not None else None
             if team is None:
                 raise TeamWorkflowError(
@@ -494,11 +499,7 @@ class BoundHostRuntime:
     def _resolve_scoped_team_workflow(self, workflow_id: Any, *, team_id: str) -> Any:
         from ..team_workflows import TeamWorkflowError
 
-        service = (
-            self.services.resolve_team_workflows()
-            if self.services is not None and hasattr(self.services, "resolve_team_workflows")
-            else getattr(self.services, "team_workflows", None)
-        )
+        service = self._resolve_runtime_capability(RuntimeCapabilityKey.TEAM_WORKFLOWS.value)
         if service is None or not hasattr(service, "get"):
             raise RuntimeError("Runtime team workflow service is not configured")
         normalized_workflow_id = str(workflow_id).strip()

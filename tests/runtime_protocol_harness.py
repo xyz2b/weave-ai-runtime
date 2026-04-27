@@ -24,6 +24,7 @@ from runtime.session_runtime import SessionController
 from runtime.execution_policy import serialize_runtime_metadata
 from runtime.session_runtime.models import (
     IngressAdmission,
+    IngressCompletionReceipt,
     IngressReplayOutput,
     SessionIngressResult,
 )
@@ -189,12 +190,27 @@ def ingress_replay_output_fixture(output: IngressReplayOutput) -> dict[str, Any]
     return fixture
 
 
+def ingress_completion_receipt_fixture(receipt: IngressCompletionReceipt) -> dict[str, Any]:
+    fixture: dict[str, Any] = {
+        "receipt_id": receipt.receipt_id,
+        "kind": receipt.kind,
+    }
+    if receipt.payload is not None:
+        fixture["payload"] = _normalize_fixture_value(receipt.payload)
+    return fixture
+
+
 def ingress_result_fixture(result: SessionIngressResult) -> dict[str, Any]:
     fixture: dict[str, Any] = {
         "admission": ingress_admission_fixture(result.admission),
         "normalized_messages": messages_fixture(result.normalized_messages),
         "replay_outputs": [ingress_replay_output_fixture(output) for output in result.replay_outputs],
     }
+    if result.completion_receipts:
+        fixture["completion_receipts"] = [
+            ingress_completion_receipt_fixture(receipt)
+            for receipt in result.completion_receipts
+        ]
     if result.prompt_updates:
         fixture["prompt_updates"] = _normalize_fixture_value(result.prompt_updates)
     if result.private_updates:

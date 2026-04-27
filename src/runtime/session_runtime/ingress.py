@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Mapping
 from uuid import uuid4
@@ -8,6 +9,7 @@ from ..contracts import MessageAttachment, MessageRole, RuntimeMessage
 from ..runtime_services import RuntimeServices
 from .models import (
     IngressAdmissionKind,
+    IngressCompletionReceipt,
     IngressReplayOutput,
     SessionIngressResult,
     SessionIngressSnapshot,
@@ -23,12 +25,12 @@ _CONTROL_METADATA_KEYS = frozenset(
         "prompt_updates",
         "private_updates",
         "replay_outputs",
+        "completion_receipts",
         "replay_text",
         "replay_role",
         "replay_visibility",
         "replay_source",
         "replay_metadata",
-        "team_delivery_ack",
         "ingress_priority",
         "role",
         "source",
@@ -66,6 +68,7 @@ class SessionIngressProcessor:
             event_type=event_type,
             admission_kind=admission_kind,
         )
+        completion_receipts = self._build_completion_receipts(metadata)
         prompt_updates = _merge_context_updates(
             runtime_services.metadata.get("ingress_prompt_defaults"),
             session_snapshot.metadata.get("ingress_prompt_defaults"),
@@ -83,6 +86,7 @@ class SessionIngressProcessor:
             return SessionIngressResult.admit_turn(
                 normalized_messages=normalized_messages,
                 replay_outputs=replay_outputs,
+                completion_receipts=completion_receipts,
                 prompt_updates=prompt_updates,
                 private_updates=private_updates,
                 reason=reason,
@@ -91,6 +95,7 @@ class SessionIngressProcessor:
             return SessionIngressResult.local_only(
                 normalized_messages=normalized_messages,
                 replay_outputs=replay_outputs,
+                completion_receipts=completion_receipts,
                 private_updates=private_updates,
                 reason=reason,
             )
@@ -98,17 +103,20 @@ class SessionIngressProcessor:
             return SessionIngressResult.transcript_only(
                 normalized_messages=normalized_messages,
                 replay_outputs=replay_outputs,
+                completion_receipts=completion_receipts,
                 private_updates=private_updates,
                 reason=reason,
             )
         if admission_kind == IngressAdmissionKind.REPLAY_ONLY:
             return SessionIngressResult.replay_only(
                 replay_outputs=replay_outputs,
+                completion_receipts=completion_receipts,
                 private_updates=private_updates,
                 reason=reason,
             )
         return SessionIngressResult.reject(
             replay_outputs=replay_outputs,
+            completion_receipts=completion_receipts,
             private_updates=private_updates,
             reason=reason,
         )
@@ -191,6 +199,30 @@ class SessionIngressProcessor:
             )
         return ()
 
+    def _build_completion_receipts(
+        self,
+        metadata: Mapping[str, Any],
+    ) -> tuple[IngressCompletionReceipt, ...]:
+        raw_receipts = metadata.get("completion_receipts")
+        if not isinstance(raw_receipts, list):
+            return ()
+        receipts: list[IngressCompletionReceipt] = []
+        for raw_receipt in raw_receipts:
+            if not isinstance(raw_receipt, Mapping):
+                continue
+            receipt_id = str(raw_receipt.get("receipt_id") or "").strip()
+            kind = str(raw_receipt.get("kind") or "").strip()
+            if not receipt_id or not kind:
+                continue
+            receipts.append(
+                IngressCompletionReceipt(
+                    receipt_id=receipt_id,
+                    kind=kind,
+                    payload=_copy_receipt_payload(raw_receipt.get("payload")),
+                )
+            )
+        return tuple(receipts)
+
 
 def _resolve_admission_kind(
     event_type: str,
@@ -265,6 +297,16 @@ def _copy_mapping(value: object) -> dict[str, Any]:
     if not isinstance(value, Mapping):
         return {}
     return {str(key): item for key, item in value.items()}
+
+
+def _copy_receipt_payload(value: object) -> Any:
+    if isinstance(value, Mapping):
+        return {str(key): deepcopy(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [deepcopy(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(deepcopy(item) for item in value)
+    return deepcopy(value)
 
 
 def _merge_context_updates(*values: object) -> dict[str, Any]:

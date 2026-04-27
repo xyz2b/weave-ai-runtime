@@ -242,7 +242,7 @@ class RuntimeAssembly:
     agent_runtime: AgentRuntime
     skill_executor: SkillExecutor
     transcript_store: TranscriptStore
-    task_manager: TaskManager
+    _task_manager: TaskManager | None
     job_service: DefaultJobService
     teammates: Any = None
     team_control_plane: Any = None
@@ -250,6 +250,12 @@ class RuntimeAssembly:
     team_workflows: Any = None
     system_prompt: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def task_manager(self) -> TaskManager:
+        if self._task_manager is None:
+            self._task_manager = self.services.task_manager
+        return self._task_manager
 
     def bind_host(self, host: HostAdapter) -> BoundHostRuntime:
         self.services.bind_host(host)
@@ -928,11 +934,11 @@ class RuntimeAssembly:
                 pending_only=pending_only,
             )
             return tuple(_serialize_team_workflow_record(record) for record in records)
-        service = self.services.resolve_team_workflows()
+        service = self.services.resolve_capability(RuntimeCapabilityKey.TEAM_WORKFLOWS.value)
         if service is None:
             return ()
         resolved_team_id = team_id
-        team_control_plane = self.services.resolve_team_control_plane()
+        team_control_plane = self.services.resolve_capability(RuntimeCapabilityKey.TEAM_CONTROL_PLANE.value)
         if resolved_team_id is None and session_id is not None and team_control_plane is not None:
             team = team_control_plane.active_team_for_leader_session(session_id)
             if team is not None:
@@ -958,7 +964,7 @@ class RuntimeAssembly:
                 payload=None if payload is None else dict(payload),
             )
             return _serialize_team_workflow_record(record)
-        service = self.services.resolve_team_workflows()
+        service = self.services.resolve_capability(RuntimeCapabilityKey.TEAM_WORKFLOWS.value)
         if service is None:
             raise RuntimeError("Runtime team workflow service is not configured")
         record = await service.respond_host(
@@ -1455,7 +1461,7 @@ def _assemble_runtime_stack(kernel: RuntimeKernel) -> RuntimeAssembly:
     )
     transcript_store = services.transcript_store
     kernel.transcript_store = transcript_store
-    task_manager = services.task_manager
+    task_manager = services.tasks.manager
     turn_engine = TurnEngine(
         model_client=kernel.model_client or _UnconfiguredModelClient(),
         tool_registry=kernel.tool_registry,
@@ -1527,7 +1533,7 @@ def _assemble_runtime_stack(kernel: RuntimeKernel) -> RuntimeAssembly:
         agent_runtime=agent_runtime,
         skill_executor=skill_executor,
         transcript_store=transcript_store,
-        task_manager=task_manager,
+        _task_manager=task_manager,
         job_service=services.job_service,
         teammates=teammates,
         team_control_plane=team_control_plane,
@@ -1597,6 +1603,15 @@ def _build_runtime_services(kernel: RuntimeKernel) -> RuntimeServices:
     metadata["compatibility_surfaces"] = {
         "TaskManager": "compatibility-only",
         "runtime_context": "compatibility-only",
+        "RuntimeServices.team_control_plane": "compatibility-only",
+        "RuntimeServices.team_message_bus": "compatibility-only",
+        "RuntimeServices.team_workflows": "compatibility-only",
+        "RuntimeAssembly.team_control_plane": "compatibility-only",
+        "RuntimeAssembly.team_message_bus": "compatibility-only",
+        "RuntimeAssembly.team_workflows": "compatibility-only",
+        "BoundHostRuntime.list_team_workflows": "compatibility-wrapper",
+        "BoundHostRuntime.respond_team_workflow": "compatibility-wrapper",
+        "HostRuntime.emit_team_event": "bounded-compatibility",
     }
     metadata["migration"] = _migration_metadata(
         selected_packages=kernel.first_party_packages,
@@ -1964,6 +1979,30 @@ def _migration_metadata(
             "stuck": "runtime-builtin-workflows",
             "batch": "runtime-builtin-workflows",
             "simplify": "runtime-builtin-workflows",
+        },
+        "package_lookup": {
+            "canonical_capabilities": {
+                "team_control_plane": RuntimeCapabilityKey.TEAM_CONTROL_PLANE.value,
+                "team_message_bus": RuntimeCapabilityKey.TEAM_MESSAGE_BUS.value,
+                "team_workflows": RuntimeCapabilityKey.TEAM_WORKFLOWS.value,
+            },
+            "canonical_host_facets": {
+                "team_workflows": RuntimeHostFacetKey.TEAM_WORKFLOWS.value,
+            },
+            "canonical_lifecycle_phase": PackageLifecyclePhase.SESSION_OPEN.value,
+            "canonical_post_ingress_path": "completion_receipts",
+            "compatibility_wrappers": [
+                "RuntimeServices.team_*",
+                "RuntimeAssembly.team_*",
+                "BoundHostRuntime.list_team_workflows",
+                "BoundHostRuntime.respond_team_workflow",
+                "HostRuntime.emit_team_event",
+            ],
+            "wrapper_exit_criteria": [
+                "runtime-owned workflow helpers resolve through capability lookup or host facets only",
+                "team compatibility projections stop being required by runtime-owned primary paths",
+                "TaskManager usage remains compatibility-scoped behind JobService and TaskListService",
+            ],
         },
     }
     return metadata

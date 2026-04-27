@@ -777,7 +777,36 @@ def test_runtime_core_distribution_supports_stable_hooks_and_compatibility_diagn
     assert runtime.services.metadata["compatibility_surfaces"] == {
         "TaskManager": "compatibility-only",
         "runtime_context": "compatibility-only",
+        "RuntimeServices.team_control_plane": "compatibility-only",
+        "RuntimeServices.team_message_bus": "compatibility-only",
+        "RuntimeServices.team_workflows": "compatibility-only",
+        "RuntimeAssembly.team_control_plane": "compatibility-only",
+        "RuntimeAssembly.team_message_bus": "compatibility-only",
+        "RuntimeAssembly.team_workflows": "compatibility-only",
+        "BoundHostRuntime.list_team_workflows": "compatibility-wrapper",
+        "BoundHostRuntime.respond_team_workflow": "compatibility-wrapper",
+        "HostRuntime.emit_team_event": "bounded-compatibility",
     }
+
+
+def test_runtime_task_manager_compatibility_wrapper_is_created_lazily(tmp_path: Path) -> None:
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            distribution=RuntimeDistribution.CORE,
+        )
+    )
+
+    assert runtime.services.tasks.manager is None
+    assert runtime._task_manager is None
+    assert runtime.services.metadata.get("compatibility_accesses") is None
+
+    compat_task_manager = runtime.task_manager
+
+    assert compat_task_manager is runtime.services.task_manager
+    assert runtime.services.tasks.manager is compat_task_manager
+    assert runtime._task_manager is compat_task_manager
+    assert runtime.services.metadata["compatibility_accesses"] == ["TaskManager"]
 
 
 def test_host_assembly_entrypoint_binds_host(tmp_path: Path) -> None:

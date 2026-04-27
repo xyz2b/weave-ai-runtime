@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
@@ -55,16 +56,36 @@ class IngressReplayOutput:
 
 
 @dataclass(frozen=True, slots=True)
+class IngressCompletionReceipt:
+    receipt_id: str
+    kind: str
+    payload: Any = None
+
+    def __post_init__(self) -> None:
+        normalized_receipt_id = str(self.receipt_id).strip()
+        if not normalized_receipt_id:
+            raise ValueError("completion receipts require a non-empty receipt_id")
+        normalized_kind = str(self.kind).strip()
+        if not normalized_kind:
+            raise ValueError("completion receipts require a non-empty kind")
+        object.__setattr__(self, "receipt_id", normalized_receipt_id)
+        object.__setattr__(self, "kind", normalized_kind)
+        object.__setattr__(self, "payload", deepcopy(self.payload))
+
+
+@dataclass(frozen=True, slots=True)
 class SessionIngressResult:
     admission: IngressAdmission
     normalized_messages: tuple[RuntimeMessage, ...] = ()
     replay_outputs: tuple[IngressReplayOutput, ...] = ()
+    completion_receipts: tuple[IngressCompletionReceipt, ...] = ()
     prompt_updates: dict[str, Any] = field(default_factory=dict)
     private_updates: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "normalized_messages", tuple(self.normalized_messages))
         object.__setattr__(self, "replay_outputs", tuple(self.replay_outputs))
+        object.__setattr__(self, "completion_receipts", tuple(self.completion_receipts))
         object.__setattr__(self, "prompt_updates", dict(self.prompt_updates))
         object.__setattr__(self, "private_updates", dict(self.private_updates))
         self._validate()
@@ -79,6 +100,7 @@ class SessionIngressResult:
         *,
         normalized_messages: tuple[RuntimeMessage, ...],
         replay_outputs: tuple[IngressReplayOutput, ...] = (),
+        completion_receipts: tuple[IngressCompletionReceipt, ...] = (),
         prompt_updates: dict[str, Any] | None = None,
         private_updates: dict[str, Any] | None = None,
         reason: str = "admitted",
@@ -92,6 +114,7 @@ class SessionIngressResult:
             ),
             normalized_messages=normalized_messages,
             replay_outputs=replay_outputs,
+            completion_receipts=completion_receipts,
             prompt_updates=dict(prompt_updates or {}),
             private_updates=dict(private_updates or {}),
         )
@@ -102,6 +125,7 @@ class SessionIngressResult:
         *,
         normalized_messages: tuple[RuntimeMessage, ...] = (),
         replay_outputs: tuple[IngressReplayOutput, ...] = (),
+        completion_receipts: tuple[IngressCompletionReceipt, ...] = (),
         private_updates: dict[str, Any] | None = None,
         reason: str = "local_only",
         metadata: dict[str, Any] | None = None,
@@ -114,6 +138,7 @@ class SessionIngressResult:
             ),
             normalized_messages=normalized_messages,
             replay_outputs=replay_outputs,
+            completion_receipts=completion_receipts,
             private_updates=dict(private_updates or {}),
         )
 
@@ -123,6 +148,7 @@ class SessionIngressResult:
         *,
         normalized_messages: tuple[RuntimeMessage, ...],
         replay_outputs: tuple[IngressReplayOutput, ...] = (),
+        completion_receipts: tuple[IngressCompletionReceipt, ...] = (),
         private_updates: dict[str, Any] | None = None,
         reason: str = "transcript_only",
         metadata: dict[str, Any] | None = None,
@@ -135,6 +161,7 @@ class SessionIngressResult:
             ),
             normalized_messages=normalized_messages,
             replay_outputs=replay_outputs,
+            completion_receipts=completion_receipts,
             private_updates=dict(private_updates or {}),
         )
 
@@ -143,6 +170,7 @@ class SessionIngressResult:
         cls,
         *,
         replay_outputs: tuple[IngressReplayOutput, ...],
+        completion_receipts: tuple[IngressCompletionReceipt, ...] = (),
         private_updates: dict[str, Any] | None = None,
         reason: str = "replay_only",
         metadata: dict[str, Any] | None = None,
@@ -154,6 +182,7 @@ class SessionIngressResult:
                 metadata=dict(metadata or {}),
             ),
             replay_outputs=replay_outputs,
+            completion_receipts=completion_receipts,
             private_updates=dict(private_updates or {}),
         )
 
@@ -162,6 +191,7 @@ class SessionIngressResult:
         cls,
         *,
         replay_outputs: tuple[IngressReplayOutput, ...] = (),
+        completion_receipts: tuple[IngressCompletionReceipt, ...] = (),
         private_updates: dict[str, Any] | None = None,
         reason: str = "rejected",
         metadata: dict[str, Any] | None = None,
@@ -173,6 +203,7 @@ class SessionIngressResult:
                 metadata=dict(metadata or {}),
             ),
             replay_outputs=replay_outputs,
+            completion_receipts=completion_receipts,
             private_updates=dict(private_updates or {}),
         )
 
@@ -230,6 +261,7 @@ class SessionIngressSnapshot:
 __all__ = [
     "IngressAdmission",
     "IngressAdmissionKind",
+    "IngressCompletionReceipt",
     "IngressReplayOutput",
     "SessionCommand",
     "SessionCommandType",

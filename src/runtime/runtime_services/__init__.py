@@ -19,6 +19,8 @@ from ..runtime_package_protocols import (
     HostFacetBinding,
     HostFacetRegistry,
     HostFacetResolution,
+    IngressReceiptHandlerBinding,
+    IngressReceiptRegistry,
     PackageContribution,
     PackageLifecycleParticipant,
     PackageLifecyclePhase,
@@ -248,6 +250,7 @@ class RuntimeServices:
     capability_registry: CapabilityRegistry = field(default_factory=CapabilityRegistry)
     lifecycle_registry: PackageLifecycleRegistry = field(default_factory=PackageLifecycleRegistry)
     host_facets: HostFacetRegistry = field(default_factory=HostFacetRegistry)
+    ingress_receipts: IngressReceiptRegistry = field(default_factory=IngressReceiptRegistry)
     permissions: PermissionService = field(default_factory=PermissionEngine)
     elicitation: ElicitationService = field(default_factory=SharedElicitationService)
     isolation: IsolationManager = field(default_factory=IsolationManager)
@@ -282,15 +285,13 @@ class RuntimeServices:
             self.jobs = DefaultJobService()
         if self.jobs is None:  # pragma: no cover - defensive boundary
             self.jobs = DefaultJobService()
-        if self.tasks.manager is None:
-            self.tasks = DefaultTaskService(TaskManager(job_service=self.jobs))
         self._bind_job_runtime(self.jobs)
 
     def bind_job_service(self, job_service: DefaultJobService) -> None:
         previous_kernel = self.jobs.kernel if self.jobs is not None else None
         self.jobs = job_service
         manager = self.tasks.manager
-        if manager is None or manager.job_service is not job_service:
+        if manager is not None and manager.job_service is not job_service:
             self.tasks = DefaultTaskService(TaskManager(job_service=job_service))
         self._bind_job_runtime(job_service, kernel=previous_kernel)
 
@@ -304,6 +305,9 @@ class RuntimeServices:
     def task_manager(self) -> TaskManager:
         if self.tasks.manager is None:  # pragma: no cover - defensive boundary
             self.tasks = DefaultTaskService(TaskManager(job_service=self.job_service))
+            accesses = self.metadata.setdefault("compatibility_accesses", [])
+            if isinstance(accesses, list) and "TaskManager" not in accesses:
+                accesses.append("TaskManager")
         return self.tasks.manager
 
     @property
@@ -475,6 +479,35 @@ class RuntimeServices:
     def require_host_facet(self, name: str) -> Any:
         return self.host_facets.require(name)
 
+    def register_ingress_receipt_handler(
+        self,
+        binding: IngressReceiptHandlerBinding,
+        *,
+        override: bool = True,
+    ) -> IngressReceiptHandlerBinding | None:
+        return self.ingress_receipts.register(binding, override=override)
+
+    def resolve_ingress_receipt_handler(self, kind: str) -> Any:
+        return self.ingress_receipts.resolve(kind)
+
+    async def execute_ingress_completion_receipt(
+        self,
+        receipt: Any,
+        **kwargs: Any,
+    ) -> Any:
+        handler = self.resolve_ingress_receipt_handler(receipt.kind)
+        if handler is None:
+            raise LookupError(
+                f"Ingress completion receipt '{receipt.kind}' is not registered in the active runtime"
+            )
+        return await _maybe_await(
+            handler(
+                receipt=receipt,
+                services=self,
+                **kwargs,
+            )
+        )
+
     def apply_package_contribution(
         self,
         manifest: RuntimePackageManifest,
@@ -498,6 +531,13 @@ class RuntimeServices:
                 "package_role": facet.owner.package_role,
                 "surface": facet.owner.surface,
             }
+        for binding in contribution.ingress_receipt_handlers:
+            self.register_ingress_receipt_handler(binding, override=True)
+            self.metadata.setdefault("package_ingress_receipt_owners", {})[binding.kind] = {
+                "package_name": binding.owner.package_name,
+                "package_role": binding.owner.package_role,
+                "surface": binding.owner.surface,
+            }
         entry = {
             "package_name": manifest.name,
             "package_role": manifest.role,
@@ -505,6 +545,7 @@ class RuntimeServices:
             "capabilities": [binding.key for binding in contribution.capabilities],
             "lifecycle_participants": [participant.name for participant in contribution.lifecycle_participants],
             "host_facets": [facet.name for facet in contribution.host_facets],
+            "ingress_receipt_handlers": [binding.kind for binding in contribution.ingress_receipt_handlers],
             "store_bindings": [binding.slot for binding in contribution.store_bindings],
             "model_providers": [binding.name for binding in contribution.model_providers],
             "model_routes": [binding.name for binding in contribution.model_routes],
@@ -614,6 +655,8 @@ __all__ = [
     "HostFacetBinding",
     "HostFacetRegistry",
     "HostFacetResolution",
+    "IngressReceiptHandlerBinding",
+    "IngressReceiptRegistry",
     "NoopCompactionService",
     "NoopHookService",
     "NoopMemoryService",

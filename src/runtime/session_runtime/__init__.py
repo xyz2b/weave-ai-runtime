@@ -3,6 +3,7 @@ from .ingress import SessionIngressProcessor
 from .models import (
     IngressAdmission,
     IngressAdmissionKind,
+    IngressCompletionReceipt,
     IngressReplayOutput,
     SessionCommand,
     SessionCommandType,
@@ -17,6 +18,7 @@ __all__ = [
     "FileTranscriptStore",
     "IngressAdmission",
     "IngressAdmissionKind",
+    "IngressCompletionReceipt",
     "IngressReplayOutput",
     "InboundEvent",
     "InboundEventType",

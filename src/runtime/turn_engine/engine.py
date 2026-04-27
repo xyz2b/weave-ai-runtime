@@ -907,7 +907,7 @@ class TurnEngine:
             agent_name=agent_name,
             cwd=cwd,
             private_context=private_context,
-            task_manager=self._runtime_services.task_manager,
+            task_manager=self._runtime_services.tasks.manager,
         )
         return ToolContext(
             session_id=session_id,
@@ -924,7 +924,7 @@ class TurnEngine:
             ask_user_handler=self._runtime_services.ask_user_handler,
             agent_runner=self._runtime_services.agent_runner,
             skill_runner=self._runtime_services.skill_runner,
-            task_manager=self._runtime_services.task_manager,
+            task_manager=self._runtime_services.tasks.manager,
             abort_signal=abort_signal,
             notifications=notifications,
             notification_sink=self._runtime_services.notification_sink,

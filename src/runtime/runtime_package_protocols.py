@@ -93,6 +93,18 @@ class HostFacetBinding:
 
 
 @dataclass(frozen=True, slots=True)
+class IngressReceiptHandlerBinding:
+    kind: str
+    handler: Callable[..., Any]
+    owner: PackageOwnership
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "kind", _require_non_empty(self.kind, "kind"))
+        object.__setattr__(self, "metadata", dict(self.metadata))
+
+
+@dataclass(frozen=True, slots=True)
 class HostFacetResolution:
     name: str
     available: bool
@@ -162,6 +174,7 @@ class PackageContribution:
     capabilities: tuple[CapabilityBinding, ...] = ()
     lifecycle_participants: tuple[PackageLifecycleParticipant, ...] = ()
     host_facets: tuple[HostFacetBinding, ...] = ()
+    ingress_receipt_handlers: tuple[IngressReceiptHandlerBinding, ...] = ()
     store_bindings: tuple[StoreBinding, ...] = ()
     model_providers: tuple[ModelProviderContribution, ...] = ()
     model_routes: tuple[ModelRouteContribution, ...] = ()
@@ -176,6 +189,7 @@ class PackageContribution:
         object.__setattr__(self, "capabilities", tuple(self.capabilities))
         object.__setattr__(self, "lifecycle_participants", tuple(self.lifecycle_participants))
         object.__setattr__(self, "host_facets", tuple(self.host_facets))
+        object.__setattr__(self, "ingress_receipt_handlers", tuple(self.ingress_receipt_handlers))
         object.__setattr__(self, "store_bindings", tuple(self.store_bindings))
         object.__setattr__(self, "model_providers", tuple(self.model_providers))
         object.__setattr__(self, "model_routes", tuple(self.model_routes))
@@ -356,6 +370,38 @@ class HostFacetRegistry:
         return tuple(self._bindings[key] for key in sorted(self._bindings))
 
 
+@dataclass(slots=True)
+class IngressReceiptRegistry:
+    _bindings: dict[str, IngressReceiptHandlerBinding] = field(default_factory=dict)
+
+    def register(
+        self,
+        binding: IngressReceiptHandlerBinding,
+        *,
+        override: bool = True,
+    ) -> IngressReceiptHandlerBinding | None:
+        normalized = _require_non_empty(binding.kind, "binding.kind")
+        previous = self._bindings.get(normalized)
+        if previous is not None and not override:
+            raise ValueError(f"Ingress receipt handler '{normalized}' is already registered")
+        self._bindings[normalized] = binding
+        return previous
+
+    def binding(self, kind: str) -> IngressReceiptHandlerBinding | None:
+        return self._bindings.get(_require_non_empty(kind, "kind"))
+
+    def resolve(self, kind: str) -> Callable[..., Any] | None:
+        binding = self.binding(kind)
+        return None if binding is None else binding.handler
+
+    def owner(self, kind: str) -> PackageOwnership | None:
+        binding = self.binding(kind)
+        return None if binding is None else binding.owner
+
+    def bindings(self) -> tuple[IngressReceiptHandlerBinding, ...]:
+        return tuple(self._bindings[key] for key in sorted(self._bindings))
+
+
 def order_package_manifests(
     package_names: Sequence[str],
     manifest_catalog: Mapping[str, RuntimePackageManifest],
@@ -431,6 +477,8 @@ __all__ = [
     "HostFacetBinding",
     "HostFacetRegistry",
     "HostFacetResolution",
+    "IngressReceiptHandlerBinding",
+    "IngressReceiptRegistry",
     "JobExecutorContribution",
     "ModelProviderContribution",
     "ModelRouteContribution",

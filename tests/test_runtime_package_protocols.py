@@ -21,6 +21,7 @@ from runtime.runtime_package_manifests import official_runtime_package_manifests
 from runtime.runtime_package_protocols import (
     CapabilityBinding,
     HostFacetBinding,
+    IngressReceiptHandlerBinding,
     PackageAssemblyStage,
     PackageContribution,
     PackageLifecycleParticipant,
@@ -53,6 +54,7 @@ def test_runtime_services_apply_package_contribution_registers_protocol_surfaces
         description="Example package",
     )
     observed_phases: list[str] = []
+    observed_receipts: list[str] = []
 
     async def handle_cleanup(**kwargs):
         observed_phases.append(kwargs["phase"].value)
@@ -92,6 +94,17 @@ def test_runtime_services_apply_package_contribution_registers_protocol_surfaces
                 ),
             ),
         ),
+        ingress_receipt_handlers=(
+            IngressReceiptHandlerBinding(
+                kind="runtime.example.receipt",
+                handler=lambda *, receipt, **_kwargs: observed_receipts.append(receipt.receipt_id),
+                owner=PackageOwnership(
+                    package_name="runtime-example",
+                    package_role="capability",
+                    surface="ingress_receipt",
+                ),
+            ),
+        ),
     )
 
     services.apply_package_contribution(manifest, contribution, stage="runtime")
@@ -103,9 +116,16 @@ def test_runtime_services_apply_package_contribution_registers_protocol_surfaces
     assert facet.available is True
     assert facet.facet == {"facet": "example"}
     assert services.metadata["package_capability_owners"]["runtime.example.service"]["package_name"] == "runtime-example"
+    assert services.metadata["package_ingress_receipt_owners"]["runtime.example.receipt"]["package_name"] == "runtime-example"
     assert services.metadata["package_contributions"][0]["package_name"] == "runtime-example"
     assert asyncio.run(services.dispatch_lifecycle_phase(PackageLifecyclePhase.SESSION_CLOSE)) == ()
+    asyncio.run(
+        services.execute_ingress_completion_receipt(
+            type("Receipt", (), {"kind": "runtime.example.receipt", "receipt_id": "receipt-1"})()
+        )
+    )
     assert observed_phases == [PackageLifecyclePhase.SESSION_CLOSE.value]
+    assert observed_receipts == ["receipt-1"]
     try:
         services.require_capability("runtime.example.missing")
     except KeyError as exc:
@@ -170,10 +190,66 @@ def test_manifest_backed_team_runtime_registers_capabilities_and_host_facet(tmp_
         participant.name
         for participant in runtime.services.lifecycle_participants(PackageLifecyclePhase.RUNTIME_RECOVERY)
     } == {"runtime-team-recover-pending-workflows"}
+    assert {
+        participant.name
+        for participant in runtime.services.lifecycle_participants(PackageLifecyclePhase.SESSION_OPEN)
+    } == {"runtime-team-replay-pending-leader-messages"}
+    assert runtime.services.metadata["package_ingress_receipt_owners"]["runtime.team.delivery_ack"]["package_name"] == "runtime-team"
     facet = runtime.services.resolve_host_facet(RuntimeHostFacetKey.TEAM_WORKFLOWS.value)
     assert facet.available is True
     listed = asyncio.run(facet.facet.list_workflows(team_id=None, session_id=None, pending_only=True))
     assert listed == ()
+
+
+def test_runtime_workflow_helpers_prefer_canonical_lookup_over_compatibility_slots(tmp_path: Path) -> None:
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            distribution=RuntimeDistribution.DEFAULT,
+        )
+    )
+    plane = runtime.team_control_plane
+    workflows = runtime.team_workflows
+    assert plane is not None
+    assert workflows is not None
+
+    async def scenario():
+        async with runtime.bind_host(NullHostAdapter(name="compat")) as bound:
+            team, _ = await plane.create_team(session_id="leader-session", extensions={}, name="ops")
+            member = await plane.register_member(
+                session_id="leader-session",
+                extensions={},
+                name="alpha",
+                agent_name="main-router",
+                execution_defaults={"cwd": str(tmp_path)},
+            )
+            workflow = await workflows.create_permission_workflow(
+                team=team,
+                requester_member_id=member.member_id,
+                requester_name=member.name,
+                responder_member_id=team.leader_member_id,
+                responder_name="leader",
+                request_payload={"permission_name": "bash", "permission_message": "approve?"},
+            )
+            runtime.services.team_control_plane = object()
+            runtime.services.team_workflows = object()
+            runtime.team_control_plane = object()
+            runtime.team_workflows = object()
+
+            pending = await runtime.list_team_workflows(session_id="leader-session", pending_only=True)
+            updated = await bound.respond_team_workflow(
+                workflow.workflow_id,
+                action="reject",
+                session_id="leader-session",
+            )
+            return pending, updated
+
+    pending, updated = asyncio.run(scenario())
+
+    assert pending
+    assert pending[0]["workflow_kind"] == "permission"
+    assert updated["workflow_id"] == pending[0]["workflow_id"]
+    assert updated["status"] == "rejected"
 
 
 def test_non_participating_runtime_reports_host_facet_not_available(tmp_path: Path) -> None:

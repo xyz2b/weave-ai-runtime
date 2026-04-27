@@ -8,6 +8,7 @@ from .package_profiles import FIRST_PARTY_PACKAGE_SPECS
 from .runtime_package_protocols import (
     CapabilityBinding,
     HostFacetBinding,
+    IngressReceiptHandlerBinding,
     ModelProviderContribution,
     ModelRouteContribution,
     PackageAssemblyStage,
@@ -161,9 +162,51 @@ def assemble_runtime_team_package(context: PackageContext) -> PackageContributio
         control_plane=components.control_plane,
         workflows=components.workflows,
     )
+
     async def recover_team_workflows(*, services: Any = None, **_kwargs: Any) -> None:
         _ = services
         await components.workflows.recover_pending()
+
+    async def replay_pending_leader_messages(
+        *,
+        session: Any = None,
+        services: Any = None,
+        **_kwargs: Any,
+    ) -> None:
+        if session is None or getattr(getattr(session, "state", None), "queued_commands", None):
+            return
+        runtime_services = services or context.require_resource("runtime_services")
+        message_bus = runtime_services.resolve_capability(RuntimeCapabilityKey.TEAM_MESSAGE_BUS.value)
+        if message_bus is None or not hasattr(message_bus, "replay_pending_leader_messages"):
+            return
+        await message_bus.replay_pending_leader_messages(
+            session_id=session.state.session_id,
+            session=session,
+        )
+
+    async def acknowledge_team_delivery(
+        *,
+        receipt: Any,
+        services: Any = None,
+        **_kwargs: Any,
+    ) -> None:
+        runtime_services = services or context.require_resource("runtime_services")
+        message_bus = runtime_services.resolve_capability(RuntimeCapabilityKey.TEAM_MESSAGE_BUS.value)
+        if message_bus is None or not hasattr(message_bus, "acknowledge_delivery"):
+            return
+        payload = getattr(receipt, "payload", None)
+        if not isinstance(payload, dict):
+            return
+        team_id = str(payload.get("team_id") or "").strip()
+        message_id = str(payload.get("message_id") or "").strip()
+        delivery_id = str(payload.get("delivery_id") or "").strip()
+        if not team_id or not message_id or not delivery_id:
+            return
+        await message_bus.acknowledge_delivery(
+            team_id=team_id,
+            message_id=message_id,
+            delivery_id=delivery_id,
+        )
 
     return PackageContribution(
         capabilities=(
@@ -195,12 +238,25 @@ def assemble_runtime_team_package(context: PackageContext) -> PackageContributio
                 owner=context.ownership("host_facet", facet=RuntimeHostFacetKey.TEAM_WORKFLOWS.value),
             ),
         ),
+        ingress_receipt_handlers=(
+            IngressReceiptHandlerBinding(
+                kind="runtime.team.delivery_ack",
+                handler=acknowledge_team_delivery,
+                owner=context.ownership("ingress_receipt", kind="runtime.team.delivery_ack"),
+            ),
+        ),
         lifecycle_participants=(
             PackageLifecycleParticipant(
                 phase=PackageLifecyclePhase.RUNTIME_RECOVERY,
                 name="runtime-team-recover-pending-workflows",
                 handler=recover_team_workflows,
                 owner=context.ownership("lifecycle", phase=PackageLifecyclePhase.RUNTIME_RECOVERY.value),
+            ),
+            PackageLifecycleParticipant(
+                phase=PackageLifecyclePhase.SESSION_OPEN,
+                name="runtime-team-replay-pending-leader-messages",
+                handler=replay_pending_leader_messages,
+                owner=context.ownership("lifecycle", phase=PackageLifecyclePhase.SESSION_OPEN.value),
             ),
         ),
     )

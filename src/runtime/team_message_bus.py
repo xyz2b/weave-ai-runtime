@@ -419,7 +419,7 @@ class RuntimeTeamMessageBus:
         self._store.save(replace(envelope, deliveries=tuple(deliveries)))
         return True
 
-    async def replay_pending_leader_messages(self, *, session_id: str) -> int:
+    async def replay_pending_leader_messages(self, *, session_id: str, session: Any | None = None) -> int:
         team = self._control_plane.active_team_for_leader_session(session_id)
         if team is None:
             return 0
@@ -427,6 +427,7 @@ class RuntimeTeamMessageBus:
         if leader is None or not leader.active:
             return 0
         replayed = 0
+        replay_session = session or self._runtime_services.session_registry.get(team.leader_session_id)
         for envelope in self._store.list_messages(team.team_id, recipient_member_id=leader.member_id):
             for delivery in envelope.deliveries:
                 if (
@@ -435,7 +436,13 @@ class RuntimeTeamMessageBus:
                     or not delivery.pending
                 ):
                     continue
-                await self._route_to_leader(team=team, envelope=envelope, delivery=delivery)
+                await self._route_to_leader(
+                    team=team,
+                    envelope=envelope,
+                    delivery=delivery,
+                    session=replay_session,
+                    session_open_replay=session is not None,
+                )
                 replayed += 1
         return replayed
 
@@ -499,15 +506,20 @@ class RuntimeTeamMessageBus:
         team: TeamRecord,
         envelope: TeamMessageEnvelope,
         delivery: TeamMessageDelivery,
+        session: Any | None = None,
+        session_open_replay: bool = False,
     ) -> None:
-        session = self._runtime_services.session_registry.get(team.leader_session_id)
+        session = session or self._runtime_services.session_registry.get(team.leader_session_id)
         event = self._leader_ingress_event(team=team, envelope=envelope, delivery=delivery)
         drained = False
         status = None
         if session is not None:
             status = getattr(getattr(session, "state", None), "status", None)
-            drain = str(getattr(status, "value", status) or "") == "waiting"
-            drained = await session.submit_runtime_event(event, drain=drain)
+            if session_open_replay:
+                session.enqueue_event(event)
+            else:
+                drain = str(getattr(status, "value", status) or "") == "waiting"
+                drained = await session.submit_runtime_event(event, drain=drain)
         await self._emit_team_event(
             event_type="team.message.routed",
             team=team,
@@ -519,7 +531,11 @@ class RuntimeTeamMessageBus:
                 "recipient_name": delivery.recipient_name,
                 "queued": True,
                 "drained": drained,
-                "session_status": str(getattr(status, "value", status) or "offline"),
+                "session_status": (
+                    "session_open"
+                    if session_open_replay
+                    else str(getattr(status, "value", status) or "offline")
+                ),
                 "kind": envelope.kind.value,
                 "public_to": envelope.public_to,
             },
@@ -612,11 +628,13 @@ class RuntimeTeamMessageBus:
                         "workflow_kind": request_protocol.workflow_kind.value,
                         "workflow_requester_member_id": request_protocol.requester_member_id,
                         "workflow_requester_name": request_protocol.requester_name,
-                        "team_delivery_ack": {
-                            "team_id": team.team_id,
-                            "message_id": envelope.message_id,
-                            "delivery_id": delivery.delivery_id,
-                        },
+                        "completion_receipts": [
+                            _delivery_ack_receipt(
+                                team_id=team.team_id,
+                                message_id=envelope.message_id,
+                                delivery_id=delivery.delivery_id,
+                            )
+                        ],
                         "ingress_priority": int(
                             envelope.metadata.get("workflow_priority")
                             or workflow_priority(request_protocol.workflow_kind)
@@ -650,11 +668,13 @@ class RuntimeTeamMessageBus:
                     content="",
                     metadata={
                         "admission_kind": "replay_only",
-                        "team_delivery_ack": {
-                            "team_id": team.team_id,
-                            "message_id": envelope.message_id,
-                            "delivery_id": delivery.delivery_id,
-                        },
+                        "completion_receipts": [
+                            _delivery_ack_receipt(
+                                team_id=team.team_id,
+                                message_id=envelope.message_id,
+                                delivery_id=delivery.delivery_id,
+                            )
+                        ],
                         "private_updates": {
                             "team_last_workflow_update": {
                                 "workflow_id": response_protocol.workflow_id,
@@ -708,11 +728,13 @@ class RuntimeTeamMessageBus:
                 content="",
                 metadata={
                     "admission_kind": "replay_only",
-                    "team_delivery_ack": {
-                        "team_id": team.team_id,
-                        "message_id": envelope.message_id,
-                        "delivery_id": delivery.delivery_id,
-                    },
+                    "completion_receipts": [
+                        _delivery_ack_receipt(
+                            team_id=team.team_id,
+                            message_id=envelope.message_id,
+                            delivery_id=delivery.delivery_id,
+                        )
+                    ],
                     "private_updates": {
                         "team_last_control_message": {
                             "team_id": team.team_id,
@@ -760,11 +782,13 @@ class RuntimeTeamMessageBus:
                 "team_sender_role": envelope.sender.role.value,
                 "team_recipient_member_id": delivery.recipient_member_id,
                 "correlation_id": envelope.correlation_id,
-                "team_delivery_ack": {
-                    "team_id": team.team_id,
-                    "message_id": envelope.message_id,
-                    "delivery_id": delivery.delivery_id,
-                },
+                "completion_receipts": [
+                    _delivery_ack_receipt(
+                        team_id=team.team_id,
+                        message_id=envelope.message_id,
+                        delivery_id=delivery.delivery_id,
+                    )
+                ],
                 "private_updates": {
                     "team_last_message": {
                         "team_id": team.team_id,
@@ -859,6 +883,18 @@ def _coerce_mapping(value: object) -> dict[str, Any]:
     if isinstance(value, Mapping):
         return {str(key): inner for key, inner in value.items()}
     return {}
+
+
+def _delivery_ack_receipt(*, team_id: str, message_id: str, delivery_id: str) -> dict[str, Any]:
+    return {
+        "receipt_id": delivery_id,
+        "kind": "runtime.team.delivery_ack",
+        "payload": {
+            "team_id": team_id,
+            "message_id": message_id,
+            "delivery_id": delivery_id,
+        },
+    }
 
 
 def _workflow_response_logical_sender(

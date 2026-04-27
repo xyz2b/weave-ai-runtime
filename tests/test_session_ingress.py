@@ -41,6 +41,13 @@ def test_session_ingress_protocol_distinguishes_turn_local_only_and_reject(tmp_p
             InboundEventType.USER_PROMPT,
             "Summarize the deployment failure",
             metadata={
+                "completion_receipts": [
+                    {
+                        "receipt_id": "receipt-1",
+                        "kind": "runtime.test.receipt",
+                        "payload": {"ack": "host"},
+                    }
+                ],
                 "prompt_updates": {"topic": "incident"},
                 "private_updates": {"request_id": "req-1"},
             },
@@ -81,6 +88,13 @@ def test_session_ingress_protocol_distinguishes_turn_local_only_and_reject(tmp_p
             }
         ],
         "replay_outputs": [],
+        "completion_receipts": [
+            {
+                "receipt_id": "receipt-1",
+                "kind": "runtime.test.receipt",
+                "payload": {"ack": "host"},
+            }
+        ],
         "prompt_updates": {"session_hint": "active", "topic": "incident"},
         "private_updates": {
             "host_scope": "bound",
@@ -174,6 +188,49 @@ def test_session_ingress_invalid_admission_kind_becomes_reject_with_private_diag
     assert result.admission.reason == "invalid_admission_kind"
     assert result.private_updates["invalid_admission_kind"] == "bogus"
     assert [output.text for output in result.replay_outputs] == ["Rejected by ingress"]
+
+
+def test_session_ingress_preserves_completion_receipt_order_and_identity(tmp_path) -> None:
+    processor = SessionIngressProcessor()
+    snapshot = SessionIngressSnapshot(
+        session_id="session-receipts",
+        current_agent="main-router",
+        cwd=str(tmp_path),
+        status=SessionStatus.READY,
+    )
+
+    result = processor.process(
+        InboundEvent(
+            InboundEventType.HOST_EVENT,
+            "Queued receipt",
+            metadata={
+                "admission_kind": "local_only",
+                "completion_receipts": [
+                    {
+                        "receipt_id": "receipt-1",
+                        "kind": "runtime.test.first",
+                        "payload": {"step": 1},
+                    },
+                    {
+                        "receipt_id": "receipt-2",
+                        "kind": "runtime.test.second",
+                        "payload": {"step": 2},
+                    },
+                ],
+            },
+        ),
+        session_snapshot=snapshot,
+        runtime_services=RuntimeServices(),
+    )
+
+    assert [(receipt.receipt_id, receipt.kind) for receipt in result.completion_receipts] == [
+        ("receipt-1", "runtime.test.first"),
+        ("receipt-2", "runtime.test.second"),
+    ]
+    assert ingress_result_fixture(result)["completion_receipts"] == [
+        {"receipt_id": "receipt-1", "kind": "runtime.test.first", "payload": {"step": 1}},
+        {"receipt_id": "receipt-2", "kind": "runtime.test.second", "payload": {"step": 2}},
+    ]
 
 
 def test_session_ingress_result_rejects_invalid_field_combinations() -> None:

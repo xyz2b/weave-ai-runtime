@@ -156,6 +156,14 @@
 当前少量 `RuntimeServices` package-specific 字段仍会保留一段时间，但它们现在只应视为 compatibility projection。
 这也包括残留的 team 顶层 helper / workflow helper：canonical discovery path 已经是 capability lookup 与 host facet discovery，新的 runtime-owned primary path 不应再把这些 wrapper 当 source of truth。
 
+新的 staged exit criteria 也应明确下来：
+
+- `SESSION_OPEN` replay 已经只通过 lifecycle participant 触发，而不是 controller special case
+- post-ingress acknowledgement 已经只通过 ingress `completion_receipts` 执行，而不是 metadata key + controller branch
+- runtime-owned workflow helper 已经先走 capability / host-facet lookup，再把旧 helper 当 projection
+- `TaskManager` 只在 compatibility facade 里按需 materialize，而不是 runtime-owned primary path 的默认 state owner
+- `emit_team_event()` 继续只保留为 bounded compatibility sink，直到出现真正共享的 package event contract
+
 ## 4.6 Explicit Non-Goals
 
 这次边界收敛明确不是下面这些事情：

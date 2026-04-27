@@ -216,8 +216,22 @@ Runtime 核心流转本身由框架收口，用户通常不应该改 `TurnEngine
 - 不是“某段代码从 `runtime-core/` 挪到别的目录”
 - 而是“这段能力能否通过 manifest + contribution + lookup contract 独立接入”
 - capability lookup / host-facet lookup / lifecycle participant 才是 package-owned runtime behavior 的 canonical path
+- ingress `completion_receipts` 现在也是 package-owned post-ingress ack 的 canonical attachment path
 - 当前残留的 team 顶层 helper、`RuntimeServices.team_*`、workflow helper method 都只应视为 compatibility wrapper
 - `emit_team_event()` 目前只应视为 bounded compatibility sink，而不是推荐继续扩展的新 package event contract
+
+当前 runtime metadata 也会显式标这些边界：
+
+- `runtime.services.metadata["package_lookup"]`：canonical capability / host-facet / lifecycle / receipt path
+- `runtime.services.metadata["compatibility_surfaces"]`：仍保留但非 canonical 的 wrapper / projection
+- `runtime.services.metadata["compatibility_projections"]`：当前 projection 仍映射到哪些 capability key
+
+判断一个 wrapper 是否还该继续保留，可以先看这几个 exit criteria：
+
+- runtime-owned primary path 是否已经全部先走 capability lookup / host facet
+- session-open replay 是否已经只走 lifecycle participant
+- post-ingress ack 是否已经只走 `completion_receipts`
+- `TaskManager` 是否只剩 compatibility facade，而不是新的 authoritative control-plane dependency
 
 这意味着：
 

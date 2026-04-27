@@ -42,7 +42,7 @@ from ..tool_runtime import SessionScope
 from ..turn_engine.engine import TurnEngine, TurnStreamEvent, TurnStreamEventType
 from ..turn_engine.models import TranscriptEntry, TranscriptSession, TranscriptStore
 from .ingress import SessionIngressProcessor
-from .models import IngressReplayOutput, SessionIngressSnapshot
+from .models import IngressCompletionReceipt, IngressReplayOutput, SessionIngressSnapshot
 
 
 class InboundEventType(StrEnum):
@@ -57,6 +57,15 @@ class InboundEvent:
     event_type: InboundEventType
     content: str
     metadata: dict[str, object] = field(default_factory=dict)
+
+
+class IngressCompletionReceiptExecutionError(RuntimeError):
+    def __init__(self, receipt: IngressCompletionReceipt, *, error: Exception) -> None:
+        super().__init__(
+            f"Ingress completion receipt '{receipt.kind}' ({receipt.receipt_id}) failed: {error}"
+        )
+        self.receipt = receipt
+        self.error = error
 
 
 class SessionController:
@@ -103,7 +112,7 @@ class SessionController:
             agent_name=agent.name,
             cwd=Path(cwd),
             private_context=self._session_scope_private_context(),
-            task_manager=self._runtime_services.task_manager,
+            task_manager=self._runtime_services.tasks.manager,
         )
         if hasattr(self._runtime_services, "session_registry"):
             self._runtime_services.session_registry.register(self)
@@ -257,7 +266,6 @@ class SessionController:
     async def start(self) -> None:
         if hasattr(self._runtime_services, "wait_until_runtime_ready"):
             await self._runtime_services.wait_until_runtime_ready()
-        replay_pending_team_messages = not self._started and not self.state.queued_commands
         if not self._started:
             memory_service = self._runtime_services.memory
             if memory_service is not None and hasattr(memory_service, "start_session"):
@@ -288,8 +296,6 @@ class SessionController:
                 )
             self._started = True
         self.state.status = SessionStatus.READY
-        if replay_pending_team_messages:
-            await self._replay_pending_team_messages()
 
     def normalize_event(self, event: InboundEvent) -> SessionCommand:
         metadata = getattr(event, "metadata", None)
@@ -351,8 +357,6 @@ class SessionController:
             )
         self.state.status = SessionStatus.READY
         self.state.active_turn_id = None
-        if not self.state.queued_commands:
-            await self._replay_pending_team_messages()
 
     async def close(self, final_status: str = "completed") -> None:
         if self._closed:
@@ -444,9 +448,9 @@ class SessionController:
             if ingress_result.private_updates:
                 self._apply_ingress_private_updates(ingress_result.private_updates)
             await self._emit_ingress_replay_outputs(ingress_result.replay_outputs)
-            await self._acknowledge_team_delivery(event.metadata)
+            await self._persist_session_metadata()
+            await self._execute_ingress_completion_receipts(ingress_result.completion_receipts)
             if not ingress_result.admits_turn:
-                await self._persist_session_metadata()
                 if self.state.status != SessionStatus.WAITING:
                     self.state.status = SessionStatus.READY
                 continue
@@ -463,7 +467,7 @@ class SessionController:
             self._session_scope.private_context = self._session_scope_private_context()
             self._session_scope.agent_name = self._agent.name
             self._session_scope.cwd = Path(self._cwd)
-            self._session_scope.task_manager = self._runtime_services.task_manager
+            self._session_scope.task_manager = self._runtime_services.tasks.manager
             async for event in self._turn_engine.run_turn_stream(
                 session_id=self.state.session_id,
                 turn_id=self.state.active_turn_id,
@@ -591,29 +595,28 @@ class SessionController:
                 )
             )
 
-    async def _acknowledge_team_delivery(self, metadata: Mapping[str, Any] | None) -> None:
-        if not isinstance(metadata, Mapping):
-            return
-        raw = metadata.get("team_delivery_ack")
-        if not isinstance(raw, Mapping):
-            return
-        team_id = str(raw.get("team_id") or "").strip()
-        message_id = str(raw.get("message_id") or "").strip()
-        delivery_id = str(raw.get("delivery_id") or "").strip()
-        if not team_id or not message_id or not delivery_id:
-            return
-        message_bus = (
-            self._runtime_services.resolve_team_message_bus()
-            if hasattr(self._runtime_services, "resolve_team_message_bus")
-            else getattr(self._runtime_services, "team_message_bus", None)
-        )
-        if message_bus is None or not hasattr(message_bus, "acknowledge_delivery"):
-            return
-        await message_bus.acknowledge_delivery(
-            team_id=team_id,
-            message_id=message_id,
-            delivery_id=delivery_id,
-        )
+    async def _execute_ingress_completion_receipts(
+        self,
+        completion_receipts: tuple[IngressCompletionReceipt, ...],
+    ) -> None:
+        for receipt in completion_receipts:
+            try:
+                await self._runtime_services.execute_ingress_completion_receipt(
+                    receipt,
+                    session=self,
+                )
+            except Exception as exc:
+                failure = {
+                    "receipt_id": receipt.receipt_id,
+                    "kind": receipt.kind,
+                    "error": str(exc),
+                }
+                history = self.state.metadata.setdefault("ingress_completion_receipt_failures", [])
+                if isinstance(history, list):
+                    history.append(failure)
+                self.state.metadata["last_ingress_completion_receipt_failure"] = failure
+                await self._persist_session_metadata()
+                raise IngressCompletionReceiptExecutionError(receipt, error=exc) from exc
 
     def _apply_ingress_private_updates(self, private_updates: dict[str, Any]) -> None:
         for key, value in private_updates.items():
@@ -736,16 +739,6 @@ class SessionController:
         else:
             self.state.metadata.pop("resumable_request_override", None)
         self._restore_resumable_private_context()
-
-    async def _replay_pending_team_messages(self) -> None:
-        message_bus = (
-            self._runtime_services.resolve_team_message_bus()
-            if hasattr(self._runtime_services, "resolve_team_message_bus")
-            else getattr(self._runtime_services, "team_message_bus", None)
-        )
-        if message_bus is None or not hasattr(message_bus, "replay_pending_leader_messages"):
-            return
-        await message_bus.replay_pending_leader_messages(session_id=self.state.session_id)
 
     def _ingress_snapshot(self) -> SessionIngressSnapshot:
         return SessionIngressSnapshot.from_state(
@@ -1157,6 +1150,8 @@ def _session_control_plane_metadata_snapshot(
         "team_last_workflow_request",
         "team_last_workflow_update",
         "team_workflow_requests",
+        "ingress_completion_receipt_failures",
+        "last_ingress_completion_receipt_failure",
         "compaction",
         "compaction_summary",
         "compaction_boundary",

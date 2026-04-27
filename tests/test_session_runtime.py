@@ -1,6 +1,8 @@
 import asyncio
 from pathlib import Path
 
+import pytest
+
 from runtime.contracts import (
     MessageAttachment,
     MessageRole,
@@ -11,6 +13,7 @@ from runtime.contracts import (
 from runtime.definitions import AgentDefinition, ToolDefinition, ToolTraits
 from runtime.hooks import RuntimeHookPhase
 from runtime.registries import ToolRegistry
+from runtime.runtime_package_protocols import IngressReceiptHandlerBinding, PackageOwnership
 from runtime.runtime_services import RuntimeServices
 from runtime.session_runtime import (
     FileTranscriptStore,
@@ -615,3 +618,163 @@ def test_session_controller_records_task_notifications_without_turn_execution(tm
     assert model_client.requests == []
     assert [entry.message.role for entry in loaded.entries] == [MessageRole.NOTIFICATION]
     assert [entry.message.text for entry in loaded.entries] == ["Task finished"]
+
+
+def test_session_controller_executes_completion_receipts_after_ingress_commit(tmp_path: Path) -> None:
+    transcript_store = FileTranscriptStore(tmp_path / "transcripts")
+    services = RuntimeServices()
+    observations: list[dict[str, object]] = []
+
+    async def record_receipt(*, receipt, services, session, **_kwargs):
+        transcript = await transcript_store.load(session.state.session_id)
+        session_metadata = await transcript_store.load_session_metadata(session.state.session_id)
+        observations.append(
+            {
+                "receipt_id": receipt.receipt_id,
+                "messages": [entry.message.text for entry in transcript.entries],
+                "notifications": [message.text for message in services.host.current_notifications()],
+                "private_updates": dict(session_metadata or {}),
+            }
+        )
+
+    owner = PackageOwnership(
+        package_name="runtime-test",
+        package_role="capability",
+        surface="ingress_receipt",
+    )
+    services.register_ingress_receipt_handler(
+        IngressReceiptHandlerBinding(
+            kind="runtime.test.inspect",
+            handler=record_receipt,
+            owner=owner,
+        )
+    )
+    controller = SessionController(
+        session_id="session-receipt-order",
+        agent=AgentDefinition(name="main-router", description="router", prompt="Route the turn"),
+        turn_engine=TurnEngine(model_client=FakeModelClient([]), tool_registry=ToolRegistry(), runtime_services=services),
+        transcript_store=transcript_store,
+        cwd=str(tmp_path),
+        system_prompt="System prompt",
+        runtime_services=services,
+    )
+    controller.enqueue_event(
+        InboundEvent(
+            InboundEventType.HOST_EVENT,
+            "Transcript before receipts",
+            metadata={
+                "admission_kind": "transcript_only",
+                "role": "notification",
+                "private_updates": {"team_id": "team-1"},
+                "replay_outputs": [
+                    {
+                        "output_id": "replay-1",
+                        "role": "notification",
+                        "content": "Replay before receipts",
+                    }
+                ],
+                "completion_receipts": [
+                    {"receipt_id": "receipt-1", "kind": "runtime.test.inspect", "payload": {"step": 1}},
+                    {"receipt_id": "receipt-2", "kind": "runtime.test.inspect", "payload": {"step": 2}},
+                ],
+            },
+        )
+    )
+
+    asyncio.run(controller.run_until_idle())
+
+    assert observations == [
+        {
+            "receipt_id": "receipt-1",
+            "messages": ["Transcript before receipts"],
+            "notifications": ["Replay before receipts"],
+            "private_updates": {"team_id": "team-1"},
+        },
+        {
+            "receipt_id": "receipt-2",
+            "messages": ["Transcript before receipts"],
+            "notifications": ["Replay before receipts"],
+            "private_updates": {"team_id": "team-1"},
+        },
+    ]
+
+
+def test_session_controller_stops_completion_receipts_after_first_failure(tmp_path: Path) -> None:
+    transcript_store = FileTranscriptStore(tmp_path / "transcripts")
+    services = RuntimeServices()
+    attempted_receipts: list[str] = []
+
+    async def fail_receipt(*, receipt, **_kwargs):
+        attempted_receipts.append(receipt.receipt_id)
+        raise RuntimeError("boom")
+
+    async def later_receipt(*, receipt, **_kwargs):
+        attempted_receipts.append(receipt.receipt_id)
+
+    owner = PackageOwnership(
+        package_name="runtime-test",
+        package_role="capability",
+        surface="ingress_receipt",
+    )
+    services.register_ingress_receipt_handler(
+        IngressReceiptHandlerBinding(
+            kind="runtime.test.fail",
+            handler=fail_receipt,
+            owner=owner,
+        )
+    )
+    services.register_ingress_receipt_handler(
+        IngressReceiptHandlerBinding(
+            kind="runtime.test.later",
+            handler=later_receipt,
+            owner=owner,
+        )
+    )
+    controller = SessionController(
+        session_id="session-receipt-failure",
+        agent=AgentDefinition(name="main-router", description="router", prompt="Route the turn"),
+        turn_engine=TurnEngine(model_client=FakeModelClient([]), tool_registry=ToolRegistry(), runtime_services=services),
+        transcript_store=transcript_store,
+        cwd=str(tmp_path),
+        system_prompt="System prompt",
+        runtime_services=services,
+    )
+    controller.enqueue_event(
+        InboundEvent(
+            InboundEventType.HOST_EVENT,
+            "Failure still commits ingress",
+            metadata={
+                "admission_kind": "transcript_only",
+                "role": "notification",
+                "private_updates": {"team_id": "team-2"},
+                "replay_outputs": [
+                    {
+                        "output_id": "replay-failure",
+                        "role": "notification",
+                        "content": "Replay committed",
+                    }
+                ],
+                "completion_receipts": [
+                    {"receipt_id": "receipt-fail", "kind": "runtime.test.fail"},
+                    {"receipt_id": "receipt-later", "kind": "runtime.test.later"},
+                ],
+            },
+        )
+    )
+
+    with pytest.raises(RuntimeError, match="runtime.test.fail"):
+        asyncio.run(controller.run_until_idle())
+
+    loaded = asyncio.run(transcript_store.load("session-receipt-failure"))
+    persisted = asyncio.run(transcript_store.load_session_metadata("session-receipt-failure"))
+
+    assert attempted_receipts == ["receipt-fail"]
+    assert [entry.message.text for entry in loaded.entries] == ["Failure still commits ingress"]
+    assert [message.text for message in services.host.current_notifications()] == ["Replay committed"]
+    assert persisted is not None
+    assert persisted["team_id"] == "team-2"
+    assert persisted["last_ingress_completion_receipt_failure"] == {
+        "receipt_id": "receipt-fail",
+        "kind": "runtime.test.fail",
+        "error": "boom",
+    }
