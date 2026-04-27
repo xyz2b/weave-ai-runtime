@@ -52,6 +52,8 @@ from ..jobs import DefaultJobService, InMemoryJobStore, JobScopeFilter, job_reco
 from ..package_profiles import FIRST_PARTY_PACKAGE_SPECS
 from ..runtime_package_manifests import official_runtime_package_manifests
 from ..runtime_package_protocols import (
+    InvocationProviderContribution,
+    InvocationProviderFactoryContext,
     PackageAssemblyStage,
     PackageContext,
     PackageContribution,
@@ -61,7 +63,14 @@ from ..runtime_package_protocols import (
     RuntimePackageManifest,
     preserve_builtin_owner,
 )
-from ..registries import AgentRegistry, DefinitionDiscovery, InvocationRegistry, SkillRegistry, ToolRegistry
+from ..registries import (
+    AgentRegistry,
+    DefinitionDiscovery,
+    InvocationProviderRegistration,
+    InvocationRegistry,
+    SkillRegistry,
+    ToolRegistry,
+)
 from ..runtime_services import DefaultTranscriptService, NoopCompactionService, NoopMemoryService, RuntimeServices
 from ..task_discipline import TaskDisciplineSidecar
 from ..task_lists import (
@@ -122,6 +131,15 @@ class RuntimeKernel:
 class _CachedSkillRoot:
     fingerprint: tuple[tuple[str, str], ...] = ()
     skills: tuple[SkillDefinition, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class _ResolvedPackageInvocationProvider:
+    manifest: RuntimePackageManifest
+    contribution: InvocationProviderContribution
+    provider: Any
+    package_index: int
+    contribution_index: int
 
 
 class _SessionSkillViewResolver:
@@ -1408,14 +1426,17 @@ def build_runtime_kernel(config: RuntimeConfig) -> RuntimeKernel:
     _register_all(tool_registry, discovered.tools, diagnostics)
     _register_all(agent_registry, discovered.agents, diagnostics)
     _register_all(skill_registry, discovered.skills, diagnostics)
-    invocation_registry.register_provider(
-        SkillInvocationProvider(
-            skill_registry,
-            skill_resolver=skill_view_resolver,
-        )
+    _register_runtime_invocation_providers(
+        invocation_registry=invocation_registry,
+        config=config,
+        skill_registry=skill_registry,
+        skill_view_resolver=skill_view_resolver,
+        package_service_contributions=package_service_contributions,
+        distribution=config.resolved_distribution().value,
+        working_directory=config.working_directory,
+        tool_registry=tool_registry,
+        agent_registry=agent_registry,
     )
-    for provider in config.extra_invocation_providers:
-        invocation_registry.register_provider(provider)
     diagnostics.extend(invocation_registry.diagnostics())
     for _, contribution in package_service_contributions:
         diagnostics.extend(contribution.diagnostics)
@@ -1565,6 +1586,10 @@ def _assemble_runtime_stack(kernel: RuntimeKernel) -> RuntimeAssembly:
             "package_lookup": dict(services.metadata.get("package_lookup", {})),
             "compatibility_surfaces": dict(services.metadata.get("compatibility_surfaces", {})),
             "compatibility_projections": dict(services.metadata.get("compatibility_projections", {})),
+            "invocation_provider_paths": dict(services.metadata.get("invocation_provider_paths", {})),
+            "invocation_provider_registrations": [
+                dict(entry) for entry in services.metadata.get("invocation_provider_registrations", ())
+            ],
         },
     )
     _register_job_executors(
@@ -1623,6 +1648,7 @@ def _build_runtime_services(kernel: RuntimeKernel) -> RuntimeServices:
     metadata["compatibility_surfaces"] = {
         "TaskManager": "compatibility-only",
         "runtime_context": "compatibility-only",
+        "RuntimeConfig.extra_invocation_providers": "bounded-compatibility",
         "RuntimeServices.teammates": "compatibility-only",
         "RuntimeServices.team_control_plane": "compatibility-only",
         "RuntimeServices.team_message_bus": "compatibility-only",
@@ -1636,6 +1662,11 @@ def _build_runtime_services(kernel: RuntimeKernel) -> RuntimeServices:
         "HostRuntime.emit_team_event": "bounded-compatibility",
     }
     metadata["package_lookup"] = _package_lookup_metadata()
+    metadata["invocation_provider_paths"] = _invocation_provider_paths_metadata()
+    metadata["invocation_provider_registrations"] = [
+        _serialize_invocation_provider_registration(registration)
+        for registration in kernel.invocation_registry.registrations()
+    ]
     metadata["migration"] = _migration_metadata(
         selected_packages=kernel.first_party_packages,
         distribution=kernel.distribution,
@@ -1770,6 +1801,119 @@ def _with_package_model_binding_baseline(
     )
 
 
+def _register_runtime_invocation_providers(
+    *,
+    invocation_registry: InvocationRegistry,
+    config: RuntimeConfig,
+    skill_registry: SkillRegistry,
+    skill_view_resolver: _SessionSkillViewResolver,
+    package_service_contributions: tuple[tuple[RuntimePackageManifest, PackageContribution], ...],
+    distribution: str,
+    working_directory: Path,
+    tool_registry: ToolRegistry,
+    agent_registry: AgentRegistry,
+) -> None:
+    invocation_registry.register_provider(
+        SkillInvocationProvider(
+            skill_registry,
+            skill_resolver=skill_view_resolver,
+        ),
+        origin="builtin",
+        metadata={
+            "registration_path": "builtin_skill_baseline",
+            "compatibility_status": "baseline",
+        },
+    )
+    for record in _resolve_package_invocation_providers(
+        package_service_contributions=package_service_contributions,
+        config=config,
+        distribution=distribution,
+        working_directory=working_directory,
+        tool_registry=tool_registry,
+        agent_registry=agent_registry,
+        skill_registry=skill_registry,
+        skill_view_resolver=skill_view_resolver,
+    ):
+        invocation_registry.register_provider(
+            record.provider,
+            origin="package",
+            owner=record.contribution.owner,
+            order=record.contribution.order,
+            metadata={
+                "registration_path": "PackageContribution.invocation_providers",
+                "compatibility_status": "canonical-package-path",
+                "package_name": record.manifest.name,
+                "package_role": record.manifest.role,
+                "package_stage": PackageAssemblyStage.SERVICES.value,
+                "package_index": record.package_index,
+                "contribution_index": record.contribution_index,
+                **dict(record.contribution.metadata),
+            },
+        )
+    for index, provider in enumerate(config.extra_invocation_providers):
+        invocation_registry.register_provider(
+            provider,
+            origin="config",
+            order=index,
+            metadata={
+                "registration_path": "RuntimeConfig.extra_invocation_providers",
+                "compatibility_status": "bounded-compatibility",
+                "config_index": index,
+            },
+        )
+
+
+def _resolve_package_invocation_providers(
+    *,
+    package_service_contributions: tuple[tuple[RuntimePackageManifest, PackageContribution], ...],
+    config: RuntimeConfig,
+    distribution: str,
+    working_directory: Path,
+    tool_registry: ToolRegistry,
+    agent_registry: AgentRegistry,
+    skill_registry: SkillRegistry,
+    skill_view_resolver: _SessionSkillViewResolver,
+) -> tuple[_ResolvedPackageInvocationProvider, ...]:
+    records: list[_ResolvedPackageInvocationProvider] = []
+    for package_index, (manifest, contribution) in enumerate(package_service_contributions):
+        ordered_contributions = sorted(
+            contribution.invocation_providers,
+            key=lambda binding: (binding.order, binding.name),
+        )
+        for contribution_index, binding in enumerate(ordered_contributions):
+            provider = binding.build_provider(
+                InvocationProviderFactoryContext(
+                    manifest=manifest,
+                    owner=binding.owner,
+                    distribution=distribution,
+                    working_directory=working_directory,
+                    config=config,
+                    resources={
+                        "tool_registry": tool_registry,
+                        "agent_registry": agent_registry,
+                        "skill_registry": skill_registry,
+                        "skill_view_resolver": skill_view_resolver,
+                        "package_contribution": contribution,
+                    },
+                    metadata={
+                        "package_index": package_index,
+                        "contribution_index": contribution_index,
+                        "registration_path": "PackageContribution.invocation_providers",
+                    },
+                )
+            )
+            records.append(
+                _ResolvedPackageInvocationProvider(
+                    manifest=manifest,
+                    contribution=binding,
+                    provider=provider,
+                    package_index=package_index,
+                    contribution_index=contribution_index,
+                )
+            )
+    return tuple(records)
+
+
 def _resolve_capability_from_contributions(
     package_contributions: tuple[tuple[RuntimePackageManifest, PackageContribution], ...],
     key: str,
@@ -1809,8 +1953,41 @@ def _package_manifest_catalog(
             "role": manifest.role,
             "description": manifest.description,
             "dependencies": list(manifest.dependencies),
+            "invocation_providers": list(manifest.metadata.get("invocation_providers", ())),
         }
         for manifest in manifests
+    }
+
+
+def _invocation_provider_paths_metadata() -> dict[str, Any]:
+    return {
+        "builtin_skill_baseline": "baseline",
+        "package_contributions": "canonical-package-path",
+        "extra_invocation_providers": "bounded-compatibility",
+        "canonical_package_surface": "PackageContribution.invocation_providers",
+        "compatibility_surface": "RuntimeConfig.extra_invocation_providers",
+    }
+
+
+def _serialize_invocation_provider_registration(
+    registration: InvocationProviderRegistration,
+) -> dict[str, Any]:
+    return {
+        "provider_name": registration.name,
+        "origin": registration.origin,
+        "order": registration.order,
+        "sequence": registration.sequence,
+        "owner": (
+            None
+            if registration.owner is None
+            else {
+                "package_name": registration.owner.package_name,
+                "package_role": registration.owner.package_role,
+                "surface": registration.owner.surface,
+                "metadata": dict(registration.owner.metadata),
+            }
+        ),
+        "metadata": dict(registration.metadata),
     }
 
 
@@ -1828,6 +2005,13 @@ def _package_lookup_metadata() -> dict[str, Any]:
         "canonical_control_plane_services": {
             "job_service": "RuntimeServices.job_service",
             "task_list_service": "RuntimeServices.task_list_service",
+        },
+        "canonical_invocation_providers": {
+            "package_contributions": "PackageContribution.invocation_providers",
+            "builtins": "builtin_skill_baseline",
+        },
+        "compatibility_invocation_providers": {
+            "embedder_config": "RuntimeConfig.extra_invocation_providers",
         },
         "canonical_lifecycle_phase": PackageLifecyclePhase.SESSION_OPEN.value,
         "canonical_post_ingress_path": "completion_receipts",

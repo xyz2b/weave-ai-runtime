@@ -9,6 +9,7 @@ from .runtime_package_protocols import (
     CapabilityBinding,
     HostFacetBinding,
     IngressReceiptHandlerBinding,
+    InvocationProviderContribution,
     ModelProviderContribution,
     ModelRouteContribution,
     PackageAssemblyStage,
@@ -416,6 +417,7 @@ _OFFICIAL_RUNTIME_PACKAGE_MANIFESTS = {
             "builtin_tools": list(spec.builtin_tools),
             "builtin_agents": list(spec.builtin_agents),
             "builtin_skills": list(spec.builtin_skills),
+            "invocation_providers": list(spec.invocation_providers),
         },
     )
     for package_name, spec in FIRST_PARTY_PACKAGE_SPECS.items()
@@ -451,6 +453,40 @@ def _load_builtin_skill_contribution(
     return _load_builtin_definitions(context, loader_spec, kind="skill")
 
 
+def _load_invocation_provider_contribution(
+    context: PackageContext,
+    loader_spec: str,
+) -> tuple[InvocationProviderContribution, ...]:
+    factory = load_object(loader_spec)
+    loaded = factory()
+    if loaded is None:
+        contributions: tuple[InvocationProviderContribution, ...] = ()
+    else:
+        raw_items = loaded if isinstance(loaded, Iterable) and not hasattr(loaded, "list_invocations") else (loaded,)
+        resolved: list[InvocationProviderContribution] = []
+        for item in raw_items:
+            if isinstance(item, InvocationProviderContribution):
+                resolved.append(item)
+                continue
+            provider_name = getattr(item, "name", None)
+            resolved.append(
+                InvocationProviderContribution(
+                    name=provider_name,
+                    provider=item,
+                    owner=context.ownership("invocation_provider", provider_name=provider_name),
+                )
+            )
+        contributions = tuple(resolved)
+    expected_names = _expected_invocation_provider_names(context.manifest.name)
+    actual_names = tuple(binding.name for binding in contributions)
+    if actual_names != expected_names:
+        raise ValueError(
+            f"Invocation provider contributions for {context.manifest.name} do not match the "
+            f"published package profile: expected {expected_names}, got {actual_names}"
+        )
+    return contributions
+
+
 def _load_builtin_definitions(
     context: PackageContext,
     loader_spec: str,
@@ -482,6 +518,10 @@ def _expected_builtin_names(package_name: str, kind: str) -> tuple[str, ...]:
     if kind == "skill":
         return spec.builtin_skills
     raise ValueError(f"Unsupported builtin kind: {kind}")
+
+
+def _expected_invocation_provider_names(package_name: str) -> tuple[str, ...]:
+    return FIRST_PARTY_PACKAGE_SPECS[package_name].invocation_providers
 
 
 def _annotated_definitions(

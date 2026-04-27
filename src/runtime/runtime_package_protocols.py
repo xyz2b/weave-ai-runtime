@@ -5,7 +5,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any, Callable, Mapping, Protocol, Sequence
 
-from .definitions import AgentDefinition, SkillDefinition, ToolDefinition
+from .definitions import AgentDefinition, InvocationProvider, SkillDefinition, ToolDefinition
 from .diagnostics import Diagnostic
 from .first_party_loading import load_object
 from .jobs import JobExecutorBinding
@@ -167,10 +167,74 @@ class JobExecutorContribution:
 
 
 @dataclass(frozen=True, slots=True)
+class InvocationProviderFactoryContext:
+    manifest: "RuntimePackageManifest"
+    owner: PackageOwnership
+    distribution: str
+    working_directory: Path
+    config: Any = None
+    resources: Mapping[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "distribution", _require_non_empty(self.distribution, "distribution"))
+        object.__setattr__(self, "working_directory", Path(self.working_directory))
+        object.__setattr__(self, "resources", dict(self.resources))
+        object.__setattr__(self, "metadata", dict(self.metadata))
+
+    def resource(self, name: str, default: Any = None) -> Any:
+        return self.resources.get(name, default)
+
+    def require_resource(self, name: str) -> Any:
+        if name not in self.resources:
+            raise KeyError(
+                f"Invocation provider '{self.name}' requires build resource '{name}'"
+            )
+        return self.resources[name]
+
+    @property
+    def name(self) -> str:
+        return self.owner.metadata.get("provider_name", "") or "<unknown>"
+
+
+@dataclass(frozen=True, slots=True)
+class InvocationProviderContribution:
+    name: str
+    owner: PackageOwnership
+    provider: InvocationProvider | None = None
+    factory: Callable[[InvocationProviderFactoryContext], InvocationProvider] | None = None
+    order: int = 0
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "name", _require_non_empty(self.name, "name"))
+        object.__setattr__(self, "metadata", dict(self.metadata))
+        has_provider = self.provider is not None
+        has_factory = self.factory is not None
+        if has_provider == has_factory:
+            raise ValueError("InvocationProviderContribution requires exactly one of provider or factory")
+        if self.provider is not None:
+            self._validate_provider(self.provider)
+
+    def build_provider(self, context: InvocationProviderFactoryContext) -> InvocationProvider:
+        provider = self.provider if self.provider is not None else self.factory(context)
+        return self._validate_provider(provider)
+
+    def _validate_provider(self, provider: InvocationProvider) -> InvocationProvider:
+        provider_name = _require_non_empty(getattr(provider, "name", None), "provider.name")
+        if provider_name != self.name:
+            raise ValueError(
+                f"Invocation provider contribution '{self.name}' resolved provider '{provider_name}'"
+            )
+        return provider
+
+
+@dataclass(frozen=True, slots=True)
 class PackageContribution:
     builtin_tools: tuple[ToolDefinition, ...] = ()
     builtin_agents: tuple[AgentDefinition, ...] = ()
     builtin_skills: tuple[SkillDefinition, ...] = ()
+    invocation_providers: tuple[InvocationProviderContribution, ...] = ()
     capabilities: tuple[CapabilityBinding, ...] = ()
     lifecycle_participants: tuple[PackageLifecycleParticipant, ...] = ()
     host_facets: tuple[HostFacetBinding, ...] = ()
@@ -186,6 +250,7 @@ class PackageContribution:
         object.__setattr__(self, "builtin_tools", tuple(self.builtin_tools))
         object.__setattr__(self, "builtin_agents", tuple(self.builtin_agents))
         object.__setattr__(self, "builtin_skills", tuple(self.builtin_skills))
+        object.__setattr__(self, "invocation_providers", tuple(self.invocation_providers))
         object.__setattr__(self, "capabilities", tuple(self.capabilities))
         object.__setattr__(self, "lifecycle_participants", tuple(self.lifecycle_participants))
         object.__setattr__(self, "host_facets", tuple(self.host_facets))
@@ -479,6 +544,8 @@ __all__ = [
     "HostFacetResolution",
     "IngressReceiptHandlerBinding",
     "IngressReceiptRegistry",
+    "InvocationProviderContribution",
+    "InvocationProviderFactoryContext",
     "JobExecutorContribution",
     "ModelProviderContribution",
     "ModelRouteContribution",

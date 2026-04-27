@@ -31,6 +31,7 @@ class FirstPartyPackageSpec:
     builtin_tools: tuple[str, ...] = ()
     builtin_agents: tuple[str, ...] = ()
     builtin_skills: tuple[str, ...] = ()
+    invocation_providers: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

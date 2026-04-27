@@ -391,7 +391,7 @@ execution plane 是直接干活的一侧，主要包括：
 2. 构建 registries
 3. 加载 builtins
 4. 执行 definition discovery
-5. 注册 invocation providers
+5. 按固定顺序注册 invocation providers
 6. 构建 `RuntimeServices`
 7. 装配 `TurnEngine`、`AgentRuntime`、`SkillExecutor`
 8. 按需绑定 teammate orchestrator
@@ -400,7 +400,7 @@ execution plane 是直接干活的一侧，主要包括：
 这里有三个重要结论：
 
 - builtins、user definitions、project definitions 共存，但都先进入统一 registry
-- invocation catalog 不是写死的，而是 provider-driven 的解析结果
+- invocation catalog 不是写死的，而是 provider-driven 的解析结果；provider 注册顺序固定为 built-in skill baseline -> package contribution -> `RuntimeConfig.extra_invocation_providers`
 - host 和 model provider 都是 runtime 的外接边界，而不是 turn engine 内部硬编码依赖
 
 ## 6. 请求流转
@@ -763,7 +763,8 @@ host 不是外围包装层，而是 runtime 的正式集成边界。
 
 ### 13.4 Invocation 扩展
 
-通过 `extra_invocation_providers` 向 invocation registry 增加额外能力源。
+package-owned invocation source 应通过 `PackageContribution.invocation_providers` 进入 shared invocation registry。  
+`extra_invocation_providers` 继续保留，但应视为 embedder-facing 的 bounded compatibility / override path。
 
 ### 13.5 Memory Policy 扩展
 
@@ -958,7 +959,7 @@ sequenceDiagram
     Kernel->>Kernel: load builtin pack
     Kernel->>Discovery: discover()
     Discovery-->>Kernel: tools / agents / skills
-    Kernel->>Kernel: register invocation providers
+    Kernel->>Kernel: register built-in / package / config invocation providers
     Kernel->>Services: _build_runtime_services()
     Caller->>Runtime: assemble_runtime(config)
     Runtime->>Runtime: assemble TurnEngine

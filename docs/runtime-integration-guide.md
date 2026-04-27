@@ -223,6 +223,8 @@ Runtime 核心流转本身由框架收口，用户通常不应该改 `TurnEngine
 当前 runtime metadata 也会显式标这些边界：
 
 - `runtime.services.metadata["package_lookup"]`：canonical capability / host-facet / lifecycle / receipt path
+- `runtime.services.metadata["invocation_provider_paths"]`：built-in baseline、package canonical path、config compatibility path
+- `runtime.services.metadata["invocation_provider_registrations"]`：当前 runtime 里实际生效的 provider 注册顺序、owner、origin 与 registration metadata
 - `runtime.metadata["package_lookup"]`：`RuntimeAssembly` 侧同步暴露的 owner-layer lookup guidance
 - `runtime.services.metadata["compatibility_surfaces"]`：仍保留但非 canonical 的 wrapper / projection
 - `runtime.services.metadata["compatibility_projections"]`：当前 projection 仍映射到哪些 capability key
@@ -979,9 +981,11 @@ config.default_model_route = "research"
 
 ### 8.3 Extra Invocation Providers
 
-如果你的产品不只想暴露 skill，还想纳入 slash command、plugin command、MCP prompt 之类的能力源，应接 `extra_invocation_providers`。
+如果你在做 package-owned invocation source，canonical path 是 `PackageContribution.invocation_providers`。  
+如果你在做宿主侧覆盖、兼容接入，或者不想引入 package manifest，再接 `extra_invocation_providers`。
 
-这让更多能力源可以进入统一 invocation catalog，而不是让 host 再自己造一套能力列表。
+这让更多能力源可以进入统一 invocation catalog，而不是让 host 再自己造一套能力列表。  
+runtime 会按固定顺序注册 provider：built-in skill baseline -> package contribution -> `RuntimeConfig.extra_invocation_providers`。
 
 ### 8.4 Runtime-Owned Team Mode
 

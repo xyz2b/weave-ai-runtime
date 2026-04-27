@@ -583,9 +583,20 @@ Invocation catalog 不只接 skill。
 
 用户视角怎么扩：
 
-1. 实现一个 `InvocationProvider`。
-2. 把它放进 `RuntimeConfig.extra_invocation_providers`。
+1. 如果这是 package-owned invocation source，优先通过 `PackageContribution.invocation_providers` 注册。
+2. 如果这是宿主侧兼容接入、覆盖，或者临时不想引入 package manifest，再放进 `RuntimeConfig.extra_invocation_providers`。
 3. 用 `resolve_invocations()` / `visible_invocations()` / `invocation_diagnostics()` 给 UI 提供统一能力图。
+
+runtime 会按固定顺序注册 provider：
+
+- built-in skill baseline
+- package contribution
+- `RuntimeConfig.extra_invocation_providers`
+
+调试时可看：
+
+- `runtime.services.metadata["invocation_provider_paths"]`
+- `runtime.services.metadata["invocation_provider_registrations"]`
 
 ## 4. 基础设施与持久化扩展点
 
@@ -1083,7 +1094,7 @@ runtime.services.memory = LongTermMemoryService(
   -> model_providers + model_routes + default_model_route
 
 我想把 slash / plugin / MCP prompt 也纳入统一能力图
-  -> InvocationProvider / extra_invocation_providers
+  -> PackageContribution.invocation_providers / RuntimeConfig.extra_invocation_providers
 
 我想持久化 transcript
   -> TranscriptStore

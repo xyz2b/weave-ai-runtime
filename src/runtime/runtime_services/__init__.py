@@ -550,6 +550,7 @@ class RuntimeServices:
             "package_name": manifest.name,
             "package_role": manifest.role,
             "stage": stage,
+            "invocation_providers": [binding.name for binding in contribution.invocation_providers],
             "capabilities": [binding.key for binding in contribution.capabilities],
             "lifecycle_participants": [participant.name for participant in contribution.lifecycle_participants],
             "host_facets": [facet.name for facet in contribution.host_facets],

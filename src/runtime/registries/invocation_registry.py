@@ -1,40 +1,91 @@
 from __future__ import annotations
 
-from typing import Sequence
+from dataclasses import dataclass, field, replace
+from typing import Any, Mapping, Sequence
 
 from ..diagnostics import Diagnostic, DiagnosticSeverity
 from ..definitions import InvocationDefinition, InvocationProvider, InvocationResolutionContext, ResolvedInvocationCatalog
+from ..runtime_package_protocols import PackageOwnership
+
+
+@dataclass(frozen=True, slots=True)
+class InvocationProviderRegistration:
+    name: str
+    provider: InvocationProvider
+    origin: str
+    owner: PackageOwnership | None = None
+    order: int = 0
+    sequence: int = 0
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "name", str(self.name).strip())
+        object.__setattr__(self, "origin", str(self.origin).strip())
+        object.__setattr__(self, "metadata", dict(self.metadata))
 
 
 class InvocationRegistry:
     def __init__(self, providers: Sequence[InvocationProvider] = ()) -> None:
-        self._providers: dict[str, InvocationProvider] = {}
+        self._providers: dict[str, InvocationProviderRegistration] = {}
         self._provider_diagnostics: list[Diagnostic] = []
+        self._registration_sequence = 0
         for provider in providers:
             self.register_provider(provider)
 
-    def register_provider(self, provider: InvocationProvider) -> InvocationProvider:
-        existing = self._providers.get(provider.name)
-        if existing is not None and existing is not provider:
+    def register_provider(
+        self,
+        provider: InvocationProvider,
+        *,
+        origin: str = "runtime",
+        owner: PackageOwnership | None = None,
+        order: int = 0,
+        metadata: Mapping[str, Any] | None = None,
+    ) -> InvocationProvider:
+        provider_name = str(getattr(provider, "name", "")).strip()
+        if not provider_name:
+            raise ValueError("Invocation providers must declare a non-empty name")
+        registration = InvocationProviderRegistration(
+            name=provider_name,
+            provider=provider,
+            origin=origin,
+            owner=owner,
+            order=order,
+            sequence=self._registration_sequence,
+            metadata=dict(metadata or {}),
+        )
+        self._registration_sequence += 1
+        existing = self._providers.get(provider_name)
+        if existing is not None and existing.provider is not provider:
             self._provider_diagnostics.append(
                 Diagnostic(
                     severity=DiagnosticSeverity.WARNING,
                     code="invocation_provider_replaced",
                     message=(
-                        f"Invocation provider '{provider.name}' replaced an existing provider registration."
+                        f"Invocation provider '{provider_name}' replaced an existing provider registration."
                     ),
                     definition_type="invocation_provider",
-                    location=provider.name,
+                    source=registration.origin,
+                    location=provider_name,
+                    details={
+                        "replaced_origin": existing.origin,
+                        "replacement_origin": registration.origin,
+                        "replaced_owner": _serialize_owner(existing.owner),
+                        "replacement_owner": _serialize_owner(registration.owner),
+                    },
                 )
             )
-        self._providers[provider.name] = provider
+        self._providers[provider_name] = registration
         return provider
 
     def remove_provider(self, name: str) -> InvocationProvider | None:
-        return self._providers.pop(name, None)
+        registration = self._providers.pop(name, None)
+        return None if registration is None else registration.provider
 
     def providers(self) -> tuple[InvocationProvider, ...]:
-        return tuple(self._providers.values())
+        return tuple(record.provider for record in self.registrations())
+
+    def registrations(self) -> tuple[InvocationProviderRegistration, ...]:
+        return tuple(sorted(self._providers.values(), key=lambda record: record.sequence))
 
     def definitions(self) -> tuple[InvocationDefinition, ...]:
         definitions, _ = self._collect_definitions()
@@ -50,12 +101,14 @@ class InvocationRegistry:
     ) -> tuple[tuple[InvocationDefinition, ...], tuple[Diagnostic, ...]]:
         collected: dict[str, InvocationDefinition] = {}
         diagnostics = list(self._provider_diagnostics)
-        for provider in self._providers.values():
+        for registration in self.registrations():
+            provider = registration.provider
             if context is not None and hasattr(provider, "list_invocations_for_context"):
                 definitions = provider.list_invocations_for_context(context)
             else:
                 definitions = provider.list_invocations()
             for definition in definitions:
+                definition = _annotate_provider_metadata(definition, registration)
                 existing = collected.get(definition.name)
                 if existing is None:
                     collected[definition.name] = definition
@@ -126,4 +179,37 @@ def _invocation_tiebreak_key(definition: InvocationDefinition) -> tuple[str, str
     return (definition.origin.label, definition.source_kind.value, target_name)
 
 
-__all__ = ["InvocationRegistry"]
+def _serialize_owner(owner: PackageOwnership | None) -> dict[str, Any] | None:
+    if owner is None:
+        return None
+    return {
+        "package_name": owner.package_name,
+        "package_role": owner.package_role,
+        "surface": owner.surface,
+        "metadata": dict(owner.metadata),
+    }
+
+
+def _annotate_provider_metadata(
+    definition: InvocationDefinition,
+    registration: InvocationProviderRegistration,
+) -> InvocationDefinition:
+    metadata = dict(definition.metadata)
+    owner = _serialize_owner(registration.owner)
+    registration_metadata = {
+        "name": registration.name,
+        "origin": registration.origin,
+        "order": registration.order,
+        "sequence": registration.sequence,
+        "owner": owner,
+        "metadata": dict(registration.metadata),
+    }
+    metadata["invocation_provider_registration"] = registration_metadata
+    metadata["invocation_provider_name"] = registration.name
+    metadata["invocation_provider_origin"] = registration.origin
+    if owner is not None:
+        metadata["invocation_provider_owner"] = owner
+    return replace(definition, metadata=metadata)
+
+
+__all__ = ["InvocationProviderRegistration", "InvocationRegistry"]

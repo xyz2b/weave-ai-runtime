@@ -391,6 +391,15 @@ def _capability_metadata(definition: InvocationDefinition) -> dict[str, Any]:
     if policy is not None:
         metadata["target_kind"] = policy.target_kind.value
         metadata["target_name"] = policy.target_name
+    provider_name = definition.metadata.get("invocation_provider_name")
+    if provider_name is not None:
+        metadata["provider_name"] = provider_name
+    provider_origin = definition.metadata.get("invocation_provider_origin")
+    if provider_origin is not None:
+        metadata["provider_origin"] = provider_origin
+    provider_owner = definition.metadata.get("invocation_provider_owner")
+    if provider_owner is not None:
+        metadata["provider_owner"] = provider_owner
     return metadata
 
 
@@ -406,6 +415,9 @@ def _diagnostics_metadata(definition: InvocationDefinition) -> dict[str, Any]:
     dynamic_root = definition.metadata.get("dynamic_root")
     if dynamic_root is not None:
         metadata["dynamic_root"] = dynamic_root
+    provider_registration = definition.metadata.get("invocation_provider_registration")
+    if provider_registration is not None:
+        metadata["provider_registration"] = provider_registration
     return metadata
 
 
