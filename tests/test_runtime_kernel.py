@@ -806,7 +806,12 @@ def test_runtime_task_manager_compatibility_wrapper_is_created_lazily(tmp_path: 
     assert compat_task_manager is runtime.services.task_manager
     assert runtime.services.tasks.manager is compat_task_manager
     assert runtime._task_manager is compat_task_manager
+    assert compat_task_manager.job_service is runtime.services.job_service
     assert runtime.services.metadata["compatibility_accesses"] == ["TaskManager"]
+    assert runtime.services.metadata["package_lookup"]["canonical_control_plane_services"] == {
+        "job_service": "RuntimeServices.job_service",
+        "task_list_service": "RuntimeServices.task_list_service",
+    }
 
 
 def test_host_assembly_entrypoint_binds_host(tmp_path: Path) -> None:

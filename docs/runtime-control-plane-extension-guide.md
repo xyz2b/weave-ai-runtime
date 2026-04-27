@@ -252,6 +252,34 @@ runtime = assemble_runtime(config)
 
 如果 executor 构造需要 `RuntimeServices`、`RuntimeKernel` 或 project config，应改用 factory-backed binding，而不是在 assemble 后直接 patch runtime internals。
 
+### 3.6 Package-Owned Team / Workflow Lookup Contract
+
+runtime-owned team / workflow path 现在应把下面这些 surface 当 canonical authority：
+
+- capability lookup
+  - `runtime.team.control_plane`
+  - `runtime.team.message_bus`
+  - `runtime.team.workflows`
+- host facet lookup
+  - `runtime.team.workflows`
+- shared control-plane services
+  - `RuntimeServices.job_service`
+  - `RuntimeServices.task_list_service`
+
+而下面这些 surface 现在只应视为 compatibility-only wrapper / projection：
+
+- `RuntimeServices.team_*`
+- `RuntimeAssembly.team_*`
+- `BoundHostRuntime.list_team_workflows()`
+- `BoundHostRuntime.respond_team_workflow()`
+- `TaskManager`
+
+bounded absence 语义也需要保持明确：
+
+- list helper 在相关 package 未装配时返回空结果
+- respond helper 在相关 package 未装配时抛出 explicit not-available failure
+- `HostRuntime.emit_team_event()` 继续只是 bounded compatibility sink，不是 team state authority
+
 ## 4. Permission 与 Elicitation 接入规范
 
 ### 4.1 Permission 的位置

@@ -34,6 +34,7 @@ from runtime.runtime_package_protocols import (
 from runtime.runtime_services import RuntimeServices
 from runtime.session_runtime import FileTranscriptStore
 from runtime.task_lists import FileTaskListStore
+from runtime.team_workflows import TeamWorkflowError
 from runtime.turn_engine import ModelStreamEvent, ModelStreamEventType
 
 
@@ -186,6 +187,16 @@ def test_manifest_backed_team_runtime_registers_capabilities_and_host_facet(tmp_
     assert runtime.services.require_capability(RuntimeCapabilityKey.TEAM_CONTROL_PLANE.value) is runtime.team_control_plane
     assert runtime.services.require_capability(RuntimeCapabilityKey.TEAM_WORKFLOWS.value) is runtime.team_workflows
     assert runtime.services.metadata["compatibility_projections"]["team_control_plane"] == RuntimeCapabilityKey.TEAM_CONTROL_PLANE.value
+    assert runtime.services.metadata["package_lookup"]["canonical_capabilities"] == {
+        "team_control_plane": RuntimeCapabilityKey.TEAM_CONTROL_PLANE.value,
+        "team_message_bus": RuntimeCapabilityKey.TEAM_MESSAGE_BUS.value,
+        "team_workflows": RuntimeCapabilityKey.TEAM_WORKFLOWS.value,
+    }
+    assert runtime.services.metadata["package_lookup"]["canonical_host_facets"] == {
+        "team_workflows": RuntimeHostFacetKey.TEAM_WORKFLOWS.value,
+    }
+    assert "TaskManager" in runtime.services.metadata["package_lookup"]["compatibility_wrappers"]
+    assert runtime.metadata["package_lookup"] == runtime.services.metadata["package_lookup"]
     assert {
         participant.name
         for participant in runtime.services.lifecycle_participants(PackageLifecyclePhase.RUNTIME_RECOVERY)
@@ -199,6 +210,32 @@ def test_manifest_backed_team_runtime_registers_capabilities_and_host_facet(tmp_
     assert facet.available is True
     listed = asyncio.run(facet.facet.list_workflows(team_id=None, session_id=None, pending_only=True))
     assert listed == ()
+
+
+def test_runtime_team_compatibility_projections_delegate_to_canonical_capabilities(tmp_path: Path) -> None:
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            distribution=RuntimeDistribution.DEFAULT,
+        )
+    )
+
+    canonical_plane = runtime.services.require_capability(RuntimeCapabilityKey.TEAM_CONTROL_PLANE.value)
+    canonical_bus = runtime.services.require_capability(RuntimeCapabilityKey.TEAM_MESSAGE_BUS.value)
+    canonical_workflows = runtime.services.require_capability(RuntimeCapabilityKey.TEAM_WORKFLOWS.value)
+    runtime.services.team_control_plane = object()
+    runtime.services.team_message_bus = object()
+    runtime.services.team_workflows = object()
+    runtime.team_control_plane = object()
+    runtime.team_message_bus = object()
+    runtime.team_workflows = object()
+
+    assert runtime.services.team_control_plane is canonical_plane
+    assert runtime.services.team_message_bus is canonical_bus
+    assert runtime.services.team_workflows is canonical_workflows
+    assert runtime.team_control_plane is canonical_plane
+    assert runtime.team_message_bus is canonical_bus
+    assert runtime.team_workflows is canonical_workflows
 
 
 def test_runtime_workflow_helpers_prefer_canonical_lookup_over_compatibility_slots(tmp_path: Path) -> None:
@@ -250,6 +287,35 @@ def test_runtime_workflow_helpers_prefer_canonical_lookup_over_compatibility_slo
     assert pending[0]["workflow_kind"] == "permission"
     assert updated["workflow_id"] == pending[0]["workflow_id"]
     assert updated["status"] == "rejected"
+
+
+def test_bound_host_workflow_helpers_preserve_bounded_absent_package_behavior(tmp_path: Path) -> None:
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            distribution=RuntimeDistribution.CORE,
+        )
+    )
+
+    async def scenario():
+        async with runtime.bind_host(NullHostAdapter(name="compat")) as bound:
+            listed = await bound.list_team_workflows(team_id="team-core", pending_only=True)
+            missing = None
+            try:
+                await bound.respond_team_workflow(
+                    "workflow-core",
+                    action="reject",
+                    team_id="team-core",
+                )
+            except TeamWorkflowError as exc:
+                missing = exc
+            return listed, missing
+
+    listed, missing = asyncio.run(scenario())
+
+    assert listed == ()
+    assert missing is not None
+    assert missing.code == "not_available"
 
 
 def test_non_participating_runtime_reports_host_facet_not_available(tmp_path: Path) -> None:

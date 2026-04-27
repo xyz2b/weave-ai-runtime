@@ -26,10 +26,19 @@ from ..runtime_package_protocols import (
     PackageLifecyclePhase,
     PackageLifecycleRegistry,
     RuntimeCapabilityKey,
+    RuntimeHostFacetKey,
     RuntimePackageManifest,
 )
 from ..tasking import TaskManager
 from ..task_lists import DefaultTaskListService
+
+
+_COMPATIBILITY_CAPABILITY_PROJECTIONS = {
+    "teammates": RuntimeCapabilityKey.TEAMMATES.value,
+    "team_control_plane": RuntimeCapabilityKey.TEAM_CONTROL_PLANE.value,
+    "team_message_bus": RuntimeCapabilityKey.TEAM_MESSAGE_BUS.value,
+    "team_workflows": RuntimeCapabilityKey.TEAM_WORKFLOWS.value,
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -277,6 +286,14 @@ class RuntimeServices:
     runtime_lifecycle_task: asyncio.Task[tuple[dict[str, Any], ...]] | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
+    def __getattribute__(self, name: str) -> Any:
+        capability_key = _COMPATIBILITY_CAPABILITY_PROJECTIONS.get(name)
+        if capability_key is not None:
+            # Retained team_* projections stay delegated to the capability registry.
+            fallback = object.__getattribute__(self, name)
+            return object.__getattribute__(self, "resolve_capability")(capability_key, fallback)
+        return object.__getattribute__(self, name)
+
     def __post_init__(self) -> None:
         manager = self.tasks.manager
         if manager is not None:
@@ -438,28 +455,16 @@ class RuntimeServices:
         return self.capability_registry.require(key)
 
     def resolve_teammates(self) -> Any:
-        return self.resolve_capability(
-            RuntimeCapabilityKey.TEAMMATES.value,
-            self.teammates,
-        )
+        return self.resolve_capability(RuntimeCapabilityKey.TEAMMATES.value)
 
     def resolve_team_control_plane(self) -> Any:
-        return self.resolve_capability(
-            RuntimeCapabilityKey.TEAM_CONTROL_PLANE.value,
-            self.team_control_plane,
-        )
+        return self.resolve_capability(RuntimeCapabilityKey.TEAM_CONTROL_PLANE.value)
 
     def resolve_team_message_bus(self) -> Any:
-        return self.resolve_capability(
-            RuntimeCapabilityKey.TEAM_MESSAGE_BUS.value,
-            self.team_message_bus,
-        )
+        return self.resolve_capability(RuntimeCapabilityKey.TEAM_MESSAGE_BUS.value)
 
     def resolve_team_workflows(self) -> Any:
-        return self.resolve_capability(
-            RuntimeCapabilityKey.TEAM_WORKFLOWS.value,
-            self.team_workflows,
-        )
+        return self.resolve_capability(RuntimeCapabilityKey.TEAM_WORKFLOWS.value)
 
     def register_lifecycle_participant(self, participant: PackageLifecycleParticipant) -> None:
         self.lifecycle_registry.register(participant)
@@ -478,6 +483,9 @@ class RuntimeServices:
 
     def require_host_facet(self, name: str) -> Any:
         return self.host_facets.require(name)
+
+    def resolve_team_workflow_host_facet(self) -> HostFacetResolution:
+        return self.resolve_host_facet(RuntimeHostFacetKey.TEAM_WORKFLOWS.value)
 
     def register_ingress_receipt_handler(
         self,

@@ -91,6 +91,12 @@ from ..execution_policy import DelegationPolicyError, default_delegation_policy_
 
 SKILL_DYNAMIC_ROOTS_KEY = "skill_dynamic_roots"
 _UNSET = object()
+_COMPATIBILITY_RUNTIME_ASSEMBLY_PROJECTIONS = {
+    "teammates": RuntimeCapabilityKey.TEAMMATES.value,
+    "team_control_plane": RuntimeCapabilityKey.TEAM_CONTROL_PLANE.value,
+    "team_message_bus": RuntimeCapabilityKey.TEAM_MESSAGE_BUS.value,
+    "team_workflows": RuntimeCapabilityKey.TEAM_WORKFLOWS.value,
+}
 
 
 @dataclass(slots=True)
@@ -250,6 +256,17 @@ class RuntimeAssembly:
     team_workflows: Any = None
     system_prompt: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
+
+    def __getattribute__(self, name: str) -> Any:
+        capability_key = _COMPATIBILITY_RUNTIME_ASSEMBLY_PROJECTIONS.get(name)
+        if capability_key is not None:
+            # RuntimeAssembly keeps team_* projections as compatibility-only views.
+            fallback = object.__getattribute__(self, name)
+            services = object.__getattribute__(self, "services")
+            if services is None:
+                return fallback
+            return services.resolve_capability(capability_key, fallback)
+        return object.__getattribute__(self, name)
 
     @property
     def task_manager(self) -> TaskManager:
@@ -926,7 +943,7 @@ class RuntimeAssembly:
         pending_only: bool | None = True,
     ) -> tuple[dict[str, Any], ...]:
         await self.wait_until_ready()
-        facet = self.services.resolve_host_facet(RuntimeHostFacetKey.TEAM_WORKFLOWS.value)
+        facet = self.services.resolve_team_workflow_host_facet()
         if facet.available and facet.facet is not None:
             records = await facet.facet.list_workflows(
                 team_id=team_id,
@@ -934,11 +951,11 @@ class RuntimeAssembly:
                 pending_only=pending_only,
             )
             return tuple(_serialize_team_workflow_record(record) for record in records)
-        service = self.services.resolve_capability(RuntimeCapabilityKey.TEAM_WORKFLOWS.value)
+        service = self.services.resolve_team_workflows()
         if service is None:
             return ()
         resolved_team_id = team_id
-        team_control_plane = self.services.resolve_capability(RuntimeCapabilityKey.TEAM_CONTROL_PLANE.value)
+        team_control_plane = self.services.resolve_team_control_plane()
         if resolved_team_id is None and session_id is not None and team_control_plane is not None:
             team = team_control_plane.active_team_for_leader_session(session_id)
             if team is not None:
@@ -955,7 +972,7 @@ class RuntimeAssembly:
         payload: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         await self.wait_until_ready()
-        facet = self.services.resolve_host_facet(RuntimeHostFacetKey.TEAM_WORKFLOWS.value)
+        facet = self.services.resolve_team_workflow_host_facet()
         if facet.available and facet.facet is not None:
             record = await facet.facet.respond(
                 workflow_id,
@@ -964,7 +981,7 @@ class RuntimeAssembly:
                 payload=None if payload is None else dict(payload),
             )
             return _serialize_team_workflow_record(record)
-        service = self.services.resolve_capability(RuntimeCapabilityKey.TEAM_WORKFLOWS.value)
+        service = self.services.resolve_team_workflows()
         if service is None:
             raise RuntimeError("Runtime team workflow service is not configured")
         record = await service.respond_host(
@@ -1545,6 +1562,9 @@ def _assemble_runtime_stack(kernel: RuntimeKernel) -> RuntimeAssembly:
             "distribution": kernel.distribution,
             "first_party_packages": list(kernel.first_party_packages),
             "package_runtime_contributions": [manifest.name for manifest, _ in runtime_package_contributions],
+            "package_lookup": dict(services.metadata.get("package_lookup", {})),
+            "compatibility_surfaces": dict(services.metadata.get("compatibility_surfaces", {})),
+            "compatibility_projections": dict(services.metadata.get("compatibility_projections", {})),
         },
     )
     _register_job_executors(
@@ -1613,6 +1633,7 @@ def _build_runtime_services(kernel: RuntimeKernel) -> RuntimeServices:
         "BoundHostRuntime.respond_team_workflow": "compatibility-wrapper",
         "HostRuntime.emit_team_event": "bounded-compatibility",
     }
+    metadata["package_lookup"] = _package_lookup_metadata()
     metadata["migration"] = _migration_metadata(
         selected_packages=kernel.first_party_packages,
         distribution=kernel.distribution,
@@ -1788,6 +1809,38 @@ def _package_manifest_catalog(
             "dependencies": list(manifest.dependencies),
         }
         for manifest in manifests
+    }
+
+
+def _package_lookup_metadata() -> dict[str, Any]:
+    return {
+        "canonical_capabilities": {
+            "team_control_plane": RuntimeCapabilityKey.TEAM_CONTROL_PLANE.value,
+            "team_message_bus": RuntimeCapabilityKey.TEAM_MESSAGE_BUS.value,
+            "team_workflows": RuntimeCapabilityKey.TEAM_WORKFLOWS.value,
+        },
+        "canonical_host_facets": {
+            "team_workflows": RuntimeHostFacetKey.TEAM_WORKFLOWS.value,
+        },
+        "canonical_control_plane_services": {
+            "job_service": "RuntimeServices.job_service",
+            "task_list_service": "RuntimeServices.task_list_service",
+        },
+        "canonical_lifecycle_phase": PackageLifecyclePhase.SESSION_OPEN.value,
+        "canonical_post_ingress_path": "completion_receipts",
+        "compatibility_wrappers": [
+            "TaskManager",
+            "RuntimeServices.team_*",
+            "RuntimeAssembly.team_*",
+            "BoundHostRuntime.list_team_workflows",
+            "BoundHostRuntime.respond_team_workflow",
+            "HostRuntime.emit_team_event",
+        ],
+        "wrapper_exit_criteria": [
+            "runtime-owned workflow helpers resolve through capability lookup or host facets only",
+            "team compatibility projections stop being required by runtime-owned primary paths",
+            "TaskManager usage remains compatibility-scoped behind JobService and TaskListService",
+        ],
     }
 
 
@@ -1980,30 +2033,7 @@ def _migration_metadata(
             "batch": "runtime-builtin-workflows",
             "simplify": "runtime-builtin-workflows",
         },
-        "package_lookup": {
-            "canonical_capabilities": {
-                "team_control_plane": RuntimeCapabilityKey.TEAM_CONTROL_PLANE.value,
-                "team_message_bus": RuntimeCapabilityKey.TEAM_MESSAGE_BUS.value,
-                "team_workflows": RuntimeCapabilityKey.TEAM_WORKFLOWS.value,
-            },
-            "canonical_host_facets": {
-                "team_workflows": RuntimeHostFacetKey.TEAM_WORKFLOWS.value,
-            },
-            "canonical_lifecycle_phase": PackageLifecyclePhase.SESSION_OPEN.value,
-            "canonical_post_ingress_path": "completion_receipts",
-            "compatibility_wrappers": [
-                "RuntimeServices.team_*",
-                "RuntimeAssembly.team_*",
-                "BoundHostRuntime.list_team_workflows",
-                "BoundHostRuntime.respond_team_workflow",
-                "HostRuntime.emit_team_event",
-            ],
-            "wrapper_exit_criteria": [
-                "runtime-owned workflow helpers resolve through capability lookup or host facets only",
-                "team compatibility projections stop being required by runtime-owned primary paths",
-                "TaskManager usage remains compatibility-scoped behind JobService and TaskListService",
-            ],
-        },
+        "package_lookup": _package_lookup_metadata(),
     }
     return metadata
 

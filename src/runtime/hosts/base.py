@@ -501,7 +501,11 @@ class BoundHostRuntime:
 
         service = self._resolve_runtime_capability(RuntimeCapabilityKey.TEAM_WORKFLOWS.value)
         if service is None or not hasattr(service, "get"):
-            raise RuntimeError("Runtime team workflow service is not configured")
+            raise TeamWorkflowError(
+                "not_available",
+                "Runtime team workflow service is not available in the active distribution",
+                team_id=team_id,
+            )
         normalized_workflow_id = str(workflow_id).strip()
         record = service.get(normalized_workflow_id)
         if record is None or record.team_id != team_id:

@@ -223,8 +223,28 @@ Runtime 核心流转本身由框架收口，用户通常不应该改 `TurnEngine
 当前 runtime metadata 也会显式标这些边界：
 
 - `runtime.services.metadata["package_lookup"]`：canonical capability / host-facet / lifecycle / receipt path
+- `runtime.metadata["package_lookup"]`：`RuntimeAssembly` 侧同步暴露的 owner-layer lookup guidance
 - `runtime.services.metadata["compatibility_surfaces"]`：仍保留但非 canonical 的 wrapper / projection
 - `runtime.services.metadata["compatibility_projections"]`：当前 projection 仍映射到哪些 capability key
+
+其中 package-owned team / workflow lookup 当前应按下面的 machine-readable contract 理解：
+
+- canonical capability keys
+  - `runtime.team.control_plane`
+  - `runtime.team.message_bus`
+  - `runtime.team.workflows`
+- canonical host facet key
+  - `runtime.team.workflows`
+- canonical control-plane services
+  - `RuntimeServices.job_service`
+  - `RuntimeServices.task_list_service`
+- retained compatibility wrappers
+  - `TaskManager`
+  - `RuntimeServices.team_*`
+  - `RuntimeAssembly.team_*`
+  - `BoundHostRuntime.list_team_workflows()`
+  - `BoundHostRuntime.respond_team_workflow()`
+  - `HostRuntime.emit_team_event()`
 
 判断一个 wrapper 是否还该继续保留，可以先看这几个 exit criteria：
 

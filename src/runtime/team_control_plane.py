@@ -600,11 +600,7 @@ class RuntimeTeamRunnerManager:
         team_id = team.team_id
         member_id = member.member_id
         key = (team_id, member_id)
-        workflow_service = (
-            self._runtime_services.resolve_team_workflows()
-            if hasattr(self._runtime_services, "resolve_team_workflows")
-            else getattr(self._runtime_services, "team_workflows", None)
-        )
+        workflow_service = self._runtime_services.resolve_team_workflows()
         if workflow_service is None:
             task = self._drain_tasks.pop(key, None)
             if task is not None and not task.done():

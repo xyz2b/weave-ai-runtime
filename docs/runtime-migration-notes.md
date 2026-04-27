@@ -164,6 +164,31 @@
 - `TaskManager` 只在 compatibility facade 里按需 materialize，而不是 runtime-owned primary path 的默认 state owner
 - `emit_team_event()` 继续只保留为 bounded compatibility sink，直到出现真正共享的 package event contract
 
+当前仓库里需要优先记住的 canonical lookup key / wrapper status 也可以直接按下面核对：
+
+- canonical capability keys
+  - `runtime.team.control_plane`
+  - `runtime.team.message_bus`
+  - `runtime.team.workflows`
+- canonical host facet key
+  - `runtime.team.workflows`
+- canonical control-plane services
+  - `RuntimeServices.job_service`
+  - `RuntimeServices.task_list_service`
+- compatibility-only wrappers
+  - `TaskManager`
+  - `RuntimeServices.team_*`
+  - `RuntimeAssembly.team_*`
+  - `BoundHostRuntime.list_team_workflows()`
+  - `BoundHostRuntime.respond_team_workflow()`
+  - `HostRuntime.emit_team_event()`
+
+这些信息现在也会直接写进：
+
+- `runtime.services.metadata["package_lookup"]`
+- `runtime.metadata["package_lookup"]`
+- `runtime.services.metadata["compatibility_surfaces"]`
+
 ## 4.6 Explicit Non-Goals
 
 这次边界收敛明确不是下面这些事情：

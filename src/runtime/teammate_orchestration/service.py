@@ -203,13 +203,20 @@ class PersistentTeammateHostBridge:
     def workflow_service(self) -> RuntimeTeamWorkflowService | None:
         return self._orchestrator.workflow_service
 
-    def _leader_member_id(self, team_id: str) -> str | None:
+    def _team_control_plane(self) -> Any:
         services = getattr(self._orchestrator, "_runtime_services", None)
-        control_plane = (
-            services.resolve_team_control_plane()
-            if services is not None and hasattr(services, "resolve_team_control_plane")
-            else getattr(services, "team_control_plane", None)
-        )
+        if services is None:
+            return None
+        return services.resolve_team_control_plane()
+
+    def _team_message_bus(self) -> Any:
+        services = getattr(self._orchestrator, "_runtime_services", None)
+        if services is None:
+            return None
+        return services.resolve_team_message_bus()
+
+    def _leader_member_id(self, team_id: str) -> str | None:
+        control_plane = self._team_control_plane()
         if control_plane is None or not hasattr(control_plane, "get_team"):
             return None
         team = control_plane.get_team(team_id)
@@ -229,23 +236,13 @@ class PersistentTeammateHostBridge:
         return getattr(member, "name", None) or teammate_id
 
     def _member_record(self, team_id: str, member_id: str) -> Any:
-        services = getattr(self._orchestrator, "_runtime_services", None)
-        control_plane = (
-            services.resolve_team_control_plane()
-            if services is not None and hasattr(services, "resolve_team_control_plane")
-            else getattr(services, "team_control_plane", None)
-        )
+        control_plane = self._team_control_plane()
         if control_plane is None or not hasattr(control_plane, "get_member"):
             return None
         return control_plane.get_member(team_id, member_id)
 
     def _team_record(self, team_id: str) -> Any:
-        services = getattr(self._orchestrator, "_runtime_services", None)
-        control_plane = (
-            services.resolve_team_control_plane()
-            if services is not None and hasattr(services, "resolve_team_control_plane")
-            else getattr(services, "team_control_plane", None)
-        )
+        control_plane = self._team_control_plane()
         if control_plane is None or not hasattr(control_plane, "get_team"):
             return None
         return control_plane.get_team(team_id)
@@ -295,12 +292,7 @@ class PersistentTeammateHostBridge:
     ) -> None:
         if sender_member_id is None or recipient_member_id is None:
             return
-        services = getattr(self._orchestrator, "_runtime_services", None)
-        message_bus = (
-            services.resolve_team_message_bus()
-            if services is not None and hasattr(services, "resolve_team_message_bus")
-            else getattr(services, "team_message_bus", None)
-        )
+        message_bus = self._team_message_bus()
         if message_bus is None or not hasattr(message_bus, "send_control_message"):
             return
         try:

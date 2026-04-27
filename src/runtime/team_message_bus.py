@@ -822,11 +822,7 @@ class RuntimeTeamMessageBus:
     ) -> bool:
         if not str(workflow_id).strip():
             return False
-        workflow_service = (
-            self._runtime_services.resolve_team_workflows()
-            if hasattr(self._runtime_services, "resolve_team_workflows")
-            else getattr(self._runtime_services, "team_workflows", None)
-        )
+        workflow_service = self._runtime_services.resolve_team_workflows()
         if workflow_service is None or not hasattr(workflow_service, "get"):
             return False
         record = workflow_service.get(workflow_id)
