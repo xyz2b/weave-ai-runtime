@@ -48,12 +48,18 @@ from ..hooks import (
 )
 from ..invocation_catalog import SkillInvocationProvider
 from ..jobs import DefaultJobService, InMemoryJobStore, JobScopeFilter, job_record_to_payload
-from ..package_profiles import FIRST_PARTY_PACKAGE_SPECS
+from ..package_profiles import FIRST_PARTY_PACKAGE_SPECS, distribution_spec
 from ..runtime_package_manifests import (
     RuntimePackageRegistrationReport,
-    merge_runtime_package_manifests,
     official_runtime_package_manifests,
     register_external_runtime_package_manifests,
+)
+from ..runtime_package_resolution import (
+    RuntimePackageResolutionError,
+    RuntimePackageResolutionReport,
+    build_runtime_package_catalog,
+    build_runtime_package_request,
+    resolve_runtime_package_graph,
 )
 from ..runtime_core_protocol_catalog import (
     build_stable_core_protocol_catalog,
@@ -130,6 +136,7 @@ class RuntimeKernel:
     package_registration: RuntimePackageRegistrationReport = field(
         default_factory=RuntimePackageRegistrationReport
     )
+    package_resolution: RuntimePackageResolutionReport | None = None
     package_manifests: tuple[RuntimePackageManifest, ...] = ()
     package_service_contributions: tuple[tuple[RuntimePackageManifest, PackageContribution], ...] = ()
     diagnostics: tuple[Diagnostic, ...] = ()
@@ -1414,28 +1421,42 @@ def _coerce_definition_source(value: Any) -> DefinitionSource:
 
 
 def build_runtime_kernel(config: RuntimeConfig) -> RuntimeKernel:
+    resolved_distribution = config.resolved_distribution()
     selected_packages = config.selected_first_party_packages()
     first_party_manifests = official_runtime_package_manifests(selected_packages)
     package_registration = register_external_runtime_package_manifests(
         config.extra_package_manifests,
         selected_first_party_manifests=first_party_manifests,
     )
-    package_manifests = merge_runtime_package_manifests(
+    package_request = build_runtime_package_request(
+        distribution=resolved_distribution.value,
+        baseline_packages=distribution_spec(resolved_distribution).packages,
+        enabled_packages=config.enabled_packages,
+        disabled_packages=config.disabled_packages,
+        explicit_package_requests=config.requested_packages,
+        selected_first_party_packages=tuple(manifest.name for manifest in first_party_manifests),
+        first_party_package_names=FIRST_PARTY_PACKAGE_SPECS,
+    )
+    package_catalog = build_runtime_package_catalog(
         first_party_manifests,
         package_registration,
     )
+    package_resolution = resolve_runtime_package_graph(package_request, package_catalog)
+    if not package_resolution.success:
+        raise RuntimePackageResolutionError(package_resolution)
+    package_manifests = package_resolution.resolved_manifests
     builtin_package_contributions = _assemble_package_contributions(
         package_manifests,
         stage=PackageAssemblyStage.BUILTINS,
         config=config,
-        distribution=config.resolved_distribution().value,
+        distribution=resolved_distribution.value,
         working_directory=config.working_directory,
     )
     package_service_contributions = _assemble_package_contributions(
         package_manifests,
         stage=PackageAssemblyStage.SERVICES,
         config=config,
-        distribution=config.resolved_distribution().value,
+        distribution=resolved_distribution.value,
         working_directory=config.working_directory,
     )
     config = _with_package_model_binding_baseline(
@@ -1472,7 +1493,7 @@ def build_runtime_kernel(config: RuntimeConfig) -> RuntimeKernel:
         skill_registry=skill_registry,
         skill_view_resolver=skill_view_resolver,
         package_service_contributions=package_service_contributions,
-        distribution=config.resolved_distribution().value,
+        distribution=resolved_distribution.value,
         working_directory=config.working_directory,
         tool_registry=tool_registry,
         agent_registry=agent_registry,
@@ -1483,7 +1504,7 @@ def build_runtime_kernel(config: RuntimeConfig) -> RuntimeKernel:
     diagnostics.extend(
         _package_migration_diagnostics(
             selected_packages=selected_packages,
-            distribution=config.resolved_distribution().value,
+            distribution=resolved_distribution.value,
         )
     )
 
@@ -1493,9 +1514,10 @@ def build_runtime_kernel(config: RuntimeConfig) -> RuntimeKernel:
         agent_registry=agent_registry,
         skill_registry=skill_registry,
         invocation_registry=invocation_registry,
-        distribution=config.resolved_distribution().value,
+        distribution=resolved_distribution.value,
         first_party_packages=selected_packages,
         package_registration=package_registration,
+        package_resolution=package_resolution,
         package_manifests=package_manifests,
         package_service_contributions=package_service_contributions,
         diagnostics=tuple(diagnostics),
@@ -1626,6 +1648,7 @@ def _assemble_runtime_stack(kernel: RuntimeKernel) -> RuntimeAssembly:
             "first_party_packages": list(kernel.first_party_packages),
             "first_party_package_catalog": dict(services.metadata.get("first_party_package_catalog", {})),
             "package_registration": dict(services.metadata.get("package_registration", {})),
+            "package_resolution": dict(services.metadata.get("package_resolution", {})),
             "package_manifests": dict(services.metadata.get("package_manifests", {})),
             "package_runtime_contributions": [manifest.name for manifest, _ in runtime_package_contributions],
             "core_protocol_catalog": dict(services.metadata.get("core_protocol_catalog", {})),
@@ -1685,6 +1708,11 @@ def _build_runtime_services(kernel: RuntimeKernel) -> RuntimeServices:
     metadata["first_party_packages"] = list(kernel.first_party_packages)
     metadata["first_party_package_catalog"] = _first_party_package_catalog(kernel.first_party_packages)
     metadata["package_registration"] = kernel.package_registration.to_metadata()
+    metadata["package_resolution"] = (
+        {}
+        if kernel.package_resolution is None
+        else kernel.package_resolution.to_metadata()
+    )
     metadata["package_manifests"] = _package_manifest_catalog(kernel.package_manifests)
     metadata["package_service_contributions"] = [
         manifest.name for manifest, _ in kernel.package_service_contributions

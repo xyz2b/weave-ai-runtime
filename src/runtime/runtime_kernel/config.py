@@ -232,6 +232,7 @@ class RuntimeConfig:
     enabled_packages: set[str] = field(default_factory=set)
     disabled_packages: set[str] = field(default_factory=set)
     extra_package_manifests: tuple[RuntimePackageRegistrationSource, ...] | list[RuntimePackageRegistrationSource] = ()
+    requested_packages: set[str] = field(default_factory=set)
     builtins: BuiltinPackConfig = field(default_factory=BuiltinPackConfig)
     hooks: Mapping[str, Any] = field(default_factory=dict)
     host_bindings: tuple[HostBinding, ...] = ()

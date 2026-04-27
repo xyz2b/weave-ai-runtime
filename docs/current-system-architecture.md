@@ -256,13 +256,18 @@ helper 语义也已经固定：
 
 - `RuntimeConfig.extra_package_manifests`
   - 接受本地 `RuntimePackageManifest` 实例，或解析为该 contract 的 manifest entrypoint
-  - runtime 会先做 manifest shape / trust-boundary 校验、external duplicate name 校验、官方 first-party reserved name 校验，以及 dependency reference 校验
-  - 当前不支持 override mode，也不会做隐式目录扫描或 last-write-wins 覆盖
-  - 被拒绝的 external manifest 不会进入 built-ins、services、runtime、lifecycle 或 host-facet contribution assembly
+  - runtime 会先做 manifest shape / trust-boundary 校验，以及官方 first-party reserved name 校验；通过校验的 external manifest 会先进入 local package candidate catalog，而不是直接进入装配
+  - 当前不支持 override mode，也不会做隐式目录扫描、remote discovery、package install 或 Python environment dependency management
+  - 只有被 `RuntimeConfig.requested_packages` 或已选 candidate graph 依赖到的 external candidate，才会继续进入 built-ins、services、runtime、lifecycle 或 host-facet contribution assembly
+- `RuntimeConfig.requested_packages`
+  - 用 package name 显式请求已注册 external candidate；first-party package 仍通过 distribution defaults 与 `enabled_packages` / `disabled_packages` 控制
 - `runtime.services.metadata["package_registration"]` / `runtime.metadata["package_registration"]`
   - 单独发布 accepted / rejected registration、machine-readable diagnostics、external provenance 与 trust-boundary 信息
+- `runtime.services.metadata["package_resolution"]` / `runtime.metadata["package_resolution"]`
+  - 单独发布 raw candidate catalog、resolution request inputs、resolved manifest graph，以及 missing package / conflicting constraint / incompatible candidate / cyclic dependency diagnostics
+  - resolution failure 会在任何 package contribution assembly 开始之前阻断 runtime boot
 - `runtime.services.metadata["package_manifests"]` / `runtime.metadata["package_manifests"]`
-  - 只描述真正进入装配的 merged manifest inventory
+  - 只描述真正通过 resolution 并进入装配的 manifest graph；不会混入 raw candidate inventory
 
 当前官方包已经按这个协议收敛到 manifest-backed assembly：
 

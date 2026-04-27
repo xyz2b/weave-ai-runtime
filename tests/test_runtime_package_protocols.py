@@ -5,6 +5,9 @@ import sys
 import types
 from dataclasses import replace
 from pathlib import Path
+from typing import Any
+
+import pytest
 
 import runtime.runtime_kernel.kernel as runtime_kernel_module
 from runtime.contracts import MessageRole, RuntimeMessage
@@ -32,6 +35,10 @@ from runtime.runtime_kernel import (
 )
 from runtime.runtime_core_protocol_catalog import CORE_PROTOCOL_CATALOG_SCHEMA_VERSION
 from runtime.runtime_package_manifests import official_runtime_package_manifests
+from runtime.runtime_package_resolution import (
+    PACKAGE_CANDIDATE_METADATA_KEY,
+    RuntimePackageResolutionError,
+)
 from runtime.runtime_package_protocols import (
     CapabilityBinding,
     ContextContributorBinding,
@@ -75,6 +82,25 @@ def _invocation_definition(
     )
 
 
+def _package_candidate_metadata(
+    *,
+    candidate_id: str | None = None,
+    version: str | None = None,
+    dependencies: tuple[dict[str, Any], ...] = (),
+    compatibility: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    candidate: dict[str, Any] = {}
+    if candidate_id is not None:
+        candidate["candidate_id"] = candidate_id
+    if version is not None:
+        candidate["version"] = version
+    if dependencies:
+        candidate["dependencies"] = list(dependencies)
+    if compatibility:
+        candidate["compatibility"] = dict(compatibility)
+    return {PACKAGE_CANDIDATE_METADATA_KEY: candidate}
+
+
 def test_official_runtime_package_manifests_follow_dependency_order() -> None:
     manifests = official_runtime_package_manifests(("runtime-team", "runtime-core"))
 
@@ -84,7 +110,7 @@ def test_official_runtime_package_manifests_follow_dependency_order() -> None:
     )
 
 
-def test_external_package_registration_accepts_manifest_entrypoints_and_publishes_metadata(
+def test_external_package_registration_accepts_manifest_entrypoints_and_publishes_candidate_metadata(
     tmp_path: Path,
 ) -> None:
     observed_stages: list[str] = []
@@ -115,16 +141,11 @@ def test_external_package_registration_accepts_manifest_entrypoints_and_publishe
         sys.modules.pop(module_name, None)
 
     accepted = runtime.services.metadata["package_registration"]["accepted"]
+    resolution = runtime.services.metadata["package_resolution"]
+
     assert runtime.kernel.first_party_packages == ("runtime-core",)
-    assert tuple(manifest.name for manifest in runtime.kernel.package_manifests) == (
-        "runtime-core",
-        "runtime-external",
-    )
-    assert observed_stages == [
-        PackageAssemblyStage.BUILTINS.value,
-        PackageAssemblyStage.SERVICES.value,
-        PackageAssemblyStage.RUNTIME.value,
-    ]
+    assert tuple(manifest.name for manifest in runtime.kernel.package_manifests) == ("runtime-core",)
+    assert observed_stages == []
     assert accepted == [
         {
             "package_name": "runtime-external",
@@ -151,14 +172,16 @@ def test_external_package_registration_accepts_manifest_entrypoints_and_publishe
         }
     ]
     assert runtime.services.metadata["package_registration"]["rejected"] == []
-    assert runtime.services.metadata["package_manifests"]["runtime-external"]["dependencies"] == ["runtime-core"]
-    assert runtime.services.metadata["package_service_contributions"] == ["runtime-core", "runtime-external"]
-    assert runtime.metadata["package_manifests"]["runtime-external"]["role"] == "capability"
-    assert runtime.metadata["package_runtime_contributions"] == ["runtime-core", "runtime-external"]
+    assert "runtime-external" not in runtime.services.metadata["package_manifests"]
+    assert runtime.services.metadata["package_service_contributions"] == ["runtime-core"]
+    assert set(resolution["candidate_catalog"]) == {"runtime-core", "runtime-external"}
+    assert resolution["resolved_graph"]["order"] == ["runtime-core"]
+    assert set(resolution["resolved_graph"]["packages"]) == {"runtime-core"}
     assert runtime.metadata["package_registration"] == runtime.services.metadata["package_registration"]
+    assert runtime.metadata["package_resolution"] == runtime.services.metadata["package_resolution"]
 
 
-def test_external_package_registration_accepts_single_entrypoint_string_config(
+def test_external_package_registration_accepts_single_entrypoint_string_config_for_requested_package(
     tmp_path: Path,
 ) -> None:
     observed_stages: list[str] = []
@@ -182,32 +205,44 @@ def test_external_package_registration_accepts_single_entrypoint_string_config(
                 working_directory=tmp_path,
                 distribution=RuntimeDistribution.CORE,
                 extra_package_manifests=f"{module_name}:external_manifest",
+                requested_packages={"runtime-external"},
             )
         )
     finally:
         sys.modules.pop(module_name, None)
 
     registration = runtime.services.metadata["package_registration"]
+    resolution = runtime.services.metadata["package_resolution"]
+
     assert [record["package_name"] for record in registration["accepted"]] == ["runtime-external"]
     assert registration["rejected"] == []
+    assert tuple(manifest.name for manifest in runtime.kernel.package_manifests) == (
+        "runtime-core",
+        "runtime-external",
+    )
     assert observed_stages == [
         PackageAssemblyStage.BUILTINS.value,
         PackageAssemblyStage.SERVICES.value,
         PackageAssemblyStage.RUNTIME.value,
     ]
+    assert resolution["request"]["explicit_package_requests"] == ["runtime-external"]
+    assert resolution["resolved_graph"]["order"] == ["runtime-core", "runtime-external"]
+    assert resolution["resolved_graph"]["packages"]["runtime-external"]["candidate_id"] == (
+        "external::runtime-external#0"
+    )
 
 
-def test_duplicate_external_package_registration_rejects_later_manifest(tmp_path: Path) -> None:
-    first_stages: list[str] = []
-    second_stages: list[str] = []
+def test_package_resolution_selects_one_candidate_graph_and_keeps_raw_catalog_separate(
+    tmp_path: Path,
+) -> None:
+    observed_stages: list[str] = []
 
-    def assemble_first(context):
-        first_stages.append(context.stage.value)
-        return PackageContribution()
+    def assemble_candidate(label: str):
+        def _assemble(context):
+            observed_stages.append(f"{label}:{context.stage.value}")
+            return PackageContribution()
 
-    def assemble_second(context):
-        second_stages.append(context.stage.value)
-        return PackageContribution()
+        return _assemble
 
     runtime = assemble_runtime(
         RuntimeConfig(
@@ -215,33 +250,83 @@ def test_duplicate_external_package_registration_rejects_later_manifest(tmp_path
             distribution=RuntimeDistribution.CORE,
             extra_package_manifests=(
                 RuntimePackageManifest(
-                    name="runtime-external",
+                    name="runtime-shared",
                     role="capability",
                     dependencies=("runtime-core",),
-                    assembly_entrypoint=assemble_first,
+                    assembly_entrypoint=assemble_candidate("shared-v1"),
+                    metadata=_package_candidate_metadata(
+                        candidate_id="runtime-shared-v1",
+                        version="1.0.0",
+                    ),
                 ),
                 RuntimePackageManifest(
-                    name="runtime-external",
+                    name="runtime-shared",
                     role="capability",
                     dependencies=("runtime-core",),
-                    assembly_entrypoint=assemble_second,
+                    assembly_entrypoint=assemble_candidate("shared-v2"),
+                    metadata=_package_candidate_metadata(
+                        candidate_id="runtime-shared-v2",
+                        version="2.0.0",
+                    ),
+                ),
+                RuntimePackageManifest(
+                    name="runtime-external-app",
+                    role="capability",
+                    dependencies=("runtime-core",),
+                    assembly_entrypoint=assemble_candidate("app"),
+                    metadata=_package_candidate_metadata(
+                        candidate_id="runtime-external-app",
+                        dependencies=(
+                            {
+                                "package_name": "runtime-shared",
+                                "candidate_id": "runtime-shared-v2",
+                            },
+                        ),
+                    ),
                 ),
             ),
+            requested_packages={"runtime-external-app"},
         )
     )
 
     registration = runtime.services.metadata["package_registration"]
-    assert [record["package_name"] for record in registration["accepted"]] == ["runtime-external"]
-    assert len(registration["rejected"]) == 1
-    assert registration["rejected"][0]["diagnostics"][0]["code"] == (
-        "runtime_external_package_duplicate_name"
-    )
-    assert first_stages == [
-        PackageAssemblyStage.BUILTINS.value,
-        PackageAssemblyStage.SERVICES.value,
-        PackageAssemblyStage.RUNTIME.value,
+    resolution = runtime.services.metadata["package_resolution"]
+
+    assert [record["package_name"] for record in registration["accepted"]] == [
+        "runtime-shared",
+        "runtime-shared",
+        "runtime-external-app",
     ]
-    assert second_stages == []
+    assert tuple(manifest.name for manifest in runtime.kernel.package_manifests) == (
+        "runtime-core",
+        "runtime-shared",
+        "runtime-external-app",
+    )
+    assert observed_stages == [
+        "shared-v2:builtins",
+        "app:builtins",
+        "shared-v2:services",
+        "app:services",
+        "shared-v2:runtime",
+        "app:runtime",
+    ]
+    assert len(resolution["candidate_catalog"]["runtime-shared"]) == 2
+    assert resolution["resolved_graph"]["packages"]["runtime-shared"]["candidate_id"] == (
+        "runtime-shared-v2"
+    )
+    assert resolution["resolved_graph"]["packages"]["runtime-external-app"]["manifest"]["dependencies"] == [
+        "runtime-core",
+        "runtime-shared",
+    ]
+    assert set(runtime.services.metadata["package_manifests"]) == {
+        "runtime-core",
+        "runtime-shared",
+        "runtime-external-app",
+    }
+    assert runtime.services.metadata["package_lookup"]
+    assert runtime.services.metadata["core_protocol_catalog"]
+    assert runtime.services.metadata["first_party_package_catalog"]["runtime-core"]["role"] == "core"
+    assert runtime.metadata["package_resolution"] == runtime.services.metadata["package_resolution"]
 
 
 def test_external_package_registration_rejects_reserved_first_party_name(tmp_path: Path) -> None:
@@ -276,32 +361,33 @@ def test_external_package_registration_rejects_reserved_first_party_name(tmp_pat
     assert observed_stages == []
 
 
-def test_external_package_registration_rejects_unknown_dependency_before_assembly(tmp_path: Path) -> None:
+def test_package_resolution_reports_missing_package_before_assembly(tmp_path: Path) -> None:
     observed_stages: list[str] = []
 
     def assemble_external(context):
         observed_stages.append(context.stage.value)
         return PackageContribution()
 
-    runtime = assemble_runtime(
-        RuntimeConfig(
-            working_directory=tmp_path,
-            distribution=RuntimeDistribution.CORE,
-            extra_package_manifests=(
-                RuntimePackageManifest(
-                    name="runtime-external",
-                    role="capability",
-                    dependencies=("runtime-missing",),
-                    assembly_entrypoint=assemble_external,
+    with pytest.raises(RuntimePackageResolutionError) as exc_info:
+        assemble_runtime(
+            RuntimeConfig(
+                working_directory=tmp_path,
+                distribution=RuntimeDistribution.CORE,
+                extra_package_manifests=(
+                    RuntimePackageManifest(
+                        name="runtime-external",
+                        role="capability",
+                        dependencies=("runtime-missing",),
+                        assembly_entrypoint=assemble_external,
+                    ),
                 ),
-            ),
+                requested_packages={"runtime-external"},
+            )
         )
-    )
 
-    rejected = runtime.services.metadata["package_registration"]["rejected"]
-    assert len(rejected) == 1
-    assert rejected[0]["diagnostics"][0]["code"] == "runtime_external_package_unknown_dependency"
-    assert rejected[0]["diagnostics"][0]["details"]["missing_dependencies"] == ["runtime-missing"]
+    diagnostic = exc_info.value.report.diagnostics[0]
+    assert diagnostic.code == "runtime_package_missing"
+    assert diagnostic.package_name == "runtime-missing"
     assert observed_stages == []
 
 
@@ -346,7 +432,93 @@ def test_external_package_registration_rejects_blank_entrypoint_with_diagnostics
     )
 
 
-def test_external_package_registration_rejects_cyclic_dependencies_before_assembly(
+def test_package_resolution_reports_conflicting_constraints_before_assembly(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(RuntimePackageResolutionError) as exc_info:
+        assemble_runtime(
+            RuntimeConfig(
+                working_directory=tmp_path,
+                distribution=RuntimeDistribution.CORE,
+                extra_package_manifests=(
+                    RuntimePackageManifest(
+                        name="runtime-shared",
+                        role="capability",
+                        dependencies=("runtime-core",),
+                        metadata=_package_candidate_metadata(candidate_id="runtime-shared-v1"),
+                    ),
+                    RuntimePackageManifest(
+                        name="runtime-shared",
+                        role="capability",
+                        dependencies=("runtime-core",),
+                        metadata=_package_candidate_metadata(candidate_id="runtime-shared-v2"),
+                    ),
+                    RuntimePackageManifest(
+                        name="runtime-uses-one",
+                        role="capability",
+                        dependencies=("runtime-core",),
+                        metadata=_package_candidate_metadata(
+                            dependencies=(
+                                {
+                                    "package_name": "runtime-shared",
+                                    "candidate_id": "runtime-shared-v1",
+                                },
+                            )
+                        ),
+                    ),
+                    RuntimePackageManifest(
+                        name="runtime-uses-two",
+                        role="capability",
+                        dependencies=("runtime-core",),
+                        metadata=_package_candidate_metadata(
+                            dependencies=(
+                                {
+                                    "package_name": "runtime-shared",
+                                    "candidate_id": "runtime-shared-v2",
+                                },
+                            )
+                        ),
+                    ),
+                ),
+                requested_packages={"runtime-uses-one", "runtime-uses-two"},
+            )
+        )
+
+    diagnostic = exc_info.value.report.diagnostics[0]
+    assert diagnostic.code == "runtime_package_conflicting_constraints"
+    assert diagnostic.package_name == "runtime-shared"
+
+
+def test_package_resolution_reports_incompatible_candidate_before_assembly(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(RuntimePackageResolutionError) as exc_info:
+        assemble_runtime(
+            RuntimeConfig(
+                working_directory=tmp_path,
+                distribution=RuntimeDistribution.CORE,
+                extra_package_manifests=(
+                    RuntimePackageManifest(
+                        name="runtime-external",
+                        role="capability",
+                        dependencies=("runtime-core",),
+                        metadata=_package_candidate_metadata(
+                            candidate_id="runtime-external-full-only",
+                            compatibility={"distributions": ["runtime-full"]},
+                        ),
+                    ),
+                ),
+                requested_packages={"runtime-external"},
+            )
+        )
+
+    diagnostic = exc_info.value.report.diagnostics[0]
+    assert diagnostic.code == "runtime_package_incompatible_candidate"
+    assert diagnostic.package_name == "runtime-external"
+    assert diagnostic.details["distribution"] == RuntimeDistribution.CORE.value
+
+
+def test_package_resolution_reports_cyclic_dependencies_before_assembly(
     tmp_path: Path,
 ) -> None:
     first_stages: list[str] = []
@@ -360,46 +532,40 @@ def test_external_package_registration_rejects_cyclic_dependencies_before_assemb
         second_stages.append(context.stage.value)
         return PackageContribution()
 
-    runtime = assemble_runtime(
-        RuntimeConfig(
-            working_directory=tmp_path,
-            distribution=RuntimeDistribution.CORE,
-            extra_package_manifests=(
-                RuntimePackageManifest(
-                    name="runtime-cycle-a",
-                    role="capability",
-                    dependencies=("runtime-cycle-b",),
-                    assembly_entrypoint=assemble_first,
+    with pytest.raises(RuntimePackageResolutionError) as exc_info:
+        assemble_runtime(
+            RuntimeConfig(
+                working_directory=tmp_path,
+                distribution=RuntimeDistribution.CORE,
+                extra_package_manifests=(
+                    RuntimePackageManifest(
+                        name="runtime-cycle-a",
+                        role="capability",
+                        dependencies=("runtime-cycle-b",),
+                        assembly_entrypoint=assemble_first,
+                    ),
+                    RuntimePackageManifest(
+                        name="runtime-cycle-b",
+                        role="capability",
+                        dependencies=("runtime-cycle-a",),
+                        assembly_entrypoint=assemble_second,
+                    ),
                 ),
-                RuntimePackageManifest(
-                    name="runtime-cycle-b",
-                    role="capability",
-                    dependencies=("runtime-cycle-a",),
-                    assembly_entrypoint=assemble_second,
-                ),
-            ),
+                requested_packages={"runtime-cycle-a"},
+            )
         )
-    )
 
-    rejected = runtime.services.metadata["package_registration"]["rejected"]
-    assert len(rejected) == 2
-    assert [record["package_name"] for record in rejected] == [
+    diagnostic = exc_info.value.report.diagnostics[0]
+    assert diagnostic.code == "runtime_package_cyclic_dependency"
+    assert diagnostic.details["cycle_members"] == [
         "runtime-cycle-a",
         "runtime-cycle-b",
     ]
-    for record in rejected:
-        diagnostic = record["diagnostics"][0]
-        assert diagnostic["code"] == "runtime_external_package_cyclic_dependency"
-        assert diagnostic["details"]["cycle_members"] == [
-            "runtime-cycle-a",
-            "runtime-cycle-b",
-        ]
-        assert diagnostic["details"]["cycle_path"] == [
-            "runtime-cycle-a",
-            "runtime-cycle-b",
-            "runtime-cycle-a",
-        ]
-    assert tuple(manifest.name for manifest in runtime.kernel.package_manifests) == ("runtime-core",)
+    assert diagnostic.details["cycle_path"] == [
+        "runtime-cycle-a",
+        "runtime-cycle-b",
+        "runtime-cycle-a",
+    ]
     assert first_stages == []
     assert second_stages == []
 

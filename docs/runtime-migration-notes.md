@@ -127,6 +127,7 @@
 运行时会把当前已选 package 和其 builtin 所有权摘要写进：
 
 - `runtime.services.metadata["first_party_package_catalog"]`
+- `runtime.services.metadata["package_resolution"]`
 
 ## 4.5 Package Attachment Contract Changes
 
@@ -152,9 +153,18 @@
 - package-owned runtime object -> capability registry
 - optional host operation -> host facet discovery
 - package-owned startup / recovery / session behavior -> lifecycle participant
+- local external package selection -> `RuntimeConfig.extra_package_manifests` + `RuntimeConfig.requested_packages` + `package_resolution`
 
 当前少量 `RuntimeServices` package-specific 字段仍会保留一段时间，但它们现在只应视为 compatibility projection。
 这也包括残留的 team 顶层 helper / workflow helper：canonical discovery path 已经是 capability lookup 与 host facet discovery，新的 runtime-owned primary path 不应再把这些 wrapper 当 source of truth。
+
+external package 的迁移口径也需要一起改：
+
+- `RuntimeConfig.extra_package_manifests` 现在只负责 local candidate admission，不再意味着该 package 会自动进入 active runtime
+- admitted external manifest 会先进入 local package catalog；真正进入装配的 graph 由 selected first-party manifests、`RuntimeConfig.requested_packages` 与 bounded dependency constraints 一起 deterministic resolve
+- duplicate external package names、missing dependency、conflicting constraint、incompatible candidate、cyclic dependency 都属于 resolution phase 的结构化结果，而不是继续藏在 registration side effect 里
+- `package_resolution` metadata 与 `package_registration`、`package_manifests`、`package_lookup`、`core_protocol_catalog` 分开发布；raw candidate inventory 与 active resolved graph 不再混在同一个 manifest view 里
+- 这次变更仍然明确不做 remote discovery、package install、publish workflow 或 Python environment package management
 
 新的 staged exit criteria 也应明确下来：
 
@@ -187,6 +197,8 @@
 
 - `runtime.services.metadata["core_protocol_catalog"]`
 - `runtime.metadata["core_protocol_catalog"]`
+- `runtime.services.metadata["package_resolution"]`
+- `runtime.metadata["package_resolution"]`
 - `runtime.services.metadata["package_lookup"]`
 - `runtime.metadata["package_lookup"]`
 - `runtime.services.metadata["compatibility_surfaces"]`
@@ -196,6 +208,8 @@
 - `core_protocol_catalog`
   - stable core protocol source of truth
   - 只覆盖 `TranscriptStore`、`JobService`、`TaskListService`、`PermissionService`、`ElicitationService`、context contributors、invocation providers、`HostRuntime`
+- `package_resolution`
+  - local package catalog、resolution request、resolved graph 与 structured diagnostics 的 source of truth
 - `package_lookup`
   - package-specific canonical capability key、host facet key、wrapper exit criteria 的 source of truth
 - `compatibility_surfaces`

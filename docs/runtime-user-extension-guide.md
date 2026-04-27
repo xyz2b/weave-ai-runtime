@@ -175,10 +175,10 @@ Tool '<name>' has no execution handler
 `RuntimeConfig.extra_package_manifests`：
 
 - 接受 `RuntimePackageManifest` 实例，或解析为 manifest 的本地 entrypoint string
-- runtime 会在装配前校验 manifest shape、trust boundary、external duplicate name、官方 first-party reserved name，以及 dependency references
-- 当前不支持 override mode，也不会自动扫目录找 package
-- 被拒绝的 manifest 不会进入 built-ins / services / runtime contribution
-- 诊断、provenance 与拒绝原因会发布到 `runtime.services.metadata["package_registration"]` 和 `runtime.metadata["package_registration"]`
+- runtime 会先校验 manifest shape、trust boundary 与官方 first-party reserved name；通过校验的 external manifest 会先进入 local package candidate catalog
+- 当前不支持 override mode，也不会自动扫目录找 package、remote discovery、package install 或 Python environment dependency management
+- external package 只有在被 `RuntimeConfig.requested_packages` 或 active resolved graph 依赖到时，才会进入 built-ins / services / runtime contribution
+- 诊断、provenance 与拒绝原因会发布到 `runtime.services.metadata["package_registration"]` / `runtime.metadata["package_registration"]`；resolved graph 与 resolution diagnostics 会单独发布到 `package_resolution`
 
 这意味着 package boundary 现在更接近：
 

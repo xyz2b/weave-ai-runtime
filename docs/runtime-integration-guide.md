@@ -144,10 +144,17 @@ Runtime 核心流转本身由框架收口，用户通常不应该改 `TurnEngine
 `RuntimeConfig.extra_package_manifests`：
 
 - 接受 `RuntimePackageManifest` 实例，或可解析为 manifest 的本地 entrypoint string
-- runtime 会在 package assembly 之前校验 manifest shape、trust boundary、external duplicate name、官方 first-party reserved name，以及 dependency references
-- 当前不支持 override mode，也不会自动扫描目录
-- 被拒绝的 external manifest 不会进入 built-ins / services / runtime contribution
+- runtime 会先校验 manifest shape、trust boundary 与官方 first-party reserved name；通过校验的 external manifest 会先进入 local package candidate catalog
+- 当前不支持 override mode，也不会自动扫描目录、remote discovery、package install 或 Python environment dependency management
+- 被拒绝的 external manifest 不会进入 candidate catalog；未被选择进 resolved graph 的 admitted external candidate 也不会进入 built-ins / services / runtime contribution
 - 诊断与 provenance 会单独发布到 `runtime.services.metadata["package_registration"]` 和 `runtime.metadata["package_registration"]`
+
+如果你要让某个 admitted external package 真正进入当前 runtime，还需要通过
+`RuntimeConfig.requested_packages` 按 package name 显式请求它：
+
+- 这个输入只负责 external package name request；first-party package 仍通过 distribution defaults 与 `enabled_packages` / `disabled_packages` 控制
+- runtime 会在 package assembly 之前把 selected first-party manifests、admitted external candidates 与 explicit package requests 一起做 deterministic resolution
+- missing package、conflicting constraint、incompatible candidate、cyclic dependency 都会以 machine-readable diagnostics 形式体现在 `package_resolution` metadata 里，并在 resolution 失败时阻断 assembly
 
 ### 2.2 Runtime 入口：`RuntimeAssembly`
 
@@ -237,12 +244,13 @@ Runtime 核心流转本身由框架收口，用户通常不应该改 `TurnEngine
 
 - `runtime.services.metadata["core_protocol_catalog"]`：stable core protocol catalog，包含 schema version、owner、binding boundary、canonical binding surface、discovery surface 与 compatibility status
 - `runtime.services.metadata["package_registration"]`：external package accepted / rejected registration、diagnostics、provenance、trust-boundary details
-- `runtime.services.metadata["package_manifests"]`：真正进入装配的 merged manifest inventory
+- `runtime.services.metadata["package_resolution"]`：raw candidate catalog、resolution request inputs、resolved graph 与 structured diagnostics
+- `runtime.services.metadata["package_manifests"]`：真正进入装配的 resolved manifest inventory
 - `runtime.services.metadata["package_lookup"]`：canonical capability / host-facet / lifecycle / receipt path
 - `runtime.services.metadata["invocation_provider_paths"]`：built-in baseline、package canonical path、config compatibility path
 - `runtime.services.metadata["invocation_provider_registrations"]`：当前 runtime 里实际生效的 provider 注册顺序、owner、origin 与 registration metadata
 - `runtime.metadata["core_protocol_catalog"]`：`RuntimeAssembly` 侧同步暴露的 stable core protocol catalog
-- `runtime.metadata["package_registration"]` / `runtime.metadata["package_manifests"]`：`RuntimeAssembly` 侧同步暴露的 external registration diagnostics 与 merged package inventory
+- `runtime.metadata["package_registration"]` / `runtime.metadata["package_resolution"]` / `runtime.metadata["package_manifests"]`：`RuntimeAssembly` 侧同步暴露的 external registration diagnostics、resolved-graph metadata 与 active manifest inventory
 - `runtime.metadata["package_lookup"]`：`RuntimeAssembly` 侧同步暴露的 owner-layer lookup guidance
 - `runtime.services.metadata["compatibility_surfaces"]`：仍保留但非 canonical 的 wrapper / projection
 - `runtime.services.metadata["compatibility_projections"]`：当前 projection 仍映射到哪些 capability key

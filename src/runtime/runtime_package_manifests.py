@@ -293,46 +293,13 @@ def _normalize_runtime_package_registrations_input(
         return (registrations,)
 
 
-def _external_registration_cycle_paths(
-    active: Mapping[str, _NormalizedRuntimePackageRegistration],
-) -> dict[str, tuple[str, ...]]:
-    states: dict[str, int] = {}
-    stack: list[str] = []
-    cycle_paths: dict[str, tuple[str, ...]] = {}
-
-    def visit(package_name: str) -> None:
-        state = states.get(package_name, 0)
-        if state != 0:
-            return
-        states[package_name] = 1
-        stack.append(package_name)
-        entry = active[package_name]
-        for dependency in entry.manifest.dependencies:
-            if dependency not in active:
-                continue
-            dependency_state = states.get(dependency, 0)
-            if dependency_state == 1:
-                cycle_start = stack.index(dependency)
-                cycle_path = tuple(stack[cycle_start:] + [dependency])
-                for member in cycle_path[:-1]:
-                    cycle_paths.setdefault(member, cycle_path)
-                continue
-            if dependency_state == 0:
-                visit(dependency)
-        stack.pop()
-        states[package_name] = 2
-
-    for package_name in sorted(active):
-        visit(package_name)
-    return cycle_paths
-
-
 def register_external_runtime_package_manifests(
     registrations: Sequence[RuntimePackageRegistrationSource] | None,
     *,
     selected_first_party_manifests: Sequence[RuntimePackageManifest] = (),
     reserved_first_party_names: Iterable[str] | None = None,
 ) -> RuntimePackageRegistrationReport:
+    _ = selected_first_party_manifests
     normalized_registrations = _normalize_runtime_package_registrations_input(registrations)
     if not normalized_registrations:
         return RuntimePackageRegistrationReport()
@@ -345,10 +312,7 @@ def register_external_runtime_package_manifests(
             else reserved_first_party_names
         )
     }
-    selected_manifest_catalog = {
-        manifest.name: manifest for manifest in selected_first_party_manifests
-    }
-    normalized: list[_NormalizedRuntimePackageRegistration] = []
+    accepted: list[AcceptedRuntimePackageRegistration] = []
     rejected_by_index: dict[int, RejectedRuntimePackageRegistration] = {}
 
     for registration_index, raw_registration in enumerate(normalized_registrations):
@@ -359,27 +323,10 @@ def register_external_runtime_package_manifests(
         if isinstance(resolved, RejectedRuntimePackageRegistration):
             rejected_by_index[registration_index] = resolved
             continue
-        normalized.append(resolved)
-
-    active: dict[str, _NormalizedRuntimePackageRegistration] = {}
-    seen_names: set[str] = set()
-    for entry in normalized:
-        manifest = entry.manifest
-        package_name = manifest.name
-        if package_name in seen_names:
-            rejected_by_index[entry.registration_index] = _rejected_registration(
-                entry,
-                code="runtime_external_package_duplicate_name",
-                message=(
-                    f"External package '{package_name}' duplicates an earlier external registration"
-                ),
-                details={"conflict_package_name": package_name},
-            )
-            continue
-        seen_names.add(package_name)
+        package_name = resolved.manifest.name
         if package_name in reserved_names:
-            rejected_by_index[entry.registration_index] = _rejected_registration(
-                entry,
+            rejected_by_index[resolved.registration_index] = _rejected_registration(
+                resolved,
                 code="runtime_external_package_reserved_name_collision",
                 message=(
                     f"External package '{package_name}' reuses a reserved official first-party name"
@@ -387,70 +334,15 @@ def register_external_runtime_package_manifests(
                 details={"conflict_package_name": package_name},
             )
             continue
-        if package_name in selected_manifest_catalog:
-            rejected_by_index[entry.registration_index] = _rejected_registration(
-                entry,
-                code="runtime_external_package_selected_name_collision",
-                message=(
-                    f"External package '{package_name}' collides with an already selected package manifest"
-                ),
-                details={"conflict_package_name": package_name},
+        accepted.append(
+            AcceptedRuntimePackageRegistration(
+                manifest=resolved.manifest,
+                registration_index=resolved.registration_index,
+                source_kind=resolved.source_kind,
+                source_ref=resolved.source_ref,
             )
-            continue
-        active[package_name] = entry
-
-    while True:
-        available_names = set(selected_manifest_catalog) | set(active)
-        rejected_names: list[str] = []
-        for package_name, entry in active.items():
-            missing_dependencies = sorted(
-                dependency
-                for dependency in entry.manifest.dependencies
-                if dependency not in available_names
-            )
-            if not missing_dependencies:
-                continue
-            rejected_by_index[entry.registration_index] = _rejected_registration(
-                entry,
-                code="runtime_external_package_unknown_dependency",
-                message=(
-                    f"External package '{package_name}' depends on unknown package(s): "
-                    f"{', '.join(missing_dependencies)}"
-                ),
-                details={"missing_dependencies": missing_dependencies},
-            )
-            rejected_names.append(package_name)
-        cycle_paths = _external_registration_cycle_paths(active)
-        for package_name, cycle_path in cycle_paths.items():
-            entry = active[package_name]
-            rejected_by_index[entry.registration_index] = _rejected_registration(
-                entry,
-                code="runtime_external_package_cyclic_dependency",
-                message=(
-                    f"External package '{package_name}' participates in a cyclic dependency: "
-                    f"{' -> '.join(cycle_path)}"
-                ),
-                details={
-                    "cycle_members": list(cycle_path[:-1]),
-                    "cycle_path": list(cycle_path),
-                },
-            )
-            rejected_names.append(package_name)
-        if not rejected_names:
-            break
-        for package_name in rejected_names:
-            active.pop(package_name, None)
-
-    accepted = tuple(
-        AcceptedRuntimePackageRegistration(
-            manifest=entry.manifest,
-            registration_index=entry.registration_index,
-            source_kind=entry.source_kind,
-            source_ref=entry.source_ref,
         )
-        for entry in normalized
-        if entry.registration_index not in rejected_by_index and entry.manifest.name in active
-    )
+
     rejected = tuple(record for _, record in sorted(rejected_by_index.items()))
     diagnostics = tuple(
         diagnostic
@@ -458,7 +350,7 @@ def register_external_runtime_package_manifests(
         for diagnostic in record.diagnostics
     )
     return RuntimePackageRegistrationReport(
-        accepted=accepted,
+        accepted=tuple(accepted),
         rejected=rejected,
         diagnostics=diagnostics,
     )
