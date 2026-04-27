@@ -786,6 +786,15 @@ def test_package_context_contributor_failures_degrade_and_keep_private_diagnosti
     )
     services.register_context_contributor(
         ContextContributorBinding(
+            name="runtime-test.invalid-binding",
+            stage=ContextContributorStage.HOOKS,
+            contributor=object(),
+            owner=owner,
+            order=15,
+        )
+    )
+    services.register_context_contributor(
+        ContextContributorBinding(
             name="runtime-test.invalid",
             stage=ContextContributorStage.HOOKS,
             contributor=InvalidContributor(),
@@ -839,11 +848,13 @@ def test_package_context_contributor_failures_degrade_and_keep_private_diagnosti
     diagnostics = request.private_context.diagnostics["context_contributor_diagnostics"]
     assert {entry["code"] for entry in diagnostics} == {
         "context_contributor_failed",
+        "context_contributor_invalid_binding",
         "context_contributor_invalid_output",
         "context_contributor_timeout",
     }
     assert {entry["contributor"] for entry in diagnostics} == {
         "runtime-test.failing",
+        "runtime-test.invalid-binding",
         "runtime-test.invalid",
         "runtime-test.slow",
     }

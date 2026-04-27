@@ -557,6 +557,14 @@ class _InvalidContextContributorOutput(TypeError):
         )
 
 
+class _InvalidContextContributorBinding(TypeError):
+    def __init__(self, value: Any) -> None:
+        self.returned_type = type(value).__name__
+        super().__init__(
+            "context contributor binding must expose a callable collect() method"
+        )
+
+
 _SIDECAR_DIAGNOSTIC_KEYS = frozenset({"memory_retrieval", "memory_diagnostics"})
 _SIDECAR_PROMPT_ONLY_KEYS = frozenset({"prompt_updates"})
 
@@ -2509,6 +2517,17 @@ class TurnEngine:
                     )
                 )
                 continue
+            except _InvalidContextContributorBinding as exc:
+                failure_records.append(
+                    _context_contributor_failure_record(
+                        entry,
+                        code="context_contributor_invalid_binding",
+                        error=type(exc).__name__,
+                        message=str(exc),
+                        returned_type=exc.returned_type,
+                    )
+                )
+                continue
             except Exception as exc:
                 failure_records.append(
                     _context_contributor_failure_record(
@@ -2545,8 +2564,11 @@ class TurnEngine:
         entry: ContextContributorExecutionEntry,
         contributor_kwargs: Mapping[str, Any],
     ) -> _SidecarJoinResult:
+        contributor = entry.binding.contributor
+        if not callable(getattr(contributor, "collect", None)):
+            raise _InvalidContextContributorBinding(contributor)
         coroutine = self._collect_control_plane_fragments_with_context(
-            entry.binding.contributor,
+            contributor,
             **dict(contributor_kwargs),
         )
         if entry.binding.timeout_seconds is None:

@@ -485,12 +485,7 @@ class RuntimeServices:
         return tuple(
             sorted(
                 registered,
-                key=lambda entry: (
-                    entry.stage.order,
-                    entry.binding.order,
-                    entry.sequence,
-                    entry.binding.name,
-                ),
+                key=lambda entry: entry.ordering_key,
             )
         )
 

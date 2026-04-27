@@ -221,6 +221,20 @@ class ContextContributorExecutionEntry:
     stage: ContextContributorStageDefinition
     sequence: int
 
+    @property
+    def ordering_key(self) -> tuple[int, int, bool, str, str, str, int]:
+        # Canonical contributors sort ahead of compatibility-only adapters, then
+        # fall back to stable package/binding identity instead of registration order.
+        return (
+            self.stage.order,
+            self.binding.order,
+            bool(self.binding.metadata.get("compatibility_only")),
+            self.binding.owner.package_name,
+            self.binding.owner.package_role,
+            self.binding.name,
+            self.sequence,
+        )
+
 
 DEFAULT_CONTEXT_CONTRIBUTOR_STAGES = (
     ContextContributorStageDefinition(
@@ -532,12 +546,7 @@ class ContextContributorRegistry:
         return tuple(
             sorted(
                 records,
-                key=lambda record: (
-                    record.stage.order,
-                    record.binding.order,
-                    record.sequence,
-                    record.binding.name,
-                ),
+                key=lambda record: record.ordering_key,
             )
         )
 

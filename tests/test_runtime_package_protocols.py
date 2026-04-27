@@ -314,6 +314,78 @@ def test_runtime_context_contributor_registry_exposes_canonical_stage_catalog(tm
     assert runtime.metadata["context_contributors"] == runtime.services.metadata["context_contributors"]
 
 
+def test_package_context_contributor_order_is_deterministic_across_packages(tmp_path: Path) -> None:
+    original = runtime_kernel_module.official_runtime_package_manifests
+
+    def assemble_package(binding_name: str):
+        class ExampleContributor:
+            async def collect(self, **_kwargs):
+                return ()
+
+        def _assemble(context):
+            if context.stage != PackageAssemblyStage.SERVICES:
+                return PackageContribution()
+            return PackageContribution(
+                context_contributors=(
+                    ContextContributorBinding(
+                        name=binding_name,
+                        stage=ContextContributorStage.HOOKS,
+                        contributor=ExampleContributor(),
+                        owner=context.ownership("context_contributor"),
+                        order=0,
+                    ),
+                )
+            )
+
+        return _assemble
+
+    manifests = {
+        "pkg-alpha": RuntimePackageManifest(
+            name="pkg-alpha",
+            role="capability",
+            dependencies=("runtime-core",),
+            assembly_entrypoint=assemble_package("zzz.context"),
+        ),
+        "pkg-beta": RuntimePackageManifest(
+            name="pkg-beta",
+            role="capability",
+            dependencies=("runtime-core",),
+            assembly_entrypoint=assemble_package("aaa.context"),
+        ),
+    }
+
+    def build_kernel(package_order: tuple[str, str]):
+        def patched_manifests(selected_packages):
+            return (
+                *original(selected_packages),
+                *(manifests[name] for name in package_order),
+            )
+
+        runtime_kernel_module.official_runtime_package_manifests = patched_manifests
+        try:
+            return build_runtime_kernel(
+                RuntimeConfig(
+                    working_directory=tmp_path,
+                    distribution=RuntimeDistribution.CORE,
+                )
+            )
+        finally:
+            runtime_kernel_module.official_runtime_package_manifests = original
+
+    forward = build_kernel(("pkg-beta", "pkg-alpha"))
+    reversed_order = build_kernel(("pkg-alpha", "pkg-beta"))
+
+    def contributor_names(kernel) -> list[str]:
+        return [
+            entry.binding.name
+            for entry in kernel.services.context_contributor_execution_plan()
+            if entry.binding.owner.package_name in {"pkg-alpha", "pkg-beta"}
+        ]
+
+    assert contributor_names(forward) == ["zzz.context", "aaa.context"]
+    assert contributor_names(reversed_order) == ["zzz.context", "aaa.context"]
+
+
 def test_runtime_team_compatibility_projections_delegate_to_canonical_capabilities(tmp_path: Path) -> None:
     runtime = assemble_runtime(
         RuntimeConfig(
