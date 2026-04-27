@@ -409,6 +409,47 @@ def test_runtime_core_protocol_catalog_keeps_package_capabilities_and_wrappers_o
     ]
 
 
+def test_runtime_core_protocol_catalog_matches_adjacent_metadata_contracts(tmp_path: Path) -> None:
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            distribution=RuntimeDistribution.DEFAULT,
+        )
+    )
+
+    catalog = runtime.services.metadata["core_protocol_catalog"]["protocols"]
+    compatibility_surfaces = runtime.services.metadata["compatibility_surfaces"]
+    package_lookup = runtime.services.metadata["package_lookup"]
+    invocation_provider_paths = runtime.services.metadata["invocation_provider_paths"]
+
+    for entry in catalog.values():
+        for retained_surface in entry.get("retained_surfaces", []):
+            surface = retained_surface["surface"]
+            assert compatibility_surfaces[surface] == retained_surface["status"]
+
+    assert catalog["runtime.job.service"]["canonical_binding_surface"] == (
+        package_lookup["canonical_control_plane_services"]["job_service"]
+    )
+    assert catalog["runtime.task-list.service"]["canonical_binding_surface"] == (
+        package_lookup["canonical_control_plane_services"]["task_list_service"]
+    )
+    assert catalog["runtime.context-contributors.registry"]["canonical_binding_surface"] == (
+        package_lookup["canonical_context_contributors"]["package_contributions"]
+    )
+    assert catalog["runtime.context-contributors.registry"]["metadata"]["stage_catalog"] == (
+        package_lookup["canonical_context_contributors"]["stage_catalog"]
+    )
+    assert catalog["runtime.invocation-provider.registry"]["canonical_binding_surface"] == (
+        package_lookup["canonical_invocation_providers"]["package_contributions"]
+    )
+    assert catalog["runtime.invocation-provider.registry"]["metadata"]["builtin_baseline"] == (
+        package_lookup["canonical_invocation_providers"]["builtins"]
+    )
+    assert catalog["runtime.invocation-provider.registry"]["metadata"]["builtin_baseline_status"] == (
+        invocation_provider_paths["builtin_skill_baseline"]
+    )
+
+
 def test_package_context_contributor_order_is_deterministic_across_packages(tmp_path: Path) -> None:
     original = runtime_kernel_module.official_runtime_package_manifests
 

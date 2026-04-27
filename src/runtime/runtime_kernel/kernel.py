@@ -51,7 +51,12 @@ from ..invocation_catalog import SkillInvocationProvider
 from ..jobs import DefaultJobService, InMemoryJobStore, JobScopeFilter, job_record_to_payload
 from ..package_profiles import FIRST_PARTY_PACKAGE_SPECS
 from ..runtime_package_manifests import official_runtime_package_manifests
-from ..runtime_core_protocol_catalog import build_stable_core_protocol_catalog
+from ..runtime_core_protocol_catalog import (
+    build_stable_core_protocol_catalog,
+    core_protocol_compatibility_surfaces,
+    core_protocol_invocation_provider_paths_metadata,
+    core_protocol_package_lookup_sections,
+)
 from ..runtime_package_protocols import (
     InvocationProviderContribution,
     InvocationProviderFactoryContext,
@@ -1570,6 +1575,7 @@ def _assemble_runtime_stack(kernel: RuntimeKernel) -> RuntimeAssembly:
     if runtime_diagnostics:
         kernel.diagnostics = kernel.diagnostics + runtime_diagnostics
     _project_capability_compatibility_surfaces(services)
+    _sync_core_protocol_catalog_metadata(services)
     teammates = services.resolve_capability(RuntimeCapabilityKey.TEAMMATES.value)
     team_control_plane = services.resolve_capability(RuntimeCapabilityKey.TEAM_CONTROL_PLANE.value)
     team_message_bus = services.resolve_capability(RuntimeCapabilityKey.TEAM_MESSAGE_BUS.value)
@@ -1658,12 +1664,8 @@ def _build_runtime_services(kernel: RuntimeKernel) -> RuntimeServices:
         for slot, binding in _store_binding_entries(kernel.package_service_contributions).items()
     }
     metadata["compatibility_surfaces"] = {
-        "TaskManager": "compatibility-only",
+        **core_protocol_compatibility_surfaces(),
         "runtime_context": "compatibility-only",
-        "RuntimeConfig.extra_invocation_providers": "bounded-compatibility",
-        "RuntimeServices.memory.collect": "compatibility-only",
-        "RuntimeServices.hooks.collect": "compatibility-only",
-        "RuntimeServices.task_discipline.collect": "compatibility-only",
         "RuntimeServices.compaction.prepare_turn": "dedicated-control-plane",
         "RuntimeServices.compaction.collect": "dedicated-control-plane",
         "RuntimeServices.teammates": "compatibility-only",
@@ -1676,9 +1678,7 @@ def _build_runtime_services(kernel: RuntimeKernel) -> RuntimeServices:
         "RuntimeAssembly.team_workflows": "compatibility-only",
         "BoundHostRuntime.list_team_workflows": "compatibility-wrapper",
         "BoundHostRuntime.respond_team_workflow": "compatibility-wrapper",
-        "HostRuntime.emit_team_event": "bounded-compatibility",
     }
-    metadata["core_protocol_catalog"] = build_stable_core_protocol_catalog()
     metadata["package_lookup"] = _package_lookup_metadata()
     metadata["invocation_provider_paths"] = _invocation_provider_paths_metadata()
     metadata["invocation_provider_registrations"] = [
@@ -1743,6 +1743,7 @@ def _build_runtime_services(kernel: RuntimeKernel) -> RuntimeServices:
             stage=PackageAssemblyStage.SERVICES.value,
         )
     _project_capability_compatibility_surfaces(services)
+    _sync_core_protocol_catalog_metadata(services)
     services.configure_compat(
         permission_handler=kernel.config.permission_handler,
         ask_user_handler=kernel.config.ask_user_handler,
@@ -1978,13 +1979,7 @@ def _package_manifest_catalog(
 
 
 def _invocation_provider_paths_metadata() -> dict[str, Any]:
-    return {
-        "builtin_skill_baseline": "baseline",
-        "package_contributions": "canonical-package-path",
-        "extra_invocation_providers": "bounded-compatibility",
-        "canonical_package_surface": "PackageContribution.invocation_providers",
-        "compatibility_surface": "RuntimeConfig.extra_invocation_providers",
-    }
+    return core_protocol_invocation_provider_paths_metadata()
 
 
 def _serialize_invocation_provider_registration(
@@ -2010,6 +2005,7 @@ def _serialize_invocation_provider_registration(
 
 
 def _package_lookup_metadata() -> dict[str, Any]:
+    core_sections = core_protocol_package_lookup_sections()
     return {
         "canonical_capabilities": {
             "teammates": RuntimeCapabilityKey.TEAMMATES.value,
@@ -2020,34 +2016,14 @@ def _package_lookup_metadata() -> dict[str, Any]:
         "canonical_host_facets": {
             "team_workflows": RuntimeHostFacetKey.TEAM_WORKFLOWS.value,
         },
-        "canonical_control_plane_services": {
-            "job_service": "RuntimeServices.job_service",
-            "task_list_service": "RuntimeServices.task_list_service",
-        },
-        "canonical_context_contributors": {
-            "package_contributions": "PackageContribution.context_contributors",
-            "registry": "RuntimeServices.context_contributor_execution_plan",
-            "stage_catalog": [
-                "memory",
-                "hooks",
-                "task_policy",
-            ],
-        },
-        "canonical_invocation_providers": {
-            "package_contributions": "PackageContribution.invocation_providers",
-            "builtins": "builtin_skill_baseline",
-        },
-        "compatibility_context_contributors": {
-            "RuntimeServices.memory.collect": "compatibility-only",
-            "RuntimeServices.hooks.collect": "compatibility-only",
-            "RuntimeServices.task_discipline.collect": "compatibility-only",
-        },
+        "canonical_control_plane_services": dict(core_sections["canonical_control_plane_services"]),
+        "canonical_context_contributors": dict(core_sections["canonical_context_contributors"]),
+        "canonical_invocation_providers": dict(core_sections["canonical_invocation_providers"]),
+        "compatibility_context_contributors": dict(core_sections["compatibility_context_contributors"]),
         "dedicated_control_plane_paths": {
             "compaction": "RuntimeServices.compaction.prepare_turn / RuntimeServices.compaction.collect",
         },
-        "compatibility_invocation_providers": {
-            "embedder_config": "RuntimeConfig.extra_invocation_providers",
-        },
+        "compatibility_invocation_providers": dict(core_sections["compatibility_invocation_providers"]),
         "canonical_lifecycle_phase": PackageLifecyclePhase.SESSION_OPEN.value,
         "canonical_post_ingress_path": "completion_receipts",
         "compatibility_wrappers": [
@@ -2066,6 +2042,14 @@ def _package_lookup_metadata() -> dict[str, Any]:
             "TaskManager usage remains compatibility-scoped behind JobService and TaskListService",
         ],
     }
+
+
+def _sync_core_protocol_catalog_metadata(services: RuntimeServices) -> None:
+    services.metadata["core_protocol_catalog"] = build_stable_core_protocol_catalog(
+        compatibility_surfaces=services.metadata.get("compatibility_surfaces"),
+        package_lookup=services.metadata.get("package_lookup"),
+        invocation_provider_paths=services.metadata.get("invocation_provider_paths"),
+    )
 
 
 def _project_capability_compatibility_surfaces(services: RuntimeServices) -> None:

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Any
+from typing import Any, Mapping
 
 from .runtime_package_protocols import PackageOwnership
 
@@ -19,6 +19,57 @@ class CoreProtocolBindingBoundary(StrEnum):
 class CoreProtocolCompatibilityStatus(StrEnum):
     STABLE = "stable"
     STABLE_WITH_COMPATIBILITY = "stable-with-compatibility"
+
+
+def core_protocol_compatibility_surfaces() -> dict[str, str]:
+    return {
+        "TaskManager": "compatibility-only",
+        "RuntimeConfig.extra_invocation_providers": "bounded-compatibility",
+        "RuntimeServices.memory.collect": "compatibility-only",
+        "RuntimeServices.hooks.collect": "compatibility-only",
+        "RuntimeServices.task_discipline.collect": "compatibility-only",
+        "HostRuntime.emit_team_event": "bounded-compatibility",
+    }
+
+
+def core_protocol_package_lookup_sections() -> dict[str, Any]:
+    return {
+        "canonical_control_plane_services": {
+            "job_service": "RuntimeServices.job_service",
+            "task_list_service": "RuntimeServices.task_list_service",
+        },
+        "canonical_context_contributors": {
+            "package_contributions": "PackageContribution.context_contributors",
+            "registry": "RuntimeServices.context_contributor_execution_plan",
+            "stage_catalog": [
+                "memory",
+                "hooks",
+                "task_policy",
+            ],
+        },
+        "canonical_invocation_providers": {
+            "package_contributions": "PackageContribution.invocation_providers",
+            "builtins": "builtin_skill_baseline",
+        },
+        "compatibility_context_contributors": {
+            "RuntimeServices.memory.collect": "compatibility-only",
+            "RuntimeServices.hooks.collect": "compatibility-only",
+            "RuntimeServices.task_discipline.collect": "compatibility-only",
+        },
+        "compatibility_invocation_providers": {
+            "embedder_config": "RuntimeConfig.extra_invocation_providers",
+        },
+    }
+
+
+def core_protocol_invocation_provider_paths_metadata() -> dict[str, str]:
+    return {
+        "builtin_skill_baseline": "baseline",
+        "package_contributions": "canonical-package-path",
+        "extra_invocation_providers": "bounded-compatibility",
+        "canonical_package_surface": "PackageContribution.invocation_providers",
+        "compatibility_surface": "RuntimeConfig.extra_invocation_providers",
+    }
 
 
 @dataclass(frozen=True, slots=True)
@@ -146,11 +197,58 @@ class StableCoreProtocolCatalog:
         }
 
 
-def build_stable_core_protocol_catalog() -> dict[str, Any]:
-    return StableCoreProtocolCatalog(protocols=_stable_core_protocol_entries()).to_dict()
+def build_stable_core_protocol_catalog(
+    *,
+    compatibility_surfaces: Mapping[str, str] | None = None,
+    package_lookup: Mapping[str, Any] | None = None,
+    invocation_provider_paths: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    resolved_package_lookup = (
+        core_protocol_package_lookup_sections()
+        if package_lookup is None
+        else dict(package_lookup)
+    )
+    resolved_compatibility_surfaces = (
+        core_protocol_compatibility_surfaces()
+        if compatibility_surfaces is None
+        else dict(compatibility_surfaces)
+    )
+    resolved_invocation_provider_paths = (
+        core_protocol_invocation_provider_paths_metadata()
+        if invocation_provider_paths is None
+        else dict(invocation_provider_paths)
+    )
+    return StableCoreProtocolCatalog(
+        protocols=_stable_core_protocol_entries(
+            compatibility_surfaces=resolved_compatibility_surfaces,
+            package_lookup=resolved_package_lookup,
+            invocation_provider_paths=resolved_invocation_provider_paths,
+        )
+    ).to_dict()
 
 
-def _stable_core_protocol_entries() -> tuple[StableCoreProtocolEntry, ...]:
+def _stable_core_protocol_entries(
+    *,
+    compatibility_surfaces: Mapping[str, str],
+    package_lookup: Mapping[str, Any],
+    invocation_provider_paths: Mapping[str, Any],
+) -> tuple[StableCoreProtocolEntry, ...]:
+    control_plane_services = _require_mapping(
+        package_lookup,
+        "canonical_control_plane_services",
+    )
+    context_contributors = _require_mapping(
+        package_lookup,
+        "canonical_context_contributors",
+    )
+    invocation_providers = _require_mapping(
+        package_lookup,
+        "canonical_invocation_providers",
+    )
+    context_stage_catalog = _require_string_list(
+        context_contributors.get("stage_catalog"),
+        field_name="canonical_context_contributors.stage_catalog",
+    )
     return (
         StableCoreProtocolEntry(
             protocol_id="runtime.transcript.store",
@@ -174,13 +272,25 @@ def _stable_core_protocol_entries() -> tuple[StableCoreProtocolEntry, ...]:
             canonical_name="JobService",
             owner=_runtime_core_owner("RuntimeServices.job_service"),
             binding_boundary=CoreProtocolBindingBoundary.SERVICE_OWNED,
-            canonical_binding_surface="RuntimeServices.job_service",
-            discovery_surface="RuntimeServices.job_service",
+            canonical_binding_surface=_require_string(
+                control_plane_services,
+                "job_service",
+                field_name="canonical_control_plane_services.job_service",
+            ),
+            discovery_surface=_require_string(
+                control_plane_services,
+                "job_service",
+                field_name="canonical_control_plane_services.job_service",
+            ),
             compatibility_status=CoreProtocolCompatibilityStatus.STABLE_WITH_COMPATIBILITY,
             retained_surfaces=(
                 CoreProtocolRetainedSurface(
                     surface="TaskManager",
-                    status="compatibility-only",
+                    status=_require_string(
+                        compatibility_surfaces,
+                        "TaskManager",
+                        field_name="compatibility_surfaces.TaskManager",
+                    ),
                     notes="Compatibility facade over JobService and TaskListService.",
                 ),
             ),
@@ -193,13 +303,25 @@ def _stable_core_protocol_entries() -> tuple[StableCoreProtocolEntry, ...]:
             canonical_name="TaskListService",
             owner=_runtime_core_owner("RuntimeServices.task_list_service"),
             binding_boundary=CoreProtocolBindingBoundary.SERVICE_OWNED,
-            canonical_binding_surface="RuntimeServices.task_list_service",
-            discovery_surface="RuntimeServices.task_list_service",
+            canonical_binding_surface=_require_string(
+                control_plane_services,
+                "task_list_service",
+                field_name="canonical_control_plane_services.task_list_service",
+            ),
+            discovery_surface=_require_string(
+                control_plane_services,
+                "task_list_service",
+                field_name="canonical_control_plane_services.task_list_service",
+            ),
             compatibility_status=CoreProtocolCompatibilityStatus.STABLE_WITH_COMPATIBILITY,
             retained_surfaces=(
                 CoreProtocolRetainedSurface(
                     surface="TaskManager",
-                    status="compatibility-only",
+                    status=_require_string(
+                        compatibility_surfaces,
+                        "TaskManager",
+                        field_name="compatibility_surfaces.TaskManager",
+                    ),
                     notes="Compatibility facade over JobService and TaskListService.",
                 ),
             ),
@@ -228,25 +350,44 @@ def _stable_core_protocol_entries() -> tuple[StableCoreProtocolEntry, ...]:
             canonical_name="ContextContributorRegistry",
             owner=_runtime_core_owner("RuntimeServices.context_contributor_execution_plan"),
             binding_boundary=CoreProtocolBindingBoundary.REGISTRY_OWNED,
-            canonical_binding_surface="PackageContribution.context_contributors",
-            discovery_surface="RuntimeServices.context_contributor_execution_plan / runtime.services.metadata['context_contributors']",
+            canonical_binding_surface=_require_string(
+                context_contributors,
+                "package_contributions",
+                field_name="canonical_context_contributors.package_contributions",
+            ),
+            discovery_surface=(
+                f"{_require_string(context_contributors, 'registry', field_name='canonical_context_contributors.registry')}"
+                " / runtime.services.metadata['context_contributors']"
+            ),
             compatibility_status=CoreProtocolCompatibilityStatus.STABLE_WITH_COMPATIBILITY,
             retained_surfaces=(
                 CoreProtocolRetainedSurface(
                     surface="RuntimeServices.memory.collect",
-                    status="compatibility-only",
+                    status=_require_string(
+                        compatibility_surfaces,
+                        "RuntimeServices.memory.collect",
+                        field_name="compatibility_surfaces.RuntimeServices.memory.collect",
+                    ),
                 ),
                 CoreProtocolRetainedSurface(
                     surface="RuntimeServices.hooks.collect",
-                    status="compatibility-only",
+                    status=_require_string(
+                        compatibility_surfaces,
+                        "RuntimeServices.hooks.collect",
+                        field_name="compatibility_surfaces.RuntimeServices.hooks.collect",
+                    ),
                 ),
                 CoreProtocolRetainedSurface(
                     surface="RuntimeServices.task_discipline.collect",
-                    status="compatibility-only",
+                    status=_require_string(
+                        compatibility_surfaces,
+                        "RuntimeServices.task_discipline.collect",
+                        field_name="compatibility_surfaces.RuntimeServices.task_discipline.collect",
+                    ),
                 ),
             ),
             metadata={
-                "stage_catalog": ["memory", "hooks", "task_policy"],
+                "stage_catalog": context_stage_catalog,
             },
         ),
         StableCoreProtocolEntry(
@@ -254,17 +395,34 @@ def _stable_core_protocol_entries() -> tuple[StableCoreProtocolEntry, ...]:
             canonical_name="InvocationProviderRegistry",
             owner=_runtime_core_owner("InvocationRegistry.register_provider"),
             binding_boundary=CoreProtocolBindingBoundary.REGISTRY_OWNED,
-            canonical_binding_surface="PackageContribution.invocation_providers",
+            canonical_binding_surface=_require_string(
+                invocation_providers,
+                "package_contributions",
+                field_name="canonical_invocation_providers.package_contributions",
+            ),
             discovery_surface="RuntimeAssembly.resolve_invocations / runtime.services.metadata['invocation_provider_registrations']",
             compatibility_status=CoreProtocolCompatibilityStatus.STABLE_WITH_COMPATIBILITY,
             retained_surfaces=(
                 CoreProtocolRetainedSurface(
                     surface="RuntimeConfig.extra_invocation_providers",
-                    status="bounded-compatibility",
+                    status=_require_string(
+                        compatibility_surfaces,
+                        "RuntimeConfig.extra_invocation_providers",
+                        field_name="compatibility_surfaces.RuntimeConfig.extra_invocation_providers",
+                    ),
                 ),
             ),
             metadata={
-                "builtin_baseline": "builtin_skill_baseline",
+                "builtin_baseline": _require_string(
+                    invocation_providers,
+                    "builtins",
+                    field_name="canonical_invocation_providers.builtins",
+                ),
+                "builtin_baseline_status": _require_string(
+                    invocation_provider_paths,
+                    "builtin_skill_baseline",
+                    field_name="invocation_provider_paths.builtin_skill_baseline",
+                ),
                 "path_metadata": "runtime.services.metadata['invocation_provider_paths']",
             },
         ),
@@ -279,7 +437,11 @@ def _stable_core_protocol_entries() -> tuple[StableCoreProtocolEntry, ...]:
             retained_surfaces=(
                 CoreProtocolRetainedSurface(
                     surface="HostRuntime.emit_team_event",
-                    status="bounded-compatibility",
+                    status=_require_string(
+                        compatibility_surfaces,
+                        "HostRuntime.emit_team_event",
+                        field_name="compatibility_surfaces.HostRuntime.emit_team_event",
+                    ),
                     notes="Team event egress is retained as a bounded compatibility sink, not as the canonical host extension story.",
                 ),
             ),
@@ -300,6 +462,30 @@ def _require_non_empty(value: object, field_name: str) -> str:
     if not normalized:
         raise ValueError(f"{field_name} must not be empty")
     return normalized
+
+
+def _require_mapping(mapping: Mapping[str, Any], key: str) -> Mapping[str, Any]:
+    value = mapping.get(key)
+    if not isinstance(value, Mapping):
+        raise ValueError(f"{key} must be a mapping")
+    return value
+
+
+def _require_string(
+    mapping: Mapping[str, Any],
+    key: str,
+    *,
+    field_name: str,
+) -> str:
+    if key not in mapping:
+        raise ValueError(f"{field_name} must be present")
+    return _require_non_empty(mapping[key], field_name)
+
+
+def _require_string_list(value: object, *, field_name: str) -> list[str]:
+    if not isinstance(value, (list, tuple)):
+        raise ValueError(f"{field_name} must be a list of strings")
+    return [_require_non_empty(item, field_name) for item in value]
 
 
 __all__ = [
