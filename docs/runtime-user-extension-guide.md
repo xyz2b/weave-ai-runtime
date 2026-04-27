@@ -171,6 +171,15 @@ Tool '<name>' has no execution handler
 - package-owned service 通过 capability registry 暴露
 - optional host helper 通过 host facet discovery 暴露
 
+如果这是一个本地 embedder-owned package，现在推荐的显式注册方式是
+`RuntimeConfig.extra_package_manifests`：
+
+- 接受 `RuntimePackageManifest` 实例，或解析为 manifest 的本地 entrypoint string
+- runtime 会在装配前校验 manifest shape、trust boundary、external duplicate name、官方 first-party reserved name，以及 dependency references
+- 当前不支持 override mode，也不会自动扫目录找 package
+- 被拒绝的 manifest 不会进入 built-ins / services / runtime contribution
+- 诊断、provenance 与拒绝原因会发布到 `runtime.services.metadata["package_registration"]` 和 `runtime.metadata["package_registration"]`
+
 这意味着 package boundary 现在更接近：
 
 - “能力通过什么 contract 接上 runtime”
@@ -205,7 +214,7 @@ Tool '<name>' has no execution handler
 
 - 如果只是加一个可执行能力，继续优先写 tool / agent / skill
 - 如果你要同时贡献 built-ins、runtime object、host extension 或 lifecycle behavior，再考虑 package-level contribution
-- 不要默认通过 patch `RuntimeServices` 顶层字段或 kernel switch table 完成接入
+- 不要默认通过 patch `RuntimeServices` 顶层字段、`FIRST_PARTY_PACKAGE_SPECS` 或 kernel switch table 完成接入
 - 如果你需要稳定公开的 hook 能力，优先放在 `RuntimeConfig(hooks=...)`、host/session API，或 skill frontmatter 的 `hooks` 里。
 
 ### 2.4 Skill：可复用 workflow / prompt envelope

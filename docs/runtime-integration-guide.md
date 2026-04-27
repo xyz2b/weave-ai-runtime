@@ -23,7 +23,7 @@ Runtime 核心流转本身由框架收口，用户通常不应该改 `TurnEngine
   - package-contributed context contributors
   - tool capability refresh
 
-本文基于截至 `2026-04-21` 的仓库实现、`openspec/changes/archive/` 的演化轨迹，以及 `docs/current-system-architecture.md`、`docs/runtime-control-plane-extension-guide.md`、`docs/layered-memory-runtime-v2.md` 和对应 OpenSpec 规格中已经收敛的契约整理。
+本文基于截至 `2026-04-27` 的仓库实现、`openspec/changes/archive/` 的演化轨迹，以及 `docs/current-system-architecture.md`、`docs/runtime-control-plane-extension-guide.md`、`docs/layered-memory-runtime-v2.md` 和对应 OpenSpec 规格中已经收敛的契约整理。
 
 ## 1. 先用一句话理解这套系统
 
@@ -140,6 +140,15 @@ Runtime 核心流转本身由框架收口，用户通常不应该改 `TurnEngine
 
 而不是把 `TurnEngine`、shared `runtime_context` 或 `TaskManager` compatibility facade 当作 primary extension story。
 
+如果你要把一个 embedder-owned runtime package 显式接进当前实例，现在 canonical config slot 是
+`RuntimeConfig.extra_package_manifests`：
+
+- 接受 `RuntimePackageManifest` 实例，或可解析为 manifest 的本地 entrypoint string
+- runtime 会在 package assembly 之前校验 manifest shape、trust boundary、external duplicate name、官方 first-party reserved name，以及 dependency references
+- 当前不支持 override mode，也不会自动扫描目录
+- 被拒绝的 external manifest 不会进入 built-ins / services / runtime contribution
+- 诊断与 provenance 会单独发布到 `runtime.services.metadata["package_registration"]` 和 `runtime.metadata["package_registration"]`
+
 ### 2.2 Runtime 入口：`RuntimeAssembly`
 
 `RuntimeAssembly` 是最推荐的运行时入口。  
@@ -211,6 +220,10 @@ Runtime 核心流转本身由框架收口，用户通常不应该改 `TurnEngine
 - file-backed core stores 由 `runtime-stores-file` contribution 注册
 - team control-plane object 与 workflow host facet 由 `runtime-team` contribution 注册
 
+如果你要接的是本地 external package，也应走同一条 manifest + contribution path，只是注册入口变成
+`RuntimeConfig.extra_package_manifests`，而不是修改 `FIRST_PARTY_PACKAGE_SPECS`、
+`official_runtime_package_manifests()` 或其他 kernel-owned 表。
+
 如果你在做自定义 integration，推荐把“包边界”理解成：
 
 - 不是“某段代码从 `runtime-core/` 挪到别的目录”
@@ -223,10 +236,13 @@ Runtime 核心流转本身由框架收口，用户通常不应该改 `TurnEngine
 当前 runtime metadata 也会显式标这些边界：
 
 - `runtime.services.metadata["core_protocol_catalog"]`：stable core protocol catalog，包含 schema version、owner、binding boundary、canonical binding surface、discovery surface 与 compatibility status
+- `runtime.services.metadata["package_registration"]`：external package accepted / rejected registration、diagnostics、provenance、trust-boundary details
+- `runtime.services.metadata["package_manifests"]`：真正进入装配的 merged manifest inventory
 - `runtime.services.metadata["package_lookup"]`：canonical capability / host-facet / lifecycle / receipt path
 - `runtime.services.metadata["invocation_provider_paths"]`：built-in baseline、package canonical path、config compatibility path
 - `runtime.services.metadata["invocation_provider_registrations"]`：当前 runtime 里实际生效的 provider 注册顺序、owner、origin 与 registration metadata
 - `runtime.metadata["core_protocol_catalog"]`：`RuntimeAssembly` 侧同步暴露的 stable core protocol catalog
+- `runtime.metadata["package_registration"]` / `runtime.metadata["package_manifests"]`：`RuntimeAssembly` 侧同步暴露的 external registration diagnostics 与 merged package inventory
 - `runtime.metadata["package_lookup"]`：`RuntimeAssembly` 侧同步暴露的 owner-layer lookup guidance
 - `runtime.services.metadata["compatibility_surfaces"]`：仍保留但非 canonical 的 wrapper / projection
 - `runtime.services.metadata["compatibility_projections"]`：当前 projection 仍映射到哪些 capability key

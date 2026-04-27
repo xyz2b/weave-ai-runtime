@@ -9,7 +9,6 @@ from uuid import uuid4
 
 from ..agent_execution import SpawnMode
 from ..agent_runtime import AgentInvocation, AgentRunResult, AgentRuntime
-from ..builtins import load_builtin_pack
 from ..contracts import (
     ExecutionResult,
     ExecutionStatus,
@@ -50,7 +49,12 @@ from ..hooks import (
 from ..invocation_catalog import SkillInvocationProvider
 from ..jobs import DefaultJobService, InMemoryJobStore, JobScopeFilter, job_record_to_payload
 from ..package_profiles import FIRST_PARTY_PACKAGE_SPECS
-from ..runtime_package_manifests import official_runtime_package_manifests
+from ..runtime_package_manifests import (
+    RuntimePackageRegistrationReport,
+    merge_runtime_package_manifests,
+    official_runtime_package_manifests,
+    register_external_runtime_package_manifests,
+)
 from ..runtime_core_protocol_catalog import (
     build_stable_core_protocol_catalog,
     core_protocol_compatibility_surfaces,
@@ -123,6 +127,9 @@ class RuntimeKernel:
     invocation_registry: InvocationRegistry
     distribution: str
     first_party_packages: tuple[str, ...] = ()
+    package_registration: RuntimePackageRegistrationReport = field(
+        default_factory=RuntimePackageRegistrationReport
+    )
     package_manifests: tuple[RuntimePackageManifest, ...] = ()
     package_service_contributions: tuple[tuple[RuntimePackageManifest, PackageContribution], ...] = ()
     diagnostics: tuple[Diagnostic, ...] = ()
@@ -1408,7 +1415,22 @@ def _coerce_definition_source(value: Any) -> DefinitionSource:
 
 def build_runtime_kernel(config: RuntimeConfig) -> RuntimeKernel:
     selected_packages = config.selected_first_party_packages()
-    package_manifests = official_runtime_package_manifests(selected_packages)
+    first_party_manifests = official_runtime_package_manifests(selected_packages)
+    package_registration = register_external_runtime_package_manifests(
+        config.extra_package_manifests,
+        selected_first_party_manifests=first_party_manifests,
+    )
+    package_manifests = merge_runtime_package_manifests(
+        first_party_manifests,
+        package_registration,
+    )
+    builtin_package_contributions = _assemble_package_contributions(
+        package_manifests,
+        stage=PackageAssemblyStage.BUILTINS,
+        config=config,
+        distribution=config.resolved_distribution().value,
+        working_directory=config.working_directory,
+    )
     package_service_contributions = _assemble_package_contributions(
         package_manifests,
         stage=PackageAssemblyStage.SERVICES,
@@ -1428,12 +1450,15 @@ def build_runtime_kernel(config: RuntimeConfig) -> RuntimeKernel:
         session_cwd=config.working_directory,
         base_registry=skill_registry,
     )
-    diagnostics: list[Diagnostic] = []
+    diagnostics: list[Diagnostic] = list(package_registration.as_diagnostics())
 
-    builtin_pack = load_builtin_pack(selected_packages)
-    _register_builtin_tools(tool_registry, config, builtin_pack.tools, diagnostics)
-    _register_builtin_agents(agent_registry, config, builtin_pack.agents, diagnostics)
-    _register_builtin_skills(skill_registry, config, builtin_pack.skills, diagnostics)
+    builtin_tools, builtin_agents, builtin_skills, builtin_diagnostics = _collect_package_builtins(
+        builtin_package_contributions
+    )
+    diagnostics.extend(builtin_diagnostics)
+    _register_builtin_tools(tool_registry, config, builtin_tools, diagnostics)
+    _register_builtin_agents(agent_registry, config, builtin_agents, diagnostics)
+    _register_builtin_skills(skill_registry, config, builtin_skills, diagnostics)
 
     discovery = DefinitionDiscovery(config.discovery_sources)
     discovered = discovery.discover()
@@ -1470,6 +1495,7 @@ def build_runtime_kernel(config: RuntimeConfig) -> RuntimeKernel:
         invocation_registry=invocation_registry,
         distribution=config.resolved_distribution().value,
         first_party_packages=selected_packages,
+        package_registration=package_registration,
         package_manifests=package_manifests,
         package_service_contributions=package_service_contributions,
         diagnostics=tuple(diagnostics),
@@ -1598,6 +1624,9 @@ def _assemble_runtime_stack(kernel: RuntimeKernel) -> RuntimeAssembly:
             **dict(kernel.config.metadata),
             "distribution": kernel.distribution,
             "first_party_packages": list(kernel.first_party_packages),
+            "first_party_package_catalog": dict(services.metadata.get("first_party_package_catalog", {})),
+            "package_registration": dict(services.metadata.get("package_registration", {})),
+            "package_manifests": dict(services.metadata.get("package_manifests", {})),
             "package_runtime_contributions": [manifest.name for manifest, _ in runtime_package_contributions],
             "core_protocol_catalog": dict(services.metadata.get("core_protocol_catalog", {})),
             "package_lookup": dict(services.metadata.get("package_lookup", {})),
@@ -1655,6 +1684,7 @@ def _build_runtime_services(kernel: RuntimeKernel) -> RuntimeServices:
     metadata["distribution"] = kernel.distribution
     metadata["first_party_packages"] = list(kernel.first_party_packages)
     metadata["first_party_package_catalog"] = _first_party_package_catalog(kernel.first_party_packages)
+    metadata["package_registration"] = kernel.package_registration.to_metadata()
     metadata["package_manifests"] = _package_manifest_catalog(kernel.package_manifests)
     metadata["package_service_contributions"] = [
         manifest.name for manifest, _ in kernel.package_service_contributions
@@ -1784,6 +1814,26 @@ def _assemble_package_contributions(
         )
         records.append((manifest, contribution))
     return tuple(records)
+
+
+def _collect_package_builtins(
+    package_contributions: tuple[tuple[RuntimePackageManifest, PackageContribution], ...],
+) -> tuple[
+    tuple[ToolDefinition, ...],
+    tuple[AgentDefinition, ...],
+    tuple[SkillDefinition, ...],
+    tuple[Diagnostic, ...],
+]:
+    tools: list[ToolDefinition] = []
+    agents: list[AgentDefinition] = []
+    skills: list[SkillDefinition] = []
+    diagnostics: list[Diagnostic] = []
+    for _, contribution in package_contributions:
+        tools.extend(contribution.builtin_tools)
+        agents.extend(contribution.builtin_agents)
+        skills.extend(contribution.builtin_skills)
+        diagnostics.extend(contribution.diagnostics)
+    return tuple(tools), tuple(agents), tuple(skills), tuple(diagnostics)
 
 
 def _with_package_model_binding_baseline(

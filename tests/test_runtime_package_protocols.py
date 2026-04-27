@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import sys
+import types
 from dataclasses import replace
 from pathlib import Path
 
@@ -80,6 +82,206 @@ def test_official_runtime_package_manifests_follow_dependency_order() -> None:
         "runtime-core",
         "runtime-team",
     )
+
+
+def test_external_package_registration_accepts_manifest_entrypoints_and_publishes_metadata(
+    tmp_path: Path,
+) -> None:
+    observed_stages: list[str] = []
+
+    def assemble_external(context):
+        observed_stages.append(context.stage.value)
+        return PackageContribution()
+
+    module_name = "test_external_runtime_package_manifest_module"
+    module = types.ModuleType(module_name)
+    module.external_manifest = RuntimePackageManifest(
+        name="runtime-external",
+        role="capability",
+        description="External runtime package",
+        dependencies=("runtime-core",),
+        assembly_entrypoint=assemble_external,
+    )
+    sys.modules[module_name] = module
+    try:
+        runtime = assemble_runtime(
+            RuntimeConfig(
+                working_directory=tmp_path,
+                distribution=RuntimeDistribution.CORE,
+                extra_package_manifests=(f"{module_name}:external_manifest",),
+            )
+        )
+    finally:
+        sys.modules.pop(module_name, None)
+
+    accepted = runtime.services.metadata["package_registration"]["accepted"]
+    assert runtime.kernel.first_party_packages == ("runtime-core",)
+    assert tuple(manifest.name for manifest in runtime.kernel.package_manifests) == (
+        "runtime-core",
+        "runtime-external",
+    )
+    assert observed_stages == [
+        PackageAssemblyStage.BUILTINS.value,
+        PackageAssemblyStage.SERVICES.value,
+        PackageAssemblyStage.RUNTIME.value,
+    ]
+    assert accepted == [
+        {
+            "package_name": "runtime-external",
+            "manifest": {
+                "name": "runtime-external",
+                "role": "capability",
+                "description": "External runtime package",
+                "dependencies": ["runtime-core"],
+                "invocation_providers": [],
+            },
+            "provenance": {
+                "origin": "external",
+                "registration_path": "RuntimeConfig.extra_package_manifests",
+                "registration_index": 0,
+                "source_kind": "entrypoint",
+                "source_ref": f"{module_name}:external_manifest",
+            },
+            "trust_boundary": {
+                "classification": "external",
+                "protocol": "RuntimePackageManifest",
+                "override_mode": "not_supported",
+            },
+            "diagnostics": [],
+        }
+    ]
+    assert runtime.services.metadata["package_registration"]["rejected"] == []
+    assert runtime.services.metadata["package_manifests"]["runtime-external"]["dependencies"] == ["runtime-core"]
+    assert runtime.services.metadata["package_service_contributions"] == ["runtime-core", "runtime-external"]
+    assert runtime.metadata["package_manifests"]["runtime-external"]["role"] == "capability"
+    assert runtime.metadata["package_runtime_contributions"] == ["runtime-core", "runtime-external"]
+    assert runtime.metadata["package_registration"] == runtime.services.metadata["package_registration"]
+
+
+def test_duplicate_external_package_registration_rejects_later_manifest(tmp_path: Path) -> None:
+    first_stages: list[str] = []
+    second_stages: list[str] = []
+
+    def assemble_first(context):
+        first_stages.append(context.stage.value)
+        return PackageContribution()
+
+    def assemble_second(context):
+        second_stages.append(context.stage.value)
+        return PackageContribution()
+
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            distribution=RuntimeDistribution.CORE,
+            extra_package_manifests=(
+                RuntimePackageManifest(
+                    name="runtime-external",
+                    role="capability",
+                    dependencies=("runtime-core",),
+                    assembly_entrypoint=assemble_first,
+                ),
+                RuntimePackageManifest(
+                    name="runtime-external",
+                    role="capability",
+                    dependencies=("runtime-core",),
+                    assembly_entrypoint=assemble_second,
+                ),
+            ),
+        )
+    )
+
+    registration = runtime.services.metadata["package_registration"]
+    assert [record["package_name"] for record in registration["accepted"]] == ["runtime-external"]
+    assert len(registration["rejected"]) == 1
+    assert registration["rejected"][0]["diagnostics"][0]["code"] == (
+        "runtime_external_package_duplicate_name"
+    )
+    assert first_stages == [
+        PackageAssemblyStage.BUILTINS.value,
+        PackageAssemblyStage.SERVICES.value,
+        PackageAssemblyStage.RUNTIME.value,
+    ]
+    assert second_stages == []
+
+
+def test_external_package_registration_rejects_reserved_first_party_name(tmp_path: Path) -> None:
+    observed_stages: list[str] = []
+
+    def assemble_external(context):
+        observed_stages.append(context.stage.value)
+        return PackageContribution()
+
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            distribution=RuntimeDistribution.CORE,
+            extra_package_manifests=(
+                RuntimePackageManifest(
+                    name="runtime-core",
+                    role="capability",
+                    dependencies=(),
+                    assembly_entrypoint=assemble_external,
+                ),
+            ),
+        )
+    )
+
+    rejected = runtime.services.metadata["package_registration"]["rejected"]
+    assert len(rejected) == 1
+    assert rejected[0]["package_name"] == "runtime-core"
+    assert rejected[0]["diagnostics"][0]["code"] == (
+        "runtime_external_package_reserved_name_collision"
+    )
+    assert tuple(manifest.name for manifest in runtime.kernel.package_manifests) == ("runtime-core",)
+    assert observed_stages == []
+
+
+def test_external_package_registration_rejects_unknown_dependency_before_assembly(tmp_path: Path) -> None:
+    observed_stages: list[str] = []
+
+    def assemble_external(context):
+        observed_stages.append(context.stage.value)
+        return PackageContribution()
+
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            distribution=RuntimeDistribution.CORE,
+            extra_package_manifests=(
+                RuntimePackageManifest(
+                    name="runtime-external",
+                    role="capability",
+                    dependencies=("runtime-missing",),
+                    assembly_entrypoint=assemble_external,
+                ),
+            ),
+        )
+    )
+
+    rejected = runtime.services.metadata["package_registration"]["rejected"]
+    assert len(rejected) == 1
+    assert rejected[0]["diagnostics"][0]["code"] == "runtime_external_package_unknown_dependency"
+    assert rejected[0]["diagnostics"][0]["details"]["missing_dependencies"] == ["runtime-missing"]
+    assert observed_stages == []
+
+
+def test_external_package_registration_reports_trust_boundary_diagnostics(tmp_path: Path) -> None:
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            distribution=RuntimeDistribution.CORE,
+            extra_package_manifests=("runtime.devtools.builtins:devtools_builtin_tools",),
+        )
+    )
+
+    rejected = runtime.services.metadata["package_registration"]["rejected"]
+    assert len(rejected) == 1
+    assert rejected[0]["package_name"] is None
+    assert rejected[0]["diagnostics"][0]["code"] == (
+        "runtime_external_package_trust_boundary_violation"
+    )
+    assert rejected[0]["diagnostics"][0]["provenance"]["source_kind"] == "entrypoint"
 
 
 def test_runtime_services_apply_package_contribution_registers_protocol_surfaces() -> None:

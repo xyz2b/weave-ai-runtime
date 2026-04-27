@@ -28,6 +28,7 @@ from ..package_profiles import (
     normalize_runtime_distribution,
     resolve_first_party_package_names,
 )
+from ..runtime_package_manifests import RuntimePackageRegistrationSource
 from ..team_config import TeammateOrchestrationConfig
 from ..turn_engine.models import ModelClient, NormalizedModelCapabilities, TranscriptStore
 
@@ -230,6 +231,7 @@ class RuntimeConfig:
     distribution: RuntimeDistribution | str = DEFAULT_RUNTIME_DISTRIBUTION
     enabled_packages: set[str] = field(default_factory=set)
     disabled_packages: set[str] = field(default_factory=set)
+    extra_package_manifests: tuple[RuntimePackageRegistrationSource, ...] | list[RuntimePackageRegistrationSource] = ()
     builtins: BuiltinPackConfig = field(default_factory=BuiltinPackConfig)
     hooks: Mapping[str, Any] = field(default_factory=dict)
     host_bindings: tuple[HostBinding, ...] = ()

@@ -1,6 +1,6 @@
 # 当前系统架构
 
-本文档基于截至 `2026-04-21` 的仓库实现、`openspec/changes/archive/` 中的历史变更，以及 `docs/` 中已有的补充约定整理当前系统架构。当前 OpenSpec 没有 active change，因此本文描述的是系统的收敛态实现，而不是某个提案中的目标态。
+本文档基于截至 `2026-04-27` 的仓库实现、`openspec/changes/archive/` 中的历史变更，以及 `docs/` 中已有的补充约定整理当前系统架构。当前 OpenSpec 没有 active change，因此本文描述的是系统的收敛态实现，而不是某个提案中的目标态。
 
 ## 1. 文档目的
 
@@ -251,6 +251,18 @@ helper 语义也已经固定：
   - session open
   - session close
   - owner 仍然是 runtime / session controller；package 只是在 owner-defined phase 内参与
+
+外部 package 现在也有显式的 runtime-owned 注册入口，而不是继续 patch kernel-owned catalog：
+
+- `RuntimeConfig.extra_package_manifests`
+  - 接受本地 `RuntimePackageManifest` 实例，或解析为该 contract 的 manifest entrypoint
+  - runtime 会先做 manifest shape / trust-boundary 校验、external duplicate name 校验、官方 first-party reserved name 校验，以及 dependency reference 校验
+  - 当前不支持 override mode，也不会做隐式目录扫描或 last-write-wins 覆盖
+  - 被拒绝的 external manifest 不会进入 built-ins、services、runtime、lifecycle 或 host-facet contribution assembly
+- `runtime.services.metadata["package_registration"]` / `runtime.metadata["package_registration"]`
+  - 单独发布 accepted / rejected registration、machine-readable diagnostics、external provenance 与 trust-boundary 信息
+- `runtime.services.metadata["package_manifests"]` / `runtime.metadata["package_manifests"]`
+  - 只描述真正进入装配的 merged manifest inventory
 
 当前官方包已经按这个协议收敛到 manifest-backed assembly：
 

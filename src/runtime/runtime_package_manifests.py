@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
-from typing import Any, Iterable
+from dataclasses import dataclass, field, replace
+from typing import Any, Iterable, Mapping, Sequence
 
+from .diagnostics import Diagnostic, DiagnosticSeverity
 from .first_party_loading import load_object
 from .package_profiles import FIRST_PARTY_PACKAGE_SPECS
 from .runtime_package_protocols import (
@@ -26,6 +27,9 @@ from .runtime_package_protocols import (
     annotate_builtin_owner,
     order_package_manifests,
 )
+
+PACKAGE_REGISTRATION_PATH = "RuntimeConfig.extra_package_manifests"
+RuntimePackageRegistrationSource = RuntimePackageManifest | str
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,6 +100,323 @@ def official_runtime_package_manifests(
 
 def package_manifest(package_name: str) -> RuntimePackageManifest:
     return _OFFICIAL_RUNTIME_PACKAGE_MANIFESTS[str(package_name)]
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimePackageRegistrationDiagnostic:
+    severity: DiagnosticSeverity
+    code: str
+    message: str
+    package_name: str | None = None
+    registration_index: int | None = None
+    source_kind: str = "manifest"
+    source_ref: str = ""
+    details: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "code", _require_non_empty(self.code, "code"))
+        object.__setattr__(self, "message", str(self.message))
+        object.__setattr__(self, "package_name", _normalize_optional_string(self.package_name))
+        object.__setattr__(self, "source_kind", _require_non_empty(self.source_kind, "source_kind"))
+        object.__setattr__(self, "source_ref", str(self.source_ref))
+        object.__setattr__(self, "details", dict(self.details))
+
+    def provenance(self) -> dict[str, Any]:
+        return {
+            "origin": "external",
+            "registration_path": PACKAGE_REGISTRATION_PATH,
+            "registration_index": self.registration_index,
+            "source_kind": self.source_kind,
+            "source_ref": self.source_ref,
+        }
+
+    def trust_boundary(self) -> dict[str, Any]:
+        return {
+            "classification": "external",
+            "protocol": "RuntimePackageManifest",
+            "override_mode": "not_supported",
+        }
+
+    def to_diagnostic(self) -> Diagnostic:
+        return Diagnostic(
+            severity=self.severity,
+            code=self.code,
+            message=self.message,
+            definition_type="runtime_package_manifest",
+            source="config",
+            location=self.source_ref or self.package_name,
+            details={
+                "package_name": self.package_name,
+                "provenance": self.provenance(),
+                "trust_boundary": self.trust_boundary(),
+                **dict(self.details),
+            },
+        )
+
+    def to_metadata(self) -> dict[str, Any]:
+        return {
+            "severity": self.severity.value,
+            "code": self.code,
+            "message": self.message,
+            "package_name": self.package_name,
+            "provenance": self.provenance(),
+            "trust_boundary": self.trust_boundary(),
+            "details": dict(self.details),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class AcceptedRuntimePackageRegistration:
+    manifest: RuntimePackageManifest
+    registration_index: int
+    source_kind: str
+    source_ref: str
+    diagnostics: tuple[RuntimePackageRegistrationDiagnostic, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "source_kind", _require_non_empty(self.source_kind, "source_kind"))
+        object.__setattr__(self, "source_ref", str(self.source_ref))
+        object.__setattr__(self, "diagnostics", tuple(self.diagnostics))
+
+    def provenance(self) -> dict[str, Any]:
+        return {
+            "origin": "external",
+            "registration_path": PACKAGE_REGISTRATION_PATH,
+            "registration_index": self.registration_index,
+            "source_kind": self.source_kind,
+            "source_ref": self.source_ref,
+        }
+
+    def trust_boundary(self) -> dict[str, Any]:
+        return {
+            "classification": "external",
+            "protocol": "RuntimePackageManifest",
+            "override_mode": "not_supported",
+        }
+
+    def to_metadata(self) -> dict[str, Any]:
+        return {
+            "package_name": self.manifest.name,
+            "manifest": _serialize_manifest_summary(self.manifest),
+            "provenance": self.provenance(),
+            "trust_boundary": self.trust_boundary(),
+            "diagnostics": [diagnostic.to_metadata() for diagnostic in self.diagnostics],
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class RejectedRuntimePackageRegistration:
+    registration_index: int
+    source_kind: str
+    source_ref: str
+    diagnostics: tuple[RuntimePackageRegistrationDiagnostic, ...]
+    package_name: str | None = None
+    manifest: RuntimePackageManifest | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "source_kind", _require_non_empty(self.source_kind, "source_kind"))
+        object.__setattr__(self, "source_ref", str(self.source_ref))
+        object.__setattr__(self, "package_name", _normalize_optional_string(self.package_name))
+        object.__setattr__(self, "diagnostics", tuple(self.diagnostics))
+
+    def provenance(self) -> dict[str, Any]:
+        return {
+            "origin": "external",
+            "registration_path": PACKAGE_REGISTRATION_PATH,
+            "registration_index": self.registration_index,
+            "source_kind": self.source_kind,
+            "source_ref": self.source_ref,
+        }
+
+    def trust_boundary(self) -> dict[str, Any]:
+        return {
+            "classification": "external",
+            "protocol": "RuntimePackageManifest",
+            "override_mode": "not_supported",
+        }
+
+    def to_metadata(self) -> dict[str, Any]:
+        return {
+            "package_name": self.package_name,
+            "manifest": None if self.manifest is None else _serialize_manifest_summary(self.manifest),
+            "provenance": self.provenance(),
+            "trust_boundary": self.trust_boundary(),
+            "diagnostics": [diagnostic.to_metadata() for diagnostic in self.diagnostics],
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimePackageRegistrationReport:
+    accepted: tuple[AcceptedRuntimePackageRegistration, ...] = ()
+    rejected: tuple[RejectedRuntimePackageRegistration, ...] = ()
+    diagnostics: tuple[RuntimePackageRegistrationDiagnostic, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "accepted", tuple(self.accepted))
+        object.__setattr__(self, "rejected", tuple(self.rejected))
+        object.__setattr__(self, "diagnostics", tuple(self.diagnostics))
+
+    @property
+    def admitted_manifests(self) -> tuple[RuntimePackageManifest, ...]:
+        return tuple(record.manifest for record in self.accepted)
+
+    def as_diagnostics(self) -> tuple[Diagnostic, ...]:
+        return tuple(diagnostic.to_diagnostic() for diagnostic in self.diagnostics)
+
+    def to_metadata(self) -> dict[str, Any]:
+        return {
+            "registration_path": PACKAGE_REGISTRATION_PATH,
+            "accepted": [record.to_metadata() for record in self.accepted],
+            "rejected": [record.to_metadata() for record in self.rejected],
+            "diagnostics": [diagnostic.to_metadata() for diagnostic in self.diagnostics],
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class _NormalizedRuntimePackageRegistration:
+    manifest: RuntimePackageManifest
+    registration_index: int
+    source_kind: str
+    source_ref: str
+
+
+def register_external_runtime_package_manifests(
+    registrations: Sequence[RuntimePackageRegistrationSource] | None,
+    *,
+    selected_first_party_manifests: Sequence[RuntimePackageManifest] = (),
+    reserved_first_party_names: Iterable[str] | None = None,
+) -> RuntimePackageRegistrationReport:
+    if not registrations:
+        return RuntimePackageRegistrationReport()
+
+    reserved_names = {
+        str(name)
+        for name in (
+            official_runtime_package_manifest_catalog()
+            if reserved_first_party_names is None
+            else reserved_first_party_names
+        )
+    }
+    selected_manifest_catalog = {
+        manifest.name: manifest for manifest in selected_first_party_manifests
+    }
+    normalized: list[_NormalizedRuntimePackageRegistration] = []
+    rejected_by_index: dict[int, RejectedRuntimePackageRegistration] = {}
+
+    for registration_index, raw_registration in enumerate(registrations):
+        resolved = _normalize_runtime_package_registration_source(
+            raw_registration,
+            registration_index=registration_index,
+        )
+        if isinstance(resolved, RejectedRuntimePackageRegistration):
+            rejected_by_index[registration_index] = resolved
+            continue
+        normalized.append(resolved)
+
+    active: dict[str, _NormalizedRuntimePackageRegistration] = {}
+    seen_names: set[str] = set()
+    for entry in normalized:
+        manifest = entry.manifest
+        package_name = manifest.name
+        if package_name in seen_names:
+            rejected_by_index[entry.registration_index] = _rejected_registration(
+                entry,
+                code="runtime_external_package_duplicate_name",
+                message=(
+                    f"External package '{package_name}' duplicates an earlier external registration"
+                ),
+                details={"conflict_package_name": package_name},
+            )
+            continue
+        seen_names.add(package_name)
+        if package_name in reserved_names:
+            rejected_by_index[entry.registration_index] = _rejected_registration(
+                entry,
+                code="runtime_external_package_reserved_name_collision",
+                message=(
+                    f"External package '{package_name}' reuses a reserved official first-party name"
+                ),
+                details={"conflict_package_name": package_name},
+            )
+            continue
+        if package_name in selected_manifest_catalog:
+            rejected_by_index[entry.registration_index] = _rejected_registration(
+                entry,
+                code="runtime_external_package_selected_name_collision",
+                message=(
+                    f"External package '{package_name}' collides with an already selected package manifest"
+                ),
+                details={"conflict_package_name": package_name},
+            )
+            continue
+        active[package_name] = entry
+
+    while True:
+        available_names = set(selected_manifest_catalog) | set(active)
+        rejected_names: list[str] = []
+        for package_name, entry in active.items():
+            missing_dependencies = sorted(
+                dependency
+                for dependency in entry.manifest.dependencies
+                if dependency not in available_names
+            )
+            if not missing_dependencies:
+                continue
+            rejected_by_index[entry.registration_index] = _rejected_registration(
+                entry,
+                code="runtime_external_package_unknown_dependency",
+                message=(
+                    f"External package '{package_name}' depends on unknown package(s): "
+                    f"{', '.join(missing_dependencies)}"
+                ),
+                details={"missing_dependencies": missing_dependencies},
+            )
+            rejected_names.append(package_name)
+        if not rejected_names:
+            break
+        for package_name in rejected_names:
+            active.pop(package_name, None)
+
+    accepted = tuple(
+        AcceptedRuntimePackageRegistration(
+            manifest=entry.manifest,
+            registration_index=entry.registration_index,
+            source_kind=entry.source_kind,
+            source_ref=entry.source_ref,
+        )
+        for entry in normalized
+        if entry.registration_index not in rejected_by_index and entry.manifest.name in active
+    )
+    rejected = tuple(record for _, record in sorted(rejected_by_index.items()))
+    diagnostics = tuple(
+        diagnostic
+        for record in rejected
+        for diagnostic in record.diagnostics
+    )
+    return RuntimePackageRegistrationReport(
+        accepted=accepted,
+        rejected=rejected,
+        diagnostics=diagnostics,
+    )
+
+
+def merge_runtime_package_manifests(
+    first_party_manifests: Sequence[RuntimePackageManifest],
+    registration_report: RuntimePackageRegistrationReport,
+) -> tuple[RuntimePackageManifest, ...]:
+    merged_catalog = {
+        manifest.name: manifest for manifest in first_party_manifests
+    }
+    merged_catalog.update(
+        {
+            manifest.name: manifest
+            for manifest in registration_report.admitted_manifests
+        }
+    )
+    requested_names = tuple(manifest.name for manifest in first_party_manifests) + tuple(
+        manifest.name for manifest in registration_report.admitted_manifests
+    )
+    return order_package_manifests(requested_names, merged_catalog)
 
 
 def assemble_runtime_core_package(context: PackageContext) -> PackageContribution:
@@ -605,9 +926,175 @@ def _annotated_definitions(
     )
 
 
+def _normalize_runtime_package_registration_source(
+    registration: RuntimePackageRegistrationSource,
+    *,
+    registration_index: int,
+) -> _NormalizedRuntimePackageRegistration | RejectedRuntimePackageRegistration:
+    if isinstance(registration, RuntimePackageManifest):
+        return _NormalizedRuntimePackageRegistration(
+            manifest=registration,
+            registration_index=registration_index,
+            source_kind="manifest",
+            source_ref=f"manifest:{registration.name}",
+        )
+    if not isinstance(registration, str):
+        diagnostic = RuntimePackageRegistrationDiagnostic(
+            severity=DiagnosticSeverity.ERROR,
+            code="runtime_external_package_trust_boundary_violation",
+            message=(
+                "External package registration must provide a RuntimePackageManifest instance "
+                "or a manifest entrypoint string"
+            ),
+            registration_index=registration_index,
+            source_kind="unsupported",
+            source_ref=type(registration).__name__,
+            details={"received_type": type(registration).__name__},
+        )
+        return RejectedRuntimePackageRegistration(
+            registration_index=registration_index,
+            source_kind="unsupported",
+            source_ref=type(registration).__name__,
+            diagnostics=(diagnostic,),
+        )
+
+    source_ref = _require_non_empty(registration, "registration")
+    try:
+        loaded = load_object(source_ref)
+    except Exception as exc:
+        diagnostic = RuntimePackageRegistrationDiagnostic(
+            severity=DiagnosticSeverity.ERROR,
+            code="runtime_external_package_manifest_load_failed",
+            message=f"External package manifest entrypoint '{source_ref}' could not be loaded",
+            registration_index=registration_index,
+            source_kind="entrypoint",
+            source_ref=source_ref,
+            details={"error": str(exc)},
+        )
+        return RejectedRuntimePackageRegistration(
+            registration_index=registration_index,
+            source_kind="entrypoint",
+            source_ref=source_ref,
+            diagnostics=(diagnostic,),
+        )
+
+    resolved = loaded
+    if callable(resolved) and not isinstance(resolved, RuntimePackageManifest):
+        try:
+            resolved = resolved()
+        except Exception as exc:
+            diagnostic = RuntimePackageRegistrationDiagnostic(
+                severity=DiagnosticSeverity.ERROR,
+                code="runtime_external_package_manifest_shape_invalid",
+                message=(
+                    f"External package manifest entrypoint '{source_ref}' did not resolve to "
+                    "a RuntimePackageManifest"
+                ),
+                registration_index=registration_index,
+                source_kind="entrypoint",
+                source_ref=source_ref,
+                details={
+                    "resolved_type": type(loaded).__name__,
+                    "error": str(exc),
+                },
+            )
+            return RejectedRuntimePackageRegistration(
+                registration_index=registration_index,
+                source_kind="entrypoint",
+                source_ref=source_ref,
+                diagnostics=(diagnostic,),
+            )
+
+    if not isinstance(resolved, RuntimePackageManifest):
+        diagnostic = RuntimePackageRegistrationDiagnostic(
+            severity=DiagnosticSeverity.ERROR,
+            code="runtime_external_package_trust_boundary_violation",
+            message=(
+                f"External package manifest entrypoint '{source_ref}' did not resolve to a "
+                "RuntimePackageManifest"
+            ),
+            registration_index=registration_index,
+            source_kind="entrypoint",
+            source_ref=source_ref,
+            details={"resolved_type": type(resolved).__name__},
+        )
+        return RejectedRuntimePackageRegistration(
+            registration_index=registration_index,
+            source_kind="entrypoint",
+            source_ref=source_ref,
+            diagnostics=(diagnostic,),
+            package_name=_normalize_optional_string(getattr(resolved, "name", None)),
+        )
+
+    return _NormalizedRuntimePackageRegistration(
+        manifest=resolved,
+        registration_index=registration_index,
+        source_kind="entrypoint",
+        source_ref=source_ref,
+    )
+
+
+def _rejected_registration(
+    entry: _NormalizedRuntimePackageRegistration,
+    *,
+    code: str,
+    message: str,
+    details: Mapping[str, Any] | None = None,
+) -> RejectedRuntimePackageRegistration:
+    diagnostic = RuntimePackageRegistrationDiagnostic(
+        severity=DiagnosticSeverity.ERROR,
+        code=code,
+        message=message,
+        package_name=entry.manifest.name,
+        registration_index=entry.registration_index,
+        source_kind=entry.source_kind,
+        source_ref=entry.source_ref,
+        details=dict(details or {}),
+    )
+    return RejectedRuntimePackageRegistration(
+        registration_index=entry.registration_index,
+        source_kind=entry.source_kind,
+        source_ref=entry.source_ref,
+        package_name=entry.manifest.name,
+        manifest=entry.manifest,
+        diagnostics=(diagnostic,),
+    )
+
+
+def _serialize_manifest_summary(manifest: RuntimePackageManifest) -> dict[str, Any]:
+    return {
+        "name": manifest.name,
+        "role": manifest.role,
+        "description": manifest.description,
+        "dependencies": list(manifest.dependencies),
+        "invocation_providers": list(manifest.metadata.get("invocation_providers", ())),
+    }
+
+
+def _normalize_optional_string(value: Any) -> str | None:
+    if value is None:
+        return None
+    normalized = str(value).strip()
+    return normalized or None
+
+
+def _require_non_empty(value: Any, field_name: str) -> str:
+    normalized = str(value).strip()
+    if not normalized:
+        raise ValueError(f"{field_name} must be a non-empty string")
+    return normalized
+
+
 __all__ = [
+    "AcceptedRuntimePackageRegistration",
+    "RejectedRuntimePackageRegistration",
+    "RuntimePackageRegistrationDiagnostic",
+    "RuntimePackageRegistrationReport",
+    "RuntimePackageRegistrationSource",
     "TeamWorkflowHostFacet",
+    "merge_runtime_package_manifests",
     "official_runtime_package_manifest_catalog",
     "official_runtime_package_manifests",
     "package_manifest",
+    "register_external_runtime_package_manifests",
 ]
