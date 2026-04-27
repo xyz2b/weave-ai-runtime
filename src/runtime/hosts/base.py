@@ -9,8 +9,6 @@ from ..definitions import PermissionBehavior
 from ..elicitation import ElicitationRequest, ElicitationResponse
 from ..hooks import HookDispatchTraceQuery, HookInventoryQuery, HookRegistrationRequest, HookSourceKind
 from ..permissions import PermissionOutcome, PermissionRequest, coerce_permission_outcome
-from ..runtime_package_protocols import RuntimeCapabilityKey
-
 if TYPE_CHECKING:
     from ..contracts import RuntimeMessage
     from ..turn_engine.engine import TurnStreamEvent
@@ -192,6 +190,8 @@ class BoundHostRuntime:
         if self._host_ready:
             return
         await self.host.ready()
+        if self.services is not None and hasattr(self.services, "wait_until_runtime_ready"):
+            await self.services.wait_until_runtime_ready()
         self._host_ready = True
 
     async def shutdown(self) -> None:
@@ -468,11 +468,8 @@ class BoundHostRuntime:
             )
         if resolved_session_id is not None:
             plane = (
-                self.services.resolve_capability(
-                    RuntimeCapabilityKey.TEAM_CONTROL_PLANE.value,
-                    getattr(self.runtime, "team_control_plane", None),
-                )
-                if self.services is not None and hasattr(self.services, "resolve_capability")
+                self.services.resolve_team_control_plane()
+                if self.services is not None and hasattr(self.services, "resolve_team_control_plane")
                 else getattr(self.runtime, "team_control_plane", None)
             )
             team = plane.active_team_for_leader_session(resolved_session_id) if plane is not None else None
@@ -498,11 +495,8 @@ class BoundHostRuntime:
         from ..team_workflows import TeamWorkflowError
 
         service = (
-            self.services.resolve_capability(
-                RuntimeCapabilityKey.TEAM_WORKFLOWS.value,
-                getattr(self.services, "team_workflows", None),
-            )
-            if self.services is not None and hasattr(self.services, "resolve_capability")
+            self.services.resolve_team_workflows()
+            if self.services is not None and hasattr(self.services, "resolve_team_workflows")
             else getattr(self.services, "team_workflows", None)
         )
         if service is None or not hasattr(service, "get"):

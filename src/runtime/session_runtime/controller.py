@@ -255,6 +255,8 @@ class SessionController:
         return self.register_hook(request)
 
     async def start(self) -> None:
+        if hasattr(self._runtime_services, "wait_until_runtime_ready"):
+            await self._runtime_services.wait_until_runtime_ready()
         replay_pending_team_messages = not self._started and not self.state.queued_commands
         if not self._started:
             memory_service = self._runtime_services.memory
@@ -334,6 +336,8 @@ class SessionController:
         self._turn_engine.interrupt(reason)
 
     async def resume(self) -> None:
+        if hasattr(self._runtime_services, "wait_until_runtime_ready"):
+            await self._runtime_services.wait_until_runtime_ready()
         transcript = await self._transcript_store.load(self.state.session_id)
         self._messages = [entry.message for entry in transcript.entries]
         await self._load_persisted_session_metadata()
@@ -598,7 +602,11 @@ class SessionController:
         delivery_id = str(raw.get("delivery_id") or "").strip()
         if not team_id or not message_id or not delivery_id:
             return
-        message_bus = getattr(self._runtime_services, "team_message_bus", None)
+        message_bus = (
+            self._runtime_services.resolve_team_message_bus()
+            if hasattr(self._runtime_services, "resolve_team_message_bus")
+            else getattr(self._runtime_services, "team_message_bus", None)
+        )
         if message_bus is None or not hasattr(message_bus, "acknowledge_delivery"):
             return
         await message_bus.acknowledge_delivery(
@@ -730,7 +738,11 @@ class SessionController:
         self._restore_resumable_private_context()
 
     async def _replay_pending_team_messages(self) -> None:
-        message_bus = getattr(self._runtime_services, "team_message_bus", None)
+        message_bus = (
+            self._runtime_services.resolve_team_message_bus()
+            if hasattr(self._runtime_services, "resolve_team_message_bus")
+            else getattr(self._runtime_services, "team_message_bus", None)
+        )
         if message_bus is None or not hasattr(message_bus, "replay_pending_leader_messages"):
             return
         await message_bus.replay_pending_leader_messages(session_id=self.state.session_id)

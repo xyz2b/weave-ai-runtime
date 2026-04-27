@@ -23,6 +23,7 @@ from ..runtime_package_protocols import (
     PackageLifecycleParticipant,
     PackageLifecyclePhase,
     PackageLifecycleRegistry,
+    RuntimeCapabilityKey,
     RuntimePackageManifest,
 )
 from ..tasking import TaskManager
@@ -267,6 +268,10 @@ class RuntimeServices:
     team_control_plane: Any = None
     team_message_bus: Any = None
     team_workflows: Any = None
+    runtime_ready: bool = False
+    runtime_lifecycle_failures: tuple[dict[str, Any], ...] = ()
+    runtime_lifecycle_exception: BaseException | None = None
+    runtime_lifecycle_task: asyncio.Task[tuple[dict[str, Any], ...]] | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -428,6 +433,30 @@ class RuntimeServices:
     def require_capability(self, key: str) -> Any:
         return self.capability_registry.require(key)
 
+    def resolve_teammates(self) -> Any:
+        return self.resolve_capability(
+            RuntimeCapabilityKey.TEAMMATES.value,
+            self.teammates,
+        )
+
+    def resolve_team_control_plane(self) -> Any:
+        return self.resolve_capability(
+            RuntimeCapabilityKey.TEAM_CONTROL_PLANE.value,
+            self.team_control_plane,
+        )
+
+    def resolve_team_message_bus(self) -> Any:
+        return self.resolve_capability(
+            RuntimeCapabilityKey.TEAM_MESSAGE_BUS.value,
+            self.team_message_bus,
+        )
+
+    def resolve_team_workflows(self) -> Any:
+        return self.resolve_capability(
+            RuntimeCapabilityKey.TEAM_WORKFLOWS.value,
+            self.team_workflows,
+        )
+
     def register_lifecycle_participant(self, participant: PackageLifecycleParticipant) -> None:
         self.lifecycle_registry.register(participant)
 
@@ -483,6 +512,61 @@ class RuntimeServices:
             "diagnostics": [getattr(diagnostic, "code", None) for diagnostic in contribution.diagnostics],
         }
         self.metadata.setdefault("package_contributions", []).append(entry)
+
+    def begin_runtime_lifecycle(
+        self,
+        task: asyncio.Task[tuple[dict[str, Any], ...]],
+    ) -> None:
+        self.runtime_ready = False
+        self.runtime_lifecycle_failures = ()
+        self.runtime_lifecycle_exception = None
+        self.runtime_lifecycle_task = task
+        self.metadata["runtime_ready"] = False
+
+        def _complete(completed: asyncio.Task[tuple[dict[str, Any], ...]]) -> None:
+            if completed.cancelled():
+                self.runtime_lifecycle_task = None
+                self.runtime_ready = False
+                self.metadata["runtime_lifecycle_cancelled"] = True
+                return
+            try:
+                failures = completed.result()
+            except Exception as exc:  # pragma: no cover - defensive task boundary
+                self.runtime_lifecycle_task = None
+                self.runtime_ready = False
+                self.runtime_lifecycle_exception = exc
+                self.metadata["runtime_lifecycle_error"] = str(exc)
+                return
+            self.mark_runtime_ready(failures)
+
+        task.add_done_callback(_complete)
+
+    def mark_runtime_ready(
+        self,
+        failures: tuple[dict[str, Any], ...] | list[dict[str, Any]] = (),
+    ) -> tuple[dict[str, Any], ...]:
+        normalized = tuple(dict(entry) for entry in failures)
+        self.runtime_lifecycle_task = None
+        self.runtime_lifecycle_failures = normalized
+        self.runtime_lifecycle_exception = None
+        self.runtime_ready = True
+        self.metadata["runtime_ready"] = True
+        self.metadata["runtime_lifecycle_failures"] = [dict(entry) for entry in normalized]
+        return normalized
+
+    async def wait_until_runtime_ready(self) -> tuple[dict[str, Any], ...]:
+        task = self.runtime_lifecycle_task
+        if task is not None:
+            current = asyncio.current_task()
+            if current is task:
+                return self.runtime_lifecycle_failures
+            failures = await asyncio.shield(task)
+            return self.mark_runtime_ready(failures)
+        if self.runtime_lifecycle_exception is not None:
+            raise self.runtime_lifecycle_exception
+        if self.runtime_ready:
+            return self.runtime_lifecycle_failures
+        return self.mark_runtime_ready(())
 
     async def dispatch_lifecycle_phase(
         self,

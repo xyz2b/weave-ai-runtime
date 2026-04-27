@@ -216,15 +216,24 @@ def _context_team_id(context: ToolContext) -> str | None:
 
 
 def _team_control_plane(context: ToolContext):
-    return getattr(context.runtime_services, "team_control_plane", None)
+    services = context.runtime_services
+    if hasattr(services, "resolve_team_control_plane"):
+        return services.resolve_team_control_plane()
+    return getattr(services, "team_control_plane", None)
 
 
 def _team_message_bus(context: ToolContext):
-    return getattr(context.runtime_services, "team_message_bus", None)
+    services = context.runtime_services
+    if hasattr(services, "resolve_team_message_bus"):
+        return services.resolve_team_message_bus()
+    return getattr(services, "team_message_bus", None)
 
 
 def _team_workflow_service(context: ToolContext):
-    return getattr(context.runtime_services, "team_workflows", None)
+    services = context.runtime_services
+    if hasattr(services, "resolve_team_workflows"):
+        return services.resolve_team_workflows()
+    return getattr(services, "team_workflows", None)
 
 
 def _team_member_execution_defaults(context: ToolContext, tool_input: dict[str, Any]) -> dict[str, Any]:

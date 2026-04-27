@@ -4,7 +4,9 @@ import asyncio
 from dataclasses import replace
 from pathlib import Path
 
+import runtime.runtime_kernel.kernel as runtime_kernel_module
 from runtime.devtools.builtins import devtools_builtin_tools
+from runtime.diagnostics import Diagnostic, DiagnosticSeverity
 from runtime.definitions import AgentDefinition, DefinitionOrigin, DefinitionSource
 from runtime.hosts.base import NullHostAdapter
 from runtime.jobs import FileJobStore
@@ -19,6 +21,7 @@ from runtime.runtime_package_manifests import official_runtime_package_manifests
 from runtime.runtime_package_protocols import (
     CapabilityBinding,
     HostFacetBinding,
+    PackageAssemblyStage,
     PackageContribution,
     PackageLifecycleParticipant,
     PackageLifecyclePhase,
@@ -109,6 +112,47 @@ def test_runtime_services_apply_package_contribution_registers_protocol_surfaces
         assert "runtime.example.missing" in str(exc)
     else:  # pragma: no cover - regression guard
         raise AssertionError("Missing capability lookup should raise KeyError")
+
+
+def test_runtime_services_prefer_team_capabilities_over_compatibility_slots() -> None:
+    services = RuntimeServices(host=NullHostAdapter())
+    capability_control_plane = object()
+    capability_message_bus = object()
+    capability_workflows = object()
+    services.team_control_plane = object()
+    services.team_message_bus = object()
+    services.team_workflows = object()
+    owner = PackageOwnership(
+        package_name="runtime-team",
+        package_role="capability",
+        surface="capability",
+    )
+
+    services.bind_capability(
+        CapabilityBinding(
+            key=RuntimeCapabilityKey.TEAM_CONTROL_PLANE.value,
+            value=capability_control_plane,
+            owner=owner,
+        )
+    )
+    services.bind_capability(
+        CapabilityBinding(
+            key=RuntimeCapabilityKey.TEAM_MESSAGE_BUS.value,
+            value=capability_message_bus,
+            owner=owner,
+        )
+    )
+    services.bind_capability(
+        CapabilityBinding(
+            key=RuntimeCapabilityKey.TEAM_WORKFLOWS.value,
+            value=capability_workflows,
+            owner=owner,
+        )
+    )
+
+    assert services.resolve_team_control_plane() is capability_control_plane
+    assert services.resolve_team_message_bus() is capability_message_bus
+    assert services.resolve_team_workflows() is capability_workflows
 
 
 def test_manifest_backed_team_runtime_registers_capabilities_and_host_facet(tmp_path: Path) -> None:
@@ -228,3 +272,101 @@ def test_builtin_replacements_preserve_manifest_owned_builtin_metadata(tmp_path:
     assert kernel.tool_registry.get("read").metadata["builtin_owner_role"] == "profile_workflow"
     assert kernel.agent_registry.get("verification").metadata["builtin_owner"] == "runtime-devtools"
     assert kernel.agent_registry.get("verification").metadata["builtin_owner_role"] == "profile_workflow"
+
+
+def test_session_start_waits_for_async_runtime_recovery_participants(tmp_path: Path) -> None:
+    original = runtime_kernel_module.official_runtime_package_manifests
+    observed: list[str] = []
+
+    async def record_recovery(**kwargs):
+        await asyncio.sleep(0)
+        observed.append(kwargs["phase"].value)
+
+    def assemble_test_package(context):
+        if context.stage != PackageAssemblyStage.RUNTIME:
+            return PackageContribution()
+        return PackageContribution(
+            lifecycle_participants=(
+                PackageLifecycleParticipant(
+                    phase=PackageLifecyclePhase.RUNTIME_RECOVERY,
+                    name="runtime-test-observer",
+                    handler=record_recovery,
+                    owner=PackageOwnership(
+                        package_name="runtime-test",
+                        package_role="capability",
+                        surface="lifecycle",
+                    ),
+                ),
+            ),
+        )
+
+    def patched_manifests(selected_packages):
+        return (
+            *original(selected_packages),
+            RuntimePackageManifest(
+                name="runtime-test",
+                role="capability",
+                dependencies=("runtime-core",),
+                assembly_entrypoint=assemble_test_package,
+            ),
+        )
+
+    async def scenario() -> None:
+        runtime_kernel_module.official_runtime_package_manifests = patched_manifests
+        try:
+            runtime = assemble_runtime(
+                RuntimeConfig(
+                    working_directory=tmp_path,
+                    distribution=RuntimeDistribution.CORE,
+                )
+            )
+            session = runtime.create_session(session_id="runtime-ready")
+            await session.start()
+            assert observed == [PackageLifecyclePhase.RUNTIME_RECOVERY.value]
+            assert runtime.services.runtime_ready is True
+            await session.close()
+        finally:
+            runtime_kernel_module.official_runtime_package_manifests = original
+
+    asyncio.run(scenario())
+
+
+def test_runtime_stage_package_diagnostics_extend_kernel_diagnostics(tmp_path: Path) -> None:
+    original = runtime_kernel_module.official_runtime_package_manifests
+
+    def assemble_test_package(context):
+        if context.stage != PackageAssemblyStage.RUNTIME:
+            return PackageContribution()
+        return PackageContribution(
+            diagnostics=(
+                Diagnostic(
+                    severity=DiagnosticSeverity.WARNING,
+                    code="runtime_test_warning",
+                    message="runtime-stage package warning",
+                ),
+            ),
+        )
+
+    def patched_manifests(selected_packages):
+        return (
+            *original(selected_packages),
+            RuntimePackageManifest(
+                name="runtime-test",
+                role="capability",
+                dependencies=("runtime-core",),
+                assembly_entrypoint=assemble_test_package,
+            ),
+        )
+
+    runtime_kernel_module.official_runtime_package_manifests = patched_manifests
+    try:
+        runtime = assemble_runtime(
+            RuntimeConfig(
+                working_directory=tmp_path,
+                distribution=RuntimeDistribution.CORE,
+            )
+        )
+    finally:
+        runtime_kernel_module.official_runtime_package_manifests = original
+
+    assert any(diag.code == "runtime_test_warning" for diag in runtime.kernel.diagnostics)

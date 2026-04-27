@@ -266,6 +266,11 @@ class RuntimeAssembly:
     def resolve_host_facet(self, name: str) -> Any:
         return self.services.resolve_host_facet(name)
 
+    async def wait_until_ready(self) -> tuple[dict[str, Any], ...]:
+        if self.services is None or not hasattr(self.services, "wait_until_runtime_ready"):
+            return ()
+        return await self.services.wait_until_runtime_ready()
+
     def bind_hook_callback(self, name: str, handler: Any) -> None:
         self.services.hook_bus.bind_callback(name, handler)
 
@@ -914,6 +919,7 @@ class RuntimeAssembly:
         session_id: str | None = None,
         pending_only: bool | None = True,
     ) -> tuple[dict[str, Any], ...]:
+        await self.wait_until_ready()
         facet = self.services.resolve_host_facet(RuntimeHostFacetKey.TEAM_WORKFLOWS.value)
         if facet.available and facet.facet is not None:
             records = await facet.facet.list_workflows(
@@ -922,17 +928,11 @@ class RuntimeAssembly:
                 pending_only=pending_only,
             )
             return tuple(_serialize_team_workflow_record(record) for record in records)
-        service = self.services.resolve_capability(
-            RuntimeCapabilityKey.TEAM_WORKFLOWS.value,
-            getattr(self.services, "team_workflows", None),
-        )
+        service = self.services.resolve_team_workflows()
         if service is None:
             return ()
         resolved_team_id = team_id
-        team_control_plane = self.services.resolve_capability(
-            RuntimeCapabilityKey.TEAM_CONTROL_PLANE.value,
-            self.team_control_plane,
-        )
+        team_control_plane = self.services.resolve_team_control_plane()
         if resolved_team_id is None and session_id is not None and team_control_plane is not None:
             team = team_control_plane.active_team_for_leader_session(session_id)
             if team is not None:
@@ -948,6 +948,7 @@ class RuntimeAssembly:
         host_name: str | None = None,
         payload: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
+        await self.wait_until_ready()
         facet = self.services.resolve_host_facet(RuntimeHostFacetKey.TEAM_WORKFLOWS.value)
         if facet.available and facet.facet is not None:
             record = await facet.facet.respond(
@@ -957,10 +958,7 @@ class RuntimeAssembly:
                 payload=None if payload is None else dict(payload),
             )
             return _serialize_team_workflow_record(record)
-        service = self.services.resolve_capability(
-            RuntimeCapabilityKey.TEAM_WORKFLOWS.value,
-            getattr(self.services, "team_workflows", None),
-        )
+        service = self.services.resolve_team_workflows()
         if service is None:
             raise RuntimeError("Runtime team workflow service is not configured")
         record = await service.respond_host(
@@ -1003,6 +1001,7 @@ class RuntimeAssembly:
         system_prompt: str | None = None,
         metadata: dict[str, object] | None = None,
     ) -> tuple[RuntimeMessage, ...]:
+        await self.wait_until_ready()
         session = self.create_session(
             session_id=session_id,
             agent_name=agent_name,
@@ -1032,6 +1031,7 @@ class RuntimeAssembly:
         system_prompt: str | None = None,
         metadata: dict[str, object] | None = None,
     ) -> AsyncIterator[TurnStreamEvent]:
+        await self.wait_until_ready()
         session = self.create_session(
             session_id=session_id,
             agent_name=agent_name,
@@ -1508,6 +1508,13 @@ def _assemble_runtime_stack(kernel: RuntimeKernel) -> RuntimeAssembly:
             contribution,
             stage=PackageAssemblyStage.RUNTIME.value,
         )
+    runtime_diagnostics = tuple(
+        diagnostic
+        for _, contribution in runtime_package_contributions
+        for diagnostic in contribution.diagnostics
+    )
+    if runtime_diagnostics:
+        kernel.diagnostics = kernel.diagnostics + runtime_diagnostics
     _project_capability_compatibility_surfaces(services)
     teammates = services.resolve_capability(RuntimeCapabilityKey.TEAMMATES.value)
     team_control_plane = services.resolve_capability(RuntimeCapabilityKey.TEAM_CONTROL_PLANE.value)
@@ -1546,16 +1553,8 @@ def _assemble_runtime_stack(kernel: RuntimeKernel) -> RuntimeAssembly:
         agent_runner=runtime.run_agent_tool,
         skill_runner=runtime.run_skill_tool,
     )
-    _dispatch_runtime_lifecycle_phase(
+    _start_runtime_lifecycle(
         services,
-        PackageLifecyclePhase.RUNTIME_START,
-        runtime=runtime,
-        kernel=kernel,
-    )
-    _schedule_job_recovery(services.job_service)
-    _dispatch_runtime_lifecycle_phase(
-        services,
-        PackageLifecyclePhase.RUNTIME_RECOVERY,
         runtime=runtime,
         kernel=kernel,
     )
@@ -1800,20 +1799,51 @@ def _project_capability_compatibility_surfaces(services: RuntimeServices) -> Non
             projections["team_workflows"] = RuntimeCapabilityKey.TEAM_WORKFLOWS.value
 
 
-def _dispatch_runtime_lifecycle_phase(
+async def _run_runtime_lifecycle(
     services: RuntimeServices,
-    phase: PackageLifecyclePhase,
+    *,
+    runtime: RuntimeAssembly,
+    kernel: RuntimeKernel,
+) -> tuple[dict[str, Any], ...]:
+    failures: list[dict[str, Any]] = []
+    failures.extend(
+        await services.dispatch_lifecycle_phase(
+            PackageLifecyclePhase.RUNTIME_START,
+            runtime=runtime,
+            kernel=kernel,
+        )
+    )
+    _schedule_job_recovery(services.job_service)
+    failures.extend(
+        await services.dispatch_lifecycle_phase(
+            PackageLifecyclePhase.RUNTIME_RECOVERY,
+            runtime=runtime,
+            kernel=kernel,
+        )
+    )
+    return tuple(failures)
+
+
+def _start_runtime_lifecycle(
+    services: RuntimeServices,
     **kwargs: Any,
 ) -> None:
     if not hasattr(services, "dispatch_lifecycle_phase"):
+        if hasattr(services, "mark_runtime_ready"):
+            services.mark_runtime_ready(())
+        _schedule_job_recovery(services.job_service)
         return
-    coroutine = services.dispatch_lifecycle_phase(phase, **kwargs)
+    coroutine = _run_runtime_lifecycle(services, **kwargs)
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
-        asyncio.run(coroutine)
+        failures = asyncio.run(coroutine)
+        if hasattr(services, "mark_runtime_ready"):
+            services.mark_runtime_ready(failures)
         return
-    loop.create_task(coroutine)
+    task = loop.create_task(coroutine)
+    if hasattr(services, "begin_runtime_lifecycle"):
+        services.begin_runtime_lifecycle(task)
 
 
 def _register_job_executors(
