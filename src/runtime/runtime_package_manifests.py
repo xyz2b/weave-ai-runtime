@@ -280,13 +280,61 @@ class _NormalizedRuntimePackageRegistration:
     source_ref: str
 
 
+def _normalize_runtime_package_registrations_input(
+    registrations: Sequence[RuntimePackageRegistrationSource] | None,
+) -> tuple[Any, ...]:
+    if registrations is None:
+        return ()
+    if isinstance(registrations, (RuntimePackageManifest, str)):
+        return (registrations,)
+    try:
+        return tuple(registrations)
+    except TypeError:
+        return (registrations,)
+
+
+def _external_registration_cycle_paths(
+    active: Mapping[str, _NormalizedRuntimePackageRegistration],
+) -> dict[str, tuple[str, ...]]:
+    states: dict[str, int] = {}
+    stack: list[str] = []
+    cycle_paths: dict[str, tuple[str, ...]] = {}
+
+    def visit(package_name: str) -> None:
+        state = states.get(package_name, 0)
+        if state != 0:
+            return
+        states[package_name] = 1
+        stack.append(package_name)
+        entry = active[package_name]
+        for dependency in entry.manifest.dependencies:
+            if dependency not in active:
+                continue
+            dependency_state = states.get(dependency, 0)
+            if dependency_state == 1:
+                cycle_start = stack.index(dependency)
+                cycle_path = tuple(stack[cycle_start:] + [dependency])
+                for member in cycle_path[:-1]:
+                    cycle_paths.setdefault(member, cycle_path)
+                continue
+            if dependency_state == 0:
+                visit(dependency)
+        stack.pop()
+        states[package_name] = 2
+
+    for package_name in sorted(active):
+        visit(package_name)
+    return cycle_paths
+
+
 def register_external_runtime_package_manifests(
     registrations: Sequence[RuntimePackageRegistrationSource] | None,
     *,
     selected_first_party_manifests: Sequence[RuntimePackageManifest] = (),
     reserved_first_party_names: Iterable[str] | None = None,
 ) -> RuntimePackageRegistrationReport:
-    if not registrations:
+    normalized_registrations = _normalize_runtime_package_registrations_input(registrations)
+    if not normalized_registrations:
         return RuntimePackageRegistrationReport()
 
     reserved_names = {
@@ -303,7 +351,7 @@ def register_external_runtime_package_manifests(
     normalized: list[_NormalizedRuntimePackageRegistration] = []
     rejected_by_index: dict[int, RejectedRuntimePackageRegistration] = {}
 
-    for registration_index, raw_registration in enumerate(registrations):
+    for registration_index, raw_registration in enumerate(normalized_registrations):
         resolved = _normalize_runtime_package_registration_source(
             raw_registration,
             registration_index=registration_index,
@@ -370,6 +418,22 @@ def register_external_runtime_package_manifests(
                     f"{', '.join(missing_dependencies)}"
                 ),
                 details={"missing_dependencies": missing_dependencies},
+            )
+            rejected_names.append(package_name)
+        cycle_paths = _external_registration_cycle_paths(active)
+        for package_name, cycle_path in cycle_paths.items():
+            entry = active[package_name]
+            rejected_by_index[entry.registration_index] = _rejected_registration(
+                entry,
+                code="runtime_external_package_cyclic_dependency",
+                message=(
+                    f"External package '{package_name}' participates in a cyclic dependency: "
+                    f"{' -> '.join(cycle_path)}"
+                ),
+                details={
+                    "cycle_members": list(cycle_path[:-1]),
+                    "cycle_path": list(cycle_path),
+                },
             )
             rejected_names.append(package_name)
         if not rejected_names:
@@ -958,9 +1022,27 @@ def _normalize_runtime_package_registration_source(
             diagnostics=(diagnostic,),
         )
 
-    source_ref = _require_non_empty(registration, "registration")
+    source_ref = _display_runtime_package_registration_source(registration)
     try:
-        loaded = load_object(source_ref)
+        resolved_source_ref = _require_non_empty(registration, "registration")
+    except ValueError as exc:
+        diagnostic = RuntimePackageRegistrationDiagnostic(
+            severity=DiagnosticSeverity.ERROR,
+            code="runtime_external_package_manifest_load_failed",
+            message=f"External package manifest entrypoint '{source_ref}' could not be loaded",
+            registration_index=registration_index,
+            source_kind="entrypoint",
+            source_ref=source_ref,
+            details={"error": str(exc)},
+        )
+        return RejectedRuntimePackageRegistration(
+            registration_index=registration_index,
+            source_kind="entrypoint",
+            source_ref=source_ref,
+            diagnostics=(diagnostic,),
+        )
+    try:
+        loaded = load_object(resolved_source_ref)
     except Exception as exc:
         diagnostic = RuntimePackageRegistrationDiagnostic(
             severity=DiagnosticSeverity.ERROR,
@@ -1076,6 +1158,11 @@ def _normalize_optional_string(value: Any) -> str | None:
         return None
     normalized = str(value).strip()
     return normalized or None
+
+
+def _display_runtime_package_registration_source(value: Any) -> str:
+    source_ref = str(value)
+    return source_ref if source_ref.strip() else "<blank>"
 
 
 def _require_non_empty(value: Any, field_name: str) -> str:

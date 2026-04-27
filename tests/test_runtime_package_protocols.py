@@ -158,6 +158,45 @@ def test_external_package_registration_accepts_manifest_entrypoints_and_publishe
     assert runtime.metadata["package_registration"] == runtime.services.metadata["package_registration"]
 
 
+def test_external_package_registration_accepts_single_entrypoint_string_config(
+    tmp_path: Path,
+) -> None:
+    observed_stages: list[str] = []
+
+    def assemble_external(context):
+        observed_stages.append(context.stage.value)
+        return PackageContribution()
+
+    module_name = "test_external_runtime_package_manifest_single_string_module"
+    module = types.ModuleType(module_name)
+    module.external_manifest = RuntimePackageManifest(
+        name="runtime-external",
+        role="capability",
+        dependencies=("runtime-core",),
+        assembly_entrypoint=assemble_external,
+    )
+    sys.modules[module_name] = module
+    try:
+        runtime = assemble_runtime(
+            RuntimeConfig(
+                working_directory=tmp_path,
+                distribution=RuntimeDistribution.CORE,
+                extra_package_manifests=f"{module_name}:external_manifest",
+            )
+        )
+    finally:
+        sys.modules.pop(module_name, None)
+
+    registration = runtime.services.metadata["package_registration"]
+    assert [record["package_name"] for record in registration["accepted"]] == ["runtime-external"]
+    assert registration["rejected"] == []
+    assert observed_stages == [
+        PackageAssemblyStage.BUILTINS.value,
+        PackageAssemblyStage.SERVICES.value,
+        PackageAssemblyStage.RUNTIME.value,
+    ]
+
+
 def test_duplicate_external_package_registration_rejects_later_manifest(tmp_path: Path) -> None:
     first_stages: list[str] = []
     second_stages: list[str] = []
@@ -282,6 +321,87 @@ def test_external_package_registration_reports_trust_boundary_diagnostics(tmp_pa
         "runtime_external_package_trust_boundary_violation"
     )
     assert rejected[0]["diagnostics"][0]["provenance"]["source_kind"] == "entrypoint"
+
+
+def test_external_package_registration_rejects_blank_entrypoint_with_diagnostics(
+    tmp_path: Path,
+) -> None:
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            distribution=RuntimeDistribution.CORE,
+            extra_package_manifests=("   ",),
+        )
+    )
+
+    rejected = runtime.services.metadata["package_registration"]["rejected"]
+    assert len(rejected) == 1
+    assert rejected[0]["package_name"] is None
+    assert rejected[0]["provenance"]["source_ref"] == "<blank>"
+    assert rejected[0]["diagnostics"][0]["code"] == (
+        "runtime_external_package_manifest_load_failed"
+    )
+    assert rejected[0]["diagnostics"][0]["details"]["error"] == (
+        "registration must be a non-empty string"
+    )
+
+
+def test_external_package_registration_rejects_cyclic_dependencies_before_assembly(
+    tmp_path: Path,
+) -> None:
+    first_stages: list[str] = []
+    second_stages: list[str] = []
+
+    def assemble_first(context):
+        first_stages.append(context.stage.value)
+        return PackageContribution()
+
+    def assemble_second(context):
+        second_stages.append(context.stage.value)
+        return PackageContribution()
+
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            distribution=RuntimeDistribution.CORE,
+            extra_package_manifests=(
+                RuntimePackageManifest(
+                    name="runtime-cycle-a",
+                    role="capability",
+                    dependencies=("runtime-cycle-b",),
+                    assembly_entrypoint=assemble_first,
+                ),
+                RuntimePackageManifest(
+                    name="runtime-cycle-b",
+                    role="capability",
+                    dependencies=("runtime-cycle-a",),
+                    assembly_entrypoint=assemble_second,
+                ),
+            ),
+        )
+    )
+
+    rejected = runtime.services.metadata["package_registration"]["rejected"]
+    assert len(rejected) == 2
+    assert [record["package_name"] for record in rejected] == [
+        "runtime-cycle-a",
+        "runtime-cycle-b",
+    ]
+    for record in rejected:
+        diagnostic = record["diagnostics"][0]
+        assert diagnostic["code"] == "runtime_external_package_cyclic_dependency"
+        assert diagnostic["details"]["cycle_members"] == [
+            "runtime-cycle-a",
+            "runtime-cycle-b",
+        ]
+        assert diagnostic["details"]["cycle_path"] == [
+            "runtime-cycle-a",
+            "runtime-cycle-b",
+            "runtime-cycle-a",
+        ]
+    assert tuple(manifest.name for manifest in runtime.kernel.package_manifests) == ("runtime-core",)
+    assert first_stages == []
+    assert second_stages == []
 
 
 def test_runtime_services_apply_package_contribution_registers_protocol_surfaces() -> None:
