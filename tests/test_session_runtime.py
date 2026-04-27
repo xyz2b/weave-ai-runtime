@@ -13,7 +13,12 @@ from runtime.contracts import (
 from runtime.definitions import AgentDefinition, ToolDefinition, ToolTraits
 from runtime.hooks import RuntimeHookPhase
 from runtime.registries import ToolRegistry
-from runtime.runtime_package_protocols import IngressReceiptHandlerBinding, PackageOwnership
+from runtime.runtime_package_protocols import (
+    IngressReceiptHandlerBinding,
+    PackageLifecycleParticipant,
+    PackageLifecyclePhase,
+    PackageOwnership,
+)
 from runtime.runtime_services import RuntimeServices
 from runtime.session_runtime import (
     FileTranscriptStore,
@@ -205,6 +210,44 @@ def test_session_controller_normalizes_priorities_and_resumes_from_transcript(
     assert controller.state.status == SessionStatus.READY
     assert len(controller.messages) == len(loaded.entries)
     assert all(entry.turn_id is not None for entry in loaded.entries)
+
+
+def test_session_controller_resume_then_start_dispatches_session_open_once(tmp_path: Path) -> None:
+    transcript_store = FileTranscriptStore(tmp_path / "transcripts")
+    services = RuntimeServices()
+    observed: list[tuple[str, str]] = []
+    owner = PackageOwnership(
+        package_name="runtime-test",
+        package_role="capability",
+        surface="lifecycle",
+    )
+
+    def record_session_open(*, phase, session, **_kwargs) -> None:
+        observed.append((phase.value, session.state.session_id))
+
+    services.register_lifecycle_participant(
+        PackageLifecycleParticipant(
+            phase=PackageLifecyclePhase.SESSION_OPEN,
+            name="record-session-open",
+            handler=record_session_open,
+            owner=owner,
+        )
+    )
+    controller = SessionController(
+        session_id="session-resume-start",
+        agent=AgentDefinition(name="main-router", description="router", prompt="Route the turn"),
+        turn_engine=TurnEngine(model_client=FakeModelClient([]), tool_registry=ToolRegistry(), runtime_services=services),
+        transcript_store=transcript_store,
+        cwd=str(tmp_path),
+        system_prompt="System prompt",
+        runtime_services=services,
+    )
+
+    asyncio.run(controller.resume())
+    asyncio.run(controller.start())
+
+    assert observed == [(PackageLifecyclePhase.SESSION_OPEN.value, "session-resume-start")]
+    assert controller.state.status == SessionStatus.READY
 
 
 def test_session_controller_close_is_idempotent(tmp_path: Path) -> None:
@@ -778,3 +821,59 @@ def test_session_controller_stops_completion_receipts_after_first_failure(tmp_pa
         "kind": "runtime.test.fail",
         "error": "boom",
     }
+
+
+def test_session_controller_restores_ready_state_when_admit_turn_receipt_fails(tmp_path: Path) -> None:
+    transcript_store = FileTranscriptStore(tmp_path / "transcripts")
+    services = RuntimeServices()
+    model_client = FakeModelClient([])
+    attempted_receipts: list[str] = []
+
+    async def fail_receipt(*, receipt, **_kwargs):
+        attempted_receipts.append(receipt.receipt_id)
+        raise RuntimeError("boom")
+
+    owner = PackageOwnership(
+        package_name="runtime-test",
+        package_role="capability",
+        surface="ingress_receipt",
+    )
+    services.register_ingress_receipt_handler(
+        IngressReceiptHandlerBinding(
+            kind="runtime.test.fail",
+            handler=fail_receipt,
+            owner=owner,
+        )
+    )
+    controller = SessionController(
+        session_id="session-admit-turn-receipt-failure",
+        agent=AgentDefinition(name="main-router", description="router", prompt="Route the turn"),
+        turn_engine=TurnEngine(model_client=model_client, tool_registry=ToolRegistry(), runtime_services=services),
+        transcript_store=transcript_store,
+        cwd=str(tmp_path),
+        system_prompt="System prompt",
+        runtime_services=services,
+    )
+    controller.enqueue_event(
+        InboundEvent(
+            InboundEventType.HOST_EVENT,
+            "Turn blocked by receipt failure",
+            metadata={
+                "admission_kind": "admit_turn",
+                "completion_receipts": [
+                    {"receipt_id": "receipt-fail", "kind": "runtime.test.fail"},
+                ],
+            },
+        )
+    )
+
+    with pytest.raises(RuntimeError, match="runtime.test.fail"):
+        asyncio.run(controller.run_until_idle())
+
+    loaded = asyncio.run(transcript_store.load("session-admit-turn-receipt-failure"))
+
+    assert attempted_receipts == ["receipt-fail"]
+    assert model_client.requests == []
+    assert controller.state.status == SessionStatus.READY
+    assert controller.state.active_turn_id is None
+    assert [entry.message.text for entry in loaded.entries] == ["Turn blocked by receipt failure"]

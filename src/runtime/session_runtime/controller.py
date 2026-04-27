@@ -96,6 +96,7 @@ class SessionController:
         self._messages: list[RuntimeMessage] = []
         self._ingress_processor = ingress_processor or SessionIngressProcessor()
         self._started = False
+        self._session_open_dispatched = False
         self._closed = False
         self._close_task: asyncio.Task[None] | None = None
         self._close_callback = close_callback
@@ -266,35 +267,8 @@ class SessionController:
     async def start(self) -> None:
         if hasattr(self._runtime_services, "wait_until_runtime_ready"):
             await self._runtime_services.wait_until_runtime_ready()
-        if not self._started:
-            memory_service = self._runtime_services.memory
-            if memory_service is not None and hasattr(memory_service, "start_session"):
-                await _maybe_await(
-                    memory_service.start_session(
-                        session_id=self.state.session_id,
-                        agent=self._agent,
-                        cwd=self._cwd,
-                        set_default=True,
-                    )
-                )
-            self._call_memory_service("ensure_session_artifacts", status="active")
-            self._runtime_services.hook_bus.materialize_session(self.state.session_id)
-            await self._runtime_services.hook_bus.dispatch(
-                self.state.session_id,
-                SessionStartPayload(
-                    session_id=self.state.session_id,
-                    config_snapshot={
-                        "agent_name": self._agent.name,
-                        "cwd": self._cwd,
-                    },
-                ),
-            )
-            if hasattr(self._runtime_services, "dispatch_lifecycle_phase"):
-                await self._runtime_services.dispatch_lifecycle_phase(
-                    PackageLifecyclePhase.SESSION_OPEN,
-                    session=self,
-                )
-            self._started = True
+        await self._ensure_session_runtime_started()
+        await self._dispatch_session_open_if_needed()
         self.state.status = SessionStatus.READY
 
     def normalize_event(self, event: InboundEvent) -> SessionCommand:
@@ -350,11 +324,9 @@ class SessionController:
         self._sync_compaction_state()
         self._restore_resumable_private_context()
         _sync_skill_runtime_metadata(self.state.metadata, self._messages, self._cwd)
-        if hasattr(self._runtime_services, "dispatch_lifecycle_phase"):
-            await self._runtime_services.dispatch_lifecycle_phase(
-                PackageLifecyclePhase.SESSION_OPEN,
-                session=self,
-            )
+        await self._ensure_session_runtime_started()
+        self._session_open_dispatched = False
+        await self._dispatch_session_open_if_needed()
         self.state.status = SessionStatus.READY
         self.state.active_turn_id = None
 
@@ -396,6 +368,7 @@ class SessionController:
             error = exc
         finally:
             self._started = False
+            self._session_open_dispatched = False
             self._closed = True
             self.state.active_turn_id = None
             self.state.status = _session_status_for_close(final_status)
@@ -435,9 +408,7 @@ class SessionController:
                 runtime_services=self._runtime_services,
             )
             if ingress_result.admits_turn:
-                self.state.status = SessionStatus.RUNNING
-                self.state.active_turn_id = uuid4().hex
-                record_turn_id = self.state.active_turn_id
+                record_turn_id = uuid4().hex
             else:
                 record_turn_id = uuid4().hex if ingress_result.normalized_messages else None
                 self.state.active_turn_id = None
@@ -454,6 +425,8 @@ class SessionController:
                 if self.state.status != SessionStatus.WAITING:
                     self.state.status = SessionStatus.READY
                 continue
+            self.state.status = SessionStatus.RUNNING
+            self.state.active_turn_id = record_turn_id
 
             last_terminal = None
             turn_retrieval_trace: dict[str, Any] | None = None
@@ -617,6 +590,43 @@ class SessionController:
                 self.state.metadata["last_ingress_completion_receipt_failure"] = failure
                 await self._persist_session_metadata()
                 raise IngressCompletionReceiptExecutionError(receipt, error=exc) from exc
+
+    async def _ensure_session_runtime_started(self) -> None:
+        if self._started:
+            return
+        memory_service = self._runtime_services.memory
+        if memory_service is not None and hasattr(memory_service, "start_session"):
+            await _maybe_await(
+                memory_service.start_session(
+                    session_id=self.state.session_id,
+                    agent=self._agent,
+                    cwd=self._cwd,
+                    set_default=True,
+                )
+            )
+        self._call_memory_service("ensure_session_artifacts", status="active")
+        self._runtime_services.hook_bus.materialize_session(self.state.session_id)
+        await self._runtime_services.hook_bus.dispatch(
+            self.state.session_id,
+            SessionStartPayload(
+                session_id=self.state.session_id,
+                config_snapshot={
+                    "agent_name": self._agent.name,
+                    "cwd": self._cwd,
+                },
+            ),
+        )
+        self._started = True
+
+    async def _dispatch_session_open_if_needed(self) -> None:
+        if self._session_open_dispatched:
+            return
+        if hasattr(self._runtime_services, "dispatch_lifecycle_phase"):
+            await self._runtime_services.dispatch_lifecycle_phase(
+                PackageLifecyclePhase.SESSION_OPEN,
+                session=self,
+            )
+        self._session_open_dispatched = True
 
     def _apply_ingress_private_updates(self, private_updates: dict[str, Any]) -> None:
         for key, value in private_updates.items():
