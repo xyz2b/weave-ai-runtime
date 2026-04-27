@@ -36,6 +36,7 @@ from ..hooks import (
     SessionStartPayload,
 )
 from ..permissions import PermissionContext
+from ..runtime_package_protocols import PackageLifecyclePhase
 from ..runtime_services import DefaultTranscriptService, RuntimeServices
 from ..tool_runtime import SessionScope
 from ..turn_engine.engine import TurnEngine, TurnStreamEvent, TurnStreamEventType
@@ -277,6 +278,11 @@ class SessionController:
                         "cwd": self._cwd,
                     },
                 ),
+            )
+            if hasattr(self._runtime_services, "dispatch_lifecycle_phase"):
+                await self._runtime_services.dispatch_lifecycle_phase(
+                    PackageLifecyclePhase.SESSION_OPEN,
+                    session=self,
                 )
             self._started = True
         self.state.status = SessionStatus.READY
@@ -334,6 +340,11 @@ class SessionController:
         self._sync_compaction_state()
         self._restore_resumable_private_context()
         _sync_skill_runtime_metadata(self.state.metadata, self._messages, self._cwd)
+        if hasattr(self._runtime_services, "dispatch_lifecycle_phase"):
+            await self._runtime_services.dispatch_lifecycle_phase(
+                PackageLifecyclePhase.SESSION_OPEN,
+                session=self,
+            )
         self.state.status = SessionStatus.READY
         self.state.active_turn_id = None
         if not self.state.queued_commands:
@@ -367,6 +378,12 @@ class SessionController:
                     final_status=final_status,
                 ),
             )
+            if hasattr(self._runtime_services, "dispatch_lifecycle_phase"):
+                await self._runtime_services.dispatch_lifecycle_phase(
+                    PackageLifecyclePhase.SESSION_CLOSE,
+                    session=self,
+                    final_status=final_status,
+                )
         except Exception as exc:
             error = exc
         finally:

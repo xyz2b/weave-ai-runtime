@@ -1,0 +1,230 @@
+from __future__ import annotations
+
+import asyncio
+from dataclasses import replace
+from pathlib import Path
+
+from runtime.devtools.builtins import devtools_builtin_tools
+from runtime.definitions import AgentDefinition, DefinitionOrigin, DefinitionSource
+from runtime.hosts.base import NullHostAdapter
+from runtime.jobs import FileJobStore
+from runtime.runtime_kernel import (
+    BuiltinPackConfig,
+    RuntimeConfig,
+    RuntimeDistribution,
+    assemble_runtime,
+    build_runtime_kernel,
+)
+from runtime.runtime_package_manifests import official_runtime_package_manifests
+from runtime.runtime_package_protocols import (
+    CapabilityBinding,
+    HostFacetBinding,
+    PackageContribution,
+    PackageLifecycleParticipant,
+    PackageLifecyclePhase,
+    PackageOwnership,
+    RuntimeCapabilityKey,
+    RuntimeHostFacetKey,
+    RuntimePackageManifest,
+)
+from runtime.runtime_services import RuntimeServices
+from runtime.session_runtime import FileTranscriptStore
+from runtime.task_lists import FileTaskListStore
+from runtime.turn_engine import ModelStreamEvent, ModelStreamEventType
+
+
+def test_official_runtime_package_manifests_follow_dependency_order() -> None:
+    manifests = official_runtime_package_manifests(("runtime-team", "runtime-core"))
+
+    assert tuple(manifest.name for manifest in manifests) == (
+        "runtime-core",
+        "runtime-team",
+    )
+
+
+def test_runtime_services_apply_package_contribution_registers_protocol_surfaces() -> None:
+    services = RuntimeServices(host=NullHostAdapter())
+    manifest = RuntimePackageManifest(
+        name="runtime-example",
+        role="capability",
+        description="Example package",
+    )
+    observed_phases: list[str] = []
+
+    async def handle_cleanup(**kwargs):
+        observed_phases.append(kwargs["phase"].value)
+
+    participant = PackageLifecycleParticipant(
+        phase=PackageLifecyclePhase.SESSION_CLOSE,
+        name="cleanup",
+        handler=handle_cleanup,
+        owner=PackageOwnership(
+            package_name="runtime-example",
+            package_role="capability",
+            surface="lifecycle",
+        ),
+        order=10,
+    )
+    contribution = PackageContribution(
+        capabilities=(
+            CapabilityBinding(
+                key="runtime.example.service",
+                value={"service": "example"},
+                owner=PackageOwnership(
+                    package_name="runtime-example",
+                    package_role="capability",
+                    surface="capability",
+                ),
+            ),
+        ),
+        lifecycle_participants=(participant,),
+        host_facets=(
+            HostFacetBinding(
+                name="runtime.example.facet",
+                facet={"facet": "example"},
+                owner=PackageOwnership(
+                    package_name="runtime-example",
+                    package_role="capability",
+                    surface="host_facet",
+                ),
+            ),
+        ),
+    )
+
+    services.apply_package_contribution(manifest, contribution, stage="runtime")
+
+    assert services.require_capability("runtime.example.service") == {"service": "example"}
+    assert services.capability_registry.owner("runtime.example.service").package_name == "runtime-example"
+    assert services.lifecycle_participants(PackageLifecyclePhase.SESSION_CLOSE) == (participant,)
+    facet = services.resolve_host_facet("runtime.example.facet")
+    assert facet.available is True
+    assert facet.facet == {"facet": "example"}
+    assert services.metadata["package_capability_owners"]["runtime.example.service"]["package_name"] == "runtime-example"
+    assert services.metadata["package_contributions"][0]["package_name"] == "runtime-example"
+    assert asyncio.run(services.dispatch_lifecycle_phase(PackageLifecyclePhase.SESSION_CLOSE)) == ()
+    assert observed_phases == [PackageLifecyclePhase.SESSION_CLOSE.value]
+    try:
+        services.require_capability("runtime.example.missing")
+    except KeyError as exc:
+        assert "runtime.example.missing" in str(exc)
+    else:  # pragma: no cover - regression guard
+        raise AssertionError("Missing capability lookup should raise KeyError")
+
+
+def test_manifest_backed_team_runtime_registers_capabilities_and_host_facet(tmp_path: Path) -> None:
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            distribution=RuntimeDistribution.DEFAULT,
+        )
+    )
+
+    assert runtime.services.require_capability(RuntimeCapabilityKey.TEAM_CONTROL_PLANE.value) is runtime.team_control_plane
+    assert runtime.services.require_capability(RuntimeCapabilityKey.TEAM_WORKFLOWS.value) is runtime.team_workflows
+    assert runtime.services.metadata["compatibility_projections"]["team_control_plane"] == RuntimeCapabilityKey.TEAM_CONTROL_PLANE.value
+    assert {
+        participant.name
+        for participant in runtime.services.lifecycle_participants(PackageLifecyclePhase.RUNTIME_RECOVERY)
+    } == {"runtime-team-recover-pending-workflows"}
+    facet = runtime.services.resolve_host_facet(RuntimeHostFacetKey.TEAM_WORKFLOWS.value)
+    assert facet.available is True
+    listed = asyncio.run(facet.facet.list_workflows(team_id=None, session_id=None, pending_only=True))
+    assert listed == ()
+
+
+def test_non_participating_runtime_reports_host_facet_not_available(tmp_path: Path) -> None:
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            distribution=RuntimeDistribution.CORE,
+        )
+    )
+
+    facet = runtime.services.resolve_host_facet(RuntimeHostFacetKey.TEAM_WORKFLOWS.value)
+
+    assert facet.available is False
+    assert facet.code == "not_available"
+
+
+def test_manifest_backed_core_runtime_still_boots_without_optional_packages(tmp_path: Path) -> None:
+    class MinimalModelClient:
+        def __init__(self) -> None:
+            self.requests = []
+
+        async def complete(self, request):  # pragma: no cover - protocol completeness
+            raise NotImplementedError
+
+        async def stream(self, request):
+            self.requests.append(request)
+            yield ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-core-manifest"})
+            yield ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "core ok"})
+            yield ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"})
+
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            distribution=RuntimeDistribution.CORE,
+            model_client=MinimalModelClient(),
+        )
+    )
+
+    produced = asyncio.run(runtime.run_prompt("hello", session_id="core-manifest"))
+
+    assert produced[-1].text == "core ok"
+    assert runtime.kernel.first_party_packages == ("runtime-core",)
+
+
+def test_manifest_backed_openai_and_store_bindings_preserve_full_distribution_defaults(tmp_path: Path) -> None:
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            distribution=RuntimeDistribution.FULL,
+        )
+    )
+
+    assert runtime.kernel.config.default_model_route == "openai_default"
+    assert "openai-prod" in runtime.kernel.config.model_providers
+    assert "openai_default" in runtime.kernel.config.model_routes
+    assert isinstance(runtime.services.transcript_store, FileTranscriptStore)
+    assert isinstance(runtime.services.job_service.store, FileJobStore)
+    assert isinstance(runtime.services.task_list_service.store, FileTaskListStore)
+    assert runtime.services.metadata["package_store_bindings"] == {
+        "transcript_store": "runtime-stores-file",
+        "job_store": "runtime-stores-file",
+        "task_list_store": "runtime-stores-file",
+        "team_store": "runtime-stores-file",
+        "team_message_store": "runtime-stores-file",
+        "team_workflow_store": "runtime-stores-file",
+        "teammate_mailbox": "runtime-stores-file",
+    }
+
+
+def test_builtin_replacements_preserve_manifest_owned_builtin_metadata(tmp_path: Path) -> None:
+    read_replacement = replace(
+        next(tool for tool in devtools_builtin_tools() if tool.name == "read"),
+        description="custom read replacement",
+        metadata={},
+    )
+    verification_replacement = AgentDefinition(
+        name="verification",
+        description="replacement verification agent",
+        prompt="verify replacements",
+        metadata={},
+        origin=DefinitionOrigin(DefinitionSource.BUNDLED, path=Path("<verification>")),
+    )
+
+    kernel = build_runtime_kernel(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            distribution=RuntimeDistribution.FULL,
+            builtins=BuiltinPackConfig(
+                tool_replacements={"read": read_replacement},
+                agent_replacements={"verification": verification_replacement},
+            ),
+        )
+    )
+
+    assert kernel.tool_registry.get("read").metadata["builtin_owner"] == "runtime-devtools"
+    assert kernel.tool_registry.get("read").metadata["builtin_owner_role"] == "profile_workflow"
+    assert kernel.agent_registry.get("verification").metadata["builtin_owner"] == "runtime-devtools"
+    assert kernel.agent_registry.get("verification").metadata["builtin_owner_role"] == "profile_workflow"

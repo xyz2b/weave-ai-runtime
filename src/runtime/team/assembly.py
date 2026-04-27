@@ -27,6 +27,7 @@ def assemble_team_capability(
     project_root: Path,
     runtime_services: RuntimeServices,
     execution_core: Any,
+    bind_runtime_services: bool = True,
     teammates: PersistentTeammateOrchestrator | None = None,
     control_plane: RuntimeTeamControlPlane | None = None,
     message_bus: RuntimeTeamMessageBus | None = None,
@@ -51,7 +52,8 @@ def assemble_team_capability(
         execution_core=execution_core,
         mailbox=resolved_mailbox,
     )
-    runtime_services.bind_teammates(resolved_teammates)
+    if bind_runtime_services:
+        runtime_services.bind_teammates(resolved_teammates)
 
     runner_manager = RuntimeTeamRunnerManager(
         teammates=resolved_teammates,
@@ -73,11 +75,12 @@ def assemble_team_capability(
         runtime_services=runtime_services,
     )
     resolved_workflows.bind_message_bus(resolved_message_bus)
-    runtime_services.bind_team_services(
-        control_plane=resolved_control_plane,
-        message_bus=resolved_message_bus,
-        workflow_service=resolved_workflows,
-    )
+    if bind_runtime_services:
+        runtime_services.bind_team_services(
+            control_plane=resolved_control_plane,
+            message_bus=resolved_message_bus,
+            workflow_service=resolved_workflows,
+        )
     if hasattr(resolved_teammates, "bind_workflow_service"):
         resolved_teammates.bind_workflow_service(resolved_workflows)
     return TeamCapabilityComponents(

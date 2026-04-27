@@ -128,6 +128,49 @@
 
 - `runtime.services.metadata["first_party_package_catalog"]`
 
+## 4.5 Package Attachment Contract Changes
+
+边界收敛之后，package 是否“真正接上 runtime”不再只看目录布局，而要看它是否走 protocol attachment：
+
+- `RuntimePackageManifest`
+- dependency-ordered assembly
+- `PackageContribution`
+- capability registry lookup
+- host facet discovery
+- lifecycle participant registration
+
+如果你以前做过下面这些定制，迁移时应优先改到新的 contract 上：
+
+- patch kernel-owned first-party assembler tables
+- patch optional built-in loader tables
+- 直接向 `RuntimeServices` 增加 package-specific 顶层字段
+- 通过 ad hoc missing-method 检查推断 optional host helper 是否存在
+
+新的首选迁移路径是：
+
+- built-ins -> package contribution
+- package-owned runtime object -> capability registry
+- optional host operation -> host facet discovery
+- package-owned startup / recovery / session behavior -> lifecycle participant
+
+当前少量 `RuntimeServices` package-specific 字段仍会保留一段时间，但它们现在只应视为 compatibility projection。
+
+## 4.6 Explicit Non-Goals
+
+这次边界收敛明确不是下面这些事情：
+
+- 不是 purity-driven microkernel rewrite
+- 不是 `TaskManager` 的 flag-day removal
+- 不是立即把仓库拆成 physical multi-distribution / multi-wheel packaging layout
+
+迁移口径应理解为：
+
+- 优先冻结新的 kernel-specific package special case
+- 优先把最贵的 boundary leak 迁到 manifest / contribution / lookup seam
+- 继续保留 `JobService` 作为 authoritative surface
+- 继续把 `TaskManager` 当作 compatibility facade 处理
+- physical package split 留到后续边界和 public contract 更稳定时再谈
+
 ## 5. Recommended Upgrade Checklist
 
 - 如果你依赖 workspace tools，先切到 `runtime-full` 再逐步收窄

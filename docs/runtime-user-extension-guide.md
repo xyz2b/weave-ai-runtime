@@ -158,6 +158,29 @@ Tool '<name>' has no execution handler
 补充约束：
 
 - agent frontmatter 里的 `hooks` 不属于普通 v1 扩展面；当前 runtime 会把它们视为 compatibility-only，并在装配时发出 warning。
+
+### 2.4 Package 不是目录标签，而是协议接入点
+
+如果你准备做的不只是单个 tool / agent / skill，而是一组需要一起装配、一起拥有 runtime object 的能力，现在推荐把它理解成 package protocol attachment，而不是“在仓库里再建一个目录”。
+
+最小判断标准是：
+
+- 有明确的 `RuntimePackageManifest`
+- 有清晰的 dependency ordering
+- 通过 `PackageContribution` 返回 owned surfaces
+- package-owned service 通过 capability registry 暴露
+- optional host helper 通过 host facet discovery 暴露
+
+这意味着 package boundary 现在更接近：
+
+- “能力通过什么 contract 接上 runtime”
+- 而不是“代码物理上放在什么目录里”
+
+对扩展方的直接含义是：
+
+- 如果只是加一个可执行能力，继续优先写 tool / agent / skill
+- 如果你要同时贡献 built-ins、runtime object、host extension 或 lifecycle behavior，再考虑 package-level contribution
+- 不要默认通过 patch `RuntimeServices` 顶层字段或 kernel switch table 完成接入
 - 如果你需要稳定公开的 hook 能力，优先放在 `RuntimeConfig(hooks=...)`、host/session API，或 skill frontmatter 的 `hooks` 里。
 
 ### 2.4 Skill：可复用 workflow / prompt envelope

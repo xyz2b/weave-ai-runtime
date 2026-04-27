@@ -9,6 +9,7 @@ from ..definitions import PermissionBehavior
 from ..elicitation import ElicitationRequest, ElicitationResponse
 from ..hooks import HookDispatchTraceQuery, HookInventoryQuery, HookRegistrationRequest, HookSourceKind
 from ..permissions import PermissionOutcome, PermissionRequest, coerce_permission_outcome
+from ..runtime_package_protocols import RuntimeCapabilityKey
 
 if TYPE_CHECKING:
     from ..contracts import RuntimeMessage
@@ -239,6 +240,10 @@ class BoundHostRuntime:
         self._bind_host()
         return self.runtime.invocation_diagnostics(*args, **kwargs)
 
+    def resolve_host_facet(self, name: str) -> Any:
+        self._bind_host()
+        return self.runtime.resolve_host_facet(name)
+
     async def resolve_task_list_id(self, *args: Any, **kwargs: Any) -> Any:
         self._bind_host()
         return await self.runtime.resolve_task_list_id(*args, **kwargs)
@@ -462,7 +467,14 @@ class BoundHostRuntime:
                 "Host workflow operations require a team_id or session_id scope",
             )
         if resolved_session_id is not None:
-            plane = getattr(self.runtime, "team_control_plane", None)
+            plane = (
+                self.services.resolve_capability(
+                    RuntimeCapabilityKey.TEAM_CONTROL_PLANE.value,
+                    getattr(self.runtime, "team_control_plane", None),
+                )
+                if self.services is not None and hasattr(self.services, "resolve_capability")
+                else getattr(self.runtime, "team_control_plane", None)
+            )
             team = plane.active_team_for_leader_session(resolved_session_id) if plane is not None else None
             if team is None:
                 raise TeamWorkflowError(
@@ -485,7 +497,14 @@ class BoundHostRuntime:
     def _resolve_scoped_team_workflow(self, workflow_id: Any, *, team_id: str) -> Any:
         from ..team_workflows import TeamWorkflowError
 
-        service = getattr(self.services, "team_workflows", None)
+        service = (
+            self.services.resolve_capability(
+                RuntimeCapabilityKey.TEAM_WORKFLOWS.value,
+                getattr(self.services, "team_workflows", None),
+            )
+            if self.services is not None and hasattr(self.services, "resolve_capability")
+            else getattr(self.services, "team_workflows", None)
+        )
         if service is None or not hasattr(service, "get"):
             raise RuntimeError("Runtime team workflow service is not configured")
         normalized_workflow_id = str(workflow_id).strip()

@@ -228,6 +228,49 @@ helper 语义也已经固定：
   - 属于 `runtime-planning`
   - 它们消费的 shared planning primitive 仍应视为 `runtime-core` 所有，而不是某个上层 agent 的私有能力
 
+#### 4.1.2 Package Protocol Integration
+
+当前 first-party 包边界不再只靠目录位置表达，而是靠 runtime-owned protocol attachment 表达。
+
+最小协议面现在由下面几部分组成：
+
+- `RuntimePackageManifest`
+  - 声明 package name、role、dependencies、assembly entrypoint
+  - kernel 会先按 manifest dependency order 解析，再装配贡献
+- `PackageContribution`
+  - 统一承载 package 返回的 built-ins、capability bindings、store bindings、model provider / route bindings、job executors、lifecycle participants、host facets 与 diagnostics
+- capability registry
+  - package-owned runtime object 不再必须晋升为 `RuntimeServices` 顶层字段
+  - shared control-plane surface 应优先通过 capability key 做发现
+- host facet registry
+  - optional package-owned host operation 通过 runtime-owned discovery path 暴露
+  - 缺失 facet 会返回 structured `not_available` outcome，而不是依赖 ad hoc missing-method 检查
+- lifecycle participants
+  - runtime start
+  - runtime recovery
+  - session open
+  - session close
+  - owner 仍然是 runtime / session controller；package 只是在 owner-defined phase 内参与
+
+当前官方包已经按这个协议收敛到 manifest-backed assembly：
+
+- `runtime-core`
+  - core built-ins 通过 manifest contribution 注册
+- `runtime-memory`
+  - `remember` skill 与 memory service capability 通过 contribution 暴露
+- `runtime-team`
+  - built-ins、control-plane objects、workflow host facet、runtime recovery participant 通过 contribution 暴露
+- `runtime-openai`
+  - bundled provider / route baseline 通过 contribution 装配
+- `runtime-stores-file`
+  - transcript / job / task-list / team 相关 store binding 通过 contribution 装配
+- `runtime-compaction`、`runtime-isolation`、`runtime-hosts-reference`
+  - package-owned manager / host-type surface 通过 capability binding 暴露
+- `runtime-builtin-workflows`、`runtime-planning`、`runtime-devtools`
+  - owned built-ins 通过 manifest-backed contribution 注册
+
+为保持迁移平滑，`RuntimeServices` 上少量 package-specific 字段仍然存在，但它们现在应视为 compatibility projection，而不是 primary discovery contract。
+
 ### 4.2 会话层
 
 会话层围绕 `SessionController` 展开。

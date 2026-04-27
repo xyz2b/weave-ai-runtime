@@ -178,6 +178,43 @@ Runtime 核心流转本身由框架收口，用户通常不应该改 `TurnEngine
 - `current_notifications()`
 - `emit_notification()`
 - `emit_turn_event()`
+
+### 2.4 Package Boundary = Protocol Attachment
+
+现在判断一个 first-party 或 embedder-owned package 是否“接上了 runtime”，不应只看它放在哪个目录里，而应看它是否通过 protocol attachment 接入：
+
+- 是否发布 `RuntimePackageManifest`
+- 是否声明 dependency ordering
+- 是否通过 `PackageContribution` 返回 owned surfaces
+- 是否把 package-owned object 暴露到 capability registry
+- 是否把 optional host operation 暴露到 host facet registry
+
+接入方应优先沿下面的顺序扩展：
+
+1. tool / agent / skill definition
+2. stable public hooks
+3. package contribution
+4. capability lookup
+5. host facet discovery
+
+而不应再把这些旧路径当成 primary extension story：
+
+- patch kernel-owned first-party assembler tables
+- patch kernel-owned optional built-in loader tables
+- 给 `RuntimeServices` 继续增加 package-specific 顶层字段
+- 给 mandatory `HostRuntime` contract 继续增加 optional package helper
+
+当前官方包已经按这一思路装配：
+
+- built-ins 由 package contribution 注册
+- OpenAI provider / route baseline 由 `runtime-openai` contribution 注册
+- file-backed core stores 由 `runtime-stores-file` contribution 注册
+- team control-plane object 与 workflow host facet 由 `runtime-team` contribution 注册
+
+如果你在做自定义 integration，推荐把“包边界”理解成：
+
+- 不是“某段代码从 `runtime-core/` 挪到别的目录”
+- 而是“这段能力能否通过 manifest + contribution + lookup contract 独立接入”
 - `emit_team_event()`（可选 structured sink）
 
 这意味着：

@@ -13,6 +13,18 @@ from ..hosts.base import CallbackHostAdapter, HostRuntime, NullHostAdapter
 from ..isolation import IsolationManager
 from ..jobs import DefaultJobService
 from ..permissions import PermissionEngine
+from ..runtime_package_protocols import (
+    CapabilityBinding,
+    CapabilityRegistry,
+    HostFacetBinding,
+    HostFacetRegistry,
+    HostFacetResolution,
+    PackageContribution,
+    PackageLifecycleParticipant,
+    PackageLifecyclePhase,
+    PackageLifecycleRegistry,
+    RuntimePackageManifest,
+)
 from ..tasking import TaskManager
 from ..task_lists import DefaultTaskListService
 
@@ -232,6 +244,9 @@ class LiveSessionRegistry:
 class RuntimeServices:
     hooks: ContextContributionService = field(default_factory=NoopHookService)
     hook_bus: HookBus = field(default_factory=HookBus)
+    capability_registry: CapabilityRegistry = field(default_factory=CapabilityRegistry)
+    lifecycle_registry: PackageLifecycleRegistry = field(default_factory=PackageLifecycleRegistry)
+    host_facets: HostFacetRegistry = field(default_factory=HostFacetRegistry)
     permissions: PermissionService = field(default_factory=PermissionEngine)
     elicitation: ElicitationService = field(default_factory=SharedElicitationService)
     isolation: IsolationManager = field(default_factory=IsolationManager)
@@ -404,6 +419,98 @@ class RuntimeServices:
                 team_event_sink=team_event_sink,
             )
 
+    def bind_capability(self, binding: CapabilityBinding, *, override: bool = True) -> CapabilityBinding | None:
+        return self.capability_registry.bind(binding, override=override)
+
+    def resolve_capability(self, key: str, default: Any = None) -> Any:
+        return self.capability_registry.resolve(key, default)
+
+    def require_capability(self, key: str) -> Any:
+        return self.capability_registry.require(key)
+
+    def register_lifecycle_participant(self, participant: PackageLifecycleParticipant) -> None:
+        self.lifecycle_registry.register(participant)
+
+    def lifecycle_participants(
+        self,
+        phase: PackageLifecyclePhase | str | None = None,
+    ) -> tuple[PackageLifecycleParticipant, ...]:
+        return self.lifecycle_registry.participants(phase)
+
+    def register_host_facet(self, binding: HostFacetBinding, *, override: bool = True) -> HostFacetBinding | None:
+        return self.host_facets.register(binding, override=override)
+
+    def resolve_host_facet(self, name: str) -> HostFacetResolution:
+        return self.host_facets.resolve(name)
+
+    def require_host_facet(self, name: str) -> Any:
+        return self.host_facets.require(name)
+
+    def apply_package_contribution(
+        self,
+        manifest: RuntimePackageManifest,
+        contribution: PackageContribution,
+        *,
+        stage: str | None = None,
+    ) -> None:
+        for capability in contribution.capabilities:
+            self.bind_capability(capability, override=True)
+            self.metadata.setdefault("package_capability_owners", {})[capability.key] = {
+                "package_name": capability.owner.package_name,
+                "package_role": capability.owner.package_role,
+                "surface": capability.owner.surface,
+            }
+        for participant in contribution.lifecycle_participants:
+            self.register_lifecycle_participant(participant)
+        for facet in contribution.host_facets:
+            self.register_host_facet(facet, override=True)
+            self.metadata.setdefault("package_host_facet_owners", {})[facet.name] = {
+                "package_name": facet.owner.package_name,
+                "package_role": facet.owner.package_role,
+                "surface": facet.owner.surface,
+            }
+        entry = {
+            "package_name": manifest.name,
+            "package_role": manifest.role,
+            "stage": stage,
+            "capabilities": [binding.key for binding in contribution.capabilities],
+            "lifecycle_participants": [participant.name for participant in contribution.lifecycle_participants],
+            "host_facets": [facet.name for facet in contribution.host_facets],
+            "store_bindings": [binding.slot for binding in contribution.store_bindings],
+            "model_providers": [binding.name for binding in contribution.model_providers],
+            "model_routes": [binding.name for binding in contribution.model_routes],
+            "job_executors": [binding.kind for binding in contribution.job_executors],
+            "diagnostics": [getattr(diagnostic, "code", None) for diagnostic in contribution.diagnostics],
+        }
+        self.metadata.setdefault("package_contributions", []).append(entry)
+
+    async def dispatch_lifecycle_phase(
+        self,
+        phase: PackageLifecyclePhase | str,
+        **kwargs: Any,
+    ) -> tuple[dict[str, Any], ...]:
+        normalized_phase = PackageLifecyclePhase(phase)
+        failures: list[dict[str, Any]] = []
+        for participant in self.lifecycle_participants(normalized_phase):
+            try:
+                await _maybe_await(
+                    participant.handler(
+                        phase=normalized_phase,
+                        services=self,
+                        **kwargs,
+                    )
+                )
+            except Exception as exc:  # pragma: no cover - defensive lifecycle boundary
+                failure = {
+                    "phase": normalized_phase.value,
+                    "participant": participant.name,
+                    "package_name": participant.owner.package_name,
+                    "error": str(exc),
+                }
+                failures.append(failure)
+                self.metadata.setdefault("lifecycle_participant_failures", []).append(failure)
+        return tuple(failures)
+
 
 async def _maybe_await(value: Any) -> Any:
     if asyncio.iscoroutine(value):
@@ -412,16 +519,26 @@ async def _maybe_await(value: Any) -> Any:
 
 
 __all__ = [
+    "CapabilityBinding",
+    "CapabilityRegistry",
     "CallbackToolCatalogService",
     "CompactionService",
     "ContextContributionService",
     "DefaultTaskService",
     "DefaultTranscriptService",
     "ElicitationService",
+    "HostFacetBinding",
+    "HostFacetRegistry",
+    "HostFacetResolution",
     "NoopCompactionService",
     "NoopHookService",
     "NoopMemoryService",
+    "PackageContribution",
+    "PackageLifecycleParticipant",
+    "PackageLifecyclePhase",
+    "PackageLifecycleRegistry",
     "PermissionService",
     "RuntimeServices",
+    "RuntimePackageManifest",
     "ToolCatalogService",
 ]

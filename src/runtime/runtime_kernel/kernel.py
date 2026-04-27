@@ -50,6 +50,17 @@ from ..hooks import (
 from ..invocation_catalog import SkillInvocationProvider
 from ..jobs import DefaultJobService, InMemoryJobStore, JobScopeFilter, job_record_to_payload
 from ..package_profiles import FIRST_PARTY_PACKAGE_SPECS
+from ..runtime_package_manifests import official_runtime_package_manifests
+from ..runtime_package_protocols import (
+    PackageAssemblyStage,
+    PackageContext,
+    PackageContribution,
+    PackageLifecyclePhase,
+    RuntimeCapabilityKey,
+    RuntimeHostFacetKey,
+    RuntimePackageManifest,
+    preserve_builtin_owner,
+)
 from ..registries import AgentRegistry, DefinitionDiscovery, InvocationRegistry, SkillRegistry, ToolRegistry
 from ..runtime_services import DefaultTranscriptService, NoopCompactionService, NoopMemoryService, RuntimeServices
 from ..task_discipline import TaskDisciplineSidecar
@@ -71,7 +82,6 @@ from ..session_runtime import (
 )
 from ..skill_runtime import SkillExecutionResult, SkillExecutor
 from ..tasking import TaskManager
-from ..team_config import TeammateOrchestrationConfig
 from ..tool_runtime import ToolContext
 from ..turn_engine.composer import ContextAssembler
 from ..turn_engine.engine import TurnEngine, TurnStreamEvent, TurnStreamEventType
@@ -81,15 +91,6 @@ from ..execution_policy import DelegationPolicyError, default_delegation_policy_
 
 SKILL_DYNAMIC_ROOTS_KEY = "skill_dynamic_roots"
 _UNSET = object()
-_FIRST_PARTY_PACKAGE_ASSEMBLERS = {
-    "runtime-memory": "runtime.memory.package:assemble_memory_capability",
-    "runtime-team": "runtime.team.assembly:assemble_team_capability",
-    "runtime-compaction": "runtime.compaction.package:assemble_compaction_package",
-    "runtime-isolation": "runtime.isolation_package:assemble_isolation_package",
-    "runtime-openai": "runtime.openai_package:assemble_openai_package",
-    "runtime-stores-file": "runtime.stores_file.package:assemble_file_store_bundle",
-    "runtime-hosts-reference": "runtime.hosts.package:assemble_reference_host_package",
-}
 
 
 @dataclass(slots=True)
@@ -101,6 +102,8 @@ class RuntimeKernel:
     invocation_registry: InvocationRegistry
     distribution: str
     first_party_packages: tuple[str, ...] = ()
+    package_manifests: tuple[RuntimePackageManifest, ...] = ()
+    package_service_contributions: tuple[tuple[RuntimePackageManifest, PackageContribution], ...] = ()
     diagnostics: tuple[Diagnostic, ...] = ()
     model_client: Any = None
     transcript_store: Any = None
@@ -256,6 +259,12 @@ class RuntimeAssembly:
             runtime=self,
             services=self.services,
         )
+
+    def resolve_capability(self, key: str, default: Any = None) -> Any:
+        return self.services.resolve_capability(key, default)
+
+    def resolve_host_facet(self, name: str) -> Any:
+        return self.services.resolve_host_facet(name)
 
     def bind_hook_callback(self, name: str, handler: Any) -> None:
         self.services.hook_bus.bind_callback(name, handler)
@@ -905,12 +914,27 @@ class RuntimeAssembly:
         session_id: str | None = None,
         pending_only: bool | None = True,
     ) -> tuple[dict[str, Any], ...]:
-        service = getattr(self.services, "team_workflows", None)
+        facet = self.services.resolve_host_facet(RuntimeHostFacetKey.TEAM_WORKFLOWS.value)
+        if facet.available and facet.facet is not None:
+            records = await facet.facet.list_workflows(
+                team_id=team_id,
+                session_id=session_id,
+                pending_only=pending_only,
+            )
+            return tuple(_serialize_team_workflow_record(record) for record in records)
+        service = self.services.resolve_capability(
+            RuntimeCapabilityKey.TEAM_WORKFLOWS.value,
+            getattr(self.services, "team_workflows", None),
+        )
         if service is None:
             return ()
         resolved_team_id = team_id
-        if resolved_team_id is None and session_id is not None and self.team_control_plane is not None:
-            team = self.team_control_plane.active_team_for_leader_session(session_id)
+        team_control_plane = self.services.resolve_capability(
+            RuntimeCapabilityKey.TEAM_CONTROL_PLANE.value,
+            self.team_control_plane,
+        )
+        if resolved_team_id is None and session_id is not None and team_control_plane is not None:
+            team = team_control_plane.active_team_for_leader_session(session_id)
             if team is not None:
                 resolved_team_id = team.team_id
         records = service.list_workflows(team_id=resolved_team_id, pending_only=pending_only)
@@ -924,7 +948,19 @@ class RuntimeAssembly:
         host_name: str | None = None,
         payload: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
-        service = getattr(self.services, "team_workflows", None)
+        facet = self.services.resolve_host_facet(RuntimeHostFacetKey.TEAM_WORKFLOWS.value)
+        if facet.available and facet.facet is not None:
+            record = await facet.facet.respond(
+                workflow_id,
+                action=action,
+                host_name=host_name,
+                payload=None if payload is None else dict(payload),
+            )
+            return _serialize_team_workflow_record(record)
+        service = self.services.resolve_capability(
+            RuntimeCapabilityKey.TEAM_WORKFLOWS.value,
+            getattr(self.services, "team_workflows", None),
+        )
         if service is None:
             raise RuntimeError("Runtime team workflow service is not configured")
         record = await service.respond_host(
@@ -1316,7 +1352,18 @@ def _coerce_definition_source(value: Any) -> DefinitionSource:
 
 def build_runtime_kernel(config: RuntimeConfig) -> RuntimeKernel:
     selected_packages = config.selected_first_party_packages()
-    config = _with_bundled_openai_baseline(config, selected_packages=selected_packages)
+    package_manifests = official_runtime_package_manifests(selected_packages)
+    package_service_contributions = _assemble_package_contributions(
+        package_manifests,
+        stage=PackageAssemblyStage.SERVICES,
+        config=config,
+        distribution=config.resolved_distribution().value,
+        working_directory=config.working_directory,
+    )
+    config = _with_package_model_binding_baseline(
+        config,
+        package_service_contributions=package_service_contributions,
+    )
     tool_registry = ToolRegistry()
     agent_registry = AgentRegistry()
     skill_registry = SkillRegistry()
@@ -1347,6 +1394,8 @@ def build_runtime_kernel(config: RuntimeConfig) -> RuntimeKernel:
     for provider in config.extra_invocation_providers:
         invocation_registry.register_provider(provider)
     diagnostics.extend(invocation_registry.diagnostics())
+    for _, contribution in package_service_contributions:
+        diagnostics.extend(contribution.diagnostics)
     diagnostics.extend(
         _package_migration_diagnostics(
             selected_packages=selected_packages,
@@ -1362,6 +1411,8 @@ def build_runtime_kernel(config: RuntimeConfig) -> RuntimeKernel:
         invocation_registry=invocation_registry,
         distribution=config.resolved_distribution().value,
         first_party_packages=selected_packages,
+        package_manifests=package_manifests,
+        package_service_contributions=package_service_contributions,
         diagnostics=tuple(diagnostics),
         model_client=_default_model_client(config),
         transcript_store=config.transcript_store,
@@ -1439,37 +1490,29 @@ def _assemble_runtime_stack(kernel: RuntimeKernel) -> RuntimeAssembly:
         notification_provider=lambda: agent_runtime.notifications,
         tool_refresh_callback=kernel.config.tool_refresh_callback,
     )
-    teammates = None
-    team_control_plane = None
-    team_message_bus = None
-    team_workflows = None
-    teammate_config = _resolve_teammate_orchestration_config(kernel)
-    if teammate_config is not None:
-        team_store_kwargs: dict[str, Any] = {}
-        if "runtime-stores-file" in kernel.first_party_packages:
-            file_store_bundle = _assemble_first_party_package(
-                "runtime-stores-file",
-                project_root=kernel.config.working_directory,
-                teammate_config=teammate_config,
-            )
-            team_store_kwargs = {
-                "team_store": file_store_bundle.team_store,
-                "message_store": file_store_bundle.team_message_store,
-                "workflow_store": file_store_bundle.team_workflow_store,
-                "mailbox": file_store_bundle.teammate_mailbox,
-            }
-        team_capability = _assemble_first_party_package(
-            "runtime-team",
-            config=teammate_config,
-            project_root=kernel.config.working_directory,
-            runtime_services=services,
-            execution_core=agent_runtime,
-            **team_store_kwargs,
+    runtime_package_contributions = _assemble_package_contributions(
+        kernel.package_manifests,
+        stage=PackageAssemblyStage.RUNTIME,
+        config=kernel.config,
+        distribution=kernel.distribution,
+        working_directory=kernel.config.working_directory,
+        resources={
+            "runtime_services": services,
+            "execution_core": agent_runtime,
+            "store_bindings": _store_binding_values(kernel.package_service_contributions),
+        },
+    )
+    for manifest, contribution in runtime_package_contributions:
+        services.apply_package_contribution(
+            manifest,
+            contribution,
+            stage=PackageAssemblyStage.RUNTIME.value,
         )
-        teammates = team_capability.teammates
-        team_control_plane = team_capability.control_plane
-        team_message_bus = team_capability.message_bus
-        team_workflows = team_capability.workflows
+    _project_capability_compatibility_surfaces(services)
+    teammates = services.resolve_capability(RuntimeCapabilityKey.TEAMMATES.value)
+    team_control_plane = services.resolve_capability(RuntimeCapabilityKey.TEAM_CONTROL_PLANE.value)
+    team_message_bus = services.resolve_capability(RuntimeCapabilityKey.TEAM_MESSAGE_BUS.value)
+    team_workflows = services.resolve_capability(RuntimeCapabilityKey.TEAM_WORKFLOWS.value)
     runtime = RuntimeAssembly(
         kernel=kernel,
         services=services,
@@ -1488,49 +1531,54 @@ def _assemble_runtime_stack(kernel: RuntimeKernel) -> RuntimeAssembly:
             **dict(kernel.config.metadata),
             "distribution": kernel.distribution,
             "first_party_packages": list(kernel.first_party_packages),
+            "package_runtime_contributions": [manifest.name for manifest, _ in runtime_package_contributions],
         },
     )
-    _register_job_executors(kernel=kernel, services=services, agent_runtime=agent_runtime)
-    _schedule_job_recovery(services.job_service)
+    _register_job_executors(
+        kernel=kernel,
+        services=services,
+        agent_runtime=agent_runtime,
+        package_contributions=(
+            kernel.package_service_contributions + runtime_package_contributions
+        ),
+    )
     services.bind_execution(
         agent_runner=runtime.run_agent_tool,
         skill_runner=runtime.run_skill_tool,
     )
-    if team_workflows is not None:
-        try:
-            asyncio.get_running_loop().create_task(team_workflows.recover_pending())
-        except RuntimeError:
-            pass
+    _dispatch_runtime_lifecycle_phase(
+        services,
+        PackageLifecyclePhase.RUNTIME_START,
+        runtime=runtime,
+        kernel=kernel,
+    )
+    _schedule_job_recovery(services.job_service)
+    _dispatch_runtime_lifecycle_phase(
+        services,
+        PackageLifecyclePhase.RUNTIME_RECOVERY,
+        runtime=runtime,
+        kernel=kernel,
+    )
     return runtime
 
 
 def _build_runtime_services(kernel: RuntimeKernel) -> RuntimeServices:
-    file_store_bundle = (
-        _assemble_first_party_package(
-            "runtime-stores-file",
-            project_root=kernel.config.working_directory,
-            teammate_config=kernel.config.teammate_orchestration,
-        )
-        if "runtime-stores-file" in kernel.first_party_packages
-        else None
-    )
+    store_bindings = _store_binding_values(kernel.package_service_contributions)
     transcript_store = (
         kernel.transcript_store
-        or (file_store_bundle.transcript_store if file_store_bundle is not None else None)
+        or store_bindings.get("transcript_store")
         or InMemoryTranscriptStore()
     )
     task_list_service = DefaultTaskListService(
         store=(
-            file_store_bundle.task_list_store
-            if file_store_bundle is not None
-            else InMemoryTaskListStore()
+            store_bindings.get("task_list_store")
+            or InMemoryTaskListStore()
         )
     )
     job_service = DefaultJobService(
         store=(
-            file_store_bundle.job_store
-            if file_store_bundle is not None
-            else InMemoryJobStore()
+            store_bindings.get("job_store")
+            or InMemoryJobStore()
         ),
         metadata={"runtime_id": kernel.config.runtime_id},
     )
@@ -1539,6 +1587,14 @@ def _build_runtime_services(kernel: RuntimeKernel) -> RuntimeServices:
     metadata["distribution"] = kernel.distribution
     metadata["first_party_packages"] = list(kernel.first_party_packages)
     metadata["first_party_package_catalog"] = _first_party_package_catalog(kernel.first_party_packages)
+    metadata["package_manifests"] = _package_manifest_catalog(kernel.package_manifests)
+    metadata["package_service_contributions"] = [
+        manifest.name for manifest, _ in kernel.package_service_contributions
+    ]
+    metadata["package_store_bindings"] = {
+        slot: binding.owner.package_name
+        for slot, binding in _store_binding_entries(kernel.package_service_contributions).items()
+    }
     metadata["compatibility_surfaces"] = {
         "TaskManager": "compatibility-only",
         "runtime_context": "compatibility-only",
@@ -1557,43 +1613,35 @@ def _build_runtime_services(kernel: RuntimeKernel) -> RuntimeServices:
         },
     )
     metadata.setdefault("delegation", default_delegation_policy_metadata())
-    reference_hosts = (
-        _assemble_first_party_package("runtime-hosts-reference")
-        if "runtime-hosts-reference" in kernel.first_party_packages
-        else None
+    reference_hosts = _resolve_capability_from_contributions(
+        kernel.package_service_contributions,
+        RuntimeCapabilityKey.REFERENCE_HOST_TYPES.value,
     )
     if reference_hosts is not None:
-        metadata["reference_hosts"] = sorted(reference_hosts.host_types)
-    memory_capability = (
-        _assemble_first_party_package(
-            "runtime-memory",
-            project_root=kernel.config.working_directory,
-            memory_config=kernel.config.memory_config,
-        )
-        if "runtime-memory" in kernel.first_party_packages
-        else None
+        metadata["reference_hosts"] = sorted(reference_hosts)
+    memory_service = _resolve_capability_from_contributions(
+        kernel.package_service_contributions,
+        RuntimeCapabilityKey.MEMORY_SERVICE.value,
     )
-    compaction_package = (
-        _assemble_first_party_package("runtime-compaction")
-        if "runtime-compaction" in kernel.first_party_packages
-        else None
+    compaction_manager = _resolve_capability_from_contributions(
+        kernel.package_service_contributions,
+        RuntimeCapabilityKey.COMPACTION_MANAGER.value,
     )
-    isolation_package = (
-        _assemble_first_party_package("runtime-isolation")
-        if "runtime-isolation" in kernel.first_party_packages
-        else None
+    isolation_manager = _resolve_capability_from_contributions(
+        kernel.package_service_contributions,
+        RuntimeCapabilityKey.ISOLATION_MANAGER.value,
     )
     services = RuntimeServices(
         transcript=DefaultTranscriptService(transcript_store),
-        memory=memory_capability.service if memory_capability is not None else NoopMemoryService(),
+        memory=memory_service if memory_service is not None else NoopMemoryService(),
         compaction=(
-            compaction_package.manager
-            if compaction_package is not None
+            compaction_manager
+            if compaction_manager is not None
             else NoopCompactionService()
         ),
         isolation=(
-            isolation_package.manager
-            if isolation_package is not None
+            isolation_manager
+            if isolation_manager is not None
             else _assemble_core_isolation_manager()
         ),
         jobs=job_service,
@@ -1602,6 +1650,13 @@ def _build_runtime_services(kernel: RuntimeKernel) -> RuntimeServices:
         context_assembler=ContextAssembler(),
         metadata=metadata,
     )
+    for manifest, contribution in kernel.package_service_contributions:
+        services.apply_package_contribution(
+            manifest,
+            contribution,
+            stage=PackageAssemblyStage.SERVICES.value,
+        )
+    _project_capability_compatibility_surfaces(services)
     services.configure_compat(
         permission_handler=kernel.config.permission_handler,
         ask_user_handler=kernel.config.ask_user_handler,
@@ -1618,14 +1673,178 @@ def _build_runtime_services(kernel: RuntimeKernel) -> RuntimeServices:
     return services
 
 
+def _assemble_package_contributions(
+    manifests: tuple[RuntimePackageManifest, ...],
+    *,
+    stage: PackageAssemblyStage,
+    config: RuntimeConfig,
+    distribution: str,
+    working_directory: Path,
+    resources: Mapping[str, Any] | None = None,
+) -> tuple[tuple[RuntimePackageManifest, PackageContribution], ...]:
+    records: list[tuple[RuntimePackageManifest, PackageContribution]] = []
+    for manifest in manifests:
+        contribution = manifest.assemble(
+            PackageContext(
+                manifest=manifest,
+                stage=stage,
+                distribution=distribution,
+                selected_packages=tuple(record.name for record in manifests),
+                working_directory=working_directory,
+                config=config,
+                resources=dict(resources or {}),
+            )
+        )
+        records.append((manifest, contribution))
+    return tuple(records)
+
+
+def _with_package_model_binding_baseline(
+    config: RuntimeConfig,
+    *,
+    package_service_contributions: tuple[tuple[RuntimePackageManifest, PackageContribution], ...],
+) -> RuntimeConfig:
+    model_providers = dict(config.model_providers)
+    model_routes = dict(config.model_routes)
+    default_route_candidate: str | None = None
+
+    for _, contribution in package_service_contributions:
+        for provider in contribution.model_providers:
+            model_providers.setdefault(provider.name, provider.binding)
+        for route in contribution.model_routes:
+            model_routes.setdefault(route.name, route.binding)
+            if default_route_candidate is None:
+                default_route_candidate = route.name
+
+    default_model_route = config.default_model_route
+    if (
+        default_model_route is None
+        and config.model_client is None
+        and not config.model_routes
+        and default_route_candidate is not None
+    ):
+        default_model_route = default_route_candidate
+
+    return replace(
+        config,
+        model_providers=model_providers,
+        model_routes=model_routes,
+        default_model_route=default_model_route,
+    )
+
+
+def _resolve_capability_from_contributions(
+    package_contributions: tuple[tuple[RuntimePackageManifest, PackageContribution], ...],
+    key: str,
+) -> Any:
+    resolved = None
+    for _, contribution in package_contributions:
+        for binding in contribution.capabilities:
+            if binding.key == key:
+                resolved = binding.value
+    return resolved
+
+
+def _store_binding_entries(
+    package_contributions: tuple[tuple[RuntimePackageManifest, PackageContribution], ...],
+) -> dict[str, Any]:
+    entries: dict[str, Any] = {}
+    for _, contribution in package_contributions:
+        for binding in contribution.store_bindings:
+            entries[binding.slot] = binding
+    return entries
+
+
+def _store_binding_values(
+    package_contributions: tuple[tuple[RuntimePackageManifest, PackageContribution], ...],
+) -> dict[str, Any]:
+    return {
+        slot: binding.store
+        for slot, binding in _store_binding_entries(package_contributions).items()
+    }
+
+
+def _package_manifest_catalog(
+    manifests: tuple[RuntimePackageManifest, ...],
+) -> dict[str, dict[str, Any]]:
+    return {
+        manifest.name: {
+            "role": manifest.role,
+            "description": manifest.description,
+            "dependencies": list(manifest.dependencies),
+        }
+        for manifest in manifests
+    }
+
+
+def _project_capability_compatibility_surfaces(services: RuntimeServices) -> None:
+    teammates = services.resolve_capability(RuntimeCapabilityKey.TEAMMATES.value)
+    control_plane = services.resolve_capability(RuntimeCapabilityKey.TEAM_CONTROL_PLANE.value)
+    message_bus = services.resolve_capability(RuntimeCapabilityKey.TEAM_MESSAGE_BUS.value)
+    workflows = services.resolve_capability(RuntimeCapabilityKey.TEAM_WORKFLOWS.value)
+    projections = services.metadata.setdefault("compatibility_projections", {})
+    if teammates is not None:
+        services.bind_teammates(teammates)
+        projections["teammates"] = RuntimeCapabilityKey.TEAMMATES.value
+    if any(component is not None for component in (control_plane, message_bus, workflows)):
+        services.bind_team_services(
+            control_plane=control_plane,
+            message_bus=message_bus,
+            workflow_service=workflows,
+        )
+        if control_plane is not None:
+            projections["team_control_plane"] = RuntimeCapabilityKey.TEAM_CONTROL_PLANE.value
+        if message_bus is not None:
+            projections["team_message_bus"] = RuntimeCapabilityKey.TEAM_MESSAGE_BUS.value
+        if workflows is not None:
+            projections["team_workflows"] = RuntimeCapabilityKey.TEAM_WORKFLOWS.value
+
+
+def _dispatch_runtime_lifecycle_phase(
+    services: RuntimeServices,
+    phase: PackageLifecyclePhase,
+    **kwargs: Any,
+) -> None:
+    if not hasattr(services, "dispatch_lifecycle_phase"):
+        return
+    coroutine = services.dispatch_lifecycle_phase(phase, **kwargs)
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        asyncio.run(coroutine)
+        return
+    loop.create_task(coroutine)
+
+
 def _register_job_executors(
     *,
     kernel: RuntimeKernel,
     services: RuntimeServices,
     agent_runtime: AgentRuntime,
+    package_contributions: tuple[tuple[RuntimePackageManifest, PackageContribution], ...] = (),
 ) -> None:
     registry = services.job_service.executor_registry
     registry.register("agent", agent_runtime.job_executor, builtin=True, override=True)
+    for manifest, contribution in package_contributions:
+        for executor_binding in contribution.job_executors:
+            binding = executor_binding.binding
+            executor = (
+                binding.executor
+                if binding.executor is not None
+                else binding.factory(executor_binding.kind, binding, kernel, services)
+            )
+            registry.register(
+                executor_binding.kind,
+                executor,
+                builtin=True,
+                override=True,
+            )
+            services.metadata.setdefault("package_job_executors", []).append(
+                {
+                    "kind": executor_binding.kind,
+                    "package_name": manifest.name,
+                }
+            )
     for executor_kind, binding in kernel.config.job_executors.items():
         executor = (
             binding.executor
@@ -1642,14 +1861,6 @@ def _schedule_job_recovery(job_service: DefaultJobService) -> None:
         asyncio.run(job_service.recover_inflight())
         return
     loop.create_task(job_service.recover_inflight())
-
-
-def _assemble_first_party_package(package_name: str, /, **kwargs: Any) -> Any:
-    loader_spec = _FIRST_PARTY_PACKAGE_ASSEMBLERS.get(package_name)
-    if loader_spec is None:
-        raise RuntimeError(f"No first-party package assembler is registered for {package_name}")
-    factory = load_object(loader_spec)
-    return factory(**kwargs)
 
 
 def _assemble_core_isolation_manager() -> Any:
@@ -1983,48 +2194,6 @@ def _default_model_client(config: RuntimeConfig) -> Any:
     return None
 
 
-def _with_bundled_openai_baseline(
-    config: RuntimeConfig,
-    *,
-    selected_packages: tuple[str, ...],
-) -> RuntimeConfig:
-    if "runtime-openai" not in selected_packages:
-        return config
-    openai_package = _assemble_first_party_package("runtime-openai")
-    model_providers = dict(config.model_providers)
-    if openai_package.provider_name not in model_providers:
-        model_providers[openai_package.provider_name] = openai_package.provider_binding
-
-    model_routes = dict(config.model_routes)
-    if openai_package.route_name not in model_routes:
-        model_routes[openai_package.route_name] = openai_package.route_binding
-
-    default_model_route = config.default_model_route
-    if default_model_route is None and config.model_client is None and not config.model_routes:
-        default_model_route = openai_package.route_name
-
-    return replace(
-        config,
-        model_providers=model_providers,
-        model_routes=model_routes,
-        default_model_route=default_model_route,
-    )
-
-
-def _resolve_teammate_orchestration_config(
-    kernel: RuntimeKernel,
-) -> TeammateOrchestrationConfig | None:
-    configured = kernel.config.teammate_orchestration
-    runtime_team_selected = "runtime-team" in kernel.first_party_packages
-    if runtime_team_selected:
-        if configured is None:
-            return TeammateOrchestrationConfig(enabled=True)
-        return replace(configured, enabled=True)
-    if configured is not None and configured.enabled:
-        return configured
-    return None
-
-
 def _helper_session_close_status(
     session: SessionController,
     *,
@@ -2073,6 +2242,11 @@ def _register_builtin_tools(
         if not config.builtins.tool_enabled(definition.name):
             continue
         replacement = config.builtins.tool_replacements.get(definition.name, definition)
+        if replacement is not definition:
+            replacement = preserve_builtin_owner(
+                replacement,
+                original_definition=definition,
+            )
         diagnostics.extend(registry.register(replacement).diagnostics)
     for extra in config.builtins.extra_tools:
         diagnostics.extend(registry.register(extra).diagnostics)
@@ -2088,6 +2262,11 @@ def _register_builtin_agents(
         if not config.builtins.agent_enabled(definition.name):
             continue
         replacement = config.builtins.agent_replacements.get(definition.name, definition)
+        if replacement is not definition:
+            replacement = preserve_builtin_owner(
+                replacement,
+                original_definition=definition,
+            )
         diagnostics.extend(registry.register(replacement).diagnostics)
     for extra in config.builtins.extra_agents:
         diagnostics.extend(registry.register(extra).diagnostics)
@@ -2103,6 +2282,11 @@ def _register_builtin_skills(
         if not config.builtins.skill_enabled(definition.name):
             continue
         replacement = config.builtins.skill_replacements.get(definition.name, definition)
+        if replacement is not definition:
+            replacement = preserve_builtin_owner(
+                replacement,
+                original_definition=definition,
+            )
         diagnostics.extend(registry.register(replacement).diagnostics)
     for extra in config.builtins.extra_skills:
         diagnostics.extend(registry.register(extra).diagnostics)
