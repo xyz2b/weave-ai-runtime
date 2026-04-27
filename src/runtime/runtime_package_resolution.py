@@ -4,7 +4,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field, replace
 from itertools import zip_longest
 import re
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from .diagnostics import Diagnostic, DiagnosticSeverity
 from .runtime_package_manifests import RuntimePackageRegistrationReport
@@ -420,6 +420,13 @@ def resolve_runtime_package_graph(
     catalog: RuntimePackageCatalog,
 ) -> RuntimePackageResolutionReport:
     catalog_by_name = catalog.by_package_name()
+    catalog_diagnostics = _catalog_diagnostics(catalog_by_name)
+    if catalog_diagnostics:
+        return RuntimePackageResolutionReport(
+            request=request,
+            catalog=catalog,
+            diagnostics=tuple(catalog_diagnostics),
+        )
     selected: dict[str, RuntimePackageCandidateDescriptor] = {}
     constraints_by_package: dict[str, list[_ResolutionRequirement]] = defaultdict(list)
 
@@ -435,21 +442,20 @@ def resolve_runtime_package_graph(
             )
         )
 
-    for package_name in request.requested_packages:
-        failure = _resolve_package(
-            package_name,
-            distribution=request.distribution,
-            catalog_by_name=catalog_by_name,
-            selected=selected,
-            constraints_by_package=constraints_by_package,
-            stack=[],
+    failure = _resolve_requested_packages(
+        requested_packages=request.requested_packages,
+        index=0,
+        distribution=request.distribution,
+        catalog_by_name=catalog_by_name,
+        selected=selected,
+        constraints_by_package=constraints_by_package,
+    )
+    if failure is not None:
+        return RuntimePackageResolutionReport(
+            request=request,
+            catalog=catalog,
+            diagnostics=(failure,),
         )
-        if failure is not None:
-            return RuntimePackageResolutionReport(
-                request=request,
-                catalog=catalog,
-                diagnostics=(failure,),
-            )
 
     manifest_catalog = {
         package_name: candidate.manifest
@@ -462,6 +468,35 @@ def resolve_runtime_package_graph(
         catalog=catalog,
         resolved_candidates=ordered_candidates,
         resolved_manifests=ordered_manifests,
+    )
+
+
+def _resolve_requested_packages(
+    *,
+    requested_packages: Sequence[str],
+    index: int,
+    distribution: str,
+    catalog_by_name: Mapping[str, tuple[RuntimePackageCandidateDescriptor, ...]],
+    selected: dict[str, RuntimePackageCandidateDescriptor],
+    constraints_by_package: dict[str, list[_ResolutionRequirement]],
+) -> RuntimePackageResolutionDiagnostic | None:
+    if index >= len(requested_packages):
+        return None
+    return _resolve_package(
+        requested_packages[index],
+        distribution=distribution,
+        catalog_by_name=catalog_by_name,
+        selected=selected,
+        constraints_by_package=constraints_by_package,
+        stack=(),
+        on_success=lambda: _resolve_requested_packages(
+            requested_packages=requested_packages,
+            index=index + 1,
+            distribution=distribution,
+            catalog_by_name=catalog_by_name,
+            selected=selected,
+            constraints_by_package=constraints_by_package,
+        ),
     )
 
 
@@ -594,11 +629,12 @@ def _resolve_package(
     catalog_by_name: Mapping[str, tuple[RuntimePackageCandidateDescriptor, ...]],
     selected: dict[str, RuntimePackageCandidateDescriptor],
     constraints_by_package: dict[str, list[_ResolutionRequirement]],
-    stack: list[str],
+    stack: tuple[str, ...],
+    on_success: Callable[[], RuntimePackageResolutionDiagnostic | None],
 ) -> RuntimePackageResolutionDiagnostic | None:
     if package_name in stack:
         cycle_start = stack.index(package_name)
-        cycle_path = tuple(stack[cycle_start:] + [package_name])
+        cycle_path = stack[cycle_start:] + (package_name,)
         return RuntimePackageResolutionDiagnostic(
             severity=DiagnosticSeverity.ERROR,
             code="runtime_package_cyclic_dependency",
@@ -621,7 +657,7 @@ def _resolve_package(
     existing = selected.get(package_name)
     if existing is not None:
         if _candidate_satisfies(existing, requirements, distribution):
-            return None
+            return on_success()
         return _constraint_failure(
             package_name=package_name,
             requirements=requirements,
@@ -656,29 +692,17 @@ def _resolve_package(
             name: list(entries)
             for name, entries in constraints_by_package.items()
         }
-        stack_snapshot = list(stack)
         selected[package_name] = candidate
-        stack.append(package_name)
-        failure: RuntimePackageResolutionDiagnostic | None = None
-        for dependency in candidate.dependency_constraints:
-            constraints_by_package.setdefault(dependency.package_name, []).append(
-                _ResolutionRequirement(
-                    constraint=dependency,
-                    source="dependency",
-                    requester=candidate.package_name,
-                    requester_candidate_id=candidate.candidate_id,
-                )
-            )
-            failure = _resolve_package(
-                dependency.package_name,
-                distribution=distribution,
-                catalog_by_name=catalog_by_name,
-                selected=selected,
-                constraints_by_package=constraints_by_package,
-                stack=stack,
-            )
-            if failure is not None:
-                break
+        failure = _resolve_candidate_dependencies(
+            candidate=candidate,
+            dependency_index=0,
+            distribution=distribution,
+            catalog_by_name=catalog_by_name,
+            selected=selected,
+            constraints_by_package=constraints_by_package,
+            stack=stack + (package_name,),
+            on_success=on_success,
+        )
         if failure is None:
             return None
         branch_failures.append(failure)
@@ -691,10 +715,81 @@ def _resolve_package(
                 for name, entries in constraints_snapshot.items()
             }
         )
-        stack.clear()
-        stack.extend(stack_snapshot)
 
     return branch_failures[0]
+
+
+def _resolve_candidate_dependencies(
+    *,
+    candidate: RuntimePackageCandidateDescriptor,
+    dependency_index: int,
+    distribution: str,
+    catalog_by_name: Mapping[str, tuple[RuntimePackageCandidateDescriptor, ...]],
+    selected: dict[str, RuntimePackageCandidateDescriptor],
+    constraints_by_package: dict[str, list[_ResolutionRequirement]],
+    stack: tuple[str, ...],
+    on_success: Callable[[], RuntimePackageResolutionDiagnostic | None],
+) -> RuntimePackageResolutionDiagnostic | None:
+    if dependency_index >= len(candidate.dependency_constraints):
+        return on_success()
+    dependency = candidate.dependency_constraints[dependency_index]
+    constraints_by_package.setdefault(dependency.package_name, []).append(
+        _ResolutionRequirement(
+            constraint=dependency,
+            source="dependency",
+            requester=candidate.package_name,
+            requester_candidate_id=candidate.candidate_id,
+        )
+    )
+    return _resolve_package(
+        dependency.package_name,
+        distribution=distribution,
+        catalog_by_name=catalog_by_name,
+        selected=selected,
+        constraints_by_package=constraints_by_package,
+        stack=stack,
+        on_success=lambda: _resolve_candidate_dependencies(
+            candidate=candidate,
+            dependency_index=dependency_index + 1,
+            distribution=distribution,
+            catalog_by_name=catalog_by_name,
+            selected=selected,
+            constraints_by_package=constraints_by_package,
+            stack=stack,
+            on_success=on_success,
+        ),
+    )
+
+
+def _catalog_diagnostics(
+    catalog_by_name: Mapping[str, tuple[RuntimePackageCandidateDescriptor, ...]],
+) -> tuple[RuntimePackageResolutionDiagnostic, ...]:
+    diagnostics: list[RuntimePackageResolutionDiagnostic] = []
+    for package_name, candidates in catalog_by_name.items():
+        duplicates: dict[str, list[RuntimePackageCandidateDescriptor]] = defaultdict(list)
+        for candidate in candidates:
+            duplicates[candidate.candidate_id].append(candidate)
+        for candidate_id, entries in duplicates.items():
+            if len(entries) < 2:
+                continue
+            diagnostics.append(
+                RuntimePackageResolutionDiagnostic(
+                    severity=DiagnosticSeverity.ERROR,
+                    code="runtime_package_duplicate_candidate_id",
+                    message=(
+                        f"Package catalog defines duplicate candidate_id '{candidate_id}' "
+                        f"for '{package_name}'"
+                    ),
+                    package_name=package_name,
+                    candidate_id=candidate_id,
+                    details={
+                        "duplicate_candidates": [
+                            candidate.to_metadata() for candidate in entries
+                        ],
+                    },
+                )
+            )
+    return tuple(diagnostics)
 
 
 def _missing_package_failure(

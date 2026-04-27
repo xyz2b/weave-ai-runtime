@@ -329,6 +329,108 @@ def test_package_resolution_selects_one_candidate_graph_and_keeps_raw_catalog_se
     assert runtime.metadata["package_resolution"] == runtime.services.metadata["package_resolution"]
 
 
+def test_package_resolution_backtracks_across_requested_roots_to_find_satisfiable_graph(
+    tmp_path: Path,
+) -> None:
+    observed_stages: list[str] = []
+
+    def assemble_candidate(label: str):
+        def _assemble(context):
+            observed_stages.append(f"{label}:{context.stage.value}")
+            return PackageContribution()
+
+        return _assemble
+
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            distribution=RuntimeDistribution.CORE,
+            extra_package_manifests=(
+                RuntimePackageManifest(
+                    name="runtime-shared",
+                    role="capability",
+                    dependencies=("runtime-core",),
+                    assembly_entrypoint=assemble_candidate("shared-v1"),
+                    metadata=_package_candidate_metadata(
+                        candidate_id="shared-v1",
+                    ),
+                ),
+                RuntimePackageManifest(
+                    name="runtime-shared",
+                    role="capability",
+                    dependencies=("runtime-core",),
+                    assembly_entrypoint=assemble_candidate("shared-v2"),
+                    metadata=_package_candidate_metadata(
+                        candidate_id="shared-v2",
+                    ),
+                ),
+                RuntimePackageManifest(
+                    name="runtime-a-feature",
+                    role="capability",
+                    dependencies=("runtime-core",),
+                    assembly_entrypoint=assemble_candidate("feature-v1"),
+                    metadata=_package_candidate_metadata(
+                        candidate_id="feature-v1",
+                        dependencies=(
+                            {
+                                "package_name": "runtime-shared",
+                                "candidate_id": "shared-v1",
+                            },
+                        ),
+                    ),
+                ),
+                RuntimePackageManifest(
+                    name="runtime-a-feature",
+                    role="capability",
+                    dependencies=("runtime-core",),
+                    assembly_entrypoint=assemble_candidate("feature-v2"),
+                    metadata=_package_candidate_metadata(
+                        candidate_id="feature-v2",
+                        dependencies=(
+                            {
+                                "package_name": "runtime-shared",
+                                "candidate_id": "shared-v2",
+                            },
+                        ),
+                    ),
+                ),
+                RuntimePackageManifest(
+                    name="runtime-z-app",
+                    role="capability",
+                    dependencies=("runtime-core",),
+                    assembly_entrypoint=assemble_candidate("app"),
+                    metadata=_package_candidate_metadata(
+                        candidate_id="app",
+                        dependencies=(
+                            {
+                                "package_name": "runtime-shared",
+                                "candidate_id": "shared-v2",
+                            },
+                        ),
+                    ),
+                ),
+            ),
+            requested_packages={"runtime-a-feature", "runtime-z-app"},
+        )
+    )
+
+    resolution = runtime.services.metadata["package_resolution"]
+
+    assert resolution["resolved_graph"]["packages"]["runtime-a-feature"]["candidate_id"] == "feature-v2"
+    assert resolution["resolved_graph"]["packages"]["runtime-shared"]["candidate_id"] == "shared-v2"
+    assert observed_stages == [
+        "shared-v2:builtins",
+        "feature-v2:builtins",
+        "app:builtins",
+        "shared-v2:services",
+        "feature-v2:services",
+        "app:services",
+        "shared-v2:runtime",
+        "feature-v2:runtime",
+        "app:runtime",
+    ]
+
+
 def test_external_package_registration_rejects_reserved_first_party_name(tmp_path: Path) -> None:
     observed_stages: list[str] = []
 
@@ -388,6 +490,69 @@ def test_package_resolution_reports_missing_package_before_assembly(tmp_path: Pa
     diagnostic = exc_info.value.report.diagnostics[0]
     assert diagnostic.code == "runtime_package_missing"
     assert diagnostic.package_name == "runtime-missing"
+    assert observed_stages == []
+
+
+def test_package_resolution_rejects_duplicate_candidate_ids_before_assembly(
+    tmp_path: Path,
+) -> None:
+    observed_stages: list[str] = []
+
+    def assemble_external(context):
+        observed_stages.append(context.stage.value)
+        return PackageContribution()
+
+    with pytest.raises(RuntimePackageResolutionError) as exc_info:
+        assemble_runtime(
+            RuntimeConfig(
+                working_directory=tmp_path,
+                distribution=RuntimeDistribution.CORE,
+                extra_package_manifests=(
+                    RuntimePackageManifest(
+                        name="runtime-shared",
+                        role="capability",
+                        dependencies=("runtime-core",),
+                        assembly_entrypoint=assemble_external,
+                        metadata=_package_candidate_metadata(
+                            candidate_id="shared-duplicate",
+                            version="1.0.0",
+                        ),
+                    ),
+                    RuntimePackageManifest(
+                        name="runtime-shared",
+                        role="capability",
+                        dependencies=("runtime-core",),
+                        assembly_entrypoint=assemble_external,
+                        metadata=_package_candidate_metadata(
+                            candidate_id="shared-duplicate",
+                            version="2.0.0",
+                        ),
+                    ),
+                    RuntimePackageManifest(
+                        name="runtime-app",
+                        role="capability",
+                        dependencies=("runtime-core",),
+                        assembly_entrypoint=assemble_external,
+                        metadata=_package_candidate_metadata(
+                            candidate_id="runtime-app",
+                            dependencies=(
+                                {
+                                    "package_name": "runtime-shared",
+                                    "candidate_id": "shared-duplicate",
+                                },
+                            ),
+                        ),
+                    ),
+                ),
+                requested_packages={"runtime-app"},
+            )
+        )
+
+    diagnostic = exc_info.value.report.diagnostics[0]
+    assert diagnostic.code == "runtime_package_duplicate_candidate_id"
+    assert diagnostic.package_name == "runtime-shared"
+    assert diagnostic.candidate_id == "shared-duplicate"
+    assert len(diagnostic.details["duplicate_candidates"]) == 2
     assert observed_stages == []
 
 
