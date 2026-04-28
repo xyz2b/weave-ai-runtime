@@ -37,6 +37,7 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 .venv/
+.venv-*/
 venv/
 
 # Build outputs / caches
@@ -45,6 +46,7 @@ build/
 *.egg-info/
 out/
 tmp/
+tmp-*/
 temp/
 .cache/
 coverage/
