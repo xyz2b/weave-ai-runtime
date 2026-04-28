@@ -432,6 +432,83 @@ class PackageContext:
         )
 
 
+def build_provider_only_invocation_package_manifest(
+    *,
+    name: str,
+    provider_name: str,
+    provider: InvocationProvider | None = None,
+    factory: Callable[[InvocationProviderFactoryContext], InvocationProvider] | None = None,
+    description: str = "Provider-only runtime package.",
+    role: str = "provider",
+    dependencies: Sequence[str] = ("runtime-core",),
+    order: int = 0,
+    manifest_metadata: Mapping[str, Any] | None = None,
+    contribution_metadata: Mapping[str, Any] | None = None,
+) -> RuntimePackageManifest:
+    """Build the minimal ordinary runtime package shape for a provider-only package."""
+    normalized_name = _require_non_empty(name, "name")
+    normalized_provider_name = _require_non_empty(provider_name, "provider_name")
+    normalized_role = _require_non_empty(role, "role")
+    if (provider is None) == (factory is None):
+        raise ValueError("Provider-only package template requires exactly one of provider or factory")
+    normalized_dependencies = tuple(str(item) for item in (dependencies or ("runtime-core",)))
+    manifest_entry_metadata = dict(manifest_metadata or {})
+    manifest_entry_metadata.setdefault("invocation_providers", [normalized_provider_name])
+    manifest_entry_metadata.setdefault("package_pattern", "provider-only")
+    manifest_entry_metadata.setdefault("provider_registration_path", "PackageContribution.invocation_providers")
+    manifest_entry_metadata.setdefault(
+        "provider_registration_order",
+        [
+            "builtin_skill_baseline",
+            "PackageContribution.invocation_providers",
+        ],
+    )
+    manifest_entry_metadata.setdefault(
+        "provider_package_ordering",
+        [
+            "InvocationProviderContribution.order",
+            "package dependency order",
+            "InvocationProviderContribution.name",
+        ],
+    )
+    manifest_entry_metadata.setdefault("baseline_dependencies", list(normalized_dependencies))
+    contribution_entry_metadata = dict(contribution_metadata or {})
+    contribution_entry_metadata.setdefault("package_pattern", "provider-only")
+
+    def _assemble_provider_only_package(context: PackageContext) -> PackageContribution:
+        if context.stage != PackageAssemblyStage.SERVICES:
+            return PackageContribution()
+        return PackageContribution(
+            invocation_providers=(
+                InvocationProviderContribution(
+                    name=normalized_provider_name,
+                    owner=context.ownership(
+                        "invocation_provider",
+                        provider_name=normalized_provider_name,
+                        package_pattern="provider-only",
+                    ),
+                    provider=provider,
+                    factory=factory,
+                    order=order,
+                    metadata=contribution_entry_metadata,
+                ),
+            ),
+            metadata={
+                "package_pattern": "provider-only",
+                "registration_path": "PackageContribution.invocation_providers",
+            },
+        )
+
+    return RuntimePackageManifest(
+        name=normalized_name,
+        role=normalized_role,
+        description=str(description),
+        dependencies=normalized_dependencies,
+        assembly_entrypoint=_assemble_provider_only_package,
+        metadata=manifest_entry_metadata,
+    )
+
+
 @dataclass(slots=True)
 class CapabilityRegistry:
     _bindings: dict[str, CapabilityBinding] = field(default_factory=dict)
@@ -719,6 +796,7 @@ def _require_non_empty(value: Any, field_name: str) -> str:
 __all__ = [
     "CapabilityBinding",
     "CapabilityRegistry",
+    "build_provider_only_invocation_package_manifest",
     "ContextContributorBinding",
     "ContextContributorExecutionEntry",
     "ContextContributorPromptChannel",

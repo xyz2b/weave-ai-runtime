@@ -232,7 +232,7 @@ external package 的迁移口径也需要一起改：
 - `compatibility_boundaries`
   - raw `runtime_context` 与 `TaskManager` 剩余 whitelist / exit criteria 的 source of truth
 - `protocol_only_conformance`
-  - privileged-service-slot、context-authority、task-authority 与 team-bridge finding 的 source of truth
+  - privileged-service-slot、context-authority、task-authority、provider-provenance 与 team-bridge finding 的 source of truth
 
 这意味着 `runtime.team.control_plane`、`runtime.team.workflows`、`TaskManager` 仍然重要，但它们不属于 stable core protocol catalog 本身；canonical package path 继续通过 capability / host facet / migration metadata 发布，而已经删除的 team bridge surface 不再继续写进 `compatibility_surfaces`。
 
@@ -266,6 +266,45 @@ external package 的迁移口径也需要一起改：
 - 继续保留 `JobService` 作为 authoritative surface
 - 继续把 `TaskManager` 当作 compatibility facade 处理
 - physical package split 留到后续边界和 public contract 更稳定时再谈
+
+## 4.7 Invocation Provider Package Migration
+
+`RuntimeConfig.extra_invocation_providers` 已经不再是 canonical assembly input。
+如果你之前这样注册自定义 provider：
+
+```python
+runtime = assemble_runtime(
+    RuntimeConfig(
+        extra_invocation_providers=[repo_provider],
+    )
+)
+```
+
+现在应直接改成 provider-only runtime package：
+
+```python
+from runtime.runtime_package_protocols import build_provider_only_invocation_package_manifest
+
+provider_manifest = build_provider_only_invocation_package_manifest(
+    name="runtime-provider-only",
+    provider_name="repo-commands",
+    provider=repo_provider,
+)
+
+runtime = assemble_runtime(
+    RuntimeConfig(
+        extra_package_manifests=(provider_manifest,),
+        requested_packages={"runtime-provider-only"},
+    )
+)
+```
+
+迁移时建议按下面理解：
+
+- provider-only package 仍然是 ordinary runtime package，不是新的 manifest taxonomy
+- 默认最小 shape 是 role=`provider` + dependency=`runtime-core` + `PackageContribution.invocation_providers`
+- provider 注册顺序固定为 built-in skill baseline -> package contribution；package tier 内部再按 contribution `order`、package dependency order、contribution name 稳定排序
+- 如果一个 package 里需要多个 provider，就回到普通 `PackageContribution(invocation_providers=(...))` 写法，而不是再找 config bypass
 
 ## 5. Recommended Upgrade Checklist
 

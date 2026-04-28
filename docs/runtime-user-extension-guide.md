@@ -38,7 +38,7 @@
 - `SharedElicitationService`
 - `tool_refresh_callback`
 - `model_client / model_providers / model_routes`
-- `extra_invocation_providers`
+- `extra_package_manifests / requested_packages`
 
 ### 1.3 第三层：基础设施与持久化层
 
@@ -404,7 +404,8 @@ owner、dependency edge 和 retirement 都应走专门的 task lifecycle / orche
 - `permission_handler`
 - `ask_user_handler`
 - `tool_refresh_callback`
-- `extra_invocation_providers`
+- `extra_package_manifests`
+- `requested_packages`
 - `memory_config`
 - `teammate_orchestration`
 
@@ -621,17 +622,36 @@ Invocation catalog 不只接 skill。
 
 用户视角怎么扩：
 
-1. 如果这是 package-owned invocation source，优先通过 `PackageContribution.invocation_providers` 注册。
-2. 如果这是宿主侧兼容接入、覆盖，或者临时不想引入 package manifest，再放进 `RuntimeConfig.extra_invocation_providers`。
-3. 用 `resolve_invocations()` / `visible_invocations()` / `invocation_diagnostics()` 给 UI 提供统一能力图。
+1. 把自定义 provider 包装成 ordinary provider-only runtime package，并通过 `PackageContribution.invocation_providers` 注册。
+2. 最小 manifest shape 可以直接复用 `runtime.runtime_package_protocols.build_provider_only_invocation_package_manifest()`；默认 role 是 `provider`，普通 baseline dependency 是 `runtime-core`。
+3. 用 `RuntimeConfig.extra_package_manifests` + `RuntimeConfig.requested_packages` 把这个 manifest 接入当前 runtime。
+4. 用 `resolve_invocations()` / `visible_invocations()` / `invocation_diagnostics()` 给 UI 提供统一能力图。
+
+```python
+from runtime.invocation_catalog import StaticInvocationProvider
+from runtime.runtime_kernel import RuntimeConfig, assemble_runtime
+from runtime.runtime_package_protocols import build_provider_only_invocation_package_manifest
+
+provider_manifest = build_provider_only_invocation_package_manifest(
+    name="runtime-provider-only",
+    provider_name="repo-commands",
+    provider=StaticInvocationProvider("repo-commands", (...)),
+)
+
+runtime = assemble_runtime(
+    RuntimeConfig(
+        extra_package_manifests=(provider_manifest,),
+        requested_packages={"runtime-provider-only"},
+    )
+)
+```
 
 runtime 会按固定顺序注册 provider：
 
 - built-in skill baseline
 - package contribution（再按 contribution `order`、package dependency order、contribution name 稳定排序）
-- `RuntimeConfig.extra_invocation_providers`
 
-当前官方 distributions 还没有内置的 package-contributed non-skill provider；如果你要给 package 增加这类能力源，应该直接走这条 canonical path。
+如果你需要一个以上 provider，就在自定义 `PackageContribution(invocation_providers=(...))` 里继续扩展；provider-only package 本身仍然是 ordinary runtime package，而不是专门的新 taxonomy。
 
 调试时可看：
 
@@ -1134,7 +1154,7 @@ runtime.services.memory = LongTermMemoryService(
   -> model_providers + model_routes + default_model_route
 
 我想把 slash / plugin / MCP prompt 也纳入统一能力图
-  -> PackageContribution.invocation_providers / RuntimeConfig.extra_invocation_providers
+  -> build_provider_only_invocation_package_manifest() / PackageContribution.invocation_providers / RuntimeConfig.extra_package_manifests + requested_packages
 
 我想持久化 transcript
   -> TranscriptStore

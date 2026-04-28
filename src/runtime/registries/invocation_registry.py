@@ -71,6 +71,22 @@ class InvocationRegistry:
                         "replacement_origin": registration.origin,
                         "replaced_owner": _serialize_owner(existing.owner),
                         "replacement_owner": _serialize_owner(registration.owner),
+                        "replaced_registration_path": _registration_metadata_value(
+                            existing.metadata,
+                            "registration_path",
+                        ),
+                        "replacement_registration_path": _registration_metadata_value(
+                            registration.metadata,
+                            "registration_path",
+                        ),
+                        "replaced_provider_tier": _registration_metadata_value(
+                            existing.metadata,
+                            "provider_tier",
+                        ),
+                        "replacement_provider_tier": _registration_metadata_value(
+                            registration.metadata,
+                            "provider_tier",
+                        ),
                     },
                 )
             )
@@ -196,20 +212,33 @@ def _annotate_provider_metadata(
 ) -> InvocationDefinition:
     metadata = dict(definition.metadata)
     owner = _serialize_owner(registration.owner)
+    registration_path = _registration_metadata_value(registration.metadata, "registration_path")
+    provider_tier = _registration_metadata_value(registration.metadata, "provider_tier")
     registration_metadata = {
         "name": registration.name,
         "origin": registration.origin,
         "order": registration.order,
         "sequence": registration.sequence,
+        "registration_path": registration_path,
+        "provider_tier": provider_tier,
         "owner": owner,
         "metadata": dict(registration.metadata),
     }
     metadata["invocation_provider_registration"] = registration_metadata
     metadata["invocation_provider_name"] = registration.name
     metadata["invocation_provider_origin"] = registration.origin
+    if registration_path:
+        metadata["invocation_provider_registration_path"] = registration_path
+    if provider_tier:
+        metadata["invocation_provider_tier"] = provider_tier
     if owner is not None:
         metadata["invocation_provider_owner"] = owner
     return replace(definition, metadata=metadata)
+
+
+def _registration_metadata_value(metadata: Mapping[str, Any], key: str) -> str:
+    value = metadata.get(key)
+    return "" if value is None else str(value)
 
 
 __all__ = ["InvocationProviderRegistration", "InvocationRegistry"]

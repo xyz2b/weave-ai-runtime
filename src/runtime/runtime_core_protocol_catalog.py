@@ -24,7 +24,6 @@ class CoreProtocolCompatibilityStatus(StrEnum):
 def core_protocol_compatibility_surfaces() -> dict[str, str]:
     return {
         "TaskManager": "compatibility-only",
-        "RuntimeConfig.extra_invocation_providers": "bounded-compatibility",
         "RuntimeServices.memory": "compatibility-only",
         "RuntimeServices.memory.collect": "compatibility-only",
         "RuntimeServices.compaction": "compatibility-only",
@@ -70,19 +69,23 @@ def core_protocol_package_lookup_sections() -> dict[str, Any]:
             "compaction": "RuntimeServices.compaction",
             "isolation": "RuntimeServices.isolation",
         },
-        "compatibility_invocation_providers": {
-            "embedder_config": "RuntimeConfig.extra_invocation_providers",
-        },
     }
 
 
-def core_protocol_invocation_provider_paths_metadata() -> dict[str, str]:
+def core_protocol_invocation_provider_paths_metadata() -> dict[str, Any]:
     return {
         "builtin_skill_baseline": "baseline",
         "package_contributions": "canonical-package-path",
-        "extra_invocation_providers": "bounded-compatibility",
         "canonical_package_surface": "PackageContribution.invocation_providers",
-        "compatibility_surface": "RuntimeConfig.extra_invocation_providers",
+        "registration_order": [
+            "builtin_skill_baseline",
+            "PackageContribution.invocation_providers",
+        ],
+        "package_ordering": [
+            "InvocationProviderContribution.order",
+            "package dependency order",
+            "InvocationProviderContribution.name",
+        ],
     }
 
 
@@ -182,10 +185,10 @@ class StableCoreProtocolCatalog:
     adjacent_metadata: dict[str, str] = field(
         default_factory=lambda: {
             "package_lookup": "source of truth for package-specific canonical keys and wrapper status",
-            "compatibility_surfaces": "source of truth for compatibility-only and bounded-compatibility helpers",
+            "compatibility_surfaces": "source of truth for compatibility-only runtime helpers",
             "compatibility_boundaries": "source of truth for the finite compatibility-only runtime_context and TaskManager whitelist",
             "compatibility_projections": "legacy projections that still delegate to canonical runtime capabilities",
-            "invocation_provider_paths": "registry attachment guidance for builtin, package, and config-owned invocation providers",
+            "invocation_provider_paths": "registry attachment guidance for the builtin baseline and package-contributed invocation providers",
             "protocol_only_conformance": "source of truth for structured protocol-only authority findings",
         }
     )
@@ -417,17 +420,7 @@ def _stable_core_protocol_entries(
                 field_name="canonical_invocation_providers.package_contributions",
             ),
             discovery_surface="RuntimeAssembly.resolve_invocations / runtime.services.metadata['invocation_provider_registrations']",
-            compatibility_status=CoreProtocolCompatibilityStatus.STABLE_WITH_COMPATIBILITY,
-            retained_surfaces=(
-                CoreProtocolRetainedSurface(
-                    surface="RuntimeConfig.extra_invocation_providers",
-                    status=_require_string(
-                        compatibility_surfaces,
-                        "RuntimeConfig.extra_invocation_providers",
-                        field_name="compatibility_surfaces.RuntimeConfig.extra_invocation_providers",
-                    ),
-                ),
-            ),
+            compatibility_status=CoreProtocolCompatibilityStatus.STABLE,
             metadata={
                 "builtin_baseline": _require_string(
                     invocation_providers,
@@ -438,6 +431,14 @@ def _stable_core_protocol_entries(
                     invocation_provider_paths,
                     "builtin_skill_baseline",
                     field_name="invocation_provider_paths.builtin_skill_baseline",
+                ),
+                "package_registration_order": _require_string_list(
+                    invocation_provider_paths.get("registration_order"),
+                    field_name="invocation_provider_paths.registration_order",
+                ),
+                "package_contribution_ordering": _require_string_list(
+                    invocation_provider_paths.get("package_ordering"),
+                    field_name="invocation_provider_paths.package_ordering",
                 ),
                 "path_metadata": "runtime.services.metadata['invocation_provider_paths']",
             },

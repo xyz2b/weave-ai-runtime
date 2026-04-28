@@ -247,7 +247,7 @@ Runtime 核心流转本身由框架收口，用户通常不应该改 `TurnEngine
 - `runtime.services.metadata["package_resolution"]`：raw candidate catalog、resolution request inputs、resolved graph 与 structured diagnostics
 - `runtime.services.metadata["package_manifests"]`：真正进入装配的 resolved manifest inventory
 - `runtime.services.metadata["package_lookup"]`：canonical capability / host-facet / lifecycle / receipt path
-- `runtime.services.metadata["invocation_provider_paths"]`：built-in baseline、package canonical path、config compatibility path
+- `runtime.services.metadata["invocation_provider_paths"]`：built-in baseline、package canonical path、package contribution ordering
 - `runtime.services.metadata["invocation_provider_registrations"]`：当前 runtime 里实际生效的 provider 注册顺序、owner、origin 与 registration metadata
 - `runtime.metadata["core_protocol_catalog"]`：`RuntimeAssembly` 侧同步暴露的 stable core protocol catalog
 - `runtime.metadata["package_registration"]` / `runtime.metadata["package_resolution"]` / `runtime.metadata["package_manifests"]`：`RuntimeAssembly` 侧同步暴露的 external registration diagnostics、resolved-graph metadata 与 active manifest inventory
@@ -1035,14 +1035,40 @@ config.default_model_route = "research"
 - 调 session memory refresh 阈值
 - 调 consolidation cadence
 
-### 8.3 Extra Invocation Providers
+### 8.3 Provider-Only Invocation Packages
 
 如果你在做 package-owned invocation source，canonical path 是 `PackageContribution.invocation_providers`。  
-如果你在做宿主侧覆盖、兼容接入，或者不想引入 package manifest，再接 `extra_invocation_providers`。
+当前 runtime 不再提供 config-owned provider bypass；custom provider 应该通过 ordinary provider-only runtime package 接入。
 
-这让更多能力源可以进入统一 invocation catalog，而不是让 host 再自己造一套能力列表。  
-runtime 会按固定顺序注册 provider：built-in skill baseline -> package contribution -> `RuntimeConfig.extra_invocation_providers`。package contribution tier 内部再按 contribution `order`、package dependency order、contribution name 稳定排序。
-当前官方 distributions 还没有内置的 package-contributed non-skill provider；这条路径已经是 canonical package-owned surface，后续 first-party / external package 都应优先走这里。
+最轻量的写法是复用 `build_provider_only_invocation_package_manifest()`：
+
+```python
+from runtime.invocation_catalog import StaticInvocationProvider
+from runtime.runtime_kernel import RuntimeConfig, assemble_runtime
+from runtime.runtime_package_protocols import build_provider_only_invocation_package_manifest
+
+provider_manifest = build_provider_only_invocation_package_manifest(
+    name="runtime-provider-only",
+    provider_name="repo-commands",
+    provider=StaticInvocationProvider("repo-commands", (...)),
+)
+
+runtime = assemble_runtime(
+    RuntimeConfig(
+        extra_package_manifests=(provider_manifest,),
+        requested_packages={"runtime-provider-only"},
+    )
+)
+```
+
+这个模板默认使用 ordinary manifest shape：
+
+- role：`provider`
+- 常见 baseline dependency：`runtime-core`
+- custom provider registration path：`PackageContribution.invocation_providers`
+
+runtime 会按固定顺序注册 provider：built-in skill baseline -> package contribution。package contribution tier 内部再按 contribution `order`、package dependency order、contribution name 稳定排序。
+如果你需要多个 provider，就回到普通 `PackageContribution(invocation_providers=(...))` 写法；provider-only package 只是 documented minimal shape，不是新的 runtime package 类型。
 
 ### 8.4 Request-Time Context Contributors
 

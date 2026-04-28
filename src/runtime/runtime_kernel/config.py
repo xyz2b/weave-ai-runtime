@@ -16,7 +16,6 @@ from ..context_window import (
 from ..definitions import (
     AgentDefinition,
     DefinitionSource,
-    InvocationProvider,
     SkillDefinition,
     ToolDefinition,
 )
@@ -247,7 +246,6 @@ class RuntimeConfig:
     permission_handler: PermissionHandler | None = None
     ask_user_handler: AskUserHandler | None = None
     tool_refresh_callback: ToolRefreshCallback | None = None
-    extra_invocation_providers: list[InvocationProvider] = field(default_factory=list)
     memory_config: Mapping[str, Any] | None = None
     teammate_orchestration: TeammateOrchestrationConfig | None = None
     job_executors: dict[str, JobExecutorBinding] = field(default_factory=dict)

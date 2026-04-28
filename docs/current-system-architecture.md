@@ -452,7 +452,7 @@ execution plane 是直接干活的一侧，主要包括：
 这里有三个重要结论：
 
 - builtins、user definitions、project definitions 共存，但都先进入统一 registry
-- invocation catalog 不是写死的，而是 provider-driven 的解析结果；provider 注册顺序固定为 built-in skill baseline -> package contribution -> `RuntimeConfig.extra_invocation_providers`，其中 package tier 再按 contribution `order`、package dependency order、contribution name 稳定排序
+- invocation catalog 不是写死的，而是 provider-driven 的解析结果；provider 注册顺序固定为 built-in skill baseline -> package contribution，其中 package tier 再按 contribution `order`、package dependency order、contribution name 稳定排序
 - host 和 model provider 都是 runtime 的外接边界，而不是 turn engine 内部硬编码依赖
 
 ## 6. 请求流转
@@ -823,7 +823,7 @@ host 不是外围包装层，而是 runtime 的正式集成边界。
 ### 13.4 Invocation 扩展
 
 package-owned invocation source 应通过 `PackageContribution.invocation_providers` 进入 shared invocation registry。  
-`extra_invocation_providers` 继续保留，但应视为 embedder-facing 的 bounded compatibility / override path。
+最小 provider-only package 可以直接复用 `build_provider_only_invocation_package_manifest()`：它仍然是 ordinary runtime package，默认 role 是 `provider`，常见 baseline dependency 是 `runtime-core`。
 当前官方 distributions 还没有内置的 package-contributed non-skill provider；这条路径已经是 canonical surface，供后续 first-party / external package 直接接入。
 
 ### 13.5 Request-Time Context 扩展
@@ -1043,7 +1043,7 @@ sequenceDiagram
     Kernel->>Kernel: load builtin pack
     Kernel->>Discovery: discover()
     Discovery-->>Kernel: tools / agents / skills
-    Kernel->>Kernel: register built-in / package / config invocation providers
+    Kernel->>Kernel: register built-in baseline / package invocation providers
     Kernel->>Services: _build_runtime_services()
     Caller->>Runtime: assemble_runtime(config)
     Runtime->>Runtime: assemble TurnEngine

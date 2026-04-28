@@ -1912,6 +1912,7 @@ def _register_runtime_invocation_providers(
         origin="builtin",
         metadata={
             "registration_path": "builtin_skill_baseline",
+            "provider_tier": "builtin-baseline",
             "compatibility_status": "baseline",
         },
     )
@@ -1931,25 +1932,15 @@ def _register_runtime_invocation_providers(
             owner=record.contribution.owner,
             order=record.contribution.order,
             metadata={
+                **dict(record.contribution.metadata),
                 "registration_path": "PackageContribution.invocation_providers",
+                "provider_tier": "package-contribution",
                 "compatibility_status": "canonical-package-path",
                 "package_name": record.manifest.name,
                 "package_role": record.manifest.role,
                 "package_stage": PackageAssemblyStage.SERVICES.value,
                 "package_index": record.package_index,
                 "contribution_index": record.contribution_index,
-                **dict(record.contribution.metadata),
-            },
-        )
-    for index, provider in enumerate(config.extra_invocation_providers):
-        invocation_registry.register_provider(
-            provider,
-            origin="config",
-            order=index,
-            metadata={
-                "registration_path": "RuntimeConfig.extra_invocation_providers",
-                "compatibility_status": "bounded-compatibility",
-                "config_index": index,
             },
         )
 
@@ -2057,11 +2048,15 @@ def _invocation_provider_paths_metadata() -> dict[str, Any]:
 def _serialize_invocation_provider_registration(
     registration: InvocationProviderRegistration,
 ) -> dict[str, Any]:
+    registration_path = str(registration.metadata.get("registration_path") or "")
+    provider_tier = str(registration.metadata.get("provider_tier") or registration.origin)
     return {
         "provider_name": registration.name,
         "origin": registration.origin,
         "order": registration.order,
         "sequence": registration.sequence,
+        "registration_path": registration_path,
+        "provider_tier": provider_tier,
         "owner": (
             None
             if registration.owner is None
@@ -2098,7 +2093,6 @@ def _package_lookup_metadata() -> dict[str, Any]:
             family: spec["resolver"]
             for family, spec in _PACKAGE_SERVICE_PROTOCOL_SPECS.items()
         },
-        "compatibility_invocation_providers": dict(core_sections["compatibility_invocation_providers"]),
         "canonical_lifecycle_phase": PackageLifecyclePhase.SESSION_OPEN.value,
         "canonical_post_ingress_path": "completion_receipts",
         "canonical_extension_event_contract": {
@@ -2599,11 +2593,88 @@ def _team_protocol_only_findings(
     return [projection_finding, workflow_finding, host_event_finding]
 
 
+def _provider_provenance_findings(
+    *,
+    distribution: str,
+    invocation_provider_registrations: Sequence[Mapping[str, Any]] = (),
+) -> list[dict[str, Any]]:
+    canonical_path = "builtin_skill_baseline / PackageContribution.invocation_providers"
+    replacement_path = "PackageContribution.invocation_providers"
+    baseline_tier: list[dict[str, Any]] = []
+    package_tiers: list[dict[str, Any]] = []
+    unexpected_registrations: list[dict[str, Any]] = []
+    evidence: list[str] = []
+
+    for index, raw_entry in enumerate(invocation_provider_registrations):
+        if not isinstance(raw_entry, Mapping):
+            unexpected_registrations.append(
+                {"index": index, "reason": "invalid-registration-metadata"}
+            )
+            continue
+        provider_name = str(raw_entry.get("provider_name") or "")
+        origin = str(raw_entry.get("origin") or "")
+        registration_path = str(raw_entry.get("registration_path") or "")
+        provider_tier = str(raw_entry.get("provider_tier") or "")
+        owner = raw_entry.get("owner")
+        if not provider_tier:
+            if origin == "builtin" and registration_path == "builtin_skill_baseline":
+                provider_tier = "builtin-baseline"
+            elif origin == "package" and registration_path == "PackageContribution.invocation_providers":
+                provider_tier = "package-contribution"
+
+        label = provider_name or f"<unnamed:{index}>"
+        if registration_path:
+            label = f"{label}@{registration_path}"
+        evidence.append(label)
+
+        entry: dict[str, Any] = {
+            "provider_name": provider_name,
+            "origin": origin,
+            "registration_path": registration_path,
+            "provider_tier": provider_tier,
+        }
+        if isinstance(owner, Mapping) and owner.get("package_name"):
+            entry["package_name"] = str(owner.get("package_name"))
+
+        if (
+            index == 0
+            and origin == "builtin"
+            and registration_path == "builtin_skill_baseline"
+            and provider_tier == "builtin-baseline"
+        ):
+            baseline_tier.append(entry)
+            continue
+        if (
+            origin == "package"
+            and registration_path == "PackageContribution.invocation_providers"
+            and provider_tier == "package-contribution"
+        ):
+            package_tiers.append(entry)
+            continue
+        unexpected_registrations.append(entry)
+
+    finding: dict[str, Any] = {
+        "rule_id": "invocation_provider_provenance",
+        "family": "provider-provenance",
+        "status": "pass" if baseline_tier and not unexpected_registrations else "fail",
+        "distribution": distribution,
+        "canonical_path": canonical_path,
+        "replacement_path": replacement_path,
+        "evidence": evidence,
+        "baseline_tier": baseline_tier,
+        "package_tiers": package_tiers,
+    }
+    if unexpected_registrations:
+        finding["unexpected_registrations"] = unexpected_registrations
+    return [finding]
+
+
 def _protocol_only_conformance_metadata(
     *,
     distribution: str,
     compatibility_boundaries: Mapping[str, Any],
     package_service_protocols: Mapping[str, Any],
+    invocation_provider_registrations: Sequence[Mapping[str, Any]] = (),
     team_protocol_only: Mapping[str, Any] | None = None,
     services: RuntimeServices | None = None,
     runtime: RuntimeAssembly | None = None,
@@ -2712,6 +2783,10 @@ def _protocol_only_conformance_metadata(
         ],
         "findings": [
             *privileged_service_findings,
+            *_provider_provenance_findings(
+                distribution=distribution,
+                invocation_provider_registrations=invocation_provider_registrations,
+            ),
             runtime_context_finding,
             task_manager_finding,
             *_team_protocol_only_findings(
@@ -2754,6 +2829,11 @@ def _sync_compatibility_boundary_metadata(
         distribution=str(services.metadata.get("distribution") or ""),
         compatibility_boundaries=compatibility_boundaries,
         package_service_protocols=package_service_protocols,
+        invocation_provider_registrations=(
+            services.metadata.get("invocation_provider_registrations", ())
+            if isinstance(services.metadata.get("invocation_provider_registrations"), Sequence)
+            else ()
+        ),
         team_protocol_only=(
             migration.get("team_protocol_only")
             if isinstance(migration.get("team_protocol_only"), Mapping)

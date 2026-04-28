@@ -55,6 +55,7 @@ from runtime.runtime_package_protocols import (
     RuntimeCapabilityKey,
     RuntimeHostFacetKey,
     RuntimePackageManifest,
+    build_provider_only_invocation_package_manifest,
 )
 from runtime.runtime_services import RuntimeServices
 from runtime.session_runtime import FileTranscriptStore
@@ -1012,11 +1013,16 @@ def test_runtime_core_protocol_catalog_is_published_separately_from_package_look
 
     invocation_registry = protocols["runtime.invocation-provider.registry"]
     assert invocation_registry["canonical_binding_surface"] == "PackageContribution.invocation_providers"
-    assert invocation_registry["retained_surfaces"] == [
-        {
-            "surface": "RuntimeConfig.extra_invocation_providers",
-            "status": "bounded-compatibility",
-        }
+    assert invocation_registry["compatibility_status"] == "stable"
+    assert invocation_registry.get("retained_surfaces") is None
+    assert invocation_registry["metadata"]["package_registration_order"] == [
+        "builtin_skill_baseline",
+        "PackageContribution.invocation_providers",
+    ]
+    assert invocation_registry["metadata"]["package_contribution_ordering"] == [
+        "InvocationProviderContribution.order",
+        "package dependency order",
+        "InvocationProviderContribution.name",
     ]
 
     assert RuntimeCapabilityKey.TEAM_CONTROL_PLANE.value not in protocols
@@ -1231,6 +1237,26 @@ def test_runtime_publishes_compatibility_whitelists_and_protocol_only_findings(t
             "TurnEngine.__init__(task_manager=...)",
             "AgentRuntime.__init__(task_manager=...)",
         ],
+    }
+    assert findings["invocation_provider_provenance"] == {
+        "rule_id": "invocation_provider_provenance",
+        "family": "provider-provenance",
+        "status": "pass",
+        "distribution": RuntimeDistribution.DEFAULT.value,
+        "canonical_path": "builtin_skill_baseline / PackageContribution.invocation_providers",
+        "replacement_path": "PackageContribution.invocation_providers",
+        "evidence": [
+            "skills@builtin_skill_baseline",
+        ],
+        "baseline_tier": [
+            {
+                "provider_name": "skills",
+                "origin": "builtin",
+                "registration_path": "builtin_skill_baseline",
+                "provider_tier": "builtin-baseline",
+            }
+        ],
+        "package_tiers": [],
     }
     assert findings["team_runtime_projection_authority"] == {
         "rule_id": "team_runtime_projection_authority",
@@ -1456,6 +1482,20 @@ def test_protocol_only_conformance_fails_without_published_service_family_metada
         "canonical_path": "",
         "compat_surface": "RuntimeServices.isolation",
         "evidence": [],
+    }
+    provider_finding = next(
+        entry for entry in conformance["findings"] if entry["rule_id"] == "invocation_provider_provenance"
+    )
+    assert provider_finding == {
+        "rule_id": "invocation_provider_provenance",
+        "family": "provider-provenance",
+        "status": "fail",
+        "distribution": RuntimeDistribution.DEFAULT.value,
+        "canonical_path": "builtin_skill_baseline / PackageContribution.invocation_providers",
+        "replacement_path": "PackageContribution.invocation_providers",
+        "evidence": [],
+        "baseline_tier": [],
+        "package_tiers": [],
     }
 
 
@@ -1895,7 +1935,6 @@ def test_bound_host_workflow_helpers_delegate_through_host_facet_without_capabil
     assert updated.workflow_id == "workflow-facet"
     assert updated.status == "rejected"
     assert facet.respond_calls == [("workflow-facet", "reject", "compat", None, None, "leader-facet")]
-    assert facet.respond_calls == [("workflow-facet", "reject", "compat", None)]
 
 
 def test_non_participating_runtime_reports_host_facet_not_available(tmp_path: Path) -> None:
@@ -1996,10 +2035,9 @@ def test_builtin_replacements_preserve_manifest_owned_builtin_metadata(tmp_path:
     assert kernel.agent_registry.get("verification").metadata["builtin_owner_role"] == "profile_workflow"
 
 
-def test_package_invocation_provider_contributions_publish_pre_session_catalogs_and_metadata(
+def test_provider_only_runtime_packages_publish_pre_session_catalogs_and_metadata(
     tmp_path: Path,
 ) -> None:
-    original = runtime_kernel_module.official_runtime_package_manifests
     observed_resources: dict[str, object] = {}
     (tmp_path / "src" / "app").mkdir(parents=True)
     (tmp_path / "src" / "app" / "main.py").write_text("print('ok')\n", encoding="utf-8")
@@ -2024,110 +2062,210 @@ def test_package_invocation_provider_contributions_publish_pre_session_catalogs_
             ),
         )
 
-    def assemble_test_package(context):
-        if context.stage != PackageAssemblyStage.SERVICES:
-            return PackageContribution()
-        return PackageContribution(
-            invocation_providers=(
-                InvocationProviderContribution(
-                    name="package-commands",
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            distribution=RuntimeDistribution.CORE,
+            extra_package_manifests=(
+                build_provider_only_invocation_package_manifest(
+                    name="runtime-provider-only",
+                    provider_name="package-commands",
                     factory=build_package_provider,
-                    owner=context.ownership("invocation_provider", provider_name="package-commands"),
                     order=5,
-                    metadata={"package_channel": "test"},
+                    contribution_metadata={"package_channel": "test"},
                 ),
-            )
-        )
-
-    def patched_manifests(selected_packages):
-        return (
-            *original(selected_packages),
-            RuntimePackageManifest(
-                name="runtime-test",
-                role="capability",
-                dependencies=("runtime-core",),
-                assembly_entrypoint=assemble_test_package,
-                metadata={"invocation_providers": ["package-commands"]},
             ),
+            requested_packages={"runtime-provider-only"},
         )
-
-    runtime_kernel_module.official_runtime_package_manifests = patched_manifests
-    try:
-        runtime = assemble_runtime(
-            RuntimeConfig(
-                working_directory=tmp_path,
-                distribution=RuntimeDistribution.CORE,
-                extra_invocation_providers=[
-                    StaticInvocationProvider(
-                        "config-commands",
-                        (
-                            _invocation_definition(
-                                "config-command",
-                                target_name="config.command",
-                                origin_path=str(tmp_path / "config-command.py"),
-                            ),
-                        ),
-                    )
-                ],
-            )
-        )
-    finally:
-        runtime_kernel_module.official_runtime_package_manifests = original
+    )
 
     session = runtime.create_session(session_id="package-provider-catalog", cwd=tmp_path)
     visible = {entry.name for entry in session.visible_invocations()}
-    assert visible == {"package-command", "config-command"}
+    assert visible == {"package-command"}
 
     catalog = runtime.resolve_invocations(
         session_id=session.state.session_id,
         cwd=session.cwd,
         messages=(
-                RuntimeMessage(
-                    message_id="user-1",
-                    role=MessageRole.USER,
-                    content="Inspect src/app/main.py",
-                ),
+            RuntimeMessage(
+                message_id="user-1",
+                role=MessageRole.USER,
+                content="Inspect src/app/main.py",
             ),
-        )
+        ),
+    )
     visible_after_path = {entry.capability.name: entry for entry in catalog.visible}
-    assert set(visible_after_path) == {"package-command", "package-path-review", "config-command"}
+    assert set(visible_after_path) == {"package-command", "package-path-review"}
     assert visible_after_path["package-command"].capability.metadata["provider_name"] == "package-commands"
     assert visible_after_path["package-command"].capability.metadata["provider_origin"] == "package"
-    assert visible_after_path["package-command"].capability.metadata["provider_owner"]["package_name"] == "runtime-test"
+    assert visible_after_path["package-command"].capability.metadata["provider_tier"] == "package-contribution"
+    assert visible_after_path["package-command"].capability.metadata["provider_registration_path"] == (
+        "PackageContribution.invocation_providers"
+    )
+    assert visible_after_path["package-command"].capability.metadata["provider_owner"]["package_name"] == (
+        "runtime-provider-only"
+    )
+
+    accepted = runtime.services.metadata["package_registration"]["accepted"]
+    assert accepted == [
+        {
+            "package_name": "runtime-provider-only",
+            "manifest": {
+                "name": "runtime-provider-only",
+                "role": "provider",
+                "description": "Provider-only runtime package.",
+                "dependencies": ["runtime-core"],
+                "invocation_providers": ["package-commands"],
+            },
+            "provenance": {
+                "origin": "external",
+                "registration_path": "RuntimeConfig.extra_package_manifests",
+                "registration_index": 0,
+                "source_kind": "manifest",
+                "source_ref": "manifest:runtime-provider-only",
+            },
+            "trust_boundary": {
+                "classification": "external",
+                "protocol": "RuntimePackageManifest",
+                "override_mode": "not_supported",
+            },
+            "diagnostics": [],
+        }
+    ]
 
     registrations = runtime.services.metadata["invocation_provider_registrations"]
-    assert [(entry["provider_name"], entry["origin"]) for entry in registrations] == [
-        ("skills", "builtin"),
-        ("package-commands", "package"),
-        ("config-commands", "config"),
+    assert [(entry["provider_name"], entry["origin"], entry["registration_path"]) for entry in registrations] == [
+        ("skills", "builtin", "builtin_skill_baseline"),
+        ("package-commands", "package", "PackageContribution.invocation_providers"),
     ]
-    assert runtime.services.metadata["compatibility_surfaces"]["RuntimeConfig.extra_invocation_providers"] == (
-        "bounded-compatibility"
-    )
-    assert runtime.services.metadata["invocation_provider_paths"]["package_contributions"] == (
-        "canonical-package-path"
-    )
+    assert [entry["provider_tier"] for entry in registrations] == [
+        "builtin-baseline",
+        "package-contribution",
+    ]
+    assert "RuntimeConfig.extra_invocation_providers" not in runtime.services.metadata["compatibility_surfaces"]
+    assert runtime.services.metadata["invocation_provider_paths"] == {
+        "builtin_skill_baseline": "baseline",
+        "package_contributions": "canonical-package-path",
+        "canonical_package_surface": "PackageContribution.invocation_providers",
+        "registration_order": [
+            "builtin_skill_baseline",
+            "PackageContribution.invocation_providers",
+        ],
+        "package_ordering": [
+            "InvocationProviderContribution.order",
+            "package dependency order",
+            "InvocationProviderContribution.name",
+        ],
+    }
     assert runtime.metadata["invocation_provider_paths"] == runtime.services.metadata["invocation_provider_paths"]
     assert runtime.services.metadata["package_lookup"]["canonical_invocation_providers"] == {
         "package_contributions": "PackageContribution.invocation_providers",
         "builtins": "builtin_skill_baseline",
     }
-    assert runtime.services.metadata["package_lookup"]["compatibility_invocation_providers"] == {
-        "embedder_config": "RuntimeConfig.extra_invocation_providers",
-    }
+    assert "compatibility_invocation_providers" not in runtime.services.metadata["package_lookup"]
     assert next(
-        entry for entry in runtime.services.metadata["package_contributions"] if entry["package_name"] == "runtime-test"
+        entry
+        for entry in runtime.services.metadata["package_contributions"]
+        if entry["package_name"] == "runtime-provider-only"
     )["invocation_providers"] == ["package-commands"]
+    findings = {
+        entry["rule_id"]: entry
+        for entry in runtime.services.metadata["protocol_only_conformance"]["findings"]
+    }
+    assert findings["invocation_provider_provenance"] == {
+        "rule_id": "invocation_provider_provenance",
+        "family": "provider-provenance",
+        "status": "pass",
+        "distribution": RuntimeDistribution.CORE.value,
+        "canonical_path": "builtin_skill_baseline / PackageContribution.invocation_providers",
+        "replacement_path": "PackageContribution.invocation_providers",
+        "evidence": [
+            "skills@builtin_skill_baseline",
+            "package-commands@PackageContribution.invocation_providers",
+        ],
+        "baseline_tier": [
+            {
+                "provider_name": "skills",
+                "origin": "builtin",
+                "registration_path": "builtin_skill_baseline",
+                "provider_tier": "builtin-baseline",
+            }
+        ],
+        "package_tiers": [
+            {
+                "provider_name": "package-commands",
+                "origin": "package",
+                "registration_path": "PackageContribution.invocation_providers",
+                "provider_tier": "package-contribution",
+                "package_name": "runtime-provider-only",
+            }
+        ],
+    }
     assert observed_resources["skill_registry"] is runtime.kernel.skill_registry
     assert observed_resources["tool_registry"] is runtime.kernel.tool_registry
 
 
-def test_package_and_config_invocation_providers_share_replacement_and_conflict_diagnostics(
+@pytest.mark.parametrize(
+    "distribution",
+    (
+        RuntimeDistribution.CORE,
+        RuntimeDistribution.DEFAULT,
+        RuntimeDistribution.FULL,
+    ),
+)
+def test_provider_only_runtime_packages_assemble_consistently_across_distributions(
+    tmp_path: Path,
+    distribution: RuntimeDistribution,
+) -> None:
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            distribution=distribution,
+            extra_package_manifests=(
+                build_provider_only_invocation_package_manifest(
+                    name="runtime-provider-only",
+                    provider_name="distribution-provider",
+                    provider=StaticInvocationProvider(
+                        "distribution-provider",
+                        (
+                            _invocation_definition(
+                                "distribution-command",
+                                target_name="distribution.command",
+                                origin_path=str(tmp_path / f"{distribution.value}-provider.py"),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+            requested_packages={"runtime-provider-only"},
+        )
+    )
+
+    registrations = runtime.services.metadata["invocation_provider_registrations"]
+    assert [(entry["provider_name"], entry["registration_path"], entry["provider_tier"]) for entry in registrations] == [
+        ("skills", "builtin_skill_baseline", "builtin-baseline"),
+        (
+            "distribution-provider",
+            "PackageContribution.invocation_providers",
+            "package-contribution",
+        ),
+    ]
+    assert runtime.services.metadata["package_manifests"]["runtime-provider-only"] == {
+        "role": "provider",
+        "description": "Provider-only runtime package.",
+        "dependencies": ["runtime-core"],
+        "invocation_providers": ["distribution-provider"],
+    }
+    session = runtime.create_session(session_id=f"provider-only-{distribution.value}", cwd=tmp_path)
+    assert "distribution-command" in {entry.name for entry in session.visible_invocations()}
+
+
+def test_package_invocation_providers_share_replacement_and_conflict_diagnostics(
     tmp_path: Path,
 ) -> None:
     original = runtime_kernel_module.official_runtime_package_manifests
 
-    def assemble_test_package(context):
+    def assemble_base_package(context):
         if context.stage != PackageAssemblyStage.SERVICES:
             return PackageContribution()
         return PackageContribution(
@@ -2138,9 +2276,9 @@ def test_package_and_config_invocation_providers_share_replacement_and_conflict_
                         "override-source",
                         (
                             _invocation_definition(
-                                "package-override",
-                                target_name="package.override",
-                                origin_path=str(tmp_path / "package-override.py"),
+                                "package-base-override",
+                                target_name="package.base_override",
+                                origin_path=str(tmp_path / "package-base-override.py"),
                             ),
                         ),
                     ),
@@ -2165,15 +2303,60 @@ def test_package_and_config_invocation_providers_share_replacement_and_conflict_
             )
         )
 
+    def assemble_override_package(context):
+        if context.stage != PackageAssemblyStage.SERVICES:
+            return PackageContribution()
+        return PackageContribution(
+            invocation_providers=(
+                InvocationProviderContribution(
+                    name="override-source",
+                    provider=StaticInvocationProvider(
+                        "override-source",
+                        (
+                            _invocation_definition(
+                                "package-override",
+                                target_name="package.override",
+                                origin_path=str(tmp_path / "package-override.py"),
+                            ),
+                        ),
+                    ),
+                    owner=context.ownership("invocation_provider", provider_name="override-source"),
+                    order=1,
+                ),
+                InvocationProviderContribution(
+                    name="override-conflicts",
+                    provider=StaticInvocationProvider(
+                        "override-conflicts",
+                        (
+                            _invocation_definition(
+                                "shared-command",
+                                target_name="package.override_conflict",
+                                origin_path=str(tmp_path / "a-package-shared.py"),
+                            ),
+                        ),
+                    ),
+                    owner=context.ownership("invocation_provider", provider_name="override-conflicts"),
+                    order=3,
+                ),
+            )
+        )
+
     def patched_manifests(selected_packages):
         return (
             *original(selected_packages),
             RuntimePackageManifest(
-                name="runtime-test",
-                role="capability",
+                name="runtime-provider-base",
+                role="provider",
                 dependencies=("runtime-core",),
-                assembly_entrypoint=assemble_test_package,
+                assembly_entrypoint=assemble_base_package,
                 metadata={"invocation_providers": ["override-source", "package-conflicts"]},
+            ),
+            RuntimePackageManifest(
+                name="runtime-provider-override",
+                role="provider",
+                dependencies=("runtime-core", "runtime-provider-base"),
+                assembly_entrypoint=assemble_override_package,
+                metadata={"invocation_providers": ["override-source", "override-conflicts"]},
             ),
         )
 
@@ -2183,28 +2366,6 @@ def test_package_and_config_invocation_providers_share_replacement_and_conflict_
             RuntimeConfig(
                 working_directory=tmp_path,
                 distribution=RuntimeDistribution.CORE,
-                extra_invocation_providers=[
-                    StaticInvocationProvider(
-                        "override-source",
-                        (
-                            _invocation_definition(
-                                "config-override",
-                                target_name="config.override",
-                                origin_path=str(tmp_path / "config-override.py"),
-                            ),
-                        ),
-                    ),
-                    StaticInvocationProvider(
-                        "config-conflicts",
-                        (
-                            _invocation_definition(
-                                "shared-command",
-                                target_name="config.shared",
-                                origin_path=str(tmp_path / "a-config-shared.py"),
-                            ),
-                        ),
-                    ),
-                ],
             )
         )
     finally:
@@ -2213,23 +2374,27 @@ def test_package_and_config_invocation_providers_share_replacement_and_conflict_
     registrations = kernel.invocation_registry.registrations()
     assert [(entry.name, entry.origin) for entry in registrations] == [
         ("skills", "builtin"),
+        ("override-source", "package"),
         ("package-conflicts", "package"),
-        ("override-source", "config"),
-        ("config-conflicts", "config"),
+        ("override-conflicts", "package"),
     ]
     assert {definition.name for definition in kernel.invocation_registry.definitions()} == {
-        "config-override",
+        "package-override",
         "shared-command",
     }
 
     replacement = next(diag for diag in kernel.diagnostics if diag.code == "invocation_provider_replaced")
     assert replacement.details["replaced_origin"] == "package"
-    assert replacement.details["replacement_origin"] == "config"
-    assert replacement.details["replaced_owner"]["package_name"] == "runtime-test"
-    assert replacement.details["replacement_owner"] is None
+    assert replacement.details["replacement_origin"] == "package"
+    assert replacement.details["replaced_owner"]["package_name"] == "runtime-provider-base"
+    assert replacement.details["replacement_owner"]["package_name"] == "runtime-provider-override"
+    assert replacement.details["replaced_registration_path"] == "PackageContribution.invocation_providers"
+    assert replacement.details["replacement_registration_path"] == "PackageContribution.invocation_providers"
+    assert replacement.details["replaced_provider_tier"] == "package-contribution"
+    assert replacement.details["replacement_provider_tier"] == "package-contribution"
 
     conflict = next(diag for diag in kernel.diagnostics if diag.code == "invocation_definition_conflict")
-    assert conflict.location == str(tmp_path / "a-config-shared.py")
+    assert conflict.location == str(tmp_path / "a-package-shared.py")
     assert conflict.details["ignored"] == str(tmp_path / "z-package-shared.py")
 
 

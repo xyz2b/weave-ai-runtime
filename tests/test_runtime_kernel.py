@@ -823,7 +823,6 @@ def test_runtime_core_distribution_supports_stable_hooks_and_compatibility_diagn
     assert runtime.services.metadata["compatibility_surfaces"] == {
         "TaskManager": "compatibility-only",
         "runtime_context": "compatibility-only",
-        "RuntimeConfig.extra_invocation_providers": "bounded-compatibility",
         "RuntimeServices.memory": "compatibility-only",
         "RuntimeServices.memory.collect": "compatibility-only",
         "RuntimeServices.compaction": "compatibility-only",

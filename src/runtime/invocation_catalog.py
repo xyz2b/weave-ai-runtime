@@ -439,6 +439,12 @@ def _capability_metadata(definition: InvocationDefinition) -> dict[str, Any]:
     provider_origin = definition.metadata.get("invocation_provider_origin")
     if provider_origin is not None:
         metadata["provider_origin"] = provider_origin
+    provider_tier = definition.metadata.get("invocation_provider_tier")
+    if provider_tier is not None:
+        metadata["provider_tier"] = provider_tier
+    provider_registration_path = definition.metadata.get("invocation_provider_registration_path")
+    if provider_registration_path is not None:
+        metadata["provider_registration_path"] = provider_registration_path
     provider_owner = definition.metadata.get("invocation_provider_owner")
     if provider_owner is not None:
         metadata["provider_owner"] = provider_owner
