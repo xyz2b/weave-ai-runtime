@@ -1648,7 +1648,7 @@ def _assemble_runtime_stack(kernel: RuntimeKernel) -> RuntimeAssembly:
         kernel.diagnostics = kernel.diagnostics + runtime_diagnostics
     _project_capability_compatibility_surfaces(services)
     _sync_package_service_protocol_metadata(services)
-    _sync_compatibility_boundary_metadata(services)
+    _sync_compatibility_boundary_metadata(services, kernel=kernel)
     _sync_core_protocol_catalog_metadata(services)
     teammates = services.resolve_capability(RuntimeCapabilityKey.TEAMMATES.value)
     runtime = RuntimeAssembly(
@@ -1693,7 +1693,7 @@ def _assemble_runtime_stack(kernel: RuntimeKernel) -> RuntimeAssembly:
         },
     )
     services.attach_metadata_mirror(runtime.metadata)
-    _sync_compatibility_boundary_metadata(services, runtime=runtime)
+    services.attach_runtime_assembly(runtime)
     _register_job_executors(
         kernel=kernel,
         services=services,
@@ -1830,7 +1830,7 @@ def _build_runtime_services(kernel: RuntimeKernel) -> RuntimeServices:
         )
     _project_capability_compatibility_surfaces(services)
     _sync_package_service_protocol_metadata(services)
-    _sync_compatibility_boundary_metadata(services)
+    _sync_compatibility_boundary_metadata(services, kernel=kernel)
     _sync_core_protocol_catalog_metadata(services)
     services.configure_compat(
         permission_handler=kernel.config.permission_handler,
@@ -2795,9 +2795,60 @@ _PROTOCOL_ONLY_OPTIONAL_FINDING_FIELDS = (
 _PROTOCOL_ONLY_REQUIRED_GATE_FAMILIES = (
     "privileged-service-slot",
     "context-authority",
+    "task-authority",
     "team-bridge",
     "provider-provenance",
     "kernel-assembly",
+)
+_PROTOCOL_ONLY_GATE_GREEN_CRITERIA = {
+    "required_distributions": [
+        "runtime-core",
+        "runtime-default",
+        "runtime-full",
+    ],
+    "required_optional_package_cases": [
+        "team-present",
+        "team-absent",
+        "explicit-package-enabled",
+        "explicit-package-disabled",
+    ],
+}
+_PROTOCOL_ONLY_MATRIX_CASES = (
+    {
+        "case_id": "runtime-core",
+        "distribution": "runtime-core",
+        "enabled_packages": (),
+        "disabled_packages": (),
+        "availability": ("team-absent",),
+    },
+    {
+        "case_id": "runtime-default",
+        "distribution": "runtime-default",
+        "enabled_packages": (),
+        "disabled_packages": (),
+        "availability": ("team-present",),
+    },
+    {
+        "case_id": "runtime-full",
+        "distribution": "runtime-full",
+        "enabled_packages": (),
+        "disabled_packages": (),
+        "availability": ("team-present",),
+    },
+    {
+        "case_id": "runtime-core+runtime-planning",
+        "distribution": "runtime-core",
+        "enabled_packages": ("runtime-planning",),
+        "disabled_packages": (),
+        "availability": ("explicit-package-enabled",),
+    },
+    {
+        "case_id": "runtime-full-runtime-planning",
+        "distribution": "runtime-full",
+        "enabled_packages": (),
+        "disabled_packages": ("runtime-planning",),
+        "availability": ("explicit-package-disabled",),
+    },
 )
 
 
@@ -2949,11 +3000,11 @@ def _protocol_only_family_status(
     }
 
 
-def _protocol_only_gate_metadata(
+def _protocol_only_required_family_status(
     findings: Sequence[Mapping[str, Any]],
-) -> dict[str, Any]:
+) -> dict[str, dict[str, Any]]:
     family_status = _protocol_only_family_status(findings)
-    required_families = {
+    return {
         family: dict(
             family_status.get(
                 family,
@@ -2965,29 +3016,188 @@ def _protocol_only_gate_metadata(
         )
         for family in _PROTOCOL_ONLY_REQUIRED_GATE_FAMILIES
     }
+
+
+def _protocol_only_status(family_status: Mapping[str, Mapping[str, Any]]) -> str:
+    return (
+        "pass"
+        if all(str(entry.get("status") or "") == "pass" for entry in family_status.values())
+        else "fail"
+    )
+
+
+def _protocol_only_current_assembly_metadata(
+    findings: Sequence[Mapping[str, Any]],
+    *,
+    distribution: str,
+    selected_packages: Sequence[str] = (),
+) -> dict[str, Any]:
+    family_status = _protocol_only_required_family_status(findings)
     return {
-        "mode": "enforced",
-        "status": (
-            "pass"
-            if all(entry["status"] == "pass" for entry in required_families.values())
-            else "fail"
-        ),
-        "required_families": list(_PROTOCOL_ONLY_REQUIRED_GATE_FAMILIES),
-        "family_status": required_families,
-        "green_criteria": {
-            "required_distributions": [
-                "runtime-core",
-                "runtime-default",
-                "runtime-full",
-            ],
-            "required_optional_package_cases": [
-                "team-present",
-                "team-absent",
-                "explicit-package-enabled",
-                "explicit-package-disabled",
-            ],
-        },
+        "distribution": distribution,
+        "selected_packages": [str(name) for name in selected_packages],
+        "status": _protocol_only_status(family_status),
+        "family_status": family_status,
     }
+
+
+def _protocol_only_matrix_case_results(kernel: RuntimeKernel) -> list[dict[str, Any]]:
+    case_results: list[dict[str, Any]] = []
+    base_config = kernel.config
+    for case in _PROTOCOL_ONLY_MATRIX_CASES:
+        case_config = replace(
+            base_config,
+            runtime_id=f"{base_config.runtime_id}:{case['case_id']}",
+            distribution=str(case["distribution"]),
+            enabled_packages={str(name) for name in case.get("enabled_packages", ())},
+            disabled_packages={str(name) for name in case.get("disabled_packages", ())},
+            _skip_protocol_only_matrix_evaluation=True,
+        )
+        case_runtime = assemble_runtime(case_config)
+        case_findings = case_runtime.metadata.get("protocol_only_conformance", {}).get("findings", ())
+        if not isinstance(case_findings, Sequence) or isinstance(case_findings, (str, bytes)):
+            case_findings = ()
+        case_family_status = _protocol_only_required_family_status(case_findings)
+        case_results.append(
+            {
+                "case_id": str(case["case_id"]),
+                "distribution": str(case["distribution"]),
+                "availability": [str(name) for name in case.get("availability", ())],
+                "selected_packages": list(case_runtime.kernel.first_party_packages),
+                "status": _protocol_only_status(case_family_status),
+                "family_status": case_family_status,
+            }
+        )
+    return case_results
+
+
+def _protocol_only_supports_matrix_evaluation(
+    *,
+    selected_packages: Sequence[str],
+    resolved_active_package_graph_provenance: Mapping[str, Any],
+) -> bool:
+    official_package_set = set(official_runtime_package_names())
+    if not selected_packages:
+        return False
+    if any(str(name) not in official_package_set for name in selected_packages):
+        return False
+    resolved_packages = resolved_active_package_graph_provenance.get("resolved_packages", ())
+    if not isinstance(resolved_packages, Sequence) or isinstance(resolved_packages, (str, bytes)):
+        return False
+    return all(
+        isinstance(entry, Mapping)
+        and str(entry.get("package_name") or "") in official_package_set
+        for entry in resolved_packages
+    )
+
+
+def _protocol_only_matrix_family_status(
+    case_results: Sequence[Mapping[str, Any]],
+    *,
+    current_assembly: Mapping[str, Any] | None = None,
+) -> dict[str, dict[str, Any]]:
+    family_status: dict[str, dict[str, Any]] = {}
+    for family in _PROTOCOL_ONLY_REQUIRED_GATE_FAMILIES:
+        case_entries: list[dict[str, Any]] = []
+        rule_ids: list[str] = []
+        for case in case_results:
+            case_family_status = case.get("family_status", {})
+            if not isinstance(case_family_status, Mapping):
+                case_family_status = {}
+            family_entry = case_family_status.get(family, {})
+            if not isinstance(family_entry, Mapping):
+                family_entry = {}
+            case_entries.append(
+                {
+                    "case_id": str(case.get("case_id") or ""),
+                    "distribution": str(case.get("distribution") or ""),
+                    "availability": [str(name) for name in case.get("availability", ())],
+                    "status": str(family_entry.get("status") or "fail"),
+                }
+            )
+            for rule_id in family_entry.get("rule_ids", ()):
+                value = str(rule_id)
+                if value and value not in rule_ids:
+                    rule_ids.append(value)
+        current_family_status = (
+            current_assembly.get("family_status", {}).get(family, {})
+            if isinstance(current_assembly, Mapping)
+            else {}
+        )
+        if not isinstance(current_family_status, Mapping):
+            current_family_status = {}
+        case_entries.append(
+            {
+                "case_id": "current-assembly",
+                "distribution": (
+                    str(current_assembly.get("distribution") or "")
+                    if isinstance(current_assembly, Mapping)
+                    else ""
+                ),
+                "availability": ["current-assembly"],
+                "status": str(current_family_status.get("status") or "fail"),
+            }
+        )
+        for rule_id in current_family_status.get("rule_ids", ()):
+            value = str(rule_id)
+            if value and value not in rule_ids:
+                rule_ids.append(value)
+        family_status[family] = {
+            "status": (
+                "pass"
+                if case_entries and all(entry["status"] == "pass" for entry in case_entries)
+                else "fail"
+            ),
+            "rule_ids": rule_ids,
+            "cases": case_entries,
+        }
+    return family_status
+
+
+def _protocol_only_gate_metadata(
+    findings: Sequence[Mapping[str, Any]],
+    *,
+    distribution: str,
+    selected_packages: Sequence[str] = (),
+    case_results: Sequence[Mapping[str, Any]] = (),
+) -> dict[str, Any]:
+    current_assembly = _protocol_only_current_assembly_metadata(
+        findings,
+        distribution=distribution,
+        selected_packages=selected_packages,
+    )
+    if case_results:
+        family_status = _protocol_only_matrix_family_status(
+            case_results,
+            current_assembly=current_assembly,
+        )
+        scope = "distribution-matrix"
+        status = _protocol_only_status(family_status)
+    else:
+        family_status = current_assembly["family_status"]
+        scope = "current-assembly"
+        status = current_assembly["status"]
+    gate: dict[str, Any] = {
+        "mode": "enforced",
+        "scope": scope,
+        "status": status,
+        "required_families": list(_PROTOCOL_ONLY_REQUIRED_GATE_FAMILIES),
+        "family_status": family_status,
+        "green_criteria": dict(_PROTOCOL_ONLY_GATE_GREEN_CRITERIA),
+        "current_assembly": current_assembly,
+    }
+    if case_results:
+        gate["matrix_cases"] = [
+            {
+                "case_id": str(case.get("case_id") or ""),
+                "distribution": str(case.get("distribution") or ""),
+                "availability": [str(name) for name in case.get("availability", ())],
+                "selected_packages": [str(name) for name in case.get("selected_packages", ())],
+                "status": str(case.get("status") or "fail"),
+            }
+            for case in case_results
+        ]
+    return gate
 
 
 def _protocol_only_conformance_metadata(
@@ -3002,6 +3212,11 @@ def _protocol_only_conformance_metadata(
     services: RuntimeServices | None = None,
     runtime: RuntimeAssembly | None = None,
 ) -> dict[str, Any]:
+    if not isinstance(resolved_active_package_graph_provenance, Mapping):
+        resolved_active_package_graph_provenance = {}
+    selected_packages = resolved_active_package_graph_provenance.get("selected_first_party_packages", ())
+    if not isinstance(selected_packages, Sequence) or isinstance(selected_packages, (str, bytes)):
+        selected_packages = ()
     runtime_context = compatibility_boundaries.get("runtime_context")
     task_manager = compatibility_boundaries.get("TaskManager")
     runtime_context_entries = (
@@ -3120,6 +3335,17 @@ def _protocol_only_conformance_metadata(
             ),
         ),
     ]
+    kernel = getattr(runtime, "kernel", None) if runtime is not None else None
+    case_results = ()
+    if (
+        kernel is not None
+        and not kernel.config._skip_protocol_only_matrix_evaluation
+        and _protocol_only_supports_matrix_evaluation(
+            selected_packages=selected_packages,
+            resolved_active_package_graph_provenance=resolved_active_package_graph_provenance,
+        )
+    ):
+        case_results = _protocol_only_matrix_case_results(kernel)
     return {
         "schema_version": "1.0",
         "published_metadata_paths": [
@@ -3129,7 +3355,12 @@ def _protocol_only_conformance_metadata(
         "finding_schema": _protocol_only_finding_schema(),
         "rule_sources": _protocol_only_rule_sources(),
         "findings": findings,
-        "gate": _protocol_only_gate_metadata(findings),
+        "gate": _protocol_only_gate_metadata(
+            findings,
+            distribution=distribution,
+            selected_packages=selected_packages,
+            case_results=case_results,
+        ),
     }
 
 
@@ -3140,8 +3371,10 @@ def _sync_package_service_protocol_metadata(services: RuntimeServices) -> None:
 def _sync_compatibility_boundary_metadata(
     services: RuntimeServices,
     *,
+    kernel: RuntimeKernel | None = None,
     runtime: RuntimeAssembly | None = None,
 ) -> None:
+    _ = kernel
     compatibility_surfaces = services.metadata.get("compatibility_surfaces")
     if not isinstance(compatibility_surfaces, Mapping):
         compatibility_surfaces = {}

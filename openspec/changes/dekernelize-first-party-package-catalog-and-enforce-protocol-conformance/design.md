@@ -30,7 +30,7 @@ This is the Wave 3 terminal change. It should merge last, because it turns the e
 
 The terminal gate should consume subsystem-owned findings whenever possible:
 - privileged service-slot findings from `eliminate-privileged-runtime-package-service-slots`;
-- context-authority findings from `retire-runtime-context-and-taskmanager-compat`;
+- context-authority and task-authority findings from `retire-runtime-context-and-taskmanager-compat`;
 - team-bridge findings from `remove-runtime-team-compatibility-bridges`;
 - provider-provenance findings from `close-invocation-provider-config-bypass`.
 
@@ -140,7 +140,7 @@ The terminal protocol-only gate will only be considered green when every rule fa
 
 The initial green criteria are:
 - `runtime-core`, `runtime-default`, and `runtime-full` each publish the protocol-only summary;
-- the privileged service-slot, context-authority, team-bridge, provider-provenance, and kernel-assembly families each report `pass` for the required scenarios in that matrix;
+- the privileged service-slot, context-authority, task-authority, team-bridge, provider-provenance, and kernel-assembly families each report `pass` for the required scenarios in that matrix;
 - optional package present or absent cases continue to expose bounded absence semantics rather than hidden compatibility fallbacks.
 
 Why this decision:

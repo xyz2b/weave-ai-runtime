@@ -34,6 +34,10 @@ from runtime.runtime_kernel import (
     build_runtime_kernel,
 )
 from runtime.runtime_core_protocol_catalog import CORE_PROTOCOL_CATALOG_SCHEMA_VERSION
+from runtime.runtime_package_catalog import (
+    official_runtime_distribution_catalog,
+    official_runtime_package_catalog,
+)
 from runtime.runtime_package_manifests import official_runtime_package_manifests
 from runtime.runtime_package_resolution import (
     PACKAGE_CANDIDATE_METADATA_KEY,
@@ -1359,6 +1363,19 @@ def test_runtime_publishes_official_catalog_and_resolved_graph_provenance(tmp_pa
     assert assembly_view["protocol_only_conformance"] == runtime.metadata["protocol_only_conformance"]
 
 
+def test_official_distribution_catalog_derives_packages_from_catalog_defaults() -> None:
+    package_catalog = official_runtime_package_catalog()
+    distribution_catalog = official_runtime_distribution_catalog()
+
+    for distribution_name, distribution_entry in distribution_catalog.items():
+        expected_packages = tuple(
+            package_name
+            for package_name, package_entry in package_catalog.items()
+            if distribution_name in package_entry.distribution_defaults
+        )
+        assert distribution_entry.packages == expected_packages
+
+
 def test_protocol_only_conformance_publishes_kernel_assembly_sources_and_gate(
     tmp_path: Path,
 ) -> None:
@@ -1407,16 +1424,39 @@ def test_protocol_only_conformance_publishes_kernel_assembly_sources_and_gate(
         ],
     }
 
-    assert conformance["gate"] == {
-        "mode": "enforced",
-        "status": "pass",
-        "required_families": [
-            "privileged-service-slot",
-            "context-authority",
-            "team-bridge",
-            "provider-provenance",
-            "kernel-assembly",
+    gate = conformance["gate"]
+    assert gate["mode"] == "enforced"
+    assert gate["scope"] == "distribution-matrix"
+    assert gate["status"] == "pass"
+    assert gate["required_families"] == [
+        "privileged-service-slot",
+        "context-authority",
+        "task-authority",
+        "team-bridge",
+        "provider-provenance",
+        "kernel-assembly",
+    ]
+    assert gate["green_criteria"] == {
+        "required_distributions": [
+            "runtime-core",
+            "runtime-default",
+            "runtime-full",
         ],
+        "required_optional_package_cases": [
+            "team-present",
+            "team-absent",
+            "explicit-package-enabled",
+            "explicit-package-disabled",
+        ],
+    }
+    assert gate["current_assembly"] == {
+        "distribution": RuntimeDistribution.DEFAULT.value,
+        "selected_packages": [
+            "runtime-core",
+            "runtime-memory",
+            "runtime-team",
+        ],
+        "status": "pass",
         "family_status": {
             "privileged-service-slot": {
                 "status": "pass",
@@ -1429,6 +1469,10 @@ def test_protocol_only_conformance_publishes_kernel_assembly_sources_and_gate(
             "context-authority": {
                 "status": "pass",
                 "rule_ids": ["runtime_context_authority"],
+            },
+            "task-authority": {
+                "status": "pass",
+                "rule_ids": ["task_manager_authority"],
             },
             "team-bridge": {
                 "status": "pass",
@@ -1447,19 +1491,108 @@ def test_protocol_only_conformance_publishes_kernel_assembly_sources_and_gate(
                 "rule_ids": ["official_package_catalog_authority"],
             },
         },
-        "green_criteria": {
-            "required_distributions": [
-                "runtime-core",
-                "runtime-default",
-                "runtime-full",
-            ],
-            "required_optional_package_cases": [
-                "team-present",
-                "team-absent",
-                "explicit-package-enabled",
-                "explicit-package-disabled",
-            ],
+    }
+    assert gate["matrix_cases"] == [
+        {
+            "case_id": "runtime-core",
+            "distribution": "runtime-core",
+            "availability": ["team-absent"],
+            "selected_packages": ["runtime-core"],
+            "status": "pass",
         },
+        {
+            "case_id": "runtime-default",
+            "distribution": "runtime-default",
+            "availability": ["team-present"],
+            "selected_packages": ["runtime-core", "runtime-memory", "runtime-team"],
+            "status": "pass",
+        },
+        {
+            "case_id": "runtime-full",
+            "distribution": "runtime-full",
+            "availability": ["team-present"],
+            "selected_packages": [
+                "runtime-core",
+                "runtime-memory",
+                "runtime-team",
+                "runtime-compaction",
+                "runtime-isolation",
+                "runtime-openai",
+                "runtime-hosts-reference",
+                "runtime-stores-file",
+                "runtime-builtin-workflows",
+                "runtime-planning",
+                "runtime-devtools",
+            ],
+            "status": "pass",
+        },
+        {
+            "case_id": "runtime-core+runtime-planning",
+            "distribution": "runtime-core",
+            "availability": ["explicit-package-enabled"],
+            "selected_packages": ["runtime-core", "runtime-planning"],
+            "status": "pass",
+        },
+        {
+            "case_id": "runtime-full-runtime-planning",
+            "distribution": "runtime-full",
+            "availability": ["explicit-package-disabled"],
+            "selected_packages": [
+                "runtime-core",
+                "runtime-memory",
+                "runtime-team",
+                "runtime-compaction",
+                "runtime-isolation",
+                "runtime-openai",
+                "runtime-hosts-reference",
+                "runtime-stores-file",
+                "runtime-builtin-workflows",
+                "runtime-devtools",
+            ],
+            "status": "pass",
+        },
+    ]
+    assert gate["family_status"]["task-authority"] == {
+        "status": "pass",
+        "rule_ids": ["task_manager_authority"],
+        "cases": [
+            {
+                "case_id": "runtime-core",
+                "distribution": "runtime-core",
+                "availability": ["team-absent"],
+                "status": "pass",
+            },
+            {
+                "case_id": "runtime-default",
+                "distribution": "runtime-default",
+                "availability": ["team-present"],
+                "status": "pass",
+            },
+            {
+                "case_id": "runtime-full",
+                "distribution": "runtime-full",
+                "availability": ["team-present"],
+                "status": "pass",
+            },
+            {
+                "case_id": "runtime-core+runtime-planning",
+                "distribution": "runtime-core",
+                "availability": ["explicit-package-enabled"],
+                "status": "pass",
+            },
+            {
+                "case_id": "runtime-full-runtime-planning",
+                "distribution": "runtime-full",
+                "availability": ["explicit-package-disabled"],
+                "status": "pass",
+            },
+            {
+                "case_id": "current-assembly",
+                "distribution": RuntimeDistribution.DEFAULT.value,
+                "availability": ["current-assembly"],
+                "status": "pass",
+            },
+        ],
     }
 
 
@@ -1647,6 +1780,18 @@ def test_protocol_only_conformance_fails_without_published_service_family_metada
         "baseline_tier": [],
         "package_tiers": [],
     }
+    task_authority_finding = next(
+        entry for entry in conformance["findings"] if entry["rule_id"] == "task_manager_authority"
+    )
+    assert task_authority_finding == {
+        "rule_id": "task_manager_authority",
+        "family": "task-authority",
+        "status": "pass",
+        "distribution": RuntimeDistribution.DEFAULT.value,
+        "canonical_path": "RuntimeServices.job_service / RuntimeServices.task_list_service",
+        "compat_surface": "TaskManager",
+        "evidence": [],
+    }
     kernel_assembly_finding = next(
         entry for entry in conformance["findings"] if entry["rule_id"] == "official_package_catalog_authority"
     )
@@ -1659,7 +1804,60 @@ def test_protocol_only_conformance_fails_without_published_service_family_metada
         "replacement_path": "RuntimePackageManifest.assembly_entrypoint",
         "evidence": [],
     }
+    assert conformance["gate"]["scope"] == "current-assembly"
     assert conformance["gate"]["status"] == "fail"
+    assert conformance["gate"]["required_families"] == [
+        "privileged-service-slot",
+        "context-authority",
+        "task-authority",
+        "team-bridge",
+        "provider-provenance",
+        "kernel-assembly",
+    ]
+
+
+def test_protocol_only_gate_fails_when_task_manager_surfaces_escape_authority(tmp_path: Path) -> None:
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            distribution=RuntimeDistribution.DEFAULT,
+        )
+    )
+
+    compatibility_boundaries = dict(runtime.services.metadata["compatibility_boundaries"])
+    task_manager_boundaries = dict(compatibility_boundaries["TaskManager"])
+    task_manager_boundaries["unclassified_surfaces"] = [
+        "RuntimeAssembly.legacy_task_manager_bridge"
+    ]
+    compatibility_boundaries["TaskManager"] = task_manager_boundaries
+
+    conformance = runtime_kernel_module._protocol_only_conformance_metadata(
+        distribution=RuntimeDistribution.DEFAULT.value,
+        compatibility_boundaries=compatibility_boundaries,
+        package_service_protocols=runtime.services.metadata["package_service_protocols"],
+        invocation_provider_registrations=runtime.services.metadata["invocation_provider_registrations"],
+        team_protocol_only=runtime.services.metadata["migration"]["team_protocol_only"],
+        official_package_catalog_provenance=runtime.services.metadata[
+            "official_package_catalog_provenance"
+        ],
+        resolved_active_package_graph_provenance=runtime.services.metadata[
+            "resolved_active_package_graph_provenance"
+        ],
+        services=runtime.services,
+        runtime=runtime,
+    )
+
+    findings = {entry["rule_id"]: entry for entry in conformance["findings"]}
+    assert findings["task_manager_authority"]["status"] == "fail"
+    assert findings["task_manager_authority"]["unknown_surfaces"] == [
+        "RuntimeAssembly.legacy_task_manager_bridge"
+    ]
+    assert conformance["gate"]["status"] == "fail"
+    assert conformance["gate"]["scope"] == "distribution-matrix"
+    assert conformance["gate"]["current_assembly"]["family_status"]["task-authority"]["status"] == (
+        "fail"
+    )
+    assert conformance["gate"]["family_status"]["task-authority"]["status"] == "fail"
 
 
 @pytest.mark.parametrize(
@@ -1737,7 +1935,10 @@ def test_protocol_only_gate_is_green_across_distribution_and_optional_package_ma
     assert assembly_view["resolved_active_package_graph_provenance"]["resolved_order"] == list(
         expected_packages
     )
+    assert assembly_view["protocol_only_conformance"]["gate"]["scope"] == "distribution-matrix"
     assert assembly_view["protocol_only_conformance"]["gate"]["status"] == "pass"
+    assert assembly_view["protocol_only_conformance"]["gate"]["current_assembly"]["status"] == "pass"
+    assert len(assembly_view["protocol_only_conformance"]["gate"]["matrix_cases"]) == 5
     assert all(
         entry["status"] == "pass"
         for entry in assembly_view["protocol_only_conformance"]["gate"]["family_status"].values()

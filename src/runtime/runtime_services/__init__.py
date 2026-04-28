@@ -296,6 +296,7 @@ class RuntimeServices:
     runtime_lifecycle_task: asyncio.Task[tuple[dict[str, Any], ...]] | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
     _runtime_metadata_mirror: dict[str, Any] | None = field(default=None, init=False, repr=False)
+    _runtime_assembly: Any | None = field(default=None, init=False, repr=False)
     _compatibility_projection_ready: bool = field(default=False, init=False, repr=False)
 
     def __getattribute__(self, name: str) -> Any:
@@ -893,6 +894,10 @@ class RuntimeServices:
         self._runtime_metadata_mirror = metadata
         self._sync_metadata_mirror()
 
+    def attach_runtime_assembly(self, runtime: Any) -> None:
+        self._runtime_assembly = runtime
+        self._refresh_published_protocol_metadata()
+
     def _seed_service_family_capabilities(self) -> None:
         for field_name, capability_key in _SERVICE_FAMILY_CAPABILITY_PROJECTIONS.items():
             if self.capability_registry.binding(capability_key) is not None:
@@ -934,9 +939,11 @@ class RuntimeServices:
             _sync_package_service_protocol_metadata,
         )
 
+        runtime = self._runtime_assembly
+        kernel = getattr(runtime, "kernel", None) if runtime is not None else None
         _project_capability_compatibility_surfaces(self)
         _sync_package_service_protocol_metadata(self)
-        _sync_compatibility_boundary_metadata(self)
+        _sync_compatibility_boundary_metadata(self, kernel=kernel, runtime=runtime)
         self._sync_metadata_mirror()
 
     def _sync_metadata_mirror(self) -> None:

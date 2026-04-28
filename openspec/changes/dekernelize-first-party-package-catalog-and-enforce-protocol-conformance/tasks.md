@@ -6,7 +6,7 @@
 ## 2. Assembly and Provenance Publication
 
 - [x] 2.1 Publish official package-catalog provenance and resolved active package-graph provenance in runtime assembly metadata.
-- [x] 2.2 Publish a protocol-only conformance summary with per-rule findings for the privileged-service-slot, context-authority, team-bridge, provider-provenance, and kernel-assembly rule families, using the shared finding fields `rule_id`, `family`, `status`, `distribution`, `evidence`, `canonical_path`, and optional `compat_surface` or `replacement_path`.
+- [x] 2.2 Publish a protocol-only conformance summary with per-rule findings for the privileged-service-slot, context-authority, task-authority, team-bridge, provider-provenance, and kernel-assembly rule families, using the shared finding fields `rule_id`, `family`, `status`, `distribution`, `evidence`, `canonical_path`, and optional `compat_surface` or `replacement_path`.
 - [x] 2.3 Expose the same summary through the assembled runtime query surface used by CI and embedders.
 
 ## 3. Conformance Enforcement

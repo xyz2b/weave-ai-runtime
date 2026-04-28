@@ -9,7 +9,7 @@ This change closes the loop. It moves the official package catalog to a manifest
 - Replace kernel-owned official first-party package tables and assembly switch logic with a manifest-backed official package catalog provider.
 - Keep supported distribution composition, but source it from the official package catalog rather than hard-coded kernel-owned assembly tables.
 - Publish explicit assembly provenance for the official package catalog, resolved package graph, and protocol-only conformance summary.
-- Aggregate per-rule findings from the privileged-service-slot, context-authority, team-bridge, provider-provenance, and kernel-assembly rule families into one terminal protocol-only gate.
+- Aggregate per-rule findings from the privileged-service-slot, context-authority, task-authority, team-bridge, provider-provenance, and kernel-assembly rule families into one terminal protocol-only gate.
 - Add protocol-only conformance rules that fail when runtime-owned primary paths depend on forbidden compatibility surfaces or package-specific kernel assembly branches.
 - Treat the kernel-owned package catalog tables and similar assembly branches as retired implementation details rather than canonical runtime architecture.
 
@@ -46,4 +46,3 @@ This change closes the loop. It moves the official package catalog to a manifest
 - Recommended order: land last, after `retire-runtime-context-and-taskmanager-compat`, `eliminate-privileged-runtime-package-service-slots`, `remove-runtime-team-compatibility-bridges`, and `close-invocation-provider-config-bypass` have already published their canonical metadata and structured rule findings.
 - Downstream effect: this change should not introduce a new public API break, but it will harden CI and runtime conformance so that any missing earlier cleanup becomes an immediate failure.
 - Test ownership: this change owns the final cross-distribution protocol-only matrix across `runtime-core`, `runtime-default`, and `runtime-full`.
-

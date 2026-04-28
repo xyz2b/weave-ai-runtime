@@ -271,35 +271,31 @@ OFFICIAL_RUNTIME_PACKAGE_CATALOG: dict[str, OfficialRuntimePackageCatalogEntry] 
 }
 
 
-OFFICIAL_RUNTIME_DISTRIBUTIONS: dict[str, OfficialRuntimeDistributionCatalogEntry] = {
-    "runtime-core": OfficialRuntimeDistributionCatalogEntry(
-        name="runtime-core",
-        description="Minimal runnable kernel distribution.",
-        packages=("runtime-core",),
-    ),
-    "runtime-default": OfficialRuntimeDistributionCatalogEntry(
-        name="runtime-default",
-        description="Supported baseline distribution with first-party memory and team capabilities.",
-        packages=("runtime-core", "runtime-memory", "runtime-team"),
-    ),
-    "runtime-full": OfficialRuntimeDistributionCatalogEntry(
-        name="runtime-full",
-        description="Supported full first-party distribution.",
-        packages=(
-            "runtime-core",
-            "runtime-memory",
-            "runtime-team",
-            "runtime-compaction",
-            "runtime-isolation",
-            "runtime-openai",
-            "runtime-hosts-reference",
-            "runtime-stores-file",
-            "runtime-builtin-workflows",
-            "runtime-planning",
-            "runtime-devtools",
-        ),
-    ),
+_OFFICIAL_RUNTIME_DISTRIBUTION_DESCRIPTIONS: dict[str, str] = {
+    "runtime-core": "Minimal runnable kernel distribution.",
+    "runtime-default": "Supported baseline distribution with first-party memory and team capabilities.",
+    "runtime-full": "Supported full first-party distribution.",
 }
+
+
+def _build_official_runtime_distributions() -> dict[str, OfficialRuntimeDistributionCatalogEntry]:
+    return {
+        distribution_name: OfficialRuntimeDistributionCatalogEntry(
+            name=distribution_name,
+            description=description,
+            packages=tuple(
+                package_name
+                for package_name, entry in OFFICIAL_RUNTIME_PACKAGE_CATALOG.items()
+                if distribution_name in entry.distribution_defaults
+            ),
+        )
+        for distribution_name, description in _OFFICIAL_RUNTIME_DISTRIBUTION_DESCRIPTIONS.items()
+    }
+
+
+OFFICIAL_RUNTIME_DISTRIBUTIONS: dict[str, OfficialRuntimeDistributionCatalogEntry] = (
+    _build_official_runtime_distributions()
+)
 
 
 def official_runtime_package_catalog() -> dict[str, OfficialRuntimePackageCatalogEntry]:

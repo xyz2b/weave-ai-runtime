@@ -15,7 +15,7 @@ The runtime SHALL define and enforce a protocol-only conformance rule set that f
 
 #### Scenario: conformance summary aggregates subsystem-owned rule findings
 - **WHEN** a caller inspects the protocol-only conformance summary for an assembled runtime
-- **THEN** the runtime SHALL report distinct rule results for privileged service-slot, context-authority, team-bridge, provider-provenance, and kernel-assembly rule families
+- **THEN** the runtime SHALL report distinct rule results for privileged service-slot, context-authority, task-authority, team-bridge, provider-provenance, and kernel-assembly rule families
 - **AND** SHALL encode those rule results with the shared finding fields `rule_id`, `family`, `status`, `distribution`, `evidence`, and `canonical_path`, plus optional `compat_surface` or `replacement_path`
 - **AND** SHALL allow CI or embedders to determine which rule family failed without re-running ad hoc subsystem-specific audits
 

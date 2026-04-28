@@ -316,8 +316,9 @@ runtime-owned primary path 现在也把下面这些 package-service protocol sur
 
 如果需要区分 canonical binding 与 retained projection，不要再靠 slot 命名猜测；直接读取
 `package_service_protocols` / `protocol_only_conformance` metadata。
-其中 `protocol_only_conformance["gate"]` 已经是 terminal protocol-only gate 的聚合结果，
-`protocol_only_conformance["rule_sources"]` 则标出每条 finding 由哪一个结构化 metadata source 拥有。
+其中 `protocol_only_conformance["gate"]["status"]` 表示 supported distribution matrix 的 terminal gate 结果，
+`protocol_only_conformance["gate"]["current_assembly"]` 则保留当前 runtime 的局部 family status；`protocol_only_conformance["rule_sources"]`
+标出每条 finding 由哪一个结构化 metadata source 拥有。
 
 ## 4. Permission 与 Elicitation 接入规范
 
