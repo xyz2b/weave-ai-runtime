@@ -1433,7 +1433,8 @@ def _coerce_permission_context_view(
 def _guarded_memory_roots(context: ToolContext) -> tuple[Path, ...]:
     if context.runtime_services is None:
         return ()
-    memory_service = getattr(context.runtime_services, "memory", None)
+    resolver = getattr(context.runtime_services, "resolve_memory_service", None)
+    memory_service = resolver() if callable(resolver) else getattr(context.runtime_services, "memory", None)
     if memory_service is None or not hasattr(memory_service, "guarded_roots"):
         return ()
     agent = None

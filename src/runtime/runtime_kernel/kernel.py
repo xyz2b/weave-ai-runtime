@@ -5,7 +5,7 @@ import hashlib
 import inspect
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, AsyncIterator, Mapping
+from typing import Any, AsyncIterator, Mapping, Sequence
 from uuid import uuid4
 
 from ..agent_execution import SpawnMode
@@ -1625,6 +1625,7 @@ def _assemble_runtime_stack(kernel: RuntimeKernel) -> RuntimeAssembly:
     if runtime_diagnostics:
         kernel.diagnostics = kernel.diagnostics + runtime_diagnostics
     _project_capability_compatibility_surfaces(services)
+    _sync_package_service_protocol_metadata(services)
     _sync_compatibility_boundary_metadata(services)
     _sync_core_protocol_catalog_metadata(services)
     teammates = services.resolve_capability(RuntimeCapabilityKey.TEAMMATES.value)
@@ -1660,6 +1661,7 @@ def _assemble_runtime_stack(kernel: RuntimeKernel) -> RuntimeAssembly:
             "compatibility_surfaces": dict(services.metadata.get("compatibility_surfaces", {})),
             "compatibility_boundaries": dict(services.metadata.get("compatibility_boundaries", {})),
             "compatibility_projections": dict(services.metadata.get("compatibility_projections", {})),
+            "package_service_protocols": dict(services.metadata.get("package_service_protocols", {})),
             "invocation_provider_paths": dict(services.metadata.get("invocation_provider_paths", {})),
             "invocation_provider_registrations": [
                 dict(entry) for entry in services.metadata.get("invocation_provider_registrations", ())
@@ -1729,8 +1731,6 @@ def _build_runtime_services(kernel: RuntimeKernel) -> RuntimeServices:
     metadata["compatibility_surfaces"] = {
         **core_protocol_compatibility_surfaces(),
         "runtime_context": "compatibility-only",
-        "RuntimeServices.compaction.prepare_turn": "dedicated-control-plane",
-        "RuntimeServices.compaction.collect": "dedicated-control-plane",
         "RuntimeServices.teammates": "compatibility-only",
         "RuntimeServices.team_control_plane": "compatibility-only",
         "RuntimeServices.team_message_bus": "compatibility-only",
@@ -1806,6 +1806,7 @@ def _build_runtime_services(kernel: RuntimeKernel) -> RuntimeServices:
             stage=PackageAssemblyStage.SERVICES.value,
         )
     _project_capability_compatibility_surfaces(services)
+    _sync_package_service_protocol_metadata(services)
     _sync_compatibility_boundary_metadata(services)
     _sync_core_protocol_catalog_metadata(services)
     services.configure_compat(
@@ -2101,17 +2102,23 @@ def _package_lookup_metadata() -> dict[str, Any]:
             "team_workflows": RuntimeHostFacetKey.TEAM_WORKFLOWS.value,
         },
         "canonical_control_plane_services": dict(core_sections["canonical_control_plane_services"]),
+        "canonical_service_family_protocols": dict(core_sections["canonical_service_family_protocols"]),
         "canonical_context_contributors": dict(core_sections["canonical_context_contributors"]),
         "canonical_invocation_providers": dict(core_sections["canonical_invocation_providers"]),
         "compatibility_context_contributors": dict(core_sections["compatibility_context_contributors"]),
-        "dedicated_control_plane_paths": {
-            "compaction": "RuntimeServices.compaction.prepare_turn / RuntimeServices.compaction.collect",
+        "compatibility_service_projections": dict(core_sections["compatibility_service_projections"]),
+        "canonical_service_family_resolvers": {
+            family: spec["resolver"]
+            for family, spec in _PACKAGE_SERVICE_PROTOCOL_SPECS.items()
         },
         "compatibility_invocation_providers": dict(core_sections["compatibility_invocation_providers"]),
         "canonical_lifecycle_phase": PackageLifecyclePhase.SESSION_OPEN.value,
         "canonical_post_ingress_path": "completion_receipts",
         "compatibility_wrappers": [
             "TaskManager",
+            "RuntimeServices.memory",
+            "RuntimeServices.compaction",
+            "RuntimeServices.isolation",
             "RuntimeServices.teammates",
             "RuntimeServices.team_*",
             "RuntimeAssembly.teammates",
@@ -2121,11 +2128,41 @@ def _package_lookup_metadata() -> dict[str, Any]:
             "HostRuntime.emit_team_event",
         ],
         "wrapper_exit_criteria": [
+            "memory, compaction, and isolation runtime-owned call sites resolve through package-service protocols only",
             "runtime-owned workflow helpers resolve through capability lookup or host facets only",
             "team compatibility projections stop being required by runtime-owned primary paths",
             "TaskManager usage remains compatibility-scoped behind JobService and TaskListService",
         ],
     }
+
+
+_PACKAGE_SERVICE_PROTOCOL_SPECS: dict[str, dict[str, Any]] = {
+    "memory": {
+        "capability_key": RuntimeCapabilityKey.MEMORY_SERVICE.value,
+        "resolver": "RuntimeServices.resolve_memory_service",
+        "projection_surface": "RuntimeServices.memory",
+        "retained_surfaces": (
+            "RuntimeServices.memory",
+            "RuntimeServices.memory.collect",
+        ),
+    },
+    "compaction": {
+        "capability_key": RuntimeCapabilityKey.COMPACTION_MANAGER.value,
+        "resolver": "RuntimeServices.resolve_compaction_service",
+        "projection_surface": "RuntimeServices.compaction",
+        "retained_surfaces": (
+            "RuntimeServices.compaction",
+            "RuntimeServices.compaction.prepare_turn",
+            "RuntimeServices.compaction.collect",
+        ),
+    },
+    "isolation": {
+        "capability_key": RuntimeCapabilityKey.ISOLATION_MANAGER.value,
+        "resolver": "RuntimeServices.resolve_isolation_service",
+        "projection_surface": "RuntimeServices.isolation",
+        "retained_surfaces": ("RuntimeServices.isolation",),
+    },
+}
 
 
 _RUNTIME_CONTEXT_INVOCATION_BOUNDARIES = frozenset(
@@ -2375,10 +2412,50 @@ def _compatibility_boundaries_metadata(
     }
 
 
+def _serialize_owner_metadata(owner: Any | None) -> dict[str, Any] | None:
+    if owner is None:
+        return None
+    return {
+        "package_name": owner.package_name,
+        "package_role": owner.package_role,
+        "surface": owner.surface,
+        "metadata": dict(owner.metadata),
+    }
+
+
+def _package_service_protocol_metadata(services: RuntimeServices) -> dict[str, Any]:
+    compatibility_surfaces = services.metadata.get("compatibility_surfaces")
+    if not isinstance(compatibility_surfaces, Mapping):
+        compatibility_surfaces = {}
+    metadata: dict[str, Any] = {}
+    for family, spec in _PACKAGE_SERVICE_PROTOCOL_SPECS.items():
+        capability_key = str(spec["capability_key"])
+        projection_surface = str(spec["projection_surface"])
+        owner = services.capability_registry.owner(capability_key)
+        metadata[family] = {
+            "canonical_key": capability_key,
+            "resolver": str(spec["resolver"]),
+            "owner": _serialize_owner_metadata(owner),
+            "compatibility_projection": {
+                "surface": projection_surface,
+                "status": str(compatibility_surfaces.get(projection_surface) or "compatibility-only"),
+            },
+            "retained_surfaces": [
+                {
+                    "surface": surface,
+                    "status": str(compatibility_surfaces.get(surface) or "compatibility-only"),
+                }
+                for surface in spec["retained_surfaces"]
+            ],
+        }
+    return metadata
+
+
 def _protocol_only_conformance_metadata(
     *,
     distribution: str,
     compatibility_boundaries: Mapping[str, Any],
+    package_service_protocols: Mapping[str, Any],
 ) -> dict[str, Any]:
     runtime_context = compatibility_boundaries.get("runtime_context")
     task_manager = compatibility_boundaries.get("TaskManager")
@@ -2439,6 +2516,37 @@ def _protocol_only_conformance_metadata(
     }
     if task_manager_unknown:
         task_manager_finding["unknown_surfaces"] = list(task_manager_unknown)
+    privileged_service_findings: list[dict[str, Any]] = []
+    for family, spec in _PACKAGE_SERVICE_PROTOCOL_SPECS.items():
+        protocol_metadata = package_service_protocols.get(family)
+        if not isinstance(protocol_metadata, Mapping):
+            protocol_metadata = {}
+        retained_surfaces = protocol_metadata.get("retained_surfaces", ())
+        if not isinstance(retained_surfaces, Sequence):
+            retained_surfaces = ()
+        projection = protocol_metadata.get("compatibility_projection")
+        compat_surface = (
+            str(projection.get("surface"))
+            if isinstance(projection, Mapping) and projection.get("surface")
+            else str(spec["projection_surface"])
+        )
+        canonical_path = str(protocol_metadata.get("canonical_key") or spec["capability_key"])
+        evidence = [
+            str(surface.get("surface"))
+            for surface in retained_surfaces
+            if isinstance(surface, Mapping) and surface.get("surface")
+        ]
+        privileged_service_findings.append(
+            {
+                "rule_id": f"{family}_service_slot_authority",
+                "family": "privileged-service-slot",
+                "status": "pass" if canonical_path else "fail",
+                "distribution": distribution,
+                "canonical_path": canonical_path,
+                "compat_surface": compat_surface,
+                "evidence": evidence,
+            }
+        )
     return {
         "schema_version": "1.0",
         "published_metadata_paths": [
@@ -2446,10 +2554,15 @@ def _protocol_only_conformance_metadata(
             "runtime.metadata['protocol_only_conformance']",
         ],
         "findings": [
+            *privileged_service_findings,
             runtime_context_finding,
             task_manager_finding,
         ],
     }
+
+
+def _sync_package_service_protocol_metadata(services: RuntimeServices) -> None:
+    services.metadata["package_service_protocols"] = _package_service_protocol_metadata(services)
 
 
 def _sync_compatibility_boundary_metadata(services: RuntimeServices) -> None:
@@ -2459,6 +2572,9 @@ def _sync_compatibility_boundary_metadata(services: RuntimeServices) -> None:
     package_lookup = services.metadata.get("package_lookup")
     if not isinstance(package_lookup, Mapping):
         package_lookup = {}
+    package_service_protocols = services.metadata.get("package_service_protocols")
+    if not isinstance(package_service_protocols, Mapping):
+        package_service_protocols = {}
     compatibility_boundaries = _compatibility_boundaries_metadata(
         compatibility_surfaces=compatibility_surfaces,
         package_lookup=package_lookup,
@@ -2467,6 +2583,7 @@ def _sync_compatibility_boundary_metadata(services: RuntimeServices) -> None:
     services.metadata["protocol_only_conformance"] = _protocol_only_conformance_metadata(
         distribution=str(services.metadata.get("distribution") or ""),
         compatibility_boundaries=compatibility_boundaries,
+        package_service_protocols=package_service_protocols,
     )
 
 
@@ -2479,11 +2596,20 @@ def _sync_core_protocol_catalog_metadata(services: RuntimeServices) -> None:
 
 
 def _project_capability_compatibility_surfaces(services: RuntimeServices) -> None:
+    memory = services.resolve_capability(RuntimeCapabilityKey.MEMORY_SERVICE.value)
+    compaction = services.resolve_capability(RuntimeCapabilityKey.COMPACTION_MANAGER.value)
+    isolation = services.resolve_capability(RuntimeCapabilityKey.ISOLATION_MANAGER.value)
     teammates = services.resolve_capability(RuntimeCapabilityKey.TEAMMATES.value)
     control_plane = services.resolve_capability(RuntimeCapabilityKey.TEAM_CONTROL_PLANE.value)
     message_bus = services.resolve_capability(RuntimeCapabilityKey.TEAM_MESSAGE_BUS.value)
     workflows = services.resolve_capability(RuntimeCapabilityKey.TEAM_WORKFLOWS.value)
     projections = services.metadata.setdefault("compatibility_projections", {})
+    if memory is not None:
+        projections["memory"] = RuntimeCapabilityKey.MEMORY_SERVICE.value
+    if compaction is not None:
+        projections["compaction"] = RuntimeCapabilityKey.COMPACTION_MANAGER.value
+    if isolation is not None:
+        projections["isolation"] = RuntimeCapabilityKey.ISOLATION_MANAGER.value
     if teammates is not None:
         services.bind_teammates(teammates)
         projections["teammates"] = RuntimeCapabilityKey.TEAMMATES.value

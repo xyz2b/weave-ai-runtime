@@ -290,6 +290,32 @@ bounded absence 语义也需要保持明确：
 - respond helper 在相关 package 未装配时抛出 explicit not-available failure
 - `HostRuntime.emit_team_event()` 继续只是 bounded compatibility sink，不是 team state authority
 
+### 3.7 Package-Owned Memory / Compaction / Isolation Lookup Contract
+
+runtime-owned primary path 现在也把下面这些 package-service protocol surface 当 canonical authority：
+
+- service-family protocol key
+  - `runtime.memory.service`
+  - `runtime.compaction.manager`
+  - `runtime.isolation.manager`
+- shared control-plane resolver
+  - `RuntimeServices.resolve_memory_service()`
+  - `RuntimeServices.resolve_compaction_service()`
+  - `RuntimeServices.resolve_isolation_service()`
+- metadata publication
+  - `runtime.services.metadata["package_lookup"]["canonical_service_family_protocols"]`
+  - `runtime.services.metadata["package_lookup"]["canonical_service_family_resolvers"]`
+  - `runtime.services.metadata["package_service_protocols"]`
+
+而下面这些 surface 现在只应视为 compatibility-only projection：
+
+- `RuntimeServices.memory`
+- `RuntimeServices.compaction`
+- `RuntimeServices.isolation`
+
+如果需要区分 canonical binding 与 retained projection，不要再靠 slot 命名猜测；直接读取
+`package_service_protocols` / `protocol_only_conformance` metadata。
+
 ## 4. Permission 与 Elicitation 接入规范
 
 ### 4.1 Permission 的位置

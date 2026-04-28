@@ -1011,19 +1011,44 @@ def test_runtime_context_contributor_registry_exposes_canonical_stage_catalog(tm
         "registry": "RuntimeServices.context_contributor_execution_plan",
         "stage_catalog": ["memory", "hooks", "task_policy"],
     }
+    assert lookup["canonical_service_family_protocols"] == {
+        "memory": RuntimeCapabilityKey.MEMORY_SERVICE.value,
+        "compaction": RuntimeCapabilityKey.COMPACTION_MANAGER.value,
+        "isolation": RuntimeCapabilityKey.ISOLATION_MANAGER.value,
+    }
+    assert lookup["canonical_service_family_resolvers"] == {
+        "memory": "RuntimeServices.resolve_memory_service",
+        "compaction": "RuntimeServices.resolve_compaction_service",
+        "isolation": "RuntimeServices.resolve_isolation_service",
+    }
     assert lookup["compatibility_context_contributors"] == {
         "RuntimeServices.memory.collect": "compatibility-only",
         "RuntimeServices.hooks.collect": "compatibility-only",
         "RuntimeServices.task_discipline.collect": "compatibility-only",
     }
-    assert lookup["dedicated_control_plane_paths"] == {
-        "compaction": "RuntimeServices.compaction.prepare_turn / RuntimeServices.compaction.collect",
+    assert lookup["compatibility_service_projections"] == {
+        "memory": "RuntimeServices.memory",
+        "compaction": "RuntimeServices.compaction",
+        "isolation": "RuntimeServices.isolation",
     }
+    assert "RuntimeServices.memory" in lookup["compatibility_wrappers"]
+    assert "RuntimeServices.compaction" in lookup["compatibility_wrappers"]
+    assert "RuntimeServices.isolation" in lookup["compatibility_wrappers"]
+    assert lookup["wrapper_exit_criteria"][0] == (
+        "memory, compaction, and isolation runtime-owned call sites resolve through package-service protocols only"
+    )
+    assert runtime.services.metadata["compatibility_surfaces"]["RuntimeServices.memory"] == "compatibility-only"
     assert runtime.services.metadata["compatibility_surfaces"]["RuntimeServices.memory.collect"] == (
         "compatibility-only"
     )
+    assert runtime.services.metadata["compatibility_surfaces"]["RuntimeServices.compaction"] == (
+        "compatibility-only"
+    )
+    assert runtime.services.metadata["compatibility_surfaces"]["RuntimeServices.isolation"] == (
+        "compatibility-only"
+    )
     assert runtime.services.metadata["compatibility_surfaces"]["RuntimeServices.compaction.prepare_turn"] == (
-        "dedicated-control-plane"
+        "compatibility-only"
     )
     assert runtime.metadata["context_contributors"] == runtime.services.metadata["context_contributors"]
 
@@ -1170,6 +1195,102 @@ def test_runtime_publishes_compatibility_whitelists_and_protocol_only_findings(t
     }
 
 
+def test_runtime_publishes_privileged_service_protocol_metadata_and_findings(tmp_path: Path) -> None:
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            distribution=RuntimeDistribution.FULL,
+        )
+    )
+
+    protocols = runtime.services.metadata["package_service_protocols"]
+    assert runtime.metadata["package_service_protocols"] == protocols
+    assert runtime.services.metadata["compatibility_projections"]["memory"] == RuntimeCapabilityKey.MEMORY_SERVICE.value
+    assert runtime.services.metadata["compatibility_projections"]["compaction"] == (
+        RuntimeCapabilityKey.COMPACTION_MANAGER.value
+    )
+    assert runtime.services.metadata["compatibility_projections"]["isolation"] == (
+        RuntimeCapabilityKey.ISOLATION_MANAGER.value
+    )
+
+    assert protocols["memory"]["canonical_key"] == RuntimeCapabilityKey.MEMORY_SERVICE.value
+    assert protocols["memory"]["resolver"] == "RuntimeServices.resolve_memory_service"
+    assert protocols["memory"]["owner"]["package_name"] == "runtime-memory"
+    assert protocols["memory"]["compatibility_projection"] == {
+        "surface": "RuntimeServices.memory",
+        "status": "compatibility-only",
+    }
+    assert protocols["memory"]["retained_surfaces"] == [
+        {"surface": "RuntimeServices.memory", "status": "compatibility-only"},
+        {"surface": "RuntimeServices.memory.collect", "status": "compatibility-only"},
+    ]
+
+    assert protocols["compaction"]["canonical_key"] == RuntimeCapabilityKey.COMPACTION_MANAGER.value
+    assert protocols["compaction"]["resolver"] == "RuntimeServices.resolve_compaction_service"
+    assert protocols["compaction"]["owner"]["package_name"] == "runtime-compaction"
+    assert protocols["compaction"]["compatibility_projection"] == {
+        "surface": "RuntimeServices.compaction",
+        "status": "compatibility-only",
+    }
+    assert protocols["compaction"]["retained_surfaces"] == [
+        {"surface": "RuntimeServices.compaction", "status": "compatibility-only"},
+        {"surface": "RuntimeServices.compaction.prepare_turn", "status": "compatibility-only"},
+        {"surface": "RuntimeServices.compaction.collect", "status": "compatibility-only"},
+    ]
+
+    assert protocols["isolation"]["canonical_key"] == RuntimeCapabilityKey.ISOLATION_MANAGER.value
+    assert protocols["isolation"]["resolver"] == "RuntimeServices.resolve_isolation_service"
+    assert protocols["isolation"]["owner"]["package_name"] == "runtime-isolation"
+    assert protocols["isolation"]["compatibility_projection"] == {
+        "surface": "RuntimeServices.isolation",
+        "status": "compatibility-only",
+    }
+    assert protocols["isolation"]["retained_surfaces"] == [
+        {"surface": "RuntimeServices.isolation", "status": "compatibility-only"},
+    ]
+
+    findings = {
+        entry["rule_id"]: entry
+        for entry in runtime.services.metadata["protocol_only_conformance"]["findings"]
+    }
+    assert findings["memory_service_slot_authority"] == {
+        "rule_id": "memory_service_slot_authority",
+        "family": "privileged-service-slot",
+        "status": "pass",
+        "distribution": RuntimeDistribution.FULL.value,
+        "canonical_path": RuntimeCapabilityKey.MEMORY_SERVICE.value,
+        "compat_surface": "RuntimeServices.memory",
+        "evidence": [
+            "RuntimeServices.memory",
+            "RuntimeServices.memory.collect",
+        ],
+    }
+    assert findings["compaction_service_slot_authority"] == {
+        "rule_id": "compaction_service_slot_authority",
+        "family": "privileged-service-slot",
+        "status": "pass",
+        "distribution": RuntimeDistribution.FULL.value,
+        "canonical_path": RuntimeCapabilityKey.COMPACTION_MANAGER.value,
+        "compat_surface": "RuntimeServices.compaction",
+        "evidence": [
+            "RuntimeServices.compaction",
+            "RuntimeServices.compaction.prepare_turn",
+            "RuntimeServices.compaction.collect",
+        ],
+    }
+    assert findings["isolation_service_slot_authority"] == {
+        "rule_id": "isolation_service_slot_authority",
+        "family": "privileged-service-slot",
+        "status": "pass",
+        "distribution": RuntimeDistribution.FULL.value,
+        "canonical_path": RuntimeCapabilityKey.ISOLATION_MANAGER.value,
+        "compat_surface": "RuntimeServices.isolation",
+        "evidence": [
+            "RuntimeServices.isolation",
+        ],
+    }
+
+
 def test_protocol_only_conformance_flags_unclassified_runtime_context_surfaces(
     tmp_path: Path,
 ) -> None:
@@ -1303,6 +1424,29 @@ def test_runtime_team_compatibility_projections_delegate_to_canonical_capabiliti
     assert runtime.team_control_plane is canonical_plane
     assert runtime.team_message_bus is canonical_bus
     assert runtime.team_workflows is canonical_workflows
+
+
+def test_privileged_service_compatibility_projections_delegate_to_canonical_capabilities(tmp_path: Path) -> None:
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            distribution=RuntimeDistribution.FULL,
+        )
+    )
+
+    canonical_memory = runtime.services.require_capability(RuntimeCapabilityKey.MEMORY_SERVICE.value)
+    canonical_compaction = runtime.services.require_capability(RuntimeCapabilityKey.COMPACTION_MANAGER.value)
+    canonical_isolation = runtime.services.require_capability(RuntimeCapabilityKey.ISOLATION_MANAGER.value)
+    runtime.services.memory = object()
+    runtime.services.compaction = object()
+    runtime.services.isolation = object()
+
+    assert object.__getattribute__(runtime.services, "memory") is not canonical_memory
+    assert object.__getattribute__(runtime.services, "compaction") is not canonical_compaction
+    assert object.__getattribute__(runtime.services, "isolation") is not canonical_isolation
+    assert runtime.services.memory is canonical_memory
+    assert runtime.services.compaction is canonical_compaction
+    assert runtime.services.isolation is canonical_isolation
 
 
 def test_runtime_workflow_helpers_prefer_canonical_lookup_over_compatibility_slots(tmp_path: Path) -> None:

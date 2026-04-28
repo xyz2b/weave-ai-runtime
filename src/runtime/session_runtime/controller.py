@@ -594,7 +594,7 @@ class SessionController:
     async def _ensure_session_runtime_started(self) -> None:
         if self._started:
             return
-        memory_service = self._runtime_services.memory
+        memory_service = self._resolve_memory_service()
         if memory_service is not None and hasattr(memory_service, "start_session"):
             await _maybe_await(
                 memory_service.start_session(
@@ -822,7 +822,7 @@ class SessionController:
     ) -> None:
         if not _turn_effect_enabled(terminal, "persist_memory"):
             return
-        memory_service = self._runtime_services.memory
+        memory_service = self._resolve_memory_service()
         if memory_service is None or not hasattr(memory_service, "record_turn"):
             return
         if hasattr(memory_service, "record_turn_with_receipts"):
@@ -917,7 +917,7 @@ class SessionController:
     ) -> str | None:
         if not _turn_effect_enabled(terminal, "schedule_background_extraction"):
             return None
-        memory_service = self._runtime_services.memory
+        memory_service = self._resolve_memory_service()
         if memory_service is None or not hasattr(memory_service, "schedule_background_extraction"):
             return None
         task_id = await _maybe_await(
@@ -933,7 +933,7 @@ class SessionController:
         return str(task_id) if task_id is not None else None
 
     async def _schedule_background_memory_consolidation(self) -> str | None:
-        memory_service = self._runtime_services.memory
+        memory_service = self._resolve_memory_service()
         if memory_service is None or not hasattr(memory_service, "schedule_background_consolidation"):
             return None
         task_id = await _maybe_await(
@@ -948,7 +948,7 @@ class SessionController:
         return str(task_id) if task_id is not None else None
 
     def _resolve_session_memory_context(self) -> Any:
-        memory_service = self._runtime_services.memory
+        memory_service = self._resolve_memory_service()
         if memory_service is None or not hasattr(memory_service, "resolve_context"):
             return None
         return memory_service.resolve_context(
@@ -956,6 +956,9 @@ class SessionController:
             agent=self._agent,
             cwd=self._cwd,
         )
+
+    def _resolve_memory_service(self) -> Any:
+        return self._runtime_services.resolve_memory_service()
 
     def _ensure_session_memory_artifacts(self, *, status: str) -> None:
         self._call_memory_service("ensure_session_artifacts", status=status)
@@ -996,7 +999,7 @@ class SessionController:
         include_session_context: bool = True,
         **kwargs: Any,
     ) -> Any:
-        memory_service = self._runtime_services.memory
+        memory_service = self._resolve_memory_service()
         method = getattr(memory_service, method_name, None)
         if method is None:
             return None

@@ -39,6 +39,9 @@ from ..task_lists import DefaultTaskListService
 
 
 _COMPATIBILITY_CAPABILITY_PROJECTIONS = {
+    "memory": RuntimeCapabilityKey.MEMORY_SERVICE.value,
+    "compaction": RuntimeCapabilityKey.COMPACTION_MANAGER.value,
+    "isolation": RuntimeCapabilityKey.ISOLATION_MANAGER.value,
     "teammates": RuntimeCapabilityKey.TEAMMATES.value,
     "team_control_plane": RuntimeCapabilityKey.TEAM_CONTROL_PLANE.value,
     "team_message_bus": RuntimeCapabilityKey.TEAM_MESSAGE_BUS.value,
@@ -498,6 +501,21 @@ class RuntimeServices:
     def resolve_teammates(self) -> Any:
         return self.resolve_capability(RuntimeCapabilityKey.TEAMMATES.value)
 
+    def resolve_memory_service(self) -> Any:
+        return self._resolve_compatibility_projection("memory", RuntimeCapabilityKey.MEMORY_SERVICE.value)
+
+    def resolve_compaction_service(self) -> Any:
+        return self._resolve_compatibility_projection(
+            "compaction",
+            RuntimeCapabilityKey.COMPACTION_MANAGER.value,
+        )
+
+    def resolve_isolation_service(self) -> Any:
+        return self._resolve_compatibility_projection(
+            "isolation",
+            RuntimeCapabilityKey.ISOLATION_MANAGER.value,
+        )
+
     def resolve_team_control_plane(self) -> Any:
         return self.resolve_capability(RuntimeCapabilityKey.TEAM_CONTROL_PLANE.value)
 
@@ -709,7 +727,10 @@ class RuntimeServices:
 
     def _sync_context_contributor_metadata(self) -> None:
         compatibility_surfaces = self.metadata.setdefault("compatibility_surfaces", {})
+        compatibility_surfaces.setdefault("RuntimeServices.memory", "compatibility-only")
         compatibility_surfaces.setdefault(_LEGACY_MEMORY_CONTEXT_SURFACE, "compatibility-only")
+        compatibility_surfaces.setdefault("RuntimeServices.compaction", "compatibility-only")
+        compatibility_surfaces.setdefault("RuntimeServices.isolation", "compatibility-only")
         compatibility_surfaces.setdefault(_LEGACY_HOOK_CONTEXT_SURFACE, "compatibility-only")
         compatibility_surfaces.setdefault(
             _LEGACY_TASK_DISCIPLINE_CONTEXT_SURFACE,
@@ -717,11 +738,11 @@ class RuntimeServices:
         )
         compatibility_surfaces.setdefault(
             "RuntimeServices.compaction.prepare_turn",
-            "dedicated-control-plane",
+            "compatibility-only",
         )
         compatibility_surfaces.setdefault(
             "RuntimeServices.compaction.collect",
-            "dedicated-control-plane",
+            "compatibility-only",
         )
         self.metadata["context_contributors"] = {
             "stages": [
@@ -753,18 +774,26 @@ class RuntimeServices:
                     _LEGACY_TASK_DISCIPLINE_CONTEXT_SURFACE
                 ],
             },
-            "dedicated_services": {
+            "compatibility_service_projections": {
+                "memory": {
+                    "surface": "RuntimeServices.memory",
+                    "status": compatibility_surfaces["RuntimeServices.memory"],
+                },
                 "compaction": {
-                    "surface": "RuntimeServices.compaction.prepare_turn",
-                    "status": compatibility_surfaces["RuntimeServices.compaction.prepare_turn"],
-                }
+                    "surface": "RuntimeServices.compaction",
+                    "status": compatibility_surfaces["RuntimeServices.compaction"],
+                },
+                "isolation": {
+                    "surface": "RuntimeServices.isolation",
+                    "status": compatibility_surfaces["RuntimeServices.isolation"],
+                },
             },
         }
 
     def _legacy_context_contributor_bindings(self) -> tuple[ContextContributorBinding, ...]:
         bindings: list[ContextContributorBinding] = []
         if not self._context_contributor_surface_claimed(_LEGACY_MEMORY_CONTEXT_SURFACE):
-            memory = self.memory
+            memory = self.resolve_memory_service()
             if memory is not None and hasattr(memory, "collect") and not isinstance(memory, NoopMemoryService):
                 bindings.append(
                     ContextContributorBinding(
@@ -854,6 +883,14 @@ class RuntimeServices:
             surface="compatibility_context_contributor",
             metadata={"compatibility_surface": surface},
         )
+
+    def _resolve_compatibility_projection(
+        self,
+        field_name: str,
+        capability_key: str,
+    ) -> Any:
+        fallback = object.__getattribute__(self, field_name)
+        return self.resolve_capability(capability_key, fallback)
 
     def _serialize_package_owner(self, owner: PackageOwnership) -> dict[str, Any]:
         return {

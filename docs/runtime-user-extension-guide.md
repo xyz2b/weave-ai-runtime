@@ -529,11 +529,14 @@ advanced public phase 包括：
 
 除了事件 hook，本框架还保留了 request 组装前的 sidecar 注入面。
 
-核心接口是：
+当前 canonical path 分成两类：
 
-- `RuntimeServices.hooks.collect()`
-- `RuntimeServices.memory.collect()`
-- `RuntimeServices.compaction.collect()`
+- request-time context contributor
+  - `PackageContribution.context_contributors`
+- package-owned privileged control-plane service family
+  - `RuntimeServices.resolve_memory_service()`
+  - `RuntimeServices.resolve_compaction_service()`
+  - `RuntimeServices.resolve_isolation_service()`
 
 sidecar 可以返回：
 
@@ -543,8 +546,9 @@ sidecar 可以返回：
 
 用户视角怎么扩：
 
-1. 如果你的逻辑本质上是“在请求发给模型前补充上下文”，优先用 sidecar。
+1. 如果你的逻辑本质上是“在请求发给模型前补充上下文”，优先用 `PackageContribution.context_contributors`。
 2. 如果你的逻辑本质上是“在某个 phase 上拦截事件”，优先用 `HookBus`。
+3. `RuntimeServices.memory`、`RuntimeServices.compaction`、`RuntimeServices.isolation` 仍保留，但它们现在只是 compatibility projection；不要把这些 slot 当成新的 source of truth。
 
 ### 3.5 Permission 与 Elicitation：交互控制面
 

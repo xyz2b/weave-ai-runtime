@@ -5,7 +5,8 @@ from runtime.agent_execution import AgentExecutionSpec, AgentRunStatus, InMemory
 from runtime.agent_execution_service import AgentExecutionService
 from runtime.agent_runtime import AgentInvocation
 from runtime.contracts import MessageRole, RuntimeMessage
-from runtime.definitions import AgentDefinition
+from runtime.definitions import AgentDefinition, IsolationMode
+from runtime.isolation import IsolationLease
 from runtime.registries import AgentRegistry, SkillRegistry, ToolRegistry
 from runtime.runtime_services import RuntimeServices
 from runtime.session_runtime import FileTranscriptStore, SessionController
@@ -178,7 +179,6 @@ def test_terminal_child_run_completing_during_parent_turn_is_queued_for_later_dr
         ]
         == "Child run 'verification' completed without a textual assistant summary."
     )
-
     controller.state.status = SessionStatus.READY
     controller.state.active_turn_id = None
 
@@ -187,6 +187,82 @@ def test_terminal_child_run_completing_during_parent_turn_is_queued_for_later_dr
     assert model_client.requests[0].query_source == "task_notification"
     assert produced[-1].text == "Queued after parent turn"
     assert controller.state.status == SessionStatus.READY
+
+
+def test_child_execution_uses_canonical_isolation_resolver(tmp_path: Path) -> None:
+    class BrokenIsolationSlot:
+        async def prepare(self, **_kwargs):
+            raise AssertionError("raw isolation slot should not be used")
+
+        async def cleanup(self, _lease):
+            raise AssertionError("raw isolation slot should not be used")
+
+    class RecordingIsolationService:
+        def __init__(self) -> None:
+            self.prepared: list[dict[str, object]] = []
+            self.cleaned: list[dict[str, object]] = []
+
+        async def prepare(self, **kwargs):
+            self.prepared.append(dict(kwargs))
+            return IsolationLease(
+                session_id=kwargs["session_id"],
+                agent_name=kwargs["agent_name"],
+                mode=kwargs["mode"],
+                working_directory=kwargs["cwd"],
+                adapter_name="RecordingIsolationService",
+            )
+
+        async def cleanup(self, lease) -> None:
+            self.cleaned.append(
+                {
+                    "session_id": lease.session_id,
+                    "agent_name": lease.agent_name,
+                    "mode": lease.mode,
+                    "working_directory": lease.working_directory,
+                }
+            )
+
+    class ResolverOnlyRuntimeServices(RuntimeServices):
+        def __init__(self, canonical_isolation: RecordingIsolationService) -> None:
+            super().__init__(isolation=BrokenIsolationSlot())
+            self._canonical_isolation = canonical_isolation
+
+        def resolve_isolation_service(self):
+            return getattr(self, "_canonical_isolation", object.__getattribute__(self, "isolation"))
+
+    model_client = FakeModelClient(
+        [
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-isolation-resolver"}),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "done"}),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+            ]
+        ]
+    )
+    canonical_isolation = RecordingIsolationService()
+    services = ResolverOnlyRuntimeServices(canonical_isolation)
+    _turn_engine, execution_service = _build_execution_service(tmp_path, services=services, model_client=model_client)
+    invocation, spec = _child_invocation(
+        tmp_path,
+        session_id="session-isolation-resolver",
+        run_id="child-run-isolation-resolver",
+    )
+
+    result = asyncio.run(execution_service.run(invocation, spec))
+
+    assert result.status == AgentRunStatus.COMPLETED.value
+    assert len(canonical_isolation.prepared) == 1
+    assert canonical_isolation.prepared[0]["session_id"] == "session-isolation-resolver"
+    assert canonical_isolation.prepared[0]["agent_name"] == "verification"
+    assert canonical_isolation.prepared[0]["mode"] == IsolationMode.NONE
+    assert canonical_isolation.prepared[0]["cwd"] == tmp_path
+    assert len(canonical_isolation.cleaned) == 1
+    assert canonical_isolation.cleaned[0] == {
+        "session_id": "session-isolation-resolver",
+        "agent_name": "verification",
+        "mode": IsolationMode.NONE,
+        "working_directory": tmp_path,
+    }
 
 
 def test_child_run_continuation_dedupes_session_delivery_but_not_child_run_observability(tmp_path: Path) -> None:

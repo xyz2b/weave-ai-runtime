@@ -626,7 +626,7 @@ class _PreTurnSidecarSupervisor:
             return
         self._memory_task = asyncio.create_task(
             self._engine._collect_control_plane_fragments_with_context(
-                self._engine._runtime_services.memory,
+                self._engine._resolve_memory_service(),
                 **task_kwargs,
             )
         )
@@ -802,7 +802,7 @@ class TurnEngine:
         self._active_abort_signal: ModelAbortSignal | None = None
         self._child_run_events: dict[tuple[str, str], list[AgentRunRecord]] = {}
         self._context_control_plane = context_control_plane or DefaultContextControlPlane(
-            compaction_service=self._runtime_services.compaction,
+            compaction_service=self._resolve_compaction_service(),
             default_config=self._runtime_services.metadata.get("context_control"),
         )
         self._recovery_policy = recovery_policy or DefaultRecoveryPolicy()
@@ -810,6 +810,12 @@ class TurnEngine:
     @property
     def runtime_services(self) -> RuntimeServices:
         return self._runtime_services
+
+    def _resolve_memory_service(self) -> Any:
+        return self._runtime_services.resolve_memory_service()
+
+    def _resolve_compaction_service(self) -> Any:
+        return self._runtime_services.resolve_compaction_service()
 
     def _resolve_route_runtime_metadata(
         self,
@@ -2591,7 +2597,7 @@ class TurnEngine:
         private_context: RuntimePrivateContext,
         runtime_context: Mapping[str, object] | None,
     ) -> CompactionResult:
-        service = self._runtime_services.compaction
+        service = self._resolve_compaction_service()
         if service is not None and hasattr(service, "prepare_turn"):
             prepared = await maybe_await(
                 service.prepare_turn(
@@ -2651,7 +2657,7 @@ class TurnEngine:
         agent: AgentDefinition,
         cwd: str,
     ):
-        memory_service = self._runtime_services.memory
+        memory_service = self._resolve_memory_service()
         if memory_service is not None and hasattr(memory_service, "resolve_context"):
             resolved = memory_service.resolve_context(session_id=session_id, agent=agent, cwd=cwd)
             scope = getattr(resolved, "scope", None)

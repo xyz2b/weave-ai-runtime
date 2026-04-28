@@ -428,6 +428,85 @@ def test_runtime_services_contribute_context_during_request_assembly() -> None:
     assert "Hook line" in request.system_prompt
 
 
+def test_turn_engine_uses_canonical_memory_and_compaction_resolvers() -> None:
+    class BrokenMemorySlot:
+        pass
+
+    class BrokenCompactionSlot:
+        async def prepare_turn(self, **_kwargs):
+            raise AssertionError("raw compaction slot should not be used")
+
+    class RecordingMemoryService:
+        async def collect(self, **kwargs):
+            _ = kwargs
+            return ("Memory via resolver",)
+
+    class RecordingCompactionService:
+        def __init__(self) -> None:
+            self.calls: list[tuple[object, ...]] = []
+
+        async def prepare_turn(self, **kwargs):
+            messages = tuple(kwargs["messages"])
+            self.calls.append(messages)
+            policy = CompactionPolicy(enabled=False)
+            return CompactionResult(
+                messages=messages,
+                policy=policy,
+                pressure=evaluate_context_pressure(messages, policy),
+            )
+
+    class ResolverOnlyRuntimeServices(RuntimeServices):
+        def __init__(self, memory_service: RecordingMemoryService, compaction_service: RecordingCompactionService):
+            super().__init__(
+                memory=BrokenMemorySlot(),
+                compaction=BrokenCompactionSlot(),
+                context_assembler=ContextAssembler(),
+            )
+            self._memory_service = memory_service
+            self._compaction_service = compaction_service
+
+        def resolve_memory_service(self):
+            return getattr(self, "_memory_service", object.__getattribute__(self, "memory"))
+
+        def resolve_compaction_service(self):
+            return getattr(self, "_compaction_service", object.__getattribute__(self, "compaction"))
+
+    model_client = BatchedModelClient(
+        [
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-resolver-services"}),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "done"}),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+            ]
+        ]
+    )
+    memory_service = RecordingMemoryService()
+    compaction_service = RecordingCompactionService()
+    services = ResolverOnlyRuntimeServices(memory_service, compaction_service)
+    engine = TurnEngine(
+        model_client=model_client,
+        tool_registry=ToolRegistry(),
+        runtime_services=services,
+    )
+    agent = AgentDefinition(name="main-router", description="router", prompt="Answer")
+
+    asyncio.run(
+        engine.run_turn(
+            session_id="session",
+            turn_id="turn",
+            agent=agent,
+            cwd=".",
+            messages=[],
+            base_system_prompt="System",
+        )
+    )
+
+    request = model_client.requests[0]
+    assert request.turn_context.memory_fragments == ("Memory via resolver",)
+    assert request.turn_context.prompt_context.memory_fragments == ("Memory via resolver",)
+    assert compaction_service.calls == [()]
+
+
 def test_sidecar_private_updates_cannot_reintroduce_prompt_updates() -> None:
     class LeakyLegacySidecar:
         async def collect(self, **kwargs):

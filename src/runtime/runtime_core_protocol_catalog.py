@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, Mapping
 
-from .runtime_package_protocols import PackageOwnership
+from .runtime_package_protocols import PackageOwnership, RuntimeCapabilityKey
 
 CORE_PROTOCOL_CATALOG_SCHEMA_VERSION = "1.0"
 
@@ -25,7 +25,12 @@ def core_protocol_compatibility_surfaces() -> dict[str, str]:
     return {
         "TaskManager": "compatibility-only",
         "RuntimeConfig.extra_invocation_providers": "bounded-compatibility",
+        "RuntimeServices.memory": "compatibility-only",
         "RuntimeServices.memory.collect": "compatibility-only",
+        "RuntimeServices.compaction": "compatibility-only",
+        "RuntimeServices.compaction.prepare_turn": "compatibility-only",
+        "RuntimeServices.compaction.collect": "compatibility-only",
+        "RuntimeServices.isolation": "compatibility-only",
         "RuntimeServices.hooks.collect": "compatibility-only",
         "RuntimeServices.task_discipline.collect": "compatibility-only",
         "HostRuntime.emit_team_event": "bounded-compatibility",
@@ -37,6 +42,11 @@ def core_protocol_package_lookup_sections() -> dict[str, Any]:
         "canonical_control_plane_services": {
             "job_service": "RuntimeServices.job_service",
             "task_list_service": "RuntimeServices.task_list_service",
+        },
+        "canonical_service_family_protocols": {
+            "memory": RuntimeCapabilityKey.MEMORY_SERVICE.value,
+            "compaction": RuntimeCapabilityKey.COMPACTION_MANAGER.value,
+            "isolation": RuntimeCapabilityKey.ISOLATION_MANAGER.value,
         },
         "canonical_context_contributors": {
             "package_contributions": "PackageContribution.context_contributors",
@@ -55,6 +65,11 @@ def core_protocol_package_lookup_sections() -> dict[str, Any]:
             "RuntimeServices.memory.collect": "compatibility-only",
             "RuntimeServices.hooks.collect": "compatibility-only",
             "RuntimeServices.task_discipline.collect": "compatibility-only",
+        },
+        "compatibility_service_projections": {
+            "memory": "RuntimeServices.memory",
+            "compaction": "RuntimeServices.compaction",
+            "isolation": "RuntimeServices.isolation",
         },
         "compatibility_invocation_providers": {
             "embedder_config": "RuntimeConfig.extra_invocation_providers",

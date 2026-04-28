@@ -201,6 +201,8 @@ external package 的迁移口径也需要一起改：
 - `runtime.metadata["package_resolution"]`
 - `runtime.services.metadata["package_lookup"]`
 - `runtime.metadata["package_lookup"]`
+- `runtime.services.metadata["package_service_protocols"]`
+- `runtime.metadata["package_service_protocols"]`
 - `runtime.services.metadata["compatibility_surfaces"]`
 - `runtime.services.metadata["compatibility_boundaries"]`
 - `runtime.services.metadata["protocol_only_conformance"]`
@@ -213,15 +215,32 @@ external package 的迁移口径也需要一起改：
 - `package_resolution`
   - local package catalog、resolution request、resolved graph 与 structured diagnostics 的 source of truth
 - `package_lookup`
-  - package-specific canonical capability key、host facet key、wrapper exit criteria 的 source of truth
+  - package-specific canonical capability key、host facet key、service-family protocol key、wrapper exit criteria 的 source of truth
+- `package_service_protocols`
+  - privileged memory / compaction / isolation binding 的 canonical key、resolver、owner、compatibility projection metadata 的 source of truth
 - `compatibility_surfaces`
   - retained compatibility helper / projection 的 source of truth
 - `compatibility_boundaries`
   - raw `runtime_context` 与 `TaskManager` 剩余 whitelist / exit criteria 的 source of truth
 - `protocol_only_conformance`
-  - context-authority 与 task-authority finding 的 source of truth
+  - privileged-service-slot、context-authority 与 task-authority finding 的 source of truth
 
 这意味着 `runtime.team.control_plane`、`runtime.team.workflows`、`TaskManager`、`RuntimeServices.team_*`、`BoundHostRuntime.list_team_workflows()` 仍然重要，但它们不属于 stable core protocol catalog 本身；它们要么继续在 `package_lookup` 里表达 canonical package path，要么继续在 `compatibility_surfaces` 里表达 wrapper status。
+
+同样，memory / compaction / isolation 这三类 package-owned privileged service 也应按下面的口径迁移：
+
+- canonical metadata key
+  - `runtime.services.metadata["package_lookup"]["canonical_service_family_protocols"]`
+- canonical resolver
+  - `RuntimeServices.resolve_memory_service()`
+  - `RuntimeServices.resolve_compaction_service()`
+  - `RuntimeServices.resolve_isolation_service()`
+- detailed ownership / projection metadata
+  - `runtime.services.metadata["package_service_protocols"]`
+- compatibility-only projection
+  - `RuntimeServices.memory`
+  - `RuntimeServices.compaction`
+  - `RuntimeServices.isolation`
 
 ## 4.6 Explicit Non-Goals
 

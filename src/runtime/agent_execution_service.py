@@ -204,7 +204,7 @@ class AgentExecutionService:
                 memory=policy.memory_scope,
                 isolation=policy.isolation_mode,
             )
-            memory_service = self._runtime_services.memory
+            memory_service = self._runtime_services.resolve_memory_service()
             isolation_lease = await self._prepare_isolation(execution_spec, agent, policy)
             if memory_service is not None and hasattr(memory_service, "start_session"):
                 await _maybe_await(
@@ -287,7 +287,7 @@ class AgentExecutionService:
             if owner is not None and self._runtime_services.hook_bus is not None:
                 self._runtime_services.hook_bus.release_owner(execution_spec.session_id, owner)
             if isolation_lease is not None:
-                await self._runtime_services.isolation.cleanup(isolation_lease)
+                await self._runtime_services.resolve_isolation_service().cleanup(isolation_lease)
 
     async def write_running_record(
         self,
@@ -344,7 +344,7 @@ class AgentExecutionService:
         agent: AgentDefinition,
         policy: ExecutionPolicy,
     ) -> IsolationLease:
-        return await self._runtime_services.isolation.prepare(
+        return await self._runtime_services.resolve_isolation_service().prepare(
             session_id=execution_spec.session_id,
             agent_name=agent.name,
             mode=policy.isolation_mode,

@@ -250,6 +250,63 @@ def test_session_controller_resume_then_start_dispatches_session_open_once(tmp_p
     assert controller.state.status == SessionStatus.READY
 
 
+def test_session_controller_uses_canonical_memory_resolver_for_session_start(tmp_path: Path) -> None:
+    class BrokenMemorySlot:
+        pass
+
+    class RecordingMemoryService:
+        def __init__(self) -> None:
+            self.started: list[dict[str, object]] = []
+            self.artifacts: list[dict[str, object]] = []
+
+        async def start_session(self, **kwargs):
+            self.started.append(dict(kwargs))
+
+        def ensure_session_artifacts(self, **kwargs) -> None:
+            self.artifacts.append(dict(kwargs))
+
+    class ResolverOnlyRuntimeServices(RuntimeServices):
+        def __init__(self, canonical_memory: RecordingMemoryService) -> None:
+            super().__init__(memory=BrokenMemorySlot())
+            self._canonical_memory = canonical_memory
+
+        def resolve_memory_service(self):
+            return getattr(self, "_canonical_memory", object.__getattribute__(self, "memory"))
+
+    canonical_memory = RecordingMemoryService()
+    services = ResolverOnlyRuntimeServices(canonical_memory)
+    agent = AgentDefinition(name="main-router", description="router", prompt="Route the turn")
+    controller = SessionController(
+        session_id="session-resolver",
+        agent=agent,
+        turn_engine=TurnEngine(
+            model_client=FakeModelClient([]),
+            tool_registry=ToolRegistry(),
+            runtime_services=services,
+        ),
+        transcript_store=FileTranscriptStore(tmp_path / "transcripts"),
+        cwd=str(tmp_path),
+        system_prompt="System prompt",
+        runtime_services=services,
+    )
+
+    asyncio.run(controller._ensure_session_runtime_started())
+
+    assert len(canonical_memory.started) == 1
+    assert canonical_memory.started[0]["session_id"] == "session-resolver"
+    assert canonical_memory.started[0]["agent"] == agent
+    assert canonical_memory.started[0]["cwd"] == str(tmp_path)
+    assert canonical_memory.started[0]["set_default"] is True
+    assert canonical_memory.artifacts == [
+        {
+            "session_id": "session-resolver",
+            "agent": agent,
+            "cwd": str(tmp_path),
+            "status": "active",
+        }
+    ]
+
+
 def test_session_controller_close_is_idempotent(tmp_path: Path) -> None:
     services = RuntimeServices()
     session_end_statuses: list[str] = []

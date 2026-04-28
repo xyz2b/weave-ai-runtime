@@ -1054,7 +1054,18 @@ runtime 会按固定顺序注册 provider：built-in skill baseline -> package c
 
 legacy `RuntimeServices.memory.collect()`、`RuntimeServices.hooks.collect()`、
 `RuntimeServices.task_discipline.collect()` 仍可用于兼容旧接入，但不应再作为新的 primary integration point。
-`CompactionManager` 继续走专用 `prepare_turn() / collect()` 路径，因为它拥有 main-loop continuation 语义，而不只是 append-only context collection。
+
+如果你要让 runtime-owned path 解析 package-owned memory / compaction / isolation 行为，canonical lookup
+应改成：
+
+- `RuntimeServices.resolve_memory_service()`
+- `RuntimeServices.resolve_compaction_service()`
+- `RuntimeServices.resolve_isolation_service()`
+
+对应的 canonical metadata key 会发布在
+`runtime.services.metadata["package_lookup"]["canonical_service_family_protocols"]`；旧的
+`RuntimeServices.memory`、`RuntimeServices.compaction`、`RuntimeServices.isolation`
+只保留为 compatibility projection。
 
 ### 8.5 Runtime-Owned Team Mode
 

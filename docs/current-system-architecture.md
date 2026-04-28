@@ -319,7 +319,16 @@ helper 语义也已经固定：
   - canonical bind: `RuntimeAssembly.bind_host()`
   - discovery: `RuntimeServices.host`
 
-`package_lookup` 继续是 package-specific canonical key / wrapper status 的 source of truth；`compatibility_surfaces` 继续只记录 retained helper surface，例如 `TaskManager`、`RuntimeServices.memory.collect()` 与 `HostRuntime.emit_team_event()`。
+`package_lookup` 继续是 package-specific canonical key / wrapper status 的 source of truth；现在也会发布 privileged service family 的 canonical key：
+
+- `runtime.memory.service`
+- `runtime.compaction.manager`
+- `runtime.isolation.manager`
+
+owner-layer runtime path 应通过 `RuntimeServices.resolve_memory_service()`、
+`RuntimeServices.resolve_compaction_service()`、
+`RuntimeServices.resolve_isolation_service()` 消费这些 canonical binding。
+`package_service_protocols` 会额外发布 owner / resolver / retained-surface metadata；`compatibility_surfaces` 则继续只记录 retained helper / projection，例如 `TaskManager`、`RuntimeServices.memory`、`RuntimeServices.compaction`、`RuntimeServices.isolation` 与 `HostRuntime.emit_team_event()`。
 
 ### 4.2 会话层
 
@@ -828,7 +837,18 @@ package-owned collect-style request-time context 应通过
 
 legacy `RuntimeServices.memory.collect()`、`RuntimeServices.hooks.collect()`、
 `RuntimeServices.task_discipline.collect()` 仍保留，但应只视为 compatibility adapter，而不是新的 primary integration point。
-`CompactionManager` 仍走 dedicated `prepare_turn() / collect()` path。
+memory / compaction / isolation 这三类 package-owned control-plane service 现在统一走 package-service protocol binding：
+
+- canonical key
+  - `runtime.memory.service`
+  - `runtime.compaction.manager`
+  - `runtime.isolation.manager`
+- owner-layer resolver
+  - `RuntimeServices.resolve_memory_service()`
+  - `RuntimeServices.resolve_compaction_service()`
+  - `RuntimeServices.resolve_isolation_service()`
+
+旧的 `RuntimeServices.memory`、`RuntimeServices.compaction`、`RuntimeServices.isolation` 仍保留，但只应视为 compatibility projection。
 
 ### 13.6 Memory Policy 扩展
 

@@ -686,7 +686,8 @@ def _guarded_memory_roots(context: Any) -> tuple[Path, ...]:
     runtime_services = getattr(context, "runtime_services", None)
     if runtime_services is None:
         return ()
-    memory_service = getattr(runtime_services, "memory", None)
+    resolver = getattr(runtime_services, "resolve_memory_service", None)
+    memory_service = resolver() if callable(resolver) else getattr(runtime_services, "memory", None)
     if memory_service is None or not hasattr(memory_service, "guarded_roots"):
         return ()
     agent = None

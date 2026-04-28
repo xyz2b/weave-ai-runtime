@@ -2,8 +2,11 @@ import asyncio
 import time
 from pathlib import Path
 
+import runtime.tool_runtime as tool_runtime_module
+from runtime.builtins import tool_impls as builtins_tool_impls
 from runtime.permissions import PermissionContext
 from runtime.definitions import (
+    AgentDefinition,
     PermissionBehavior,
     PermissionDecision,
     PermissionMode,
@@ -12,6 +15,7 @@ from runtime.definitions import (
     ValidationOutcome,
 )
 from runtime.registries import ToolRegistry
+from runtime.runtime_services import RuntimeServices
 from runtime.tool_runtime import (
     ToolCall,
     ToolCallStatus,
@@ -179,3 +183,52 @@ def test_tool_context_exposes_runtime_private_context(tmp_path: Path) -> None:
     assert context.private_context.run_id == "run-1"
     assert context.private_context.parent_run_id == "run-0"
     assert context.private_context.extensions["query_source"] == "agent_tool"
+
+
+def test_guarded_memory_roots_use_canonical_memory_resolver(tmp_path: Path) -> None:
+    class BrokenMemorySlot:
+        pass
+
+    class RecordingMemoryService:
+        def __init__(self, roots: tuple[Path, ...]) -> None:
+            self._roots = roots
+            self.calls: list[dict[str, object]] = []
+
+        def guarded_roots(self, **kwargs):
+            self.calls.append(dict(kwargs))
+            return self._roots
+
+    class ResolverOnlyRuntimeServices(RuntimeServices):
+        def __init__(self, canonical_memory: RecordingMemoryService) -> None:
+            super().__init__(memory=BrokenMemorySlot())
+            self._canonical_memory = canonical_memory
+
+        def resolve_memory_service(self):
+            return getattr(self, "_canonical_memory", object.__getattribute__(self, "memory"))
+
+    guarded_root = tmp_path / ".runtime" / "memory" / "shared"
+    canonical_memory = RecordingMemoryService((guarded_root,))
+    services = ResolverOnlyRuntimeServices(canonical_memory)
+    context = ToolContext(
+        session_id="session-guarded",
+        turn_id="turn-guarded",
+        agent_name="main-router",
+        cwd=tmp_path,
+        tool_registry=ToolRegistry(),
+        runtime_services=services,
+    )
+
+    assert tool_runtime_module._guarded_memory_roots(context) == (guarded_root.resolve(),)
+    assert builtins_tool_impls._guarded_memory_roots(context) == (guarded_root.resolve(),)
+    assert canonical_memory.calls == [
+        {
+            "session_id": "session-guarded",
+            "agent": AgentDefinition(name="main-router", description="", prompt=""),
+            "cwd": tmp_path,
+        },
+        {
+            "session_id": "session-guarded",
+            "agent": AgentDefinition(name="main-router", description="", prompt=""),
+            "cwd": tmp_path,
+        },
+    ]
