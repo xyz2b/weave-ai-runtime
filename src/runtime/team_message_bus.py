@@ -16,6 +16,7 @@ from .team_control_plane import (
     TeamMemberRecord,
     TeamRole,
     TeamStatus,
+    team_event_to_extension_event,
 )
 from .team_workflows import (
     TeamWorkflowKind,
@@ -844,18 +845,20 @@ class RuntimeTeamMessageBus:
         correlation_id: str | None = None,
         payload: Mapping[str, Any] | None = None,
     ) -> None:
-        if self._runtime_services.host is None or not hasattr(self._runtime_services.host, "emit_team_event"):
+        if self._runtime_services.host is None or not hasattr(self._runtime_services.host, "emit_extension_event"):
             return
-        await self._runtime_services.host.emit_team_event(
-            TeamEvent(
-                event_id=uuid4().hex,
-                event_type=event_type,
-                team_id=team.team_id,
-                leader_session_id=team.leader_session_id,
-                member_id=member_id,
-                message_id=message_id,
-                correlation_id=correlation_id,
-                payload=_coerce_mapping(payload),
+        await self._runtime_services.host.emit_extension_event(
+            team_event_to_extension_event(
+                TeamEvent(
+                    event_id=uuid4().hex,
+                    event_type=event_type,
+                    team_id=team.team_id,
+                    leader_session_id=team.leader_session_id,
+                    member_id=member_id,
+                    message_id=message_id,
+                    correlation_id=correlation_id,
+                    payload=_coerce_mapping(payload),
+                )
             )
         )
 

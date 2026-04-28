@@ -276,19 +276,19 @@ runtime-owned team / workflow path 现在应把下面这些 surface 当 canonica
   - `RuntimeServices.job_service`
   - `RuntimeServices.task_list_service`
 
-而下面这些 surface 现在只应视为 compatibility-only wrapper / projection：
+而已删除的 team bridge / helper 现在统一按 replacement matrix 迁移：
 
-- `RuntimeServices.team_*`
-- `RuntimeAssembly.team_*`
-- `BoundHostRuntime.list_team_workflows()`
-- `BoundHostRuntime.respond_team_workflow()`
-- `TaskManager`
+- `RuntimeServices.team_*` -> `RuntimeServices.resolve_team_*()`
+- `RuntimeAssembly.team_*` -> `RuntimeAssembly.resolve_capability(...)`
+- bound-host workflow helper -> `RuntimeHostFacetKey.TEAM_WORKFLOWS`
+- `HostRuntime.emit_team_event()` -> `HostRuntime.emit_extension_event(HostExtensionEvent(namespace="runtime.team", ...))`
+- `TaskManager` 仍然是 compatibility wrapper
 
-bounded absence 语义也需要保持明确：
+team-absent 语义也需要保持明确：
 
-- list helper 在相关 package 未装配时返回空结果
-- respond helper 在相关 package 未装配时抛出 explicit not-available failure
-- `HostRuntime.emit_team_event()` 继续只是 bounded compatibility sink，不是 team state authority
+- `RuntimeServices.resolve_team_*()` 在未装配 `runtime-team` 时返回 `None`
+- `RuntimeAssembly.resolve_host_facet(RuntimeHostFacetKey.TEAM_WORKFLOWS.value)` 在未装配 `runtime-team` 时返回 `not_available`
+- `runtime.team` namespace 的 extension event 只会在装配了 `runtime-team` 时出现
 
 ### 3.7 Package-Owned Memory / Compaction / Isolation Lookup Contract
 

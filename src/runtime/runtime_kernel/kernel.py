@@ -120,9 +120,6 @@ SKILL_DYNAMIC_ROOTS_KEY = "skill_dynamic_roots"
 _UNSET = object()
 _COMPATIBILITY_RUNTIME_ASSEMBLY_PROJECTIONS = {
     "teammates": RuntimeCapabilityKey.TEAMMATES.value,
-    "team_control_plane": RuntimeCapabilityKey.TEAM_CONTROL_PLANE.value,
-    "team_message_bus": RuntimeCapabilityKey.TEAM_MESSAGE_BUS.value,
-    "team_workflows": RuntimeCapabilityKey.TEAM_WORKFLOWS.value,
 }
 
 
@@ -300,9 +297,6 @@ class RuntimeAssembly:
     _task_manager: TaskManager | None
     job_service: DefaultJobService
     teammates: Any = None
-    team_control_plane: Any = None
-    team_message_bus: Any = None
-    team_workflows: Any = None
     system_prompt: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -1629,9 +1623,6 @@ def _assemble_runtime_stack(kernel: RuntimeKernel) -> RuntimeAssembly:
     _sync_compatibility_boundary_metadata(services)
     _sync_core_protocol_catalog_metadata(services)
     teammates = services.resolve_capability(RuntimeCapabilityKey.TEAMMATES.value)
-    team_control_plane = services.resolve_capability(RuntimeCapabilityKey.TEAM_CONTROL_PLANE.value)
-    team_message_bus = services.resolve_capability(RuntimeCapabilityKey.TEAM_MESSAGE_BUS.value)
-    team_workflows = services.resolve_capability(RuntimeCapabilityKey.TEAM_WORKFLOWS.value)
     runtime = RuntimeAssembly(
         kernel=kernel,
         services=services,
@@ -1642,9 +1633,6 @@ def _assemble_runtime_stack(kernel: RuntimeKernel) -> RuntimeAssembly:
         _task_manager=task_manager,
         job_service=services.job_service,
         teammates=teammates,
-        team_control_plane=team_control_plane,
-        team_message_bus=team_message_bus,
-        team_workflows=team_workflows,
         system_prompt=kernel.config.system_prompt,
         metadata={
             **dict(kernel.config.metadata),
@@ -1657,6 +1645,7 @@ def _assemble_runtime_stack(kernel: RuntimeKernel) -> RuntimeAssembly:
             "package_runtime_contributions": [manifest.name for manifest, _ in runtime_package_contributions],
             "core_protocol_catalog": dict(services.metadata.get("core_protocol_catalog", {})),
             "package_lookup": dict(services.metadata.get("package_lookup", {})),
+            "migration": dict(services.metadata.get("migration", {})),
             "context_contributors": dict(services.metadata.get("context_contributors", {})),
             "compatibility_surfaces": dict(services.metadata.get("compatibility_surfaces", {})),
             "compatibility_boundaries": dict(services.metadata.get("compatibility_boundaries", {})),
@@ -1733,15 +1722,7 @@ def _build_runtime_services(kernel: RuntimeKernel) -> RuntimeServices:
         **core_protocol_compatibility_surfaces(),
         "runtime_context": "compatibility-only",
         "RuntimeServices.teammates": "compatibility-only",
-        "RuntimeServices.team_control_plane": "compatibility-only",
-        "RuntimeServices.team_message_bus": "compatibility-only",
-        "RuntimeServices.team_workflows": "compatibility-only",
         "RuntimeAssembly.teammates": "compatibility-only",
-        "RuntimeAssembly.team_control_plane": "compatibility-only",
-        "RuntimeAssembly.team_message_bus": "compatibility-only",
-        "RuntimeAssembly.team_workflows": "compatibility-only",
-        "BoundHostRuntime.list_team_workflows": "compatibility-wrapper",
-        "BoundHostRuntime.respond_team_workflow": "compatibility-wrapper",
     }
     metadata["package_lookup"] = _package_lookup_metadata()
     metadata["invocation_provider_paths"] = _invocation_provider_paths_metadata()
@@ -2115,23 +2096,22 @@ def _package_lookup_metadata() -> dict[str, Any]:
         "compatibility_invocation_providers": dict(core_sections["compatibility_invocation_providers"]),
         "canonical_lifecycle_phase": PackageLifecyclePhase.SESSION_OPEN.value,
         "canonical_post_ingress_path": "completion_receipts",
+        "canonical_extension_event_contract": {
+            "emit": "HostRuntime.emit_extension_event",
+            "envelope": "runtime.hosts.HostExtensionEvent",
+            "unknown_namespace_behavior": "ignore_or_handle_generically",
+        },
         "compatibility_wrappers": [
             "TaskManager",
             "RuntimeServices.memory",
             "RuntimeServices.compaction",
             "RuntimeServices.isolation",
             "RuntimeServices.teammates",
-            "RuntimeServices.team_*",
             "RuntimeAssembly.teammates",
-            "RuntimeAssembly.team_*",
-            "BoundHostRuntime.list_team_workflows",
-            "BoundHostRuntime.respond_team_workflow",
-            "HostRuntime.emit_team_event",
         ],
         "wrapper_exit_criteria": [
             "memory, compaction, and isolation runtime-owned call sites resolve through package-service protocols only",
-            "runtime-owned workflow helpers resolve through capability lookup or host facets only",
-            "team compatibility projections stop being required by runtime-owned primary paths",
+            "teammate orchestration callers resolve through capability lookup only",
             "TaskManager usage remains compatibility-scoped behind JobService and TaskListService",
         ],
     }
@@ -2452,11 +2432,109 @@ def _package_service_protocol_metadata(services: RuntimeServices) -> dict[str, A
     return metadata
 
 
+def _team_protocol_only_findings(
+    *,
+    distribution: str,
+    team_protocol_only: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    if not team_protocol_only:
+        return []
+    replacement_matrix = team_protocol_only.get("replacement_matrix", ())
+    if not isinstance(replacement_matrix, Sequence):
+        replacement_matrix = ()
+    replacement_map = {
+        str(entry.get("surface")): entry
+        for entry in replacement_matrix
+        if isinstance(entry, Mapping) and entry.get("surface")
+    }
+    team_selected = bool(team_protocol_only.get("team_package_selected"))
+    host_facet = team_protocol_only.get("host_facet_keys")
+    if not isinstance(host_facet, Mapping):
+        host_facet = {}
+    extension_contract = team_protocol_only.get("extension_event_contract")
+    if not isinstance(extension_contract, Mapping):
+        extension_contract = {}
+
+    workflow_surfaces = (
+        "BoundHostRuntime.list_team_workflows",
+        "BoundHostRuntime.respond_team_workflow",
+    )
+    workflow_finding = {
+        "rule_id": "team_workflow_wrapper_authority",
+        "family": "team-bridge",
+        "status": (
+            "pass"
+            if all(surface in replacement_map for surface in workflow_surfaces)
+            else "fail"
+        ),
+        "distribution": distribution,
+        "canonical_path": "RuntimeAssembly.resolve_host_facet(RuntimeHostFacetKey.TEAM_WORKFLOWS.value)",
+        "compat_surface": "BoundHostRuntime.list_team_workflows",
+        "replacement_path": "RuntimeHostFacetKey.TEAM_WORKFLOWS.value",
+        "availability": "team-present" if team_selected else "team-absent",
+        "evidence": [
+            *workflow_surfaces,
+            str(host_facet.get("team_workflows") or RuntimeHostFacetKey.TEAM_WORKFLOWS.value),
+        ],
+    }
+
+    host_event_surface = "HostRuntime.emit_team_event"
+    host_event_finding = {
+        "rule_id": "team_host_event_bridge_authority",
+        "family": "team-bridge",
+        "status": "pass" if host_event_surface in replacement_map else "fail",
+        "distribution": distribution,
+        "canonical_path": "HostRuntime.emit_extension_event",
+        "compat_surface": host_event_surface,
+        "replacement_path": str(
+            replacement_map.get(host_event_surface, {}).get("replacement_path")
+            or "HostRuntime.emit_extension_event"
+        ),
+        "availability": "team-present" if team_selected else "team-absent",
+        "evidence": [
+            "HostRuntime.emit_extension_event",
+            str(extension_contract.get("namespace") or "runtime.team"),
+        ],
+    }
+
+    projection_surfaces = (
+        "RuntimeServices.team_control_plane",
+        "RuntimeServices.team_message_bus",
+        "RuntimeServices.team_workflows",
+        "RuntimeAssembly.team_control_plane",
+        "RuntimeAssembly.team_message_bus",
+        "RuntimeAssembly.team_workflows",
+    )
+    projection_finding = {
+        "rule_id": "team_runtime_projection_authority",
+        "family": "team-bridge",
+        "status": (
+            "pass"
+            if all(surface in replacement_map for surface in projection_surfaces)
+            else "fail"
+        ),
+        "distribution": distribution,
+        "canonical_path": (
+            "RuntimeServices.resolve_team_* / "
+            "RuntimeAssembly.resolve_capability(RuntimeCapabilityKey.TEAM_*.value)"
+        ),
+        "replacement_path": (
+            "RuntimeCapabilityKey.TEAM_CONTROL_PLANE / "
+            "RuntimeCapabilityKey.TEAM_MESSAGE_BUS / "
+            "RuntimeCapabilityKey.TEAM_WORKFLOWS"
+        ),
+        "availability": "team-present" if team_selected else "team-absent",
+        "evidence": list(projection_surfaces),
+    }
+    return [projection_finding, workflow_finding, host_event_finding]
+
+
 def _protocol_only_conformance_metadata(
     *,
     distribution: str,
     compatibility_boundaries: Mapping[str, Any],
     package_service_protocols: Mapping[str, Any],
+    team_protocol_only: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     runtime_context = compatibility_boundaries.get("runtime_context")
     task_manager = compatibility_boundaries.get("TaskManager")
@@ -2564,6 +2642,10 @@ def _protocol_only_conformance_metadata(
             *privileged_service_findings,
             runtime_context_finding,
             task_manager_finding,
+            *_team_protocol_only_findings(
+                distribution=distribution,
+                team_protocol_only=team_protocol_only or {},
+            ),
         ],
     }
 
@@ -2582,6 +2664,9 @@ def _sync_compatibility_boundary_metadata(services: RuntimeServices) -> None:
     package_service_protocols = services.metadata.get("package_service_protocols")
     if not isinstance(package_service_protocols, Mapping):
         package_service_protocols = {}
+    migration = services.metadata.get("migration")
+    if not isinstance(migration, Mapping):
+        migration = {}
     compatibility_boundaries = _compatibility_boundaries_metadata(
         compatibility_surfaces=compatibility_surfaces,
         package_lookup=package_lookup,
@@ -2591,6 +2676,11 @@ def _sync_compatibility_boundary_metadata(services: RuntimeServices) -> None:
         distribution=str(services.metadata.get("distribution") or ""),
         compatibility_boundaries=compatibility_boundaries,
         package_service_protocols=package_service_protocols,
+        team_protocol_only=(
+            migration.get("team_protocol_only")
+            if isinstance(migration.get("team_protocol_only"), Mapping)
+            else {}
+        ),
     )
 
 
@@ -2607,18 +2697,12 @@ def _project_capability_compatibility_surfaces(services: RuntimeServices) -> Non
     compaction = services.resolve_capability(RuntimeCapabilityKey.COMPACTION_MANAGER.value)
     isolation = services.resolve_capability(RuntimeCapabilityKey.ISOLATION_MANAGER.value)
     teammates = services.resolve_capability(RuntimeCapabilityKey.TEAMMATES.value)
-    control_plane = services.resolve_capability(RuntimeCapabilityKey.TEAM_CONTROL_PLANE.value)
-    message_bus = services.resolve_capability(RuntimeCapabilityKey.TEAM_MESSAGE_BUS.value)
-    workflows = services.resolve_capability(RuntimeCapabilityKey.TEAM_WORKFLOWS.value)
     projections = services.metadata.setdefault("compatibility_projections", {})
     for projection_name in (
         "memory",
         "compaction",
         "isolation",
         "teammates",
-        "team_control_plane",
-        "team_message_bus",
-        "team_workflows",
     ):
         projections.pop(projection_name, None)
     if memory is not None:
@@ -2630,18 +2714,6 @@ def _project_capability_compatibility_surfaces(services: RuntimeServices) -> Non
     if teammates is not None:
         services.bind_teammates(teammates)
         projections["teammates"] = RuntimeCapabilityKey.TEAMMATES.value
-    if any(component is not None for component in (control_plane, message_bus, workflows)):
-        services.bind_team_services(
-            control_plane=control_plane,
-            message_bus=message_bus,
-            workflow_service=workflows,
-        )
-        if control_plane is not None:
-            projections["team_control_plane"] = RuntimeCapabilityKey.TEAM_CONTROL_PLANE.value
-        if message_bus is not None:
-            projections["team_message_bus"] = RuntimeCapabilityKey.TEAM_MESSAGE_BUS.value
-        if workflows is not None:
-            projections["team_workflows"] = RuntimeCapabilityKey.TEAM_WORKFLOWS.value
 
 
 async def _run_runtime_lifecycle(
@@ -2765,6 +2837,105 @@ def _first_party_package_catalog(
     return catalog
 
 
+def _team_bridge_replacement_matrix() -> list[dict[str, Any]]:
+    return [
+        {
+            "surface": "RuntimeServices.team_control_plane",
+            "status": "removed",
+            "replacement_path": "RuntimeServices.resolve_team_control_plane()",
+            "team_present_semantics": "returns the canonical runtime.team.control_plane capability",
+            "team_absent_semantics": "returns None because runtime-team is not selected",
+        },
+        {
+            "surface": "RuntimeServices.team_message_bus",
+            "status": "removed",
+            "replacement_path": "RuntimeServices.resolve_team_message_bus()",
+            "team_present_semantics": "returns the canonical runtime.team.message_bus capability",
+            "team_absent_semantics": "returns None because runtime-team is not selected",
+        },
+        {
+            "surface": "RuntimeServices.team_workflows",
+            "status": "removed",
+            "replacement_path": "RuntimeServices.resolve_team_workflows()",
+            "team_present_semantics": "returns the canonical runtime.team.workflows capability",
+            "team_absent_semantics": "returns None because runtime-team is not selected",
+        },
+        {
+            "surface": "RuntimeAssembly.team_control_plane",
+            "status": "removed",
+            "replacement_path": (
+                "RuntimeAssembly.resolve_capability(RuntimeCapabilityKey.TEAM_CONTROL_PLANE.value)"
+            ),
+            "team_present_semantics": "resolves the canonical runtime.team.control_plane capability",
+            "team_absent_semantics": "returns None because runtime-team is not selected",
+        },
+        {
+            "surface": "RuntimeAssembly.team_message_bus",
+            "status": "removed",
+            "replacement_path": (
+                "RuntimeAssembly.resolve_capability(RuntimeCapabilityKey.TEAM_MESSAGE_BUS.value)"
+            ),
+            "team_present_semantics": "resolves the canonical runtime.team.message_bus capability",
+            "team_absent_semantics": "returns None because runtime-team is not selected",
+        },
+        {
+            "surface": "RuntimeAssembly.team_workflows",
+            "status": "removed",
+            "replacement_path": (
+                "RuntimeAssembly.resolve_capability(RuntimeCapabilityKey.TEAM_WORKFLOWS.value)"
+            ),
+            "team_present_semantics": "resolves the canonical runtime.team.workflows capability",
+            "team_absent_semantics": "returns None because runtime-team is not selected",
+        },
+        {
+            "surface": "BoundHostRuntime.list_team_workflows",
+            "status": "removed",
+            "replacement_path": "BoundHostRuntime.resolve_host_facet(RuntimeHostFacetKey.TEAM_WORKFLOWS.value)",
+            "team_present_semantics": "the resolved host facet lists team workflows",
+            "team_absent_semantics": "host facet resolution returns not_available without restoring helpers",
+        },
+        {
+            "surface": "BoundHostRuntime.respond_team_workflow",
+            "status": "removed",
+            "replacement_path": "BoundHostRuntime.resolve_host_facet(RuntimeHostFacetKey.TEAM_WORKFLOWS.value)",
+            "team_present_semantics": "the resolved host facet responds to team workflows",
+            "team_absent_semantics": "host facet resolution returns not_available without restoring helpers",
+        },
+        {
+            "surface": "HostRuntime.emit_team_event",
+            "status": "removed",
+            "replacement_path": "HostRuntime.emit_extension_event(HostExtensionEvent(namespace='runtime.team', ...))",
+            "team_present_semantics": "team packages emit namespace-scoped extension events",
+            "team_absent_semantics": "no runtime.team extension events are emitted",
+        },
+    ]
+
+
+def _team_protocol_only_migration_metadata(
+    *,
+    selected_packages: tuple[str, ...],
+) -> dict[str, Any]:
+    return {
+        "team_package_selected": "runtime-team" in selected_packages,
+        "capability_keys": {
+            "team_control_plane": RuntimeCapabilityKey.TEAM_CONTROL_PLANE.value,
+            "team_message_bus": RuntimeCapabilityKey.TEAM_MESSAGE_BUS.value,
+            "team_workflows": RuntimeCapabilityKey.TEAM_WORKFLOWS.value,
+        },
+        "host_facet_keys": {
+            "team_workflows": RuntimeHostFacetKey.TEAM_WORKFLOWS.value,
+        },
+        "extension_event_contract": {
+            "emit": "HostRuntime.emit_extension_event",
+            "envelope": "runtime.hosts.HostExtensionEvent",
+            "namespace": "runtime.team",
+            "schema_version": "1.0",
+            "unknown_namespace_behavior": "ignore_or_handle_generically",
+        },
+        "replacement_matrix": _team_bridge_replacement_matrix(),
+    }
+
+
 def _migration_metadata(
     *,
     selected_packages: tuple[str, ...],
@@ -2811,6 +2982,9 @@ def _migration_metadata(
             "simplify": "runtime-builtin-workflows",
         },
         "package_lookup": _package_lookup_metadata(),
+        "team_protocol_only": _team_protocol_only_migration_metadata(
+            selected_packages=selected_packages,
+        ),
     }
     return metadata
 

@@ -172,7 +172,7 @@ external package 的迁移口径也需要一起改：
 - post-ingress acknowledgement 已经只通过 ingress `completion_receipts` 执行，而不是 metadata key + controller branch
 - runtime-owned workflow helper 已经先走 capability / host-facet lookup，再把旧 helper 当 projection
 - `TaskManager` 只在 compatibility facade 里按需 materialize，而不是 runtime-owned primary path 的默认 state owner
-- `emit_team_event()` 继续只保留为 bounded compatibility sink，直到出现真正共享的 package event contract
+- package-owned host egress 已经统一切到 `HostRuntime.emit_extension_event()`，并通过 namespace-aware `HostExtensionEvent` envelope 交付
 
 当前仓库里需要优先记住的 canonical lookup key / wrapper status 也可以直接按下面核对：
 
@@ -182,16 +182,22 @@ external package 的迁移口径也需要一起改：
   - `runtime.team.workflows`
 - canonical host facet key
   - `runtime.team.workflows`
+- canonical extension event contract
+  - `HostRuntime.emit_extension_event()`
+  - `runtime.hosts.HostExtensionEvent`
+  - namespace: `runtime.team`
 - canonical control-plane services
   - `RuntimeServices.job_service`
   - `RuntimeServices.task_list_service`
-- compatibility-only wrappers
+- retained compatibility-only wrappers
   - `TaskManager`
-  - `RuntimeServices.team_*`
-  - `RuntimeAssembly.team_*`
-  - `BoundHostRuntime.list_team_workflows()`
-  - `BoundHostRuntime.respond_team_workflow()`
-  - `HostRuntime.emit_team_event()`
+  - `RuntimeServices.teammates`
+  - `RuntimeAssembly.teammates`
+
+已删除的 team bridge replacement matrix 则发布在：
+
+- `runtime.services.metadata["migration"]["team_protocol_only"]["replacement_matrix"]`
+- `runtime.metadata["migration"]["team_protocol_only"]["replacement_matrix"]`
 
 这些信息现在也会直接写进：
 
@@ -223,9 +229,9 @@ external package 的迁移口径也需要一起改：
 - `compatibility_boundaries`
   - raw `runtime_context` 与 `TaskManager` 剩余 whitelist / exit criteria 的 source of truth
 - `protocol_only_conformance`
-  - privileged-service-slot、context-authority 与 task-authority finding 的 source of truth
+  - privileged-service-slot、context-authority、task-authority 与 team-bridge finding 的 source of truth
 
-这意味着 `runtime.team.control_plane`、`runtime.team.workflows`、`TaskManager`、`RuntimeServices.team_*`、`BoundHostRuntime.list_team_workflows()` 仍然重要，但它们不属于 stable core protocol catalog 本身；它们要么继续在 `package_lookup` 里表达 canonical package path，要么继续在 `compatibility_surfaces` 里表达 wrapper status。
+这意味着 `runtime.team.control_plane`、`runtime.team.workflows`、`TaskManager` 仍然重要，但它们不属于 stable core protocol catalog 本身；canonical package path 继续通过 capability / host facet / migration metadata 发布，而已经删除的 team bridge surface 不再继续写进 `compatibility_surfaces`。
 
 同样，memory / compaction / isolation 这三类 package-owned privileged service 也应按下面的口径迁移：
 
@@ -265,5 +271,5 @@ external package 的迁移口径也需要一起改：
 - 如果你要构建 shared plan workflow，优先启用 `runtime-planning`，再围绕 `task_*` / `job_*` 与自定义 agent profile 做收窄或扩展
 - 如果你暴露 hooks 给第三方，优先只承诺 stable phases + `callback`
 - 如果你在 host、store、provider 侧做定制，优先通过 package-level seams 注入，而不是 patch `runtime-core`
-- 如果你还在使用 team helper，优先改到 `runtime.team.control_plane` / `runtime.team.workflows` capability 或 `runtime.team.workflows` host facet，再把旧 helper 当 compatibility wrapper 看待
+- 如果你还在使用旧 team helper，优先按 `runtime.services.metadata["migration"]["team_protocol_only"]["replacement_matrix"]` 改到 capability、host facet 或 `HostRuntime.emit_extension_event()` 路径
 - 如果你需要定位当前 runtime 的边界状态，先看 `runtime.kernel.diagnostics` 和 `runtime.services.metadata`

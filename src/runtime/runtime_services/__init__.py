@@ -46,9 +46,6 @@ _SERVICE_FAMILY_CAPABILITY_PROJECTIONS = {
 
 _COMPATIBILITY_CAPABILITY_PROJECTIONS = {
     "teammates": RuntimeCapabilityKey.TEAMMATES.value,
-    "team_control_plane": RuntimeCapabilityKey.TEAM_CONTROL_PLANE.value,
-    "team_message_bus": RuntimeCapabilityKey.TEAM_MESSAGE_BUS.value,
-    "team_workflows": RuntimeCapabilityKey.TEAM_WORKFLOWS.value,
 }
 
 _LEGACY_MEMORY_CONTEXT_SURFACE = "RuntimeServices.memory.collect"
@@ -293,9 +290,6 @@ class RuntimeServices:
     agent_runner: Any = None
     skill_runner: Any = None
     teammates: Any = None
-    team_control_plane: Any = None
-    team_message_bus: Any = None
-    team_workflows: Any = None
     runtime_ready: bool = False
     runtime_lifecycle_failures: tuple[dict[str, Any], ...] = ()
     runtime_lifecycle_exception: BaseException | None = None
@@ -440,17 +434,6 @@ class RuntimeServices:
         if self.host is not None and hasattr(teammates, "bind_host"):
             self.host = teammates.bind_host(self.host)
 
-    def bind_team_services(
-        self,
-        *,
-        control_plane: Any = None,
-        message_bus: Any = None,
-        workflow_service: Any = None,
-    ) -> None:
-        self.team_control_plane = control_plane
-        self.team_message_bus = message_bus
-        self.team_workflows = workflow_service
-
     def configure_compat(
         self,
         *,
@@ -460,7 +443,7 @@ class RuntimeServices:
         notification_provider: Callable[[], Sequence[RuntimeMessage]] | None = None,
         notification_sink: Callable[[RuntimeMessage], Any] | None = None,
         turn_event_sink: Callable[[str, Any], Any] | None = None,
-        team_event_sink: Callable[[Any], Any] | None = None,
+        extension_event_sink: Callable[[Any], Any] | None = None,
     ) -> None:
         if tool_refresh_callback is not None or isinstance(self.tool_catalog, CallbackToolCatalogService):
             self.tool_catalog = CallbackToolCatalogService(tool_refresh_callback)
@@ -472,7 +455,7 @@ class RuntimeServices:
                 notification_provider,
                 notification_sink,
                 turn_event_sink,
-                team_event_sink,
+                extension_event_sink,
             )
         ):
             self.host = CallbackHostAdapter(
@@ -481,7 +464,7 @@ class RuntimeServices:
                 notification_provider=notification_provider,
                 notification_sink=notification_sink,
                 turn_event_sink=turn_event_sink,
-                team_event_sink=team_event_sink,
+                extension_event_sink=extension_event_sink,
             )
 
     def bind_capability(self, binding: CapabilityBinding, *, override: bool = True) -> CapabilityBinding | None:

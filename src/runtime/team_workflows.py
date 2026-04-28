@@ -13,7 +13,7 @@ from uuid import uuid4
 from .contracts import utc_now
 from .definitions import PermissionBehavior
 from .permissions import PermissionOutcome
-from .team_control_plane import TeamEvent, TeamRole
+from .team_control_plane import TeamEvent, TeamRole, team_event_to_extension_event
 
 if TYPE_CHECKING:
     from .runtime_services import RuntimeServices
@@ -1460,20 +1460,22 @@ class RuntimeTeamWorkflowService:
         payload: Mapping[str, Any] | None = None,
     ) -> None:
         host = getattr(self._runtime_services, "host", None)
-        if host is None or not hasattr(host, "emit_team_event"):
+        if host is None or not hasattr(host, "emit_extension_event"):
             return
-        await host.emit_team_event(
-            TeamEvent(
-                event_id=uuid4().hex,
-                event_type=event_type,
-                team_id=record.team_id,
-                leader_session_id=record.leader_session_id or "",
-                member_id=record.requester_member_id,
-                correlation_id=record.workflow_id,
-                payload={
-                    **workflow_record_to_payload(record),
-                    **_coerce_mapping(payload),
-                },
+        await host.emit_extension_event(
+            team_event_to_extension_event(
+                TeamEvent(
+                    event_id=uuid4().hex,
+                    event_type=event_type,
+                    team_id=record.team_id,
+                    leader_session_id=record.leader_session_id or "",
+                    member_id=record.requester_member_id,
+                    correlation_id=record.workflow_id,
+                    payload={
+                        **workflow_record_to_payload(record),
+                        **_coerce_mapping(payload),
+                    },
+                )
             )
         )
 

@@ -6,6 +6,7 @@ from runtime import (
     BuiltinPackConfig,
     PermissionBehavior,
     PermissionOutcome,
+    RuntimeCapabilityKey,
     RuntimeConfig,
     SessionStatus,
     SdkHostRuntime,
@@ -40,7 +41,7 @@ class ControlledPermissionHost:
         self.name = "controlled"
         self.requests = []
         self.notifications = []
-        self.team_events = []
+        self.extension_events = []
         self.allow_event = asyncio.Event()
 
     async def startup(self) -> None:
@@ -71,8 +72,8 @@ class ControlledPermissionHost:
         _ = session_id, event
         return None
 
-    async def emit_team_event(self, event) -> None:
-        self.team_events.append(event)
+    async def emit_extension_event(self, event) -> None:
+        self.extension_events.append(event)
 
 
 def _message_batch(request_id: str, text: str) -> list[ModelStreamEvent]:
@@ -114,9 +115,30 @@ def _tool_context(runtime, *, session_id: str, cwd: Path, metadata: dict[str, ob
     )
 
 
+def _resolve_team_capability(target, key: str):
+    if hasattr(target, "resolve_capability"):
+        return target.resolve_capability(key)
+    services = getattr(target, "services", None)
+    if services is not None and hasattr(services, "resolve_capability"):
+        return services.resolve_capability(key)
+    return None
+
+
+def _team_control_plane(target):
+    return _resolve_team_capability(target, RuntimeCapabilityKey.TEAM_CONTROL_PLANE.value)
+
+
+def _team_message_bus(target):
+    return _resolve_team_capability(target, RuntimeCapabilityKey.TEAM_MESSAGE_BUS.value)
+
+
+def _team_workflows(target):
+    return _resolve_team_capability(target, RuntimeCapabilityKey.TEAM_WORKFLOWS.value)
+
+
 def test_team_control_plane_create_reuse_and_delete(tmp_path: Path) -> None:
     runtime = _build_runtime(tmp_path)
-    plane = runtime.team_control_plane
+    plane = _team_control_plane(runtime)
     assert plane is not None
 
     async def scenario():
@@ -191,7 +213,7 @@ def test_team_control_plane_create_reuse_and_delete(tmp_path: Path) -> None:
 
 def test_team_private_context_persists_across_resume(tmp_path: Path) -> None:
     runtime = _build_runtime(tmp_path)
-    plane = runtime.team_control_plane
+    plane = _team_control_plane(runtime)
     assert plane is not None
 
     async def scenario():
@@ -220,8 +242,8 @@ def test_offline_leader_messages_replay_on_resume_and_ack_delivery(tmp_path: Pat
         tmp_path,
         model_batches=[_message_batch("leader-replayed", "leader handled offline")],
     )
-    plane = runtime.team_control_plane
-    bus = runtime.team_message_bus
+    plane = _team_control_plane(runtime)
+    bus = _team_message_bus(runtime)
     assert plane is not None
     assert bus is not None
 
@@ -283,8 +305,8 @@ def test_team_message_bus_routes_messages_and_emits_events(tmp_path: Path) -> No
     )
     host = SdkHostRuntime(name="sdk")
     runtime.bind_host(host)
-    plane = runtime.team_control_plane
-    bus = runtime.team_message_bus
+    plane = _team_control_plane(runtime)
+    bus = _team_message_bus(runtime)
     teammates = runtime.teammates
     assert plane is not None
     assert bus is not None
@@ -376,7 +398,10 @@ def test_team_message_bus_routes_messages_and_emits_events(tmp_path: Path) -> No
     assert cross_team_error.code == "invalid_recipient"
     assert control.correlation_id == "corr-1"
     assert any("shutdown_request" in notification.text for notification in host.notifications)
-    assert any(event.event_type == "team.message.routed" for event in host.team_events)
+    assert any(
+        event.namespace == "runtime.team" and event.event_type == "team.message.routed"
+        for event in host.extension_events
+    )
 
     routed_messages = bus.store.list_messages(team.team_id, recipient_member_id=bravo.member_id)
     assert {message.message_id for message in routed_messages} >= {broadcast.message_id, direct.message_id}
@@ -415,9 +440,9 @@ def test_team_builtin_tools_return_structured_results_and_enforce_authority(tmp_
     team_id = primary[1].output["team_id"]
     alpha_id = primary[3].output["member_id"]
     beta_id = primary[4].output["member_id"]
-    assert runtime.team_control_plane is not None
-    asyncio.run(runtime.team_control_plane.runner_manager.wait_for_idle(team_id=team_id, member_id=alpha_id))
-    asyncio.run(runtime.team_control_plane.runner_manager.wait_for_idle(team_id=team_id, member_id=beta_id))
+    assert _team_control_plane(runtime) is not None
+    asyncio.run(_team_control_plane(runtime).runner_manager.wait_for_idle(team_id=team_id, member_id=alpha_id))
+    asyncio.run(_team_control_plane(runtime).runner_manager.wait_for_idle(team_id=team_id, member_id=beta_id))
 
     teammate_context = _tool_context(
         runtime,
@@ -458,8 +483,8 @@ def test_team_ingress_ready_running_defaults_and_no_sink_fallback(tmp_path: Path
             _message_batch("leader-running", "processed running"),
         ],
     )
-    plane = runtime.team_control_plane
-    bus = runtime.team_message_bus
+    plane = _team_control_plane(runtime)
+    bus = _team_message_bus(runtime)
     assert plane is not None
     assert bus is not None
 
@@ -568,9 +593,9 @@ def test_permission_bridge_routes_correlated_team_control_messages(tmp_path: Pat
     )
     host = ControlledPermissionHost()
     runtime.bind_host(host)
-    plane = runtime.team_control_plane
-    bus = runtime.team_message_bus
-    workflows = runtime.team_workflows
+    plane = _team_control_plane(runtime)
+    bus = _team_message_bus(runtime)
+    workflows = _team_workflows(runtime)
     assert plane is not None
     assert bus is not None
     assert workflows is not None
@@ -626,4 +651,7 @@ def test_permission_bridge_routes_correlated_team_control_messages(tmp_path: Pat
     assert {envelope.correlation_id for envelope in control_messages} == {control_messages[0].correlation_id}
     assert control_messages[0].sender.member_id == member.member_id
     assert all(envelope.sender.member_id == team.leader_member_id for envelope in control_messages[1:])
-    assert any(event.event_type == "team.message.routed" for event in host.team_events)
+    assert any(
+        event.namespace == "runtime.team" and event.event_type == "team.message.routed"
+        for event in host.extension_events
+    )

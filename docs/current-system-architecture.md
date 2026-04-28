@@ -328,7 +328,7 @@ helper 语义也已经固定：
 owner-layer runtime path 应通过 `RuntimeServices.resolve_memory_service()`、
 `RuntimeServices.resolve_compaction_service()`、
 `RuntimeServices.resolve_isolation_service()` 消费这些 canonical binding。
-`package_service_protocols` 会额外发布 owner / resolver / retained-surface metadata；`compatibility_surfaces` 则继续只记录 retained helper / projection，例如 `TaskManager`、`RuntimeServices.memory`、`RuntimeServices.compaction`、`RuntimeServices.isolation` 与 `HostRuntime.emit_team_event()`。
+`package_service_protocols` 会额外发布 owner / resolver / retained-surface metadata；`compatibility_surfaces` 现在只记录仍然保留的 helper / projection，例如 `TaskManager`、`RuntimeServices.memory`、`RuntimeServices.compaction`、`RuntimeServices.isolation` 与 `RuntimeServices.teammates`。已经删除的 team bridge surface 会发布到 `runtime.services.metadata["migration"]["team_protocol_only"]["replacement_matrix"]`。
 
 ### 4.2 会话层
 

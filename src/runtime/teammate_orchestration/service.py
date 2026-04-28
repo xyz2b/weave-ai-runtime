@@ -195,9 +195,9 @@ class PersistentTeammateHostBridge:
     async def emit_turn_event(self, session_id: str, event: Any) -> None:
         await self._delegate.emit_turn_event(session_id, event)
 
-    async def emit_team_event(self, event: Any) -> None:
-        if hasattr(self._delegate, "emit_team_event"):
-            await self._delegate.emit_team_event(event)
+    async def emit_extension_event(self, event: Any) -> None:
+        if hasattr(self._delegate, "emit_extension_event"):
+            await self._delegate.emit_extension_event(event)
 
     @property
     def workflow_service(self) -> RuntimeTeamWorkflowService | None:

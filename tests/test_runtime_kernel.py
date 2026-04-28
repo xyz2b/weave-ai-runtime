@@ -45,6 +45,7 @@ from runtime.runtime_kernel import (
     build_runtime_kernel,
 )
 from runtime.runtime_core_protocol_catalog import CORE_PROTOCOL_CATALOG_SCHEMA_VERSION
+from runtime.runtime_package_protocols import RuntimeCapabilityKey
 from runtime.runtime_services import NoopCompactionService, NoopMemoryService
 from runtime.session_runtime import FileTranscriptStore, InMemoryTranscriptStore
 from runtime.task_lists import FileTaskListStore, InMemoryTaskListStore
@@ -89,6 +90,10 @@ class InterruptibleModelClient:
         yield ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "partial"})
         while request.abort_signal is not None and not request.abort_signal.aborted:
             await asyncio.sleep(0.01)
+
+
+def _team_capability(runtime, key: RuntimeCapabilityKey):
+    return runtime.resolve_capability(key.value)
 
 
 def test_runtime_kernel_applies_builtin_switches_and_discovers_project_defs(
@@ -460,13 +465,22 @@ def test_runtime_default_distribution_wires_team_capability_out_of_the_box(tmp_p
         "runtime-team",
     )
     assert runtime.teammates is not None
-    assert runtime.team_control_plane is not None
-    assert runtime.team_message_bus is not None
-    assert runtime.team_workflows is not None
+    assert _team_capability(runtime, RuntimeCapabilityKey.TEAM_CONTROL_PLANE) is not None
+    assert _team_capability(runtime, RuntimeCapabilityKey.TEAM_MESSAGE_BUS) is not None
+    assert _team_capability(runtime, RuntimeCapabilityKey.TEAM_WORKFLOWS) is not None
     assert runtime.services.teammates is runtime.teammates
-    assert runtime.services.team_control_plane is runtime.team_control_plane
-    assert runtime.services.team_message_bus is runtime.team_message_bus
-    assert runtime.services.team_workflows is runtime.team_workflows
+    assert runtime.services.resolve_team_control_plane() is _team_capability(
+        runtime,
+        RuntimeCapabilityKey.TEAM_CONTROL_PLANE,
+    )
+    assert runtime.services.resolve_team_message_bus() is _team_capability(
+        runtime,
+        RuntimeCapabilityKey.TEAM_MESSAGE_BUS,
+    )
+    assert runtime.services.resolve_team_workflows() is _team_capability(
+        runtime,
+        RuntimeCapabilityKey.TEAM_WORKFLOWS,
+    )
 
     result = asyncio.run(
         team_create.execute(
@@ -561,9 +575,9 @@ def test_distribution_profiles_gate_runtime_mechanisms_and_store_defaults(tmp_pa
     assert isinstance(default_runtime.services.task_list_service.store, InMemoryTaskListStore)
     assert isinstance(full_runtime.services.job_service.store, FileJobStore)
     assert isinstance(full_runtime.services.task_list_service.store, FileTaskListStore)
-    assert isinstance(default_runtime.team_control_plane.store, InMemoryTeamStore)
-    assert isinstance(default_runtime.team_message_bus.store, InMemoryTeamMessageStore)
-    assert isinstance(default_runtime.team_workflows.store, InMemoryTeamWorkflowStore)
+    assert isinstance(_team_capability(default_runtime, RuntimeCapabilityKey.TEAM_CONTROL_PLANE).store, InMemoryTeamStore)
+    assert isinstance(_team_capability(default_runtime, RuntimeCapabilityKey.TEAM_MESSAGE_BUS).store, InMemoryTeamMessageStore)
+    assert isinstance(_team_capability(default_runtime, RuntimeCapabilityKey.TEAM_WORKFLOWS).store, InMemoryTeamWorkflowStore)
     assert isinstance(default_runtime.teammates.mailbox, InMemoryTeammateMailbox)
 
     assert full_runtime.services.metadata["migration"]["hook_contract"]["stable_handler_kinds"] == ["callback"]
@@ -819,16 +833,7 @@ def test_runtime_core_distribution_supports_stable_hooks_and_compatibility_diagn
         "RuntimeServices.compaction.prepare_turn": "compatibility-only",
         "RuntimeServices.compaction.collect": "compatibility-only",
         "RuntimeServices.teammates": "compatibility-only",
-        "RuntimeServices.team_control_plane": "compatibility-only",
-        "RuntimeServices.team_message_bus": "compatibility-only",
-        "RuntimeServices.team_workflows": "compatibility-only",
         "RuntimeAssembly.teammates": "compatibility-only",
-        "RuntimeAssembly.team_control_plane": "compatibility-only",
-        "RuntimeAssembly.team_message_bus": "compatibility-only",
-        "RuntimeAssembly.team_workflows": "compatibility-only",
-        "BoundHostRuntime.list_team_workflows": "compatibility-wrapper",
-        "BoundHostRuntime.respond_team_workflow": "compatibility-wrapper",
-        "HostRuntime.emit_team_event": "bounded-compatibility",
     }
 
 

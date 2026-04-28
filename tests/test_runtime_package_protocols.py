@@ -58,7 +58,6 @@ from runtime.runtime_package_protocols import (
 from runtime.runtime_services import RuntimeServices
 from runtime.session_runtime import FileTranscriptStore
 from runtime.task_lists import FileTaskListStore
-from runtime.team_workflows import TeamWorkflowError
 from runtime.turn_engine import ModelStreamEvent, ModelStreamEventType
 
 
@@ -99,6 +98,34 @@ def _package_candidate_metadata(
     if compatibility:
         candidate["compatibility"] = dict(compatibility)
     return {PACKAGE_CANDIDATE_METADATA_KEY: candidate}
+
+
+def _resolve_team_capability(target, key: str):
+    if hasattr(target, "resolve_capability"):
+        return target.resolve_capability(key)
+    services = getattr(target, "services", None)
+    if services is not None and hasattr(services, "resolve_capability"):
+        return services.resolve_capability(key)
+    return None
+
+
+def _team_control_plane(target):
+    return _resolve_team_capability(target, RuntimeCapabilityKey.TEAM_CONTROL_PLANE.value)
+
+
+def _team_message_bus(target):
+    return _resolve_team_capability(target, RuntimeCapabilityKey.TEAM_MESSAGE_BUS.value)
+
+
+def _team_workflows(target):
+    return _resolve_team_capability(target, RuntimeCapabilityKey.TEAM_WORKFLOWS.value)
+
+
+def _require_team_workflow_facet(target):
+    resolution = target.resolve_host_facet(RuntimeHostFacetKey.TEAM_WORKFLOWS.value)
+    assert resolution.available is True
+    assert resolution.facet is not None
+    return resolution.facet
 
 
 def test_official_runtime_package_manifests_follow_dependency_order() -> None:
@@ -853,9 +880,6 @@ def test_runtime_services_prefer_team_capabilities_over_compatibility_slots() ->
     capability_control_plane = object()
     capability_message_bus = object()
     capability_workflows = object()
-    services.team_control_plane = object()
-    services.team_message_bus = object()
-    services.team_workflows = object()
     owner = PackageOwnership(
         package_name="runtime-team",
         package_role="capability",
@@ -897,10 +921,11 @@ def test_manifest_backed_team_runtime_registers_capabilities_and_host_facet(tmp_
         )
     )
 
-    assert runtime.services.require_capability(RuntimeCapabilityKey.TEAM_CONTROL_PLANE.value) is runtime.team_control_plane
-    assert runtime.services.require_capability(RuntimeCapabilityKey.TEAM_WORKFLOWS.value) is runtime.team_workflows
+    assert runtime.services.require_capability(RuntimeCapabilityKey.TEAM_CONTROL_PLANE.value) is _team_control_plane(runtime)
+    assert runtime.services.require_capability(RuntimeCapabilityKey.TEAM_WORKFLOWS.value) is _team_workflows(runtime)
     assert runtime.services.metadata["compatibility_projections"]["teammates"] == RuntimeCapabilityKey.TEAMMATES.value
-    assert runtime.services.metadata["compatibility_projections"]["team_control_plane"] == RuntimeCapabilityKey.TEAM_CONTROL_PLANE.value
+    assert "team_control_plane" not in runtime.services.metadata["compatibility_projections"]
+    assert runtime.metadata["migration"] == runtime.services.metadata["migration"]
     assert runtime.services.metadata["package_lookup"]["canonical_capabilities"] == {
         "teammates": RuntimeCapabilityKey.TEAMMATES.value,
         "team_control_plane": RuntimeCapabilityKey.TEAM_CONTROL_PLANE.value,
@@ -913,6 +938,9 @@ def test_manifest_backed_team_runtime_registers_capabilities_and_host_facet(tmp_
     assert "TaskManager" in runtime.services.metadata["package_lookup"]["compatibility_wrappers"]
     assert "RuntimeServices.teammates" in runtime.services.metadata["package_lookup"]["compatibility_wrappers"]
     assert "RuntimeAssembly.teammates" in runtime.services.metadata["package_lookup"]["compatibility_wrappers"]
+    assert "BoundHostRuntime.list_team_workflows" not in runtime.services.metadata["package_lookup"][
+        "compatibility_wrappers"
+    ]
     assert runtime.metadata["package_lookup"] == runtime.services.metadata["package_lookup"]
     assert {
         participant.name
@@ -927,6 +955,13 @@ def test_manifest_backed_team_runtime_registers_capabilities_and_host_facet(tmp_
     assert facet.available is True
     listed = asyncio.run(facet.facet.list_workflows(team_id=None, session_id=None, pending_only=True))
     assert listed == ()
+    assert runtime.services.metadata["migration"]["team_protocol_only"]["extension_event_contract"] == {
+        "emit": "HostRuntime.emit_extension_event",
+        "envelope": "runtime.hosts.HostExtensionEvent",
+        "namespace": "runtime.team",
+        "schema_version": "1.0",
+        "unknown_namespace_behavior": "ignore_or_handle_generically",
+    }
 
 
 def test_runtime_core_protocol_catalog_is_published_separately_from_package_lookup(tmp_path: Path) -> None:
@@ -1082,9 +1117,12 @@ def test_runtime_core_protocol_catalog_keeps_package_capabilities_and_wrappers_o
         "compatibility-only"
     )
     assert "RuntimeServices.teammates" in runtime.services.metadata["package_lookup"]["compatibility_wrappers"]
-    assert "BoundHostRuntime.list_team_workflows" in runtime.services.metadata["package_lookup"][
+    assert "BoundHostRuntime.list_team_workflows" not in runtime.services.metadata["package_lookup"][
         "compatibility_wrappers"
     ]
+    assert protocols["runtime.host.binding"]["metadata"]["extension_event_contract"] == (
+        "HostRuntime.emit_extension_event"
+    )
 
 
 def test_runtime_core_protocol_catalog_matches_adjacent_metadata_contracts(tmp_path: Path) -> None:
@@ -1193,6 +1231,59 @@ def test_runtime_publishes_compatibility_whitelists_and_protocol_only_findings(t
             "AgentRuntime.__init__(task_manager=...)",
         ],
     }
+    assert findings["team_runtime_projection_authority"] == {
+        "rule_id": "team_runtime_projection_authority",
+        "family": "team-bridge",
+        "status": "pass",
+        "distribution": RuntimeDistribution.DEFAULT.value,
+        "canonical_path": (
+            "RuntimeServices.resolve_team_* / "
+            "RuntimeAssembly.resolve_capability(RuntimeCapabilityKey.TEAM_*.value)"
+        ),
+        "replacement_path": (
+            "RuntimeCapabilityKey.TEAM_CONTROL_PLANE / "
+            "RuntimeCapabilityKey.TEAM_MESSAGE_BUS / "
+            "RuntimeCapabilityKey.TEAM_WORKFLOWS"
+        ),
+        "availability": "team-present",
+        "evidence": [
+            "RuntimeServices.team_control_plane",
+            "RuntimeServices.team_message_bus",
+            "RuntimeServices.team_workflows",
+            "RuntimeAssembly.team_control_plane",
+            "RuntimeAssembly.team_message_bus",
+            "RuntimeAssembly.team_workflows",
+        ],
+    }
+    assert findings["team_workflow_wrapper_authority"] == {
+        "rule_id": "team_workflow_wrapper_authority",
+        "family": "team-bridge",
+        "status": "pass",
+        "distribution": RuntimeDistribution.DEFAULT.value,
+        "canonical_path": "RuntimeAssembly.resolve_host_facet(RuntimeHostFacetKey.TEAM_WORKFLOWS.value)",
+        "compat_surface": "BoundHostRuntime.list_team_workflows",
+        "replacement_path": "RuntimeHostFacetKey.TEAM_WORKFLOWS.value",
+        "availability": "team-present",
+        "evidence": [
+            "BoundHostRuntime.list_team_workflows",
+            "BoundHostRuntime.respond_team_workflow",
+            RuntimeHostFacetKey.TEAM_WORKFLOWS.value,
+        ],
+    }
+    assert findings["team_host_event_bridge_authority"] == {
+        "rule_id": "team_host_event_bridge_authority",
+        "family": "team-bridge",
+        "status": "pass",
+        "distribution": RuntimeDistribution.DEFAULT.value,
+        "canonical_path": "HostRuntime.emit_extension_event",
+        "compat_surface": "HostRuntime.emit_team_event",
+        "replacement_path": "HostRuntime.emit_extension_event(HostExtensionEvent(namespace='runtime.team', ...))",
+        "availability": "team-present",
+        "evidence": [
+            "HostRuntime.emit_extension_event",
+            "runtime.team",
+        ],
+    }
 
 
 def test_runtime_publishes_privileged_service_protocol_metadata_and_findings(tmp_path: Path) -> None:
@@ -1287,6 +1378,40 @@ def test_runtime_publishes_privileged_service_protocol_metadata_and_findings(tmp
         "compat_surface": "RuntimeServices.isolation",
         "evidence": [
             "RuntimeServices.isolation",
+        ],
+    }
+
+
+def test_runtime_publishes_team_bridge_findings_for_team_absent_distributions(tmp_path: Path) -> None:
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            distribution=RuntimeDistribution.CORE,
+        )
+    )
+
+    findings = {
+        entry["rule_id"]: entry
+        for entry in runtime.services.metadata["protocol_only_conformance"]["findings"]
+        if entry["family"] == "team-bridge"
+    }
+
+    assert findings["team_runtime_projection_authority"]["availability"] == "team-absent"
+    assert findings["team_runtime_projection_authority"]["status"] == "pass"
+    assert findings["team_workflow_wrapper_authority"]["availability"] == "team-absent"
+    assert findings["team_workflow_wrapper_authority"]["status"] == "pass"
+    assert findings["team_host_event_bridge_authority"] == {
+        "rule_id": "team_host_event_bridge_authority",
+        "family": "team-bridge",
+        "status": "pass",
+        "distribution": RuntimeDistribution.CORE.value,
+        "canonical_path": "HostRuntime.emit_extension_event",
+        "compat_surface": "HostRuntime.emit_team_event",
+        "replacement_path": "HostRuntime.emit_extension_event(HostExtensionEvent(namespace='runtime.team', ...))",
+        "availability": "team-absent",
+        "evidence": [
+            "HostRuntime.emit_extension_event",
+            "runtime.team",
         ],
     }
 
@@ -1442,7 +1567,9 @@ def test_package_context_contributor_order_is_deterministic_across_packages(tmp_
     assert contributor_names(reversed_order) == ["zzz.context", "aaa.context"]
 
 
-def test_runtime_team_compatibility_projections_delegate_to_canonical_capabilities(tmp_path: Path) -> None:
+def test_runtime_team_compatibility_projections_are_removed_in_favor_of_canonical_lookups(
+    tmp_path: Path,
+) -> None:
     runtime = assemble_runtime(
         RuntimeConfig(
             working_directory=tmp_path,
@@ -1453,19 +1580,18 @@ def test_runtime_team_compatibility_projections_delegate_to_canonical_capabiliti
     canonical_plane = runtime.services.require_capability(RuntimeCapabilityKey.TEAM_CONTROL_PLANE.value)
     canonical_bus = runtime.services.require_capability(RuntimeCapabilityKey.TEAM_MESSAGE_BUS.value)
     canonical_workflows = runtime.services.require_capability(RuntimeCapabilityKey.TEAM_WORKFLOWS.value)
-    runtime.services.team_control_plane = object()
-    runtime.services.team_message_bus = object()
-    runtime.services.team_workflows = object()
-    runtime.team_control_plane = object()
-    runtime.team_message_bus = object()
-    runtime.team_workflows = object()
-
-    assert runtime.services.team_control_plane is canonical_plane
-    assert runtime.services.team_message_bus is canonical_bus
-    assert runtime.services.team_workflows is canonical_workflows
-    assert runtime.team_control_plane is canonical_plane
-    assert runtime.team_message_bus is canonical_bus
-    assert runtime.team_workflows is canonical_workflows
+    assert runtime.services.resolve_team_control_plane() is canonical_plane
+    assert runtime.services.resolve_team_message_bus() is canonical_bus
+    assert runtime.services.resolve_team_workflows() is canonical_workflows
+    assert _team_control_plane(runtime) is canonical_plane
+    assert _team_message_bus(runtime) is canonical_bus
+    assert _team_workflows(runtime) is canonical_workflows
+    assert not hasattr(runtime.services, "team_control_plane")
+    assert not hasattr(runtime.services, "team_message_bus")
+    assert not hasattr(runtime.services, "team_workflows")
+    assert not hasattr(runtime, "team_control_plane")
+    assert not hasattr(runtime, "team_message_bus")
+    assert not hasattr(runtime, "team_workflows")
 
 
 def test_privileged_service_compatibility_slot_writes_rebind_canonical_capabilities(
@@ -1560,13 +1686,14 @@ def test_runtime_workflow_helpers_prefer_canonical_lookup_over_compatibility_slo
             distribution=RuntimeDistribution.DEFAULT,
         )
     )
-    plane = runtime.team_control_plane
-    workflows = runtime.team_workflows
+    plane = _team_control_plane(runtime)
+    workflows = _team_workflows(runtime)
     assert plane is not None
     assert workflows is not None
 
     async def scenario():
         async with runtime.bind_host(NullHostAdapter(name="compat")) as bound:
+            facet = _require_team_workflow_facet(bound)
             team, _ = await plane.create_team(session_id="leader-session", extensions={}, name="ops")
             member = await plane.register_member(
                 session_id="leader-session",
@@ -1583,16 +1710,11 @@ def test_runtime_workflow_helpers_prefer_canonical_lookup_over_compatibility_slo
                 responder_name="leader",
                 request_payload={"permission_name": "bash", "permission_message": "approve?"},
             )
-            runtime.services.team_control_plane = object()
-            runtime.services.team_workflows = object()
-            runtime.team_control_plane = object()
-            runtime.team_workflows = object()
-
             pending = await runtime.list_team_workflows(session_id="leader-session", pending_only=True)
-            updated = await bound.respond_team_workflow(
+            updated = await facet.respond(
                 workflow.workflow_id,
                 action="reject",
-                session_id="leader-session",
+                host_name=bound.host.name,
             )
             return pending, updated
 
@@ -1600,11 +1722,11 @@ def test_runtime_workflow_helpers_prefer_canonical_lookup_over_compatibility_slo
 
     assert pending
     assert pending[0]["workflow_kind"] == "permission"
-    assert updated["workflow_id"] == pending[0]["workflow_id"]
-    assert updated["status"] == "rejected"
+    assert updated.workflow_id == pending[0]["workflow_id"]
+    assert updated.status.value == "rejected"
 
 
-def test_bound_host_workflow_helpers_preserve_bounded_absent_package_behavior(tmp_path: Path) -> None:
+def test_bound_host_workflow_facet_reports_absent_package_behavior(tmp_path: Path) -> None:
     runtime = assemble_runtime(
         RuntimeConfig(
             working_directory=tmp_path,
@@ -1614,23 +1736,14 @@ def test_bound_host_workflow_helpers_preserve_bounded_absent_package_behavior(tm
 
     async def scenario():
         async with runtime.bind_host(NullHostAdapter(name="compat")) as bound:
-            listed = await bound.list_team_workflows(team_id="team-core", pending_only=True)
-            missing = None
-            try:
-                await bound.respond_team_workflow(
-                    "workflow-core",
-                    action="reject",
-                    team_id="team-core",
-                )
-            except TeamWorkflowError as exc:
-                missing = exc
-            return listed, missing
+            resolution = bound.resolve_host_facet(RuntimeHostFacetKey.TEAM_WORKFLOWS.value)
+            return resolution
 
-    listed, missing = asyncio.run(scenario())
+    resolution = asyncio.run(scenario())
 
-    assert listed == ()
-    assert missing is not None
-    assert missing.code == "not_available"
+    assert resolution.available is False
+    assert resolution.code == "not_available"
+    assert resolution.facet is None
 
 
 def test_bound_host_workflow_helpers_delegate_through_host_facet_without_capability(tmp_path: Path) -> None:
@@ -1719,21 +1832,22 @@ def test_bound_host_workflow_helpers_delegate_through_host_facet_without_capabil
 
     async def scenario():
         async with runtime.bind_host(NullHostAdapter(name="compat")) as bound:
-            listed = await bound.list_team_workflows(session_id="leader-facet", pending_only=True)
-            updated = await bound.respond_team_workflow(
+            resolved = _require_team_workflow_facet(bound)
+            listed = await resolved.list_workflows(session_id="leader-facet", pending_only=True)
+            updated = await resolved.respond(
                 "workflow-facet",
                 action="reject",
-                session_id="leader-facet",
+                host_name=bound.host.name,
             )
             return listed, updated
 
     listed, updated = asyncio.run(scenario())
 
     assert runtime.services.resolve_capability(RuntimeCapabilityKey.TEAM_WORKFLOWS.value) is None
-    assert listed[0]["workflow_id"] == "workflow-facet"
-    assert listed[0]["leader_session_id"] == "leader-facet"
-    assert updated["workflow_id"] == "workflow-facet"
-    assert updated["status"] == "rejected"
+    assert listed[0].workflow_id == "workflow-facet"
+    assert listed[0].leader_session_id == "leader-facet"
+    assert updated.workflow_id == "workflow-facet"
+    assert updated.status == "rejected"
     assert facet.respond_calls == [("workflow-facet", "reject", "compat", None)]
 
 

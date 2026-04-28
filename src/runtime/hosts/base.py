@@ -5,14 +5,36 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Mapping, Protocol, Sequence
 
+from ..contracts import utc_now
 from ..definitions import PermissionBehavior
 from ..elicitation import ElicitationRequest, ElicitationResponse
 from ..hooks import HookDispatchTraceQuery, HookInventoryQuery, HookRegistrationRequest, HookSourceKind
 from ..permissions import PermissionOutcome, PermissionRequest, coerce_permission_outcome
-from ..runtime_package_protocols import RuntimeCapabilityKey
 if TYPE_CHECKING:
     from ..contracts import RuntimeMessage
     from ..turn_engine.engine import TurnStreamEvent
+
+
+@dataclass(frozen=True, slots=True)
+class HostExtensionEvent:
+    namespace: str
+    event_type: str
+    event_id: str
+    occurred_at: Any = field(default_factory=utc_now)
+    schema_version: str = "1.0"
+    correlation_id: str | None = None
+    payload: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "namespace": self.namespace,
+            "schema_version": self.schema_version,
+            "event_type": self.event_type,
+            "event_id": self.event_id,
+            "occurred_at": self.occurred_at.isoformat(),
+            "correlation_id": self.correlation_id,
+            "payload": dict(self.payload),
+        }
 
 
 class HostRuntime(Protocol):
@@ -34,8 +56,7 @@ class HostRuntime(Protocol):
 
     async def emit_turn_event(self, session_id: str, event: "TurnStreamEvent") -> None: ...
 
-    # Team event egress remains a bounded compatibility sink for package-owned host events.
-    async def emit_team_event(self, event: Any) -> None: ...
+    async def emit_extension_event(self, event: HostExtensionEvent) -> None: ...
 
 
 class HostAdapter(HostRuntime, Protocol):
@@ -87,7 +108,7 @@ class NullHostAdapter:
         _ = session_id, event
         return None
 
-    async def emit_team_event(self, event: Any) -> None:
+    async def emit_extension_event(self, event: HostExtensionEvent) -> None:
         _ = event
         return None
 
@@ -100,7 +121,7 @@ class CallbackHostAdapter:
     notification_provider: Callable[[], Sequence["RuntimeMessage"]] | None = None
     notification_sink: Callable[["RuntimeMessage"], Any] | None = None
     turn_event_sink: Callable[[str, "TurnStreamEvent"], Any] | None = None
-    team_event_sink: Callable[[Any], Any] | None = None
+    extension_event_sink: Callable[[HostExtensionEvent], Any] | None = None
     lifecycle: list[str] = field(default_factory=list)
 
     async def startup(self) -> None:
@@ -148,10 +169,10 @@ class CallbackHostAdapter:
             return None
         await _maybe_await(self.turn_event_sink(session_id, event))
 
-    async def emit_team_event(self, event: Any) -> None:
-        if self.team_event_sink is None:
+    async def emit_extension_event(self, event: HostExtensionEvent) -> None:
+        if self.extension_event_sink is None:
             return None
-        await _maybe_await(self.team_event_sink(event))
+        await _maybe_await(self.extension_event_sink(event))
 
 
 @dataclass(slots=True)
@@ -322,41 +343,6 @@ class BoundHostRuntime:
         self._bind_host()
         return await self.runtime.stop_job(*args, **kwargs)
 
-    async def list_team_workflows(self, *args: Any, **kwargs: Any) -> Any:
-        self._bind_host()
-        resolved_team_id, resolved_session_id = self._resolve_team_workflow_scope(
-            team_id=kwargs.pop("team_id", None),
-            session_id=kwargs.pop("session_id", None),
-        )
-        return await self.runtime.list_team_workflows(
-            team_id=resolved_team_id,
-            session_id=resolved_session_id,
-            *args,
-            **kwargs,
-        )
-
-    async def respond_team_workflow(self, *args: Any, **kwargs: Any) -> Any:
-        self._bind_host()
-        if not args:
-            raise TypeError("respond_team_workflow requires a workflow_id")
-        workflow_id = args[0]
-        remaining_args = args[1:]
-        resolved_team_id, resolved_session_id = self._resolve_team_workflow_scope(
-            team_id=kwargs.pop("team_id", None),
-            session_id=kwargs.pop("session_id", None),
-        )
-        workflow = await self._resolve_scoped_team_workflow(
-            workflow_id,
-            team_id=resolved_team_id,
-            session_id=resolved_session_id,
-        )
-        return await self.runtime.respond_team_workflow(
-            workflow["workflow_id"],
-            *remaining_args,
-            host_name=kwargs.pop("host_name", self.host.name),
-            **kwargs,
-        )
-
     def bind_hook_callback(self, name: str, handler: Any) -> None:
         self._bind_host()
         self.services.hook_bus.bind_callback(name, handler)
@@ -460,116 +446,6 @@ class BoundHostRuntime:
         if self.services is not None and hasattr(self.services, "bind_host"):
             self.services.bind_host(self.host)
 
-    def _resolve_runtime_capability(self, key: str) -> Any:
-        if self.services is not None and hasattr(self.services, "resolve_capability"):
-            return self.services.resolve_capability(key)
-        if self.runtime is not None and hasattr(self.runtime, "resolve_capability"):
-            return self.runtime.resolve_capability(key)
-        return None
-
-    def _resolve_team_workflow_scope(
-        self,
-        *,
-        team_id: Any,
-        session_id: Any,
-    ) -> tuple[str | None, str | None]:
-        from ..team_workflows import TeamWorkflowError
-
-        resolved_team_id = str(team_id).strip() if team_id is not None and str(team_id).strip() else None
-        resolved_session_id = (
-            str(session_id).strip() if session_id is not None and str(session_id).strip() else None
-        )
-        if resolved_team_id is None and resolved_session_id is None:
-            raise TeamWorkflowError(
-                "invalid_workflow_scope",
-                "Host workflow operations require a team_id or session_id scope",
-            )
-        if resolved_session_id is not None:
-            plane = self._resolve_runtime_capability(RuntimeCapabilityKey.TEAM_CONTROL_PLANE.value)
-            if plane is None or not hasattr(plane, "active_team_for_leader_session"):
-                return resolved_team_id, resolved_session_id
-            team = plane.active_team_for_leader_session(resolved_session_id)
-            if team is None:
-                raise TeamWorkflowError(
-                    "invalid_workflow_scope",
-                    "No active team is bound to that leader session",
-                    session_id=resolved_session_id,
-                )
-            if resolved_team_id is not None and resolved_team_id != team.team_id:
-                raise TeamWorkflowError(
-                    "invalid_workflow_scope",
-                    "team_id does not match the active team for that leader session",
-                    team_id=resolved_team_id,
-                    session_id=resolved_session_id,
-                    active_team_id=team.team_id,
-                )
-            resolved_team_id = team.team_id
-        return resolved_team_id, resolved_session_id
-
-    async def _resolve_scoped_team_workflow(
-        self,
-        workflow_id: Any,
-        *,
-        team_id: str | None,
-        session_id: str | None,
-    ) -> dict[str, Any]:
-        from ..team_workflows import TeamWorkflowError
-
-        service = self._resolve_runtime_capability(RuntimeCapabilityKey.TEAM_WORKFLOWS.value)
-        facet = (
-            self.services.resolve_team_workflow_host_facet()
-            if self.services is not None and hasattr(self.services, "resolve_team_workflow_host_facet")
-            else None
-        )
-        if (
-            (service is None or not hasattr(service, "get"))
-            and (facet is None or facet.available is False or facet.facet is None)
-        ):
-            raise TeamWorkflowError(
-                "not_available",
-                "Runtime team workflow service is not available in the active distribution",
-                team_id=team_id,
-            )
-        normalized_workflow_id = str(workflow_id).strip()
-        records = await self.runtime.list_team_workflows(
-            team_id=team_id,
-            session_id=session_id,
-            pending_only=None,
-        )
-        for record in records:
-            if str(record.get("workflow_id") or "") == normalized_workflow_id:
-                return record
-        if service is not None and hasattr(service, "get"):
-            record = service.get(normalized_workflow_id)
-            if record is not None and (team_id is None or record.team_id == team_id):
-                return {"workflow_id": record.workflow_id, "team_id": record.team_id}
-        if facet is not None and facet.available and facet.facet is not None:
-            scope_details = {"workflow_id": normalized_workflow_id}
-            if team_id is not None:
-                scope_details["team_id"] = team_id
-            if session_id is not None:
-                scope_details["session_id"] = session_id
-            raise TeamWorkflowError(
-                "not_found",
-                f"Workflow '{normalized_workflow_id}' was not found in the requested team scope",
-                **scope_details,
-            )
-        # Fall back to canonical capability lookup when the workflow package is present
-        # but the workflow is absent from the requested scope.
-        record = service.get(normalized_workflow_id) if service is not None else None
-        if record is None or (team_id is not None and record.team_id != team_id):
-            scope_details = {"workflow_id": normalized_workflow_id}
-            if team_id is not None:
-                scope_details["team_id"] = team_id
-            if session_id is not None:
-                scope_details["session_id"] = session_id
-            raise TeamWorkflowError(
-                "not_found",
-                f"Workflow '{normalized_workflow_id}' was not found in the requested team scope",
-                **scope_details,
-            )
-        return {"workflow_id": record.workflow_id, "team_id": record.team_id}
-
     def _register_managed_session(self, session: Any, *, owner: str) -> None:
         session_id = getattr(getattr(session, "state", None), "session_id", None)
         if session_id is None:
@@ -609,6 +485,7 @@ class BoundHostRuntime:
 __all__ = [
     "BoundHostRuntime",
     "CallbackHostAdapter",
+    "HostExtensionEvent",
     "HostAdapter",
     "HostFactory",
     "HostRuntime",

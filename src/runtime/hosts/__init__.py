@@ -1,10 +1,19 @@
-from .base import BoundHostRuntime, CallbackHostAdapter, HostAdapter, HostFactory, HostRuntime, NullHostAdapter
+from .base import (
+    BoundHostRuntime,
+    CallbackHostAdapter,
+    HostAdapter,
+    HostExtensionEvent,
+    HostFactory,
+    HostRuntime,
+    NullHostAdapter,
+)
 
 __all__ = [
     "BoundHostRuntime",
     "CallbackHostAdapter",
     "CliHostRuntime",
     "HostAdapter",
+    "HostExtensionEvent",
     "HostFactory",
     "HostRuntime",
     "NullHostAdapter",

@@ -33,7 +33,6 @@ def core_protocol_compatibility_surfaces() -> dict[str, str]:
         "RuntimeServices.isolation": "compatibility-only",
         "RuntimeServices.hooks.collect": "compatibility-only",
         "RuntimeServices.task_discipline.collect": "compatibility-only",
-        "HostRuntime.emit_team_event": "bounded-compatibility",
     }
 
 
@@ -450,18 +449,10 @@ def _stable_core_protocol_entries(
             binding_boundary=CoreProtocolBindingBoundary.HOST_BOUND,
             canonical_binding_surface="RuntimeAssembly.bind_host",
             discovery_surface="RuntimeServices.host",
-            compatibility_status=CoreProtocolCompatibilityStatus.STABLE_WITH_COMPATIBILITY,
-            retained_surfaces=(
-                CoreProtocolRetainedSurface(
-                    surface="HostRuntime.emit_team_event",
-                    status=_require_string(
-                        compatibility_surfaces,
-                        "HostRuntime.emit_team_event",
-                        field_name="compatibility_surfaces.HostRuntime.emit_team_event",
-                    ),
-                    notes="Team event egress is retained as a bounded compatibility sink, not as the canonical host extension story.",
-                ),
-            ),
+            compatibility_status=CoreProtocolCompatibilityStatus.STABLE,
+            metadata={
+                "extension_event_contract": "HostRuntime.emit_extension_event",
+            },
         ),
     )
 

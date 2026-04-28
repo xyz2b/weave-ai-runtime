@@ -8,7 +8,9 @@ from runtime import (
     FileBackedTeamWorkflowStore,
     PermissionBehavior,
     PermissionOutcome,
+    RuntimeCapabilityKey,
     RuntimeConfig,
+    RuntimeHostFacetKey,
     SessionStatus,
     TeamControlError,
     TeamWorkflowActorKind,
@@ -47,7 +49,7 @@ class ControlledPermissionHost:
         self.name = "controlled"
         self.requests = []
         self.notifications = []
-        self.team_events = []
+        self.extension_events = []
 
     async def startup(self) -> None:
         return None
@@ -76,8 +78,8 @@ class ControlledPermissionHost:
         _ = session_id, event
         return None
 
-    async def emit_team_event(self, event) -> None:
-        self.team_events.append(event)
+    async def emit_extension_event(self, event) -> None:
+        self.extension_events.append(event)
 
 
 def _worker_runtime(tmp_path: Path, *, model_batches: list[list[ModelStreamEvent]]):
@@ -121,6 +123,34 @@ def _tool_context(runtime, *, session_id: str, cwd: Path, metadata: dict[str, ob
     )
 
 
+def _resolve_team_capability(target, key: str):
+    if hasattr(target, "resolve_capability"):
+        return target.resolve_capability(key)
+    services = getattr(target, "services", None)
+    if services is not None and hasattr(services, "resolve_capability"):
+        return services.resolve_capability(key)
+    return None
+
+
+def _team_control_plane(target):
+    return _resolve_team_capability(target, RuntimeCapabilityKey.TEAM_CONTROL_PLANE.value)
+
+
+def _team_message_bus(target):
+    return _resolve_team_capability(target, RuntimeCapabilityKey.TEAM_MESSAGE_BUS.value)
+
+
+def _team_workflows(target):
+    return _resolve_team_capability(target, RuntimeCapabilityKey.TEAM_WORKFLOWS.value)
+
+
+def _require_team_workflow_facet(target):
+    resolution = target.resolve_host_facet(RuntimeHostFacetKey.TEAM_WORKFLOWS.value)
+    assert resolution.available is True
+    assert resolution.facet is not None
+    return resolution.facet
+
+
 async def _wait_for(predicate, *, attempts: int = 500, delay: float = 0.01):
     for _ in range(attempts):
         result = predicate()
@@ -157,9 +187,9 @@ def test_permission_workflow_blocks_host_until_approved(tmp_path: Path) -> None:
     )
     host = ControlledPermissionHost()
     runtime.bind_host(host)
-    plane = runtime.team_control_plane
-    bus = runtime.team_message_bus
-    workflows = runtime.team_workflows
+    plane = _team_control_plane(runtime)
+    bus = _team_message_bus(runtime)
+    workflows = _team_workflows(runtime)
     assert plane is not None
     assert bus is not None
     assert workflows is not None
@@ -274,8 +304,8 @@ def test_team_respond_resolves_pending_permission_workflow(tmp_path: Path) -> No
             teammate_orchestration=TeammateOrchestrationConfig(enabled=True, heartbeat_interval_ms=10),
         )
     )
-    plane = runtime.team_control_plane
-    workflows = runtime.team_workflows
+    plane = _team_control_plane(runtime)
+    workflows = _team_workflows(runtime)
     assert plane is not None
     assert workflows is not None
 
@@ -327,8 +357,8 @@ def test_workflow_protocol_round_trip_and_unauthorized_response_is_rejected(tmp_
             teammate_orchestration=TeammateOrchestrationConfig(enabled=True, heartbeat_interval_ms=10),
         )
     )
-    plane = runtime.team_control_plane
-    workflows = runtime.team_workflows
+    plane = _team_control_plane(runtime)
+    workflows = _team_workflows(runtime)
     assert plane is not None
     assert workflows is not None
 
@@ -399,8 +429,8 @@ def test_terminal_and_timed_out_workflows_reject_follow_up_responses(tmp_path: P
             teammate_orchestration=TeammateOrchestrationConfig(enabled=True, heartbeat_interval_ms=10),
         )
     )
-    plane = runtime.team_control_plane
-    workflows = runtime.team_workflows
+    plane = _team_control_plane(runtime)
+    workflows = _team_workflows(runtime)
     assert plane is not None
     assert workflows is not None
 
@@ -480,8 +510,8 @@ def test_shutdown_workflow_completes_before_member_cleanup(tmp_path: Path) -> No
             teammate_orchestration=TeammateOrchestrationConfig(enabled=True, heartbeat_interval_ms=10),
         )
     )
-    plane = runtime.team_control_plane
-    workflows = runtime.team_workflows
+    plane = _team_control_plane(runtime)
+    workflows = _team_workflows(runtime)
     assert plane is not None
     assert workflows is not None
 
@@ -519,8 +549,8 @@ def test_idle_shutdown_persists_stopped_snapshot_before_cleanup(tmp_path: Path) 
             teammate_orchestration=TeammateOrchestrationConfig(enabled=True, heartbeat_interval_ms=10),
         )
     )
-    plane = runtime.team_control_plane
-    workflows = runtime.team_workflows
+    plane = _team_control_plane(runtime)
+    workflows = _team_workflows(runtime)
     teammates = runtime.teammates
     assert plane is not None
     assert workflows is not None
@@ -579,9 +609,9 @@ def test_shutdown_workflow_is_delivered_to_targeted_teammate_and_leader(tmp_path
             teammate_orchestration=TeammateOrchestrationConfig(enabled=True, heartbeat_interval_ms=10),
         )
     )
-    plane = runtime.team_control_plane
-    bus = runtime.team_message_bus
-    workflows = runtime.team_workflows
+    plane = _team_control_plane(runtime)
+    bus = _team_message_bus(runtime)
+    workflows = _team_workflows(runtime)
     assert plane is not None
     assert bus is not None
     assert workflows is not None
@@ -652,9 +682,9 @@ def test_permission_workflow_rejection_skips_host_permission_call(tmp_path: Path
     )
     host = ControlledPermissionHost()
     runtime.bind_host(host)
-    plane = runtime.team_control_plane
-    bus = runtime.team_message_bus
-    workflows = runtime.team_workflows
+    plane = _team_control_plane(runtime)
+    bus = _team_message_bus(runtime)
+    workflows = _team_workflows(runtime)
     assert plane is not None
     assert bus is not None
     assert workflows is not None
@@ -686,7 +716,10 @@ def test_permission_workflow_rejection_skips_host_permission_call(tmp_path: Path
     assert record is not None
     assert record.status.value == "rejected"
     assert host.requests == []
-    assert any(event.event_type == "team.workflow.rejected" for event in host.team_events)
+    assert any(
+        event.namespace == "runtime.team" and event.event_type == "team.workflow.rejected"
+        for event in host.extension_events
+    )
 
 
 def test_permission_workflow_timeout_denies_without_host_permission_call(tmp_path: Path) -> None:
@@ -709,9 +742,9 @@ def test_permission_workflow_timeout_denies_without_host_permission_call(tmp_pat
     )
     host = ControlledPermissionHost()
     runtime.bind_host(host)
-    plane = runtime.team_control_plane
-    bus = runtime.team_message_bus
-    workflows = runtime.team_workflows
+    plane = _team_control_plane(runtime)
+    bus = _team_message_bus(runtime)
+    workflows = _team_workflows(runtime)
     assert plane is not None
     assert bus is not None
     assert workflows is not None
@@ -751,7 +784,10 @@ def test_permission_workflow_timeout_denies_without_host_permission_call(tmp_pat
 
     assert record.status.value == "timed_out"
     assert host.requests == []
-    assert any(event.event_type == "team.workflow.timed_out" for event in host.team_events)
+    assert any(
+        event.namespace == "runtime.team" and event.event_type == "team.workflow.timed_out"
+        for event in host.extension_events
+    )
 
 
 def test_permission_wait_recovery_preserves_waiting_state_across_restart(tmp_path: Path) -> None:
@@ -774,9 +810,9 @@ def test_permission_wait_recovery_preserves_waiting_state_across_restart(tmp_pat
     )
     host = ControlledPermissionHost()
     runtime.bind_host(host)
-    plane = runtime.team_control_plane
-    bus = runtime.team_message_bus
-    workflows = runtime.team_workflows
+    plane = _team_control_plane(runtime)
+    bus = _team_message_bus(runtime)
+    workflows = _team_workflows(runtime)
     teammates = runtime.teammates
     assert plane is not None
     assert bus is not None
@@ -808,12 +844,12 @@ def test_permission_wait_recovery_preserves_waiting_state_across_restart(tmp_pat
 
     restarted = _worker_runtime(tmp_path, model_batches=[])
     assert restarted.teammates is not None
-    assert restarted.team_workflows is not None
+    assert _team_workflows(restarted) is not None
 
     async def stage_two():
         recovered = await restarted.teammates.recover(team_id=team_id, teammate_id=member_id)
         snapshot = restarted.teammates.snapshot(team_id, member_id)
-        pending = restarted.team_workflows.list_workflows(team_id=team_id, pending_only=True)
+        pending = _team_workflows(restarted).list_workflows(team_id=team_id, pending_only=True)
         return recovered, snapshot, pending
 
     recovered, snapshot, pending = asyncio.run(stage_two())
@@ -842,8 +878,8 @@ def test_leader_workflow_ingress_is_actionable_and_prioritized(tmp_path: Path) -
             teammate_orchestration=TeammateOrchestrationConfig(enabled=True, heartbeat_interval_ms=10),
         )
     )
-    plane = runtime.team_control_plane
-    workflows = runtime.team_workflows
+    plane = _team_control_plane(runtime)
+    workflows = _team_workflows(runtime)
     assert plane is not None
     assert workflows is not None
 
@@ -903,9 +939,9 @@ def test_shutdown_workflow_is_prioritized_and_preserves_private_envelope(tmp_pat
             teammate_orchestration=TeammateOrchestrationConfig(enabled=True, heartbeat_interval_ms=10),
         )
     )
-    plane = runtime.team_control_plane
-    bus = runtime.team_message_bus
-    workflows = runtime.team_workflows
+    plane = _team_control_plane(runtime)
+    bus = _team_message_bus(runtime)
+    workflows = _team_workflows(runtime)
     assert plane is not None
     assert bus is not None
     assert workflows is not None
@@ -989,9 +1025,9 @@ def test_team_deletion_waits_for_active_shutdown_timeout_and_persists_terminal_r
             ],
         ],
     )
-    plane = runtime.team_control_plane
-    bus = runtime.team_message_bus
-    workflows = runtime.team_workflows
+    plane = _team_control_plane(runtime)
+    bus = _team_message_bus(runtime)
+    workflows = _team_workflows(runtime)
     teammates = runtime.teammates
     assert plane is not None
     assert bus is not None
@@ -1051,10 +1087,10 @@ def test_team_deletion_waits_for_active_shutdown_timeout_and_persists_terminal_r
     assert shutdown.status is TeamWorkflowStatus.FORCED_CLOSED
 
     restarted = _worker_runtime(tmp_path, model_batches=[])
-    assert restarted.team_workflows is not None
+    assert _team_workflows(restarted) is not None
     recovered_shutdowns = [
         record
-        for record in restarted.team_workflows.list_workflows(team_id=team_id, pending_only=False)
+        for record in _team_workflows(restarted).list_workflows(team_id=team_id, pending_only=False)
         if record.workflow_kind is TeamWorkflowKind.SHUTDOWN
     ]
     assert recovered_shutdowns
@@ -1069,14 +1105,15 @@ def test_host_bridge_lists_and_resolves_pending_workflows(tmp_path: Path) -> Non
             teammate_orchestration=TeammateOrchestrationConfig(enabled=True, heartbeat_interval_ms=10),
         )
     )
-    plane = runtime.team_control_plane
-    workflows = runtime.team_workflows
+    plane = _team_control_plane(runtime)
+    workflows = _team_workflows(runtime)
     assert plane is not None
     assert workflows is not None
     host = ControlledPermissionHost()
 
     async def scenario():
         async with runtime.bind_host(host) as bound:
+            facet = _require_team_workflow_facet(bound)
             team, _ = await plane.create_team(session_id="leader-session", extensions={}, name="ops")
             member = await plane.register_member(
                 session_id="leader-session",
@@ -1093,21 +1130,21 @@ def test_host_bridge_lists_and_resolves_pending_workflows(tmp_path: Path) -> Non
                 responder_name="leader",
                 request_payload={"permission_name": "bash", "permission_message": "approve?"},
             )
-            pending = await bound.list_team_workflows(session_id="leader-session", pending_only=True)
-            updated = await bound.respond_team_workflow(
+            pending = await facet.list_workflows(session_id="leader-session", pending_only=True)
+            updated = await facet.respond(
                 workflow.workflow_id,
                 action="reject",
-                session_id="leader-session",
+                host_name=bound.host.name,
             )
             return pending, updated
 
     pending, updated = asyncio.run(scenario())
 
     assert pending
-    assert pending[0]["workflow_kind"] == "permission"
-    assert pending[0]["allowed_actions"] == ["approve", "reject"]
-    assert updated["workflow_id"] == pending[0]["workflow_id"]
-    assert updated["status"] == "rejected"
+    assert pending[0].workflow_kind.value == "permission"
+    assert pending[0].allowed_actions == ("approve", "reject")
+    assert updated.workflow_id == pending[0].workflow_id
+    assert updated.status.value == "rejected"
 
 
 def test_workflows_continue_without_host_integration(tmp_path: Path) -> None:
@@ -1118,8 +1155,8 @@ def test_workflows_continue_without_host_integration(tmp_path: Path) -> None:
             teammate_orchestration=TeammateOrchestrationConfig(enabled=True, heartbeat_interval_ms=10),
         )
     )
-    plane = runtime.team_control_plane
-    workflows = runtime.team_workflows
+    plane = _team_control_plane(runtime)
+    workflows = _team_workflows(runtime)
     assert plane is not None
     assert workflows is not None
 
@@ -1166,7 +1203,7 @@ def test_workflows_continue_without_host_integration(tmp_path: Path) -> None:
     assert result[0].output["status"] == "rejected"
 
 
-def test_host_workflow_response_requires_explicit_scope(tmp_path: Path) -> None:
+def test_host_workflow_operations_resolve_through_host_facet(tmp_path: Path) -> None:
     runtime = assemble_runtime(
         RuntimeConfig(
             working_directory=tmp_path,
@@ -1174,14 +1211,17 @@ def test_host_workflow_response_requires_explicit_scope(tmp_path: Path) -> None:
             teammate_orchestration=TeammateOrchestrationConfig(enabled=True, heartbeat_interval_ms=10),
         )
     )
-    plane = runtime.team_control_plane
-    workflows = runtime.team_workflows
+    plane = _team_control_plane(runtime)
+    workflows = _team_workflows(runtime)
     assert plane is not None
     assert workflows is not None
     host = ControlledPermissionHost()
 
     async def scenario():
         async with runtime.bind_host(host) as bound:
+            assert not hasattr(bound, "list_team_workflows")
+            assert not hasattr(bound, "respond_team_workflow")
+            facet = _require_team_workflow_facet(bound)
             team, _ = await plane.create_team(session_id="leader-session", extensions={}, name="ops")
             member = await plane.register_member(
                 session_id="leader-session",
@@ -1198,34 +1238,19 @@ def test_host_workflow_response_requires_explicit_scope(tmp_path: Path) -> None:
                 responder_name="leader",
                 request_payload={"permission_name": "bash", "permission_message": "approve?"},
             )
-            missing_scope = None
-            wrong_scope = None
-            try:
-                await bound.respond_team_workflow(workflow.workflow_id, action="reject")
-            except TeamWorkflowError as exc:
-                missing_scope = exc
-            try:
-                await bound.respond_team_workflow(
-                    workflow.workflow_id,
-                    action="reject",
-                    session_id="other-session",
-                )
-            except TeamWorkflowError as exc:
-                wrong_scope = exc
-            updated = await bound.respond_team_workflow(
+            pending = await facet.list_workflows(session_id="leader-session", pending_only=True)
+            updated = await facet.respond(
                 workflow.workflow_id,
                 action="reject",
-                session_id="leader-session",
+                host_name=bound.host.name,
             )
-            return missing_scope, wrong_scope, updated
+            return pending, updated
 
-    missing_scope, wrong_scope, updated = asyncio.run(scenario())
+    pending, updated = asyncio.run(scenario())
 
-    assert missing_scope is not None
-    assert missing_scope.code == "invalid_workflow_scope"
-    assert wrong_scope is not None
-    assert wrong_scope.code == "invalid_workflow_scope"
-    assert updated["status"] == "rejected"
+    assert pending
+    assert pending[0].workflow_id == updated.workflow_id
+    assert updated.status.value == "rejected"
 
 
 def test_host_workflow_response_preserves_logical_actor_metadata(tmp_path: Path) -> None:
@@ -1236,8 +1261,8 @@ def test_host_workflow_response_preserves_logical_actor_metadata(tmp_path: Path)
             teammate_orchestration=TeammateOrchestrationConfig(enabled=True, heartbeat_interval_ms=10),
         )
     )
-    plane = runtime.team_control_plane
-    workflows = runtime.team_workflows
+    plane = _team_control_plane(runtime)
+    workflows = _team_workflows(runtime)
     assert plane is not None
     assert workflows is not None
     host = ControlledPermissionHost()
@@ -1263,10 +1288,11 @@ def test_host_workflow_response_preserves_logical_actor_metadata(tmp_path: Path)
             request_payload={"permission_name": "bash", "permission_message": "approve?"},
         )
         async with runtime.bind_host(host) as bound:
-            await bound.respond_team_workflow(
+            facet = _require_team_workflow_facet(bound)
+            await facet.respond(
                 workflow.workflow_id,
                 action="reject",
-                session_id="leader-session",
+                host_name=bound.host.name,
             )
         command = await _wait_for(
             lambda: (
@@ -1300,8 +1326,8 @@ def test_host_and_model_share_invalid_action_validation(tmp_path: Path) -> None:
             teammate_orchestration=TeammateOrchestrationConfig(enabled=True, heartbeat_interval_ms=10),
         )
     )
-    plane = runtime.team_control_plane
-    workflows = runtime.team_workflows
+    plane = _team_control_plane(runtime)
+    workflows = _team_workflows(runtime)
     assert plane is not None
     assert workflows is not None
     host = ControlledPermissionHost()
@@ -1332,11 +1358,12 @@ def test_host_and_model_share_invalid_action_validation(tmp_path: Path) -> None:
 
     async def host_error():
         async with runtime.bind_host(host) as bound:
+            facet = _require_team_workflow_facet(bound)
             try:
-                await bound.respond_team_workflow(
+                await facet.respond(
                     workflow.workflow_id,
                     action="complete",
-                    session_id="leader-session",
+                    host_name=bound.host.name,
                 )
             except TeamWorkflowError as exc:
                 return exc
@@ -1369,9 +1396,9 @@ def test_raw_workflow_response_transport_is_rejected(tmp_path: Path) -> None:
             teammate_orchestration=TeammateOrchestrationConfig(enabled=True, heartbeat_interval_ms=10),
         )
     )
-    plane = runtime.team_control_plane
-    bus = runtime.team_message_bus
-    workflows = runtime.team_workflows
+    plane = _team_control_plane(runtime)
+    bus = _team_message_bus(runtime)
+    workflows = _team_workflows(runtime)
     assert plane is not None
     assert bus is not None
     assert workflows is not None

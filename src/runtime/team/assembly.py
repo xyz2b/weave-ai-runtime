@@ -75,12 +75,6 @@ def assemble_team_capability(
         runtime_services=runtime_services,
     )
     resolved_workflows.bind_message_bus(resolved_message_bus)
-    if bind_runtime_services:
-        runtime_services.bind_team_services(
-            control_plane=resolved_control_plane,
-            message_bus=resolved_message_bus,
-            workflow_service=resolved_workflows,
-        )
     if hasattr(resolved_teammates, "bind_workflow_service"):
         resolved_teammates.bind_workflow_service(resolved_workflows)
     return TeamCapabilityComponents(

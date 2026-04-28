@@ -237,8 +237,8 @@ Runtime 核心流转本身由框架收口，用户通常不应该改 `TurnEngine
 - 而是“这段能力能否通过 manifest + contribution + lookup contract 独立接入”
 - capability lookup / host-facet lookup / lifecycle participant 才是 package-owned runtime behavior 的 canonical path
 - ingress `completion_receipts` 现在也是 package-owned post-ingress ack 的 canonical attachment path
-- 当前残留的 team 顶层 helper、`RuntimeServices.team_*`、workflow helper method 都只应视为 compatibility wrapper
-- `emit_team_event()` 目前只应视为 bounded compatibility sink，而不是推荐继续扩展的新 package event contract
+- runtime-owned team path 现在只走 capability lookup、host facet、lifecycle participant 与 generic extension event contract
+- 已删除的 `RuntimeServices.team_*`、`RuntimeAssembly.team_*`、bound-host workflow helper 与旧 host bridge 都通过 `runtime.services.metadata["migration"]["team_protocol_only"]["replacement_matrix"]` 发布 replacement matrix
 
 当前 runtime metadata 也会显式标这些边界：
 
@@ -252,8 +252,9 @@ Runtime 核心流转本身由框架收口，用户通常不应该改 `TurnEngine
 - `runtime.metadata["core_protocol_catalog"]`：`RuntimeAssembly` 侧同步暴露的 stable core protocol catalog
 - `runtime.metadata["package_registration"]` / `runtime.metadata["package_resolution"]` / `runtime.metadata["package_manifests"]`：`RuntimeAssembly` 侧同步暴露的 external registration diagnostics、resolved-graph metadata 与 active manifest inventory
 - `runtime.metadata["package_lookup"]`：`RuntimeAssembly` 侧同步暴露的 owner-layer lookup guidance
+- `runtime.metadata["migration"]`：`RuntimeAssembly` 侧同步暴露的 breaking migration metadata，包括 team protocol-only replacement matrix
 - `runtime.services.metadata["compatibility_surfaces"]`：仍保留但非 canonical 的 wrapper / projection
-- `runtime.services.metadata["compatibility_projections"]`：当前 projection 仍映射到哪些 capability key
+- `runtime.services.metadata["compatibility_projections"]`：当前 projection 仍映射到哪些 capability key（不再包含已删除的 team control / message / workflow projection）
 
 其中 stable core protocol catalog 当前固定覆盖下面几类 runtime-owned seam：
 
@@ -270,7 +271,7 @@ Runtime 核心流转本身由框架收口，用户通常不应该改 `TurnEngine
 - `HostRuntime`
   - `host-bound`
   - canonical bind: `RuntimeAssembly.bind_host()`
-  - `HostRuntime.emit_team_event()` 继续只算 bounded compatibility sink，不算新的 canonical host extension path
+  - package-owned structured host egress 统一走 `HostRuntime.emit_extension_event()`
 
 其中 package-owned team / workflow lookup 当前应按下面的 machine-readable contract 理解：
 
@@ -280,6 +281,10 @@ Runtime 核心流转本身由框架收口，用户通常不应该改 `TurnEngine
   - `runtime.team.workflows`
 - canonical host facet key
   - `runtime.team.workflows`
+- canonical extension event contract
+  - `HostRuntime.emit_extension_event()`
+  - `runtime.hosts.HostExtensionEvent`
+  - namespace: `runtime.team`
 - canonical control-plane services
   - `RuntimeServices.job_service`
   - `RuntimeServices.task_list_service`
@@ -291,11 +296,13 @@ Runtime 核心流转本身由框架收口，用户通常不应该改 `TurnEngine
   - `RuntimeServices.memory.collect()`
   - `RuntimeServices.hooks.collect()`
   - `RuntimeServices.task_discipline.collect()`
-  - `RuntimeServices.team_*`
-  - `RuntimeAssembly.team_*`
-  - `BoundHostRuntime.list_team_workflows()`
-  - `BoundHostRuntime.respond_team_workflow()`
-  - `HostRuntime.emit_team_event()`
+  - `RuntimeServices.teammates`
+  - `RuntimeAssembly.teammates`
+
+team-specific breaking replacement matrix 则发布在：
+
+- `runtime.services.metadata["migration"]["team_protocol_only"]["replacement_matrix"]`
+- `runtime.metadata["migration"]["team_protocol_only"]["replacement_matrix"]`
 
 判断一个 wrapper 是否还该继续保留，可以先看这几个 exit criteria：
 

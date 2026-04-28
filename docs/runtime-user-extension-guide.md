@@ -208,7 +208,7 @@ Tool '<name>' has no execution handler
   - `HostRuntime`
   - 首选 bind path: `RuntimeAssembly.bind_host()`
 
-如果一个 surface 只出现在 `package_lookup` 或 `compatibility_surfaces` 里，而不在 `core_protocol_catalog` 里，就不要把它误当成 stable core protocol。典型例子包括 `runtime.team.*` capability、`RuntimeServices.team_*` projection、`TaskManager` facade，以及 `HostRuntime.emit_team_event()` 这类 bounded compatibility sink。
+如果一个 surface 只出现在 `package_lookup`、`migration.team_protocol_only.replacement_matrix` 或 `compatibility_surfaces` 里，而不在 `core_protocol_catalog` 里，就不要把它误当成 stable core protocol。典型例子包括 `runtime.team.*` capability、已删除的 team bridge replacement、`TaskManager` facade，以及 `HostRuntime.emit_extension_event()` 这类 package-owned host egress contract。
 
 对扩展方的直接含义是：
 

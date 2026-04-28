@@ -14,6 +14,7 @@ from uuid import uuid4
 
 from .contracts import utc_now
 from .definitions import IsolationMode, PermissionMode
+from .hosts.base import HostExtensionEvent
 
 if TYPE_CHECKING:
     from .runtime_services import RuntimeServices
@@ -229,6 +230,22 @@ class TeamEvent:
             "correlation_id": self.correlation_id,
             "payload": _json_safe_copy(self.payload),
         }
+
+
+TEAM_EXTENSION_EVENT_NAMESPACE = "runtime.team"
+TEAM_EXTENSION_EVENT_SCHEMA_VERSION = "1.0"
+
+
+def team_event_to_extension_event(event: TeamEvent) -> HostExtensionEvent:
+    return HostExtensionEvent(
+        namespace=TEAM_EXTENSION_EVENT_NAMESPACE,
+        schema_version=TEAM_EXTENSION_EVENT_SCHEMA_VERSION,
+        event_type=event.event_type,
+        event_id=event.event_id,
+        occurred_at=event.occurred_at,
+        correlation_id=event.correlation_id,
+        payload=event.to_dict(),
+    )
 
 
 class TeamControlError(Exception):
@@ -1022,8 +1039,8 @@ class RuntimeTeamControlPlane:
             correlation_id=correlation_id,
             payload=_coerce_mapping(payload),
         )
-        if self._runtime_services.host is not None and hasattr(self._runtime_services.host, "emit_team_event"):
-            await self._runtime_services.host.emit_team_event(event)
+        if self._runtime_services.host is not None and hasattr(self._runtime_services.host, "emit_extension_event"):
+            await self._runtime_services.host.emit_extension_event(team_event_to_extension_event(event))
 
 
 def _normalize_execution_defaults(value: Mapping[str, Any]) -> dict[str, Any]:
