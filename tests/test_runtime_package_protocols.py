@@ -1313,6 +1313,156 @@ def test_runtime_publishes_compatibility_whitelists_and_protocol_only_findings(t
     }
 
 
+def test_runtime_publishes_official_catalog_and_resolved_graph_provenance(tmp_path: Path) -> None:
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            distribution=RuntimeDistribution.FULL,
+        )
+    )
+
+    catalog_provenance = runtime.services.metadata["official_package_catalog_provenance"]
+    assert runtime.metadata["official_package_catalog_provenance"] == catalog_provenance
+    assert catalog_provenance["schema_version"] == "1.0"
+    assert catalog_provenance["provider_kind"] == "manifest-backed"
+    assert catalog_provenance["provider_path"] == (
+        "runtime.runtime_package_catalog:official_runtime_package_catalog"
+    )
+    assert "runtime.runtime_package_manifests.assembly_function_name" in (
+        catalog_provenance["retired_kernel_helpers"]
+    )
+    assert catalog_provenance["entries"]["runtime-core"]["assembly_entrypoint"] == (
+        "runtime.runtime_package_manifests:assemble_runtime_core_package"
+    )
+    assert catalog_provenance["distributions"]["runtime-full"]["packages"] == list(
+        runtime.kernel.first_party_packages
+    )
+
+    resolved_graph_provenance = runtime.services.metadata["resolved_active_package_graph_provenance"]
+    assert runtime.metadata["resolved_active_package_graph_provenance"] == resolved_graph_provenance
+    assert resolved_graph_provenance["distribution"] == RuntimeDistribution.FULL.value
+    assert resolved_graph_provenance["selected_first_party_packages"] == list(
+        runtime.kernel.first_party_packages
+    )
+    assert resolved_graph_provenance["resolved_order"] == list(runtime.kernel.first_party_packages)
+    assert all(
+        entry["origin"] == "first_party"
+        for entry in resolved_graph_provenance["resolved_packages"]
+    )
+    assert resolved_graph_provenance["resolved_packages"][0]["assembly_entrypoint"] == (
+        "runtime.runtime_package_manifests:assemble_runtime_core_package"
+    )
+
+    assembly_view = runtime.query_assembly_view()
+    assert assembly_view["official_package_catalog_provenance"] == catalog_provenance
+    assert assembly_view["resolved_active_package_graph_provenance"] == resolved_graph_provenance
+    assert assembly_view["protocol_only_conformance"] == runtime.metadata["protocol_only_conformance"]
+
+
+def test_protocol_only_conformance_publishes_kernel_assembly_sources_and_gate(
+    tmp_path: Path,
+) -> None:
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            distribution=RuntimeDistribution.DEFAULT,
+        )
+    )
+
+    conformance = runtime.metadata["protocol_only_conformance"]
+    assert conformance["finding_schema"] == {
+        "required_fields": [
+            "rule_id",
+            "family",
+            "status",
+            "distribution",
+            "evidence",
+            "canonical_path",
+        ],
+        "optional_fields": [
+            "compat_surface",
+            "replacement_path",
+        ],
+    }
+    assert conformance["rule_sources"]["official_package_catalog_authority"] == {
+        "family": "kernel-assembly",
+        "source_path": (
+            "runtime.services.metadata['official_package_catalog_provenance'] / "
+            "runtime.services.metadata['resolved_active_package_graph_provenance']"
+        ),
+    }
+
+    findings = {entry["rule_id"]: entry for entry in conformance["findings"]}
+    assert findings["official_package_catalog_authority"] == {
+        "rule_id": "official_package_catalog_authority",
+        "family": "kernel-assembly",
+        "status": "pass",
+        "distribution": RuntimeDistribution.DEFAULT.value,
+        "canonical_path": "runtime.runtime_package_catalog:official_runtime_package_catalog",
+        "replacement_path": "RuntimePackageManifest.assembly_entrypoint",
+        "evidence": [
+            "runtime-core@runtime.runtime_package_manifests:assemble_runtime_core_package",
+            "runtime-memory@runtime.runtime_package_manifests:assemble_runtime_memory_package",
+            "runtime-team@runtime.runtime_package_manifests:assemble_runtime_team_package",
+        ],
+    }
+
+    assert conformance["gate"] == {
+        "mode": "enforced",
+        "status": "pass",
+        "required_families": [
+            "privileged-service-slot",
+            "context-authority",
+            "team-bridge",
+            "provider-provenance",
+            "kernel-assembly",
+        ],
+        "family_status": {
+            "privileged-service-slot": {
+                "status": "pass",
+                "rule_ids": [
+                    "memory_service_slot_authority",
+                    "compaction_service_slot_authority",
+                    "isolation_service_slot_authority",
+                ],
+            },
+            "context-authority": {
+                "status": "pass",
+                "rule_ids": ["runtime_context_authority"],
+            },
+            "team-bridge": {
+                "status": "pass",
+                "rule_ids": [
+                    "team_runtime_projection_authority",
+                    "team_workflow_wrapper_authority",
+                    "team_host_event_bridge_authority",
+                ],
+            },
+            "provider-provenance": {
+                "status": "pass",
+                "rule_ids": ["invocation_provider_provenance"],
+            },
+            "kernel-assembly": {
+                "status": "pass",
+                "rule_ids": ["official_package_catalog_authority"],
+            },
+        },
+        "green_criteria": {
+            "required_distributions": [
+                "runtime-core",
+                "runtime-default",
+                "runtime-full",
+            ],
+            "required_optional_package_cases": [
+                "team-present",
+                "team-absent",
+                "explicit-package-enabled",
+                "explicit-package-disabled",
+            ],
+        },
+    }
+
+
 def test_runtime_publishes_privileged_service_protocol_metadata_and_findings(tmp_path: Path) -> None:
     runtime = assemble_runtime(
         RuntimeConfig(
@@ -1497,6 +1647,101 @@ def test_protocol_only_conformance_fails_without_published_service_family_metada
         "baseline_tier": [],
         "package_tiers": [],
     }
+    kernel_assembly_finding = next(
+        entry for entry in conformance["findings"] if entry["rule_id"] == "official_package_catalog_authority"
+    )
+    assert kernel_assembly_finding == {
+        "rule_id": "official_package_catalog_authority",
+        "family": "kernel-assembly",
+        "status": "fail",
+        "distribution": RuntimeDistribution.DEFAULT.value,
+        "canonical_path": "runtime.runtime_package_catalog:official_runtime_package_catalog",
+        "replacement_path": "RuntimePackageManifest.assembly_entrypoint",
+        "evidence": [],
+    }
+    assert conformance["gate"]["status"] == "fail"
+
+
+@pytest.mark.parametrize(
+    ("distribution", "enabled_packages", "disabled_packages", "expected_packages"),
+    (
+        (RuntimeDistribution.CORE, set(), set(), ("runtime-core",)),
+        (
+            RuntimeDistribution.DEFAULT,
+            set(),
+            set(),
+            ("runtime-core", "runtime-memory", "runtime-team"),
+        ),
+        (
+            RuntimeDistribution.FULL,
+            set(),
+            set(),
+            (
+                "runtime-core",
+                "runtime-memory",
+                "runtime-team",
+                "runtime-compaction",
+                "runtime-isolation",
+                "runtime-openai",
+                "runtime-hosts-reference",
+                "runtime-stores-file",
+                "runtime-builtin-workflows",
+                "runtime-planning",
+                "runtime-devtools",
+            ),
+        ),
+        (
+            RuntimeDistribution.CORE,
+            {"runtime-planning"},
+            set(),
+            ("runtime-core", "runtime-planning"),
+        ),
+        (
+            RuntimeDistribution.FULL,
+            set(),
+            {"runtime-planning"},
+            (
+                "runtime-core",
+                "runtime-memory",
+                "runtime-team",
+                "runtime-compaction",
+                "runtime-isolation",
+                "runtime-openai",
+                "runtime-hosts-reference",
+                "runtime-stores-file",
+                "runtime-builtin-workflows",
+                "runtime-devtools",
+            ),
+        ),
+    ),
+)
+def test_protocol_only_gate_is_green_across_distribution_and_optional_package_matrix(
+    tmp_path: Path,
+    distribution: RuntimeDistribution,
+    enabled_packages: set[str],
+    disabled_packages: set[str],
+    expected_packages: tuple[str, ...],
+) -> None:
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            distribution=distribution,
+            enabled_packages=enabled_packages,
+            disabled_packages=disabled_packages,
+        )
+    )
+
+    assert runtime.kernel.first_party_packages == expected_packages
+
+    assembly_view = runtime.query_assembly_view()
+    assert assembly_view["resolved_active_package_graph_provenance"]["resolved_order"] == list(
+        expected_packages
+    )
+    assert assembly_view["protocol_only_conformance"]["gate"]["status"] == "pass"
+    assert all(
+        entry["status"] == "pass"
+        for entry in assembly_view["protocol_only_conformance"]["gate"]["family_status"].values()
+    )
 
 
 def test_team_bridge_findings_fail_when_live_runtime_state_is_missing() -> None:

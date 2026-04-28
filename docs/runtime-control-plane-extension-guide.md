@@ -316,6 +316,8 @@ runtime-owned primary path 现在也把下面这些 package-service protocol sur
 
 如果需要区分 canonical binding 与 retained projection，不要再靠 slot 命名猜测；直接读取
 `package_service_protocols` / `protocol_only_conformance` metadata。
+其中 `protocol_only_conformance["gate"]` 已经是 terminal protocol-only gate 的聚合结果，
+`protocol_only_conformance["rule_sources"]` 则标出每条 finding 由哪一个结构化 metadata source 拥有。
 
 ## 4. Permission 与 Elicitation 接入规范
 
@@ -597,6 +599,7 @@ sidecar 接入时必须遵守：
 - 不要再通过共享 `runtime_context` mutation 写入 authoritative private state
 - 如果需要审计剩余 compat seam，直接看 `runtime.services.metadata["compatibility_boundaries"]`
 - 如果需要聚合 gate 结果，直接看 `runtime.services.metadata["protocol_only_conformance"]`
+- 如果 embedder 需要拿同一份汇总视图，直接调用 `RuntimeAssembly.query_assembly_view()`
 
 也就是说：
 

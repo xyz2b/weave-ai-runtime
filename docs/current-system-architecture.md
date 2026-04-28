@@ -199,6 +199,9 @@ helper 语义也已经固定：
 - `runtime.kernel.diagnostics`
 - `runtime.services.metadata["migration"]`
 - `runtime.services.metadata["first_party_package_catalog"]`
+- `runtime.services.metadata["official_package_catalog_provenance"]`
+- `runtime.services.metadata["resolved_active_package_graph_provenance"]`
+- `runtime.services.metadata["protocol_only_conformance"]`
 
 当前 builtin ownership matrix 也已经显式化：
 
@@ -266,6 +269,10 @@ helper 语义也已经固定：
 - `runtime.services.metadata["package_resolution"]` / `runtime.metadata["package_resolution"]`
   - 单独发布 raw candidate catalog、resolution request inputs、resolved manifest graph，以及 missing package / conflicting constraint / incompatible candidate / cyclic dependency diagnostics
   - resolution failure 会在任何 package contribution assembly 开始之前阻断 runtime boot
+- `runtime.services.metadata["official_package_catalog_provenance"]` / `runtime.metadata["official_package_catalog_provenance"]`
+  - 发布 manifest-backed 官方 first-party package catalog provider、distribution defaults、assembly entrypoint provenance，以及已退役的 kernel-owned helper 名单
+- `runtime.services.metadata["resolved_active_package_graph_provenance"]` / `runtime.metadata["resolved_active_package_graph_provenance"]`
+  - 单独发布当前 distribution 的 selected first-party set、resolved active graph 顺序、每个 package 的 source provenance 与 assembly entrypoint
 - `runtime.services.metadata["package_manifests"]` / `runtime.metadata["package_manifests"]`
   - 只描述真正通过 resolution 并进入装配的 manifest graph；不会混入 raw candidate inventory
 
@@ -950,6 +957,8 @@ workflow 协议层现在也已经从 transport 层显式拆开：
 
 关键 conformance harness 当前集中在：
 
+- `tests/test_runtime_package_protocols.py`
+- `tests/test_runtime_kernel.py`
 - `tests/test_session_ingress.py`
 - `tests/test_session_runtime.py`
 - `tests/test_query_turn_stream.py`
@@ -958,8 +967,7 @@ workflow 协议层现在也已经从 transport 层显式拆开：
 - `tests/test_runtime_control_plane.py`
 - `tests/test_interactive_control_plane.py`
 
-这些测试共同锁住 ingress、prompt/private carrier、turn stream、invocation visibility 和 host/control-plane ordering 等关键契约。  
-但当前 shell 的 `python3` 环境未安装 `pytest`，因此本文结论主要基于源码、历史 change 和测试分布，而不是一次实际回归执行结果。
+这些测试共同锁住 ingress、prompt/private carrier、turn stream、invocation visibility、host/control-plane ordering，以及官方 catalog ownership 与 terminal protocol-only gate。
 
 ## 17. Mermaid 图示
 

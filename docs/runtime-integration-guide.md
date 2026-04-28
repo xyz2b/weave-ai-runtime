@@ -155,6 +155,7 @@ Runtime 核心流转本身由框架收口，用户通常不应该改 `TurnEngine
 - 这个输入只负责 external package name request；first-party package 仍通过 distribution defaults 与 `enabled_packages` / `disabled_packages` 控制
 - runtime 会在 package assembly 之前把 selected first-party manifests、admitted external candidates 与 explicit package requests 一起做 deterministic resolution
 - missing package、conflicting constraint、incompatible candidate、cyclic dependency 都会以 machine-readable diagnostics 形式体现在 `package_resolution` metadata 里，并在 resolution 失败时阻断 assembly
+- 官方 first-party package catalog 本身现在也走 manifest-backed provider：selected slice 继续发布到 `first_party_package_catalog`，完整 catalog ownership / distribution defaults / assembly provenance 则单独发布到 `official_package_catalog_provenance`
 
 ### 2.2 Runtime 入口：`RuntimeAssembly`
 
@@ -168,6 +169,8 @@ Runtime 核心流转本身由框架收口，用户通常不应该改 `TurnEngine
   - `create_session()`
 - capability discovery
   - `resolve_invocations()`
+- assembly query surface
+  - `query_assembly_view()`
   - `visible_invocations()`
   - `invocation_diagnostics()`
 
@@ -243,13 +246,17 @@ Runtime 核心流转本身由框架收口，用户通常不应该改 `TurnEngine
 当前 runtime metadata 也会显式标这些边界：
 
 - `runtime.services.metadata["core_protocol_catalog"]`：stable core protocol catalog，包含 schema version、owner、binding boundary、canonical binding surface、discovery surface 与 compatibility status
+- `runtime.services.metadata["official_package_catalog_provenance"]`：manifest-backed 官方 first-party package catalog、distribution defaults、assembly entrypoint provenance 与退役 kernel helper
+- `runtime.services.metadata["resolved_active_package_graph_provenance"]`：当前 runtime active graph 的 resolved order、source provenance 与 assembly entrypoint
 - `runtime.services.metadata["package_registration"]`：external package accepted / rejected registration、diagnostics、provenance、trust-boundary details
 - `runtime.services.metadata["package_resolution"]`：raw candidate catalog、resolution request inputs、resolved graph 与 structured diagnostics
 - `runtime.services.metadata["package_manifests"]`：真正进入装配的 resolved manifest inventory
 - `runtime.services.metadata["package_lookup"]`：canonical capability / host-facet / lifecycle / receipt path
 - `runtime.services.metadata["invocation_provider_paths"]`：built-in baseline、package canonical path、package contribution ordering
 - `runtime.services.metadata["invocation_provider_registrations"]`：当前 runtime 里实际生效的 provider 注册顺序、owner、origin 与 registration metadata
+- `runtime.services.metadata["protocol_only_conformance"]`：聚合后的 protocol-only finding、shared finding schema、rule-source mapping 与 terminal gate status
 - `runtime.metadata["core_protocol_catalog"]`：`RuntimeAssembly` 侧同步暴露的 stable core protocol catalog
+- `runtime.metadata["official_package_catalog_provenance"]` / `runtime.metadata["resolved_active_package_graph_provenance"]`：`RuntimeAssembly` 侧同步暴露的官方 catalog ownership 与 resolved active graph provenance
 - `runtime.metadata["package_registration"]` / `runtime.metadata["package_resolution"]` / `runtime.metadata["package_manifests"]`：`RuntimeAssembly` 侧同步暴露的 external registration diagnostics、resolved-graph metadata 与 active manifest inventory
 - `runtime.metadata["package_lookup"]`：`RuntimeAssembly` 侧同步暴露的 owner-layer lookup guidance
 - `runtime.metadata["migration"]`：`RuntimeAssembly` 侧同步暴露的 breaking migration metadata，包括 team protocol-only replacement matrix

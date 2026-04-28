@@ -396,8 +396,11 @@ def build_runtime_package_catalog(
                 manifest,
                 source={
                     "origin": "first_party",
-                    "source_kind": "official",
-                    "source_ref": f"FIRST_PARTY_PACKAGE_SPECS[{manifest.name}]",
+                    "source_kind": "official-catalog",
+                    "source_ref": (
+                        "runtime.runtime_package_catalog:"
+                        f"OFFICIAL_RUNTIME_PACKAGE_CATALOG['{manifest.name}']"
+                    ),
                 },
             )
         )

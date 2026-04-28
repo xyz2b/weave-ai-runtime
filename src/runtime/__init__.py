@@ -142,6 +142,10 @@ from .permissions import (
     PermissionRule,
     PermissionTarget,
 )
+from .runtime_package_catalog import (
+    official_runtime_distribution_catalog,
+    official_runtime_package_catalog,
+)
 from .runtime_package_manifests import official_runtime_package_manifests, package_manifest
 from .runtime_package_resolution import (
     PACKAGE_CANDIDATE_METADATA_KEY,
@@ -607,6 +611,8 @@ __all__ = [
     "is_stable_public_hook_source",
     "is_stable_public_phase",
     "normalize_runtime_distribution",
+    "official_runtime_distribution_catalog",
+    "official_runtime_package_catalog",
     "official_runtime_package_manifests",
     "package_manifest",
     "PACKAGE_CANDIDATE_METADATA_KEY",

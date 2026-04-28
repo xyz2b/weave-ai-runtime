@@ -4,11 +4,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ..definitions import AgentDefinition, SkillDefinition, ToolDefinition
-from ..package_profiles import (
-    DEFAULT_RUNTIME_DISTRIBUTION,
-    FIRST_PARTY_PACKAGE_SPECS,
-    resolve_first_party_package_names,
-)
+from ..package_profiles import DEFAULT_RUNTIME_DISTRIBUTION, resolve_first_party_package_names
+from ..runtime_package_catalog import official_runtime_package_names
 from ..runtime_package_manifests import official_runtime_package_manifests
 from ..runtime_package_protocols import PackageAssemblyStage, PackageContext
 
@@ -24,7 +21,7 @@ def builtin_package_catalog(
     package_names: tuple[str, ...] | list[str] | None = None,
 ) -> dict[str, BuiltinPack]:
     selected = (
-        tuple(FIRST_PARTY_PACKAGE_SPECS)
+        official_runtime_package_names()
         if package_names is None
         else tuple(package_names)
     )
@@ -55,7 +52,7 @@ def load_builtin_pack(package_names: tuple[str, ...] | list[str] | None = None) 
         if package_names is not None
         else resolve_first_party_package_names(distribution=DEFAULT_RUNTIME_DISTRIBUTION)
     )
-    unknown = sorted(set(resolved_packages) - set(FIRST_PARTY_PACKAGE_SPECS))
+    unknown = sorted(set(resolved_packages) - set(official_runtime_package_names()))
     if unknown:
         raise ValueError(f"Unknown builtin package(s): {', '.join(unknown)}")
     catalog = builtin_package_catalog(resolved_packages)

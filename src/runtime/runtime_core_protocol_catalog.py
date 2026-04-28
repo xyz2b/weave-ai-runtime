@@ -185,6 +185,12 @@ class StableCoreProtocolCatalog:
     adjacent_metadata: dict[str, str] = field(
         default_factory=lambda: {
             "package_lookup": "source of truth for package-specific canonical keys and wrapper status",
+            "official_package_catalog_provenance": (
+                "source of truth for the manifest-backed official first-party package catalog"
+            ),
+            "resolved_active_package_graph_provenance": (
+                "source of truth for the resolved active package graph and its provenance"
+            ),
             "compatibility_surfaces": "source of truth for compatibility-only runtime helpers",
             "compatibility_boundaries": "source of truth for the finite compatibility-only runtime_context and TaskManager whitelist",
             "compatibility_projections": "legacy projections that still delegate to canonical runtime capabilities",

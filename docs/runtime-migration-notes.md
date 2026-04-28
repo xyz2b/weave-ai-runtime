@@ -127,6 +127,7 @@
 运行时会把当前已选 package 和其 builtin 所有权摘要写进：
 
 - `runtime.services.metadata["first_party_package_catalog"]`
+- `runtime.services.metadata["official_package_catalog_provenance"]`
 - `runtime.services.metadata["package_resolution"]`
 
 ## 4.5 Package Attachment Contract Changes
@@ -163,6 +164,8 @@ external package 的迁移口径也需要一起改：
 - `RuntimeConfig.extra_package_manifests` 现在只负责 local candidate admission，不再意味着该 package 会自动进入 active runtime
 - admitted external manifest 会先进入 local package catalog；真正进入装配的 graph 由 selected first-party manifests、`RuntimeConfig.requested_packages` 与 bounded dependency constraints 一起 deterministic resolve
 - duplicate external package names、missing dependency、conflicting constraint、incompatible candidate、cyclic dependency 都属于 resolution phase 的结构化结果，而不是继续藏在 registration side effect 里
+- `first_party_package_catalog` 现在只是 selected official package slice；完整官方 catalog ownership、distribution defaults 与 assembly provenance 则单独发布到 `official_package_catalog_provenance`
+- `resolved_active_package_graph_provenance` 会把当前 runtime active graph 的 resolved order、source provenance 与 assembly entrypoint 单独发布出来
 - `package_resolution` metadata 与 `package_registration`、`package_manifests`、`package_lookup`、`core_protocol_catalog` 分开发布；raw candidate inventory 与 active resolved graph 不再混在同一个 manifest view 里
 - 这次变更仍然明确不做 remote discovery、package install、publish workflow 或 Python environment package management
 
@@ -206,6 +209,10 @@ external package 的迁移口径也需要一起改：
 
 - `runtime.services.metadata["core_protocol_catalog"]`
 - `runtime.metadata["core_protocol_catalog"]`
+- `runtime.services.metadata["official_package_catalog_provenance"]`
+- `runtime.metadata["official_package_catalog_provenance"]`
+- `runtime.services.metadata["resolved_active_package_graph_provenance"]`
+- `runtime.metadata["resolved_active_package_graph_provenance"]`
 - `runtime.services.metadata["package_resolution"]`
 - `runtime.metadata["package_resolution"]`
 - `runtime.services.metadata["package_lookup"]`
@@ -223,6 +230,10 @@ external package 的迁移口径也需要一起改：
   - 只覆盖 `TranscriptStore`、`JobService`、`TaskListService`、`PermissionService`、`ElicitationService`、context contributors、invocation providers、`HostRuntime`
 - `package_resolution`
   - local package catalog、resolution request、resolved graph 与 structured diagnostics 的 source of truth
+- `official_package_catalog_provenance`
+  - manifest-backed 官方 first-party catalog、distribution defaults、assembly entrypoint provenance 与已退役 kernel helper 的 source of truth
+- `resolved_active_package_graph_provenance`
+  - 当前 runtime resolved active graph、package source provenance 与 assembly entrypoint 的 source of truth
 - `package_lookup`
   - package-specific canonical capability key、host facet key、service-family protocol key、wrapper exit criteria 的 source of truth
 - `package_service_protocols`
@@ -232,7 +243,8 @@ external package 的迁移口径也需要一起改：
 - `compatibility_boundaries`
   - raw `runtime_context` 与 `TaskManager` 剩余 whitelist / exit criteria 的 source of truth
 - `protocol_only_conformance`
-  - privileged-service-slot、context-authority、task-authority、provider-provenance 与 team-bridge finding 的 source of truth
+  - privileged-service-slot、context-authority、task-authority、provider-provenance、team-bridge 与 kernel-assembly finding 的 source of truth
+  - 同时发布 shared finding schema、rule-source mapping 与 terminal gate status；embedder / CI 可直接通过 `RuntimeAssembly.query_assembly_view()` 读取同样的聚合摘要
 
 这意味着 `runtime.team.control_plane`、`runtime.team.workflows`、`TaskManager` 仍然重要，但它们不属于 stable core protocol catalog 本身；canonical package path 继续通过 capability / host facet / migration metadata 发布，而已经删除的 team bridge surface 不再继续写进 `compatibility_surfaces`。
 

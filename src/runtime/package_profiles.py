@@ -3,6 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 
+from .runtime_package_catalog import (
+    official_runtime_distribution_catalog,
+    official_runtime_package_catalog,
+    official_runtime_package_names,
+)
+
 
 class FirstPartyPackageRole(StrEnum):
     CORE = "core"
@@ -41,132 +47,41 @@ class RuntimeDistributionSpec:
     packages: tuple[str, ...]
 
 
-FIRST_PARTY_PACKAGE_SPECS: dict[str, FirstPartyPackageSpec] = {
-    "runtime-core": FirstPartyPackageSpec(
-        name="runtime-core",
-        role=FirstPartyPackageRole.CORE,
-        description="Kernel assembly, root boot path, runtime control surfaces, and core built-ins.",
-        builtin_tools=(
-            "agent",
-            "skill",
-            "ask_user",
-            "sleep",
-            "task_create",
-            "task_get",
-            "task_update",
-            "task_claim",
-            "task_release",
-            "task_assign_next",
-            "task_block",
-            "task_unblock",
-            "task_archive",
-            "task_unarchive",
-            "task_delete",
-            "task_list",
-            "job_get",
-            "job_list",
-            "job_stop",
-        ),
-        builtin_agents=("main-router", "general-purpose"),
-    ),
-    "runtime-memory": FirstPartyPackageSpec(
-        name="runtime-memory",
-        role=FirstPartyPackageRole.CAPABILITY,
-        description="First-party memory capability package.",
-        dependencies=("runtime-core",),
-        builtin_skills=("remember",),
-    ),
-    "runtime-team": FirstPartyPackageSpec(
-        name="runtime-team",
-        role=FirstPartyPackageRole.CAPABILITY,
-        description="First-party team control and teammate orchestration capability package.",
-        dependencies=("runtime-core",),
-        builtin_tools=("team_create", "team_spawn", "team_send", "team_respond", "team_delete"),
-    ),
-    "runtime-compaction": FirstPartyPackageSpec(
-        name="runtime-compaction",
-        role=FirstPartyPackageRole.MECHANISM,
-        description="First-party compaction strategies and manager package.",
-        dependencies=("runtime-core",),
-    ),
-    "runtime-isolation": FirstPartyPackageSpec(
-        name="runtime-isolation",
-        role=FirstPartyPackageRole.MECHANISM,
-        description="First-party isolation adapters package.",
-        dependencies=("runtime-core",),
-    ),
-    "runtime-openai": FirstPartyPackageSpec(
-        name="runtime-openai",
-        role=FirstPartyPackageRole.PROVIDER,
-        description="First-party OpenAI provider integration package.",
-        dependencies=("runtime-core",),
-    ),
-    "runtime-hosts-reference": FirstPartyPackageSpec(
-        name="runtime-hosts-reference",
-        role=FirstPartyPackageRole.ADAPTER,
-        description="First-party reference host implementations package.",
-        dependencies=("runtime-core",),
-    ),
-    "runtime-stores-file": FirstPartyPackageSpec(
-        name="runtime-stores-file",
-        role=FirstPartyPackageRole.ADAPTER,
-        description="First-party file-backed runtime store implementations package.",
-        dependencies=("runtime-core",),
-    ),
-    "runtime-builtin-workflows": FirstPartyPackageSpec(
-        name="runtime-builtin-workflows",
-        role=FirstPartyPackageRole.PROFILE_WORKFLOW,
-        description="First-party reusable workflow skills package.",
-        dependencies=("runtime-core",),
-        builtin_skills=("verify", "debug", "stuck", "batch", "simplify"),
-    ),
-    "runtime-planning": FirstPartyPackageSpec(
-        name="runtime-planning",
-        role=FirstPartyPackageRole.PROFILE_WORKFLOW,
-        description="First-party planning profile and workflow agent package.",
-        dependencies=("runtime-core",),
-        builtin_agents=("planner", "coordinator", "worker"),
-    ),
-    "runtime-devtools": FirstPartyPackageSpec(
-        name="runtime-devtools",
-        role=FirstPartyPackageRole.PROFILE_WORKFLOW,
-        description="First-party workspace and coding-oriented built-ins package.",
-        dependencies=("runtime-core",),
-        builtin_tools=("read", "glob", "grep", "edit", "write", "bash", "web_fetch", "web_search"),
-        builtin_agents=("explore", "plan", "verification"),
-    ),
-}
+def _first_party_package_specs() -> dict[str, FirstPartyPackageSpec]:
+    catalog = official_runtime_package_catalog()
+    return {
+        package_name: FirstPartyPackageSpec(
+            name=entry.manifest.name,
+            role=FirstPartyPackageRole(entry.manifest.role),
+            description=entry.manifest.description,
+            dependencies=entry.manifest.dependencies,
+            builtin_tools=entry.builtin_tools,
+            builtin_agents=entry.builtin_agents,
+            builtin_skills=entry.builtin_skills,
+            invocation_providers=entry.invocation_providers,
+        )
+        for package_name, entry in catalog.items()
+    }
 
 
-RUNTIME_DISTRIBUTION_SPECS: dict[RuntimeDistribution, RuntimeDistributionSpec] = {
-    RuntimeDistribution.CORE: RuntimeDistributionSpec(
-        name=RuntimeDistribution.CORE,
-        description="Minimal runnable kernel distribution.",
-        packages=("runtime-core",),
-    ),
-    RuntimeDistribution.DEFAULT: RuntimeDistributionSpec(
-        name=RuntimeDistribution.DEFAULT,
-        description="Supported baseline distribution with first-party memory and team capabilities.",
-        packages=("runtime-core", "runtime-memory", "runtime-team"),
-    ),
-    RuntimeDistribution.FULL: RuntimeDistributionSpec(
-        name=RuntimeDistribution.FULL,
-        description="Supported full first-party distribution.",
-        packages=(
-            "runtime-core",
-            "runtime-memory",
-            "runtime-team",
-            "runtime-compaction",
-            "runtime-isolation",
-            "runtime-openai",
-            "runtime-hosts-reference",
-            "runtime-stores-file",
-            "runtime-builtin-workflows",
-            "runtime-planning",
-            "runtime-devtools",
-        ),
-    ),
-}
+def _runtime_distribution_specs() -> dict[RuntimeDistribution, RuntimeDistributionSpec]:
+    catalog = official_runtime_distribution_catalog()
+    return {
+        RuntimeDistribution(name): RuntimeDistributionSpec(
+            name=RuntimeDistribution(name),
+            description=entry.description,
+            packages=entry.packages,
+        )
+        for name, entry in catalog.items()
+    }
+
+
+FIRST_PARTY_PACKAGE_SPECS: dict[str, FirstPartyPackageSpec] = _first_party_package_specs()
+
+
+RUNTIME_DISTRIBUTION_SPECS: dict[RuntimeDistribution, RuntimeDistributionSpec] = (
+    _runtime_distribution_specs()
+)
 
 
 def normalize_runtime_distribution(value: RuntimeDistribution | str) -> RuntimeDistribution:
@@ -188,7 +103,8 @@ def resolve_first_party_package_names(
     resolved_distribution = normalize_runtime_distribution(distribution)
     enabled = {str(name) for name in enabled_packages}
     disabled = {str(name) for name in disabled_packages}
-    unknown = sorted((enabled | disabled) - set(FIRST_PARTY_PACKAGE_SPECS))
+    known_packages = set(official_runtime_package_names())
+    unknown = sorted((enabled | disabled) - known_packages)
     if unknown:
         raise ValueError(f"Unknown first-party package(s): {', '.join(unknown)}")
     if "runtime-core" in disabled:
@@ -198,7 +114,7 @@ def resolve_first_party_package_names(
     requested.difference_update(disabled)
     return tuple(
         package_name
-        for package_name in FIRST_PARTY_PACKAGE_SPECS
+        for package_name in official_runtime_package_names()
         if package_name in requested
     )
 

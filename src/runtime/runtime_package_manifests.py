@@ -5,7 +5,11 @@ from typing import Any, Iterable, Mapping, Sequence
 
 from .diagnostics import Diagnostic, DiagnosticSeverity
 from .first_party_loading import load_object
-from .package_profiles import FIRST_PARTY_PACKAGE_SPECS
+from .runtime_package_catalog import (
+    official_runtime_package_catalog_entry,
+    official_runtime_package_manifest_catalog as _official_runtime_package_manifest_catalog,
+    official_runtime_package_names,
+)
 from .runtime_package_protocols import (
     CapabilityBinding,
     ContextContributorBinding,
@@ -145,26 +149,23 @@ class TeamWorkflowHostFacet:
         )
 
 
-_OFFICIAL_RUNTIME_PACKAGE_MANIFESTS: dict[str, RuntimePackageManifest]
-
-
 def official_runtime_package_manifest_catalog() -> dict[str, RuntimePackageManifest]:
-    return dict(_OFFICIAL_RUNTIME_PACKAGE_MANIFESTS)
+    return _official_runtime_package_manifest_catalog()
 
 
 def official_runtime_package_manifests(
     package_names: Iterable[str] | None = None,
 ) -> tuple[RuntimePackageManifest, ...]:
     selected = (
-        tuple(FIRST_PARTY_PACKAGE_SPECS)
+        official_runtime_package_names()
         if package_names is None
         else tuple(str(name) for name in package_names)
     )
-    return order_package_manifests(selected, _OFFICIAL_RUNTIME_PACKAGE_MANIFESTS)
+    return order_package_manifests(selected, official_runtime_package_manifest_catalog())
 
 
 def package_manifest(package_name: str) -> RuntimePackageManifest:
-    return _OFFICIAL_RUNTIME_PACKAGE_MANIFESTS[str(package_name)]
+    return official_runtime_package_manifest_catalog()[str(package_name)]
 
 
 @dataclass(frozen=True, slots=True)
@@ -795,42 +796,6 @@ def assemble_runtime_devtools_package(context: PackageContext) -> PackageContrib
     )
 
 
-def assembly_function_name(package_name: str) -> str:
-    return {
-        "runtime-core": "assemble_runtime_core_package",
-        "runtime-memory": "assemble_runtime_memory_package",
-        "runtime-team": "assemble_runtime_team_package",
-        "runtime-compaction": "assemble_runtime_compaction_package",
-        "runtime-isolation": "assemble_runtime_isolation_package",
-        "runtime-openai": "assemble_runtime_openai_package",
-        "runtime-hosts-reference": "assemble_runtime_hosts_reference_package",
-        "runtime-stores-file": "assemble_runtime_stores_file_package",
-        "runtime-builtin-workflows": "assemble_runtime_builtin_workflows_package",
-        "runtime-planning": "assemble_runtime_planning_package",
-        "runtime-devtools": "assemble_runtime_devtools_package",
-    }[package_name]
-
-
-_OFFICIAL_RUNTIME_PACKAGE_MANIFESTS = {
-    package_name: RuntimePackageManifest(
-        name=package_name,
-        role=spec.role.value,
-        description=spec.description,
-        dependencies=spec.dependencies,
-        assembly_entrypoint=(
-            f"runtime.runtime_package_manifests:{assembly_function_name(package_name)}"
-        ),
-        metadata={
-            "builtin_tools": list(spec.builtin_tools),
-            "builtin_agents": list(spec.builtin_agents),
-            "builtin_skills": list(spec.builtin_skills),
-            "invocation_providers": list(spec.invocation_providers),
-        },
-    )
-    for package_name, spec in FIRST_PARTY_PACKAGE_SPECS.items()
-}
-
-
 def _resolve_team_config(context: PackageContext) -> Any:
     config = getattr(context.config, "teammate_orchestration", None)
     if config is None:
@@ -917,18 +882,18 @@ def _load_builtin_definitions(
 
 
 def _expected_builtin_names(package_name: str, kind: str) -> tuple[str, ...]:
-    spec = FIRST_PARTY_PACKAGE_SPECS[package_name]
+    entry = official_runtime_package_catalog_entry(package_name)
     if kind == "tool":
-        return spec.builtin_tools
+        return entry.builtin_tools
     if kind == "agent":
-        return spec.builtin_agents
+        return entry.builtin_agents
     if kind == "skill":
-        return spec.builtin_skills
+        return entry.builtin_skills
     raise ValueError(f"Unsupported builtin kind: {kind}")
 
 
 def _expected_invocation_provider_names(package_name: str) -> tuple[str, ...]:
-    return FIRST_PARTY_PACKAGE_SPECS[package_name].invocation_providers
+    return official_runtime_package_catalog_entry(package_name).invocation_providers
 
 
 def _annotated_definitions(

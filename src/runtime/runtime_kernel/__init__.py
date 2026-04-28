@@ -10,6 +10,10 @@ from ..package_profiles import (
     normalize_runtime_distribution,
     resolve_first_party_package_names,
 )
+from ..runtime_package_catalog import (
+    official_runtime_distribution_catalog,
+    official_runtime_package_catalog,
+)
 from ..jobs import JobExecutorBinding
 from .config import (
     BuiltinPackConfig,
@@ -43,5 +47,7 @@ __all__ = [
     "build_runtime_kernel",
     "distribution_spec",
     "normalize_runtime_distribution",
+    "official_runtime_distribution_catalog",
+    "official_runtime_package_catalog",
     "resolve_first_party_package_names",
 ]

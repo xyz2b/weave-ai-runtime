@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import inspect
+from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, AsyncIterator, Mapping, Sequence
@@ -51,6 +52,12 @@ from ..hooks import (
 from ..invocation_catalog import SkillInvocationProvider
 from ..jobs import DefaultJobService, InMemoryJobStore, JobScopeFilter, job_record_to_payload
 from ..package_profiles import FIRST_PARTY_PACKAGE_SPECS, distribution_spec
+from ..runtime_package_catalog import (
+    official_runtime_distribution_catalog,
+    official_runtime_package_catalog_metadata,
+    official_runtime_package_catalog_provenance,
+    official_runtime_package_names,
+)
 from ..runtime_package_manifests import (
     RuntimePackageRegistrationReport,
     official_runtime_package_manifests,
@@ -310,6 +317,23 @@ class RuntimeAssembly:
                 return fallback
             return services.resolve_capability(capability_key, fallback)
         return object.__getattribute__(self, name)
+
+    def query_assembly_view(self) -> dict[str, Any]:
+        keys = (
+            "distribution",
+            "first_party_packages",
+            "first_party_package_catalog",
+            "official_package_catalog_provenance",
+            "resolved_active_package_graph_provenance",
+            "protocol_only_conformance",
+            "package_resolution",
+            "package_manifests",
+            "package_registration",
+        )
+        return {
+            key: deepcopy(self.metadata.get(key))
+            for key in keys
+        }
 
     @property
     def task_manager(self) -> TaskManager:
@@ -1435,7 +1459,7 @@ def build_runtime_kernel(config: RuntimeConfig) -> RuntimeKernel:
         disabled_packages=config.disabled_packages,
         explicit_package_requests=config.requested_packages,
         selected_first_party_packages=tuple(manifest.name for manifest in first_party_manifests),
-        first_party_package_names=FIRST_PARTY_PACKAGE_SPECS,
+        first_party_package_names=official_runtime_package_names(),
     )
     package_catalog = build_runtime_package_catalog(
         first_party_manifests,
@@ -1643,6 +1667,12 @@ def _assemble_runtime_stack(kernel: RuntimeKernel) -> RuntimeAssembly:
             "distribution": kernel.distribution,
             "first_party_packages": list(kernel.first_party_packages),
             "first_party_package_catalog": dict(services.metadata.get("first_party_package_catalog", {})),
+            "official_package_catalog_provenance": dict(
+                services.metadata.get("official_package_catalog_provenance", {})
+            ),
+            "resolved_active_package_graph_provenance": dict(
+                services.metadata.get("resolved_active_package_graph_provenance", {})
+            ),
             "package_registration": dict(services.metadata.get("package_registration", {})),
             "package_resolution": dict(services.metadata.get("package_resolution", {})),
             "package_manifests": dict(services.metadata.get("package_manifests", {})),
@@ -1709,6 +1739,12 @@ def _build_runtime_services(kernel: RuntimeKernel) -> RuntimeServices:
     metadata["distribution"] = kernel.distribution
     metadata["first_party_packages"] = list(kernel.first_party_packages)
     metadata["first_party_package_catalog"] = _first_party_package_catalog(kernel.first_party_packages)
+    metadata["official_package_catalog_provenance"] = _official_package_catalog_provenance_metadata()
+    metadata["resolved_active_package_graph_provenance"] = _resolved_active_package_graph_provenance_metadata(
+        distribution=kernel.distribution,
+        selected_packages=kernel.first_party_packages,
+        package_resolution=kernel.package_resolution,
+    )
     metadata["package_registration"] = kernel.package_registration.to_metadata()
     metadata["package_resolution"] = (
         {}
@@ -2039,6 +2075,81 @@ def _package_manifest_catalog(
         }
         for manifest in manifests
     }
+
+
+def _official_package_catalog_provenance_metadata() -> dict[str, Any]:
+    return official_runtime_package_catalog_provenance()
+
+
+def _resolved_active_package_graph_provenance_metadata(
+    *,
+    distribution: str,
+    selected_packages: tuple[str, ...],
+    package_resolution: RuntimePackageResolutionReport | None,
+) -> dict[str, Any]:
+    distribution_catalog = official_runtime_distribution_catalog()
+    distribution_entry = distribution_catalog.get(str(distribution))
+    official_provenance = official_runtime_package_catalog_provenance()
+    official_entries = official_provenance.get("entries", {})
+    if not isinstance(official_entries, Mapping):
+        official_entries = {}
+    resolved_packages: list[dict[str, Any]] = []
+    resolved_order: list[str] = []
+    if package_resolution is not None:
+        for index, candidate in enumerate(package_resolution.resolved_candidates):
+            source = dict(candidate.source)
+            package_name = candidate.package_name
+            official_entry = official_entries.get(package_name, {})
+            if not isinstance(official_entry, Mapping):
+                official_entry = {}
+            resolved_order.append(package_name)
+            resolved_packages.append(
+                {
+                    "package_name": package_name,
+                    "candidate_id": candidate.candidate_id,
+                    "origin": str(source.get("origin") or ""),
+                    "source_kind": str(source.get("source_kind") or ""),
+                    "source_ref": str(source.get("source_ref") or ""),
+                    "assembly_entrypoint": str(
+                        official_entry.get("assembly_entrypoint")
+                        or _serialize_manifest_assembly_entrypoint(candidate.manifest)
+                    ),
+                    "dependencies": list(candidate.manifest.dependencies),
+                    "resolution_position": index,
+                }
+            )
+    metadata: dict[str, Any] = {
+        "schema_version": "1.0",
+        "published_metadata_paths": [
+            "runtime.services.metadata['resolved_active_package_graph_provenance']",
+            "runtime.metadata['resolved_active_package_graph_provenance']",
+        ],
+        "distribution": distribution,
+        "selected_first_party_packages": list(selected_packages),
+        "resolved_order": resolved_order,
+        "resolved_packages": resolved_packages,
+        "source_paths": {
+            "official_catalog": "runtime.services.metadata['official_package_catalog_provenance']",
+            "resolution_report": "runtime.services.metadata['package_resolution']",
+        },
+    }
+    if distribution_entry is not None:
+        metadata["baseline_distribution_packages"] = list(distribution_entry.packages)
+        metadata["distribution_source_ref"] = distribution_entry.source_ref
+    return metadata
+
+
+def _serialize_manifest_assembly_entrypoint(manifest: RuntimePackageManifest) -> str:
+    entrypoint = manifest.assembly_entrypoint
+    if entrypoint is None:
+        return ""
+    if isinstance(entrypoint, str):
+        return entrypoint
+    module = getattr(entrypoint, "__module__", "")
+    qualname = getattr(entrypoint, "__qualname__", "")
+    if module and qualname:
+        return f"{module}:{qualname}"
+    return repr(entrypoint)
 
 
 def _invocation_provider_paths_metadata() -> dict[str, Any]:
@@ -2669,6 +2780,216 @@ def _provider_provenance_findings(
     return [finding]
 
 
+_PROTOCOL_ONLY_REQUIRED_FINDING_FIELDS = (
+    "rule_id",
+    "family",
+    "status",
+    "distribution",
+    "evidence",
+    "canonical_path",
+)
+_PROTOCOL_ONLY_OPTIONAL_FINDING_FIELDS = (
+    "compat_surface",
+    "replacement_path",
+)
+_PROTOCOL_ONLY_REQUIRED_GATE_FAMILIES = (
+    "privileged-service-slot",
+    "context-authority",
+    "team-bridge",
+    "provider-provenance",
+    "kernel-assembly",
+)
+
+
+def _protocol_only_finding_schema() -> dict[str, Any]:
+    return {
+        "required_fields": list(_PROTOCOL_ONLY_REQUIRED_FINDING_FIELDS),
+        "optional_fields": list(_PROTOCOL_ONLY_OPTIONAL_FINDING_FIELDS),
+    }
+
+
+def _kernel_assembly_findings(
+    *,
+    distribution: str,
+    official_package_catalog_provenance: Mapping[str, Any],
+    resolved_active_package_graph_provenance: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    provider_kind = str(official_package_catalog_provenance.get("provider_kind") or "")
+    provider_path = str(official_package_catalog_provenance.get("provider_path") or "")
+    retired_helpers = official_package_catalog_provenance.get("retired_kernel_helpers", ())
+    if not isinstance(retired_helpers, Sequence) or isinstance(retired_helpers, (str, bytes)):
+        retired_helpers = ()
+    official_entries = official_package_catalog_provenance.get("entries", {})
+    if not isinstance(official_entries, Mapping):
+        official_entries = {}
+    resolved_packages = resolved_active_package_graph_provenance.get("resolved_packages", ())
+    if not isinstance(resolved_packages, Sequence) or isinstance(resolved_packages, (str, bytes)):
+        resolved_packages = ()
+
+    official_graph_entries = [
+        entry
+        for entry in resolved_packages
+        if isinstance(entry, Mapping) and str(entry.get("origin") or "") == "first_party"
+    ]
+    evidence = [
+        (
+            f"{entry.get('package_name')}@{entry.get('assembly_entrypoint')}"
+            if entry.get("assembly_entrypoint")
+            else str(entry.get("package_name") or "<unknown>")
+        )
+        for entry in official_graph_entries
+    ]
+    missing_catalog_entries = [
+        str(entry.get("package_name") or "")
+        for entry in official_graph_entries
+        if str(entry.get("package_name") or "") not in official_entries
+    ]
+    missing_entrypoints = [
+        str(entry.get("package_name") or "")
+        for entry in official_graph_entries
+        if not str(entry.get("assembly_entrypoint") or "")
+    ]
+    legacy_helper_retired = (
+        "runtime.runtime_package_manifests.assembly_function_name" in retired_helpers
+    )
+    status = (
+        "pass"
+        if provider_kind == "manifest-backed"
+        and provider_path == "runtime.runtime_package_catalog:official_runtime_package_catalog"
+        and legacy_helper_retired
+        and not missing_catalog_entries
+        and not missing_entrypoints
+        else "fail"
+    )
+    finding: dict[str, Any] = {
+        "rule_id": "official_package_catalog_authority",
+        "family": "kernel-assembly",
+        "status": status,
+        "distribution": distribution,
+        "canonical_path": "runtime.runtime_package_catalog:official_runtime_package_catalog",
+        "replacement_path": "RuntimePackageManifest.assembly_entrypoint",
+        "evidence": evidence,
+    }
+    if missing_catalog_entries:
+        finding["missing_catalog_entries"] = missing_catalog_entries
+    if missing_entrypoints:
+        finding["missing_entrypoints"] = missing_entrypoints
+    if provider_kind and provider_kind != "manifest-backed":
+        finding["provider_kind"] = provider_kind
+    return [finding]
+
+
+def _protocol_only_rule_sources() -> dict[str, dict[str, Any]]:
+    return {
+        "memory_service_slot_authority": {
+            "family": "privileged-service-slot",
+            "source_path": "runtime.services.metadata['package_service_protocols']['memory']",
+        },
+        "compaction_service_slot_authority": {
+            "family": "privileged-service-slot",
+            "source_path": "runtime.services.metadata['package_service_protocols']['compaction']",
+        },
+        "isolation_service_slot_authority": {
+            "family": "privileged-service-slot",
+            "source_path": "runtime.services.metadata['package_service_protocols']['isolation']",
+        },
+        "invocation_provider_provenance": {
+            "family": "provider-provenance",
+            "source_path": "runtime.services.metadata['invocation_provider_registrations']",
+        },
+        "runtime_context_authority": {
+            "family": "context-authority",
+            "source_path": "runtime.services.metadata['compatibility_boundaries']['runtime_context']",
+        },
+        "task_manager_authority": {
+            "family": "task-authority",
+            "source_path": "runtime.services.metadata['compatibility_boundaries']['TaskManager']",
+        },
+        "team_runtime_projection_authority": {
+            "family": "team-bridge",
+            "source_path": "runtime.services.metadata['migration']['team_protocol_only']",
+        },
+        "team_workflow_wrapper_authority": {
+            "family": "team-bridge",
+            "source_path": "runtime.services.metadata['migration']['team_protocol_only']",
+        },
+        "team_host_event_bridge_authority": {
+            "family": "team-bridge",
+            "source_path": "runtime.services.metadata['migration']['team_protocol_only']",
+        },
+        "official_package_catalog_authority": {
+            "family": "kernel-assembly",
+            "source_path": (
+                "runtime.services.metadata['official_package_catalog_provenance'] / "
+                "runtime.services.metadata['resolved_active_package_graph_provenance']"
+            ),
+        },
+    }
+
+
+def _protocol_only_family_status(
+    findings: Sequence[Mapping[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    grouped: dict[str, list[Mapping[str, Any]]] = {}
+    for finding in findings:
+        family = str(finding.get("family") or "")
+        if not family:
+            continue
+        grouped.setdefault(family, []).append(finding)
+    return {
+        family: {
+            "status": (
+                "pass"
+                if entries and all(str(entry.get("status") or "") == "pass" for entry in entries)
+                else "fail"
+            ),
+            "rule_ids": [str(entry.get("rule_id") or "") for entry in entries],
+        }
+        for family, entries in grouped.items()
+    }
+
+
+def _protocol_only_gate_metadata(
+    findings: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    family_status = _protocol_only_family_status(findings)
+    required_families = {
+        family: dict(
+            family_status.get(
+                family,
+                {
+                    "status": "fail",
+                    "rule_ids": [],
+                },
+            )
+        )
+        for family in _PROTOCOL_ONLY_REQUIRED_GATE_FAMILIES
+    }
+    return {
+        "mode": "enforced",
+        "status": (
+            "pass"
+            if all(entry["status"] == "pass" for entry in required_families.values())
+            else "fail"
+        ),
+        "required_families": list(_PROTOCOL_ONLY_REQUIRED_GATE_FAMILIES),
+        "family_status": required_families,
+        "green_criteria": {
+            "required_distributions": [
+                "runtime-core",
+                "runtime-default",
+                "runtime-full",
+            ],
+            "required_optional_package_cases": [
+                "team-present",
+                "team-absent",
+                "explicit-package-enabled",
+                "explicit-package-disabled",
+            ],
+        },
+    }
+
+
 def _protocol_only_conformance_metadata(
     *,
     distribution: str,
@@ -2676,6 +2997,8 @@ def _protocol_only_conformance_metadata(
     package_service_protocols: Mapping[str, Any],
     invocation_provider_registrations: Sequence[Mapping[str, Any]] = (),
     team_protocol_only: Mapping[str, Any] | None = None,
+    official_package_catalog_provenance: Mapping[str, Any] | None = None,
+    resolved_active_package_graph_provenance: Mapping[str, Any] | None = None,
     services: RuntimeServices | None = None,
     runtime: RuntimeAssembly | None = None,
 ) -> dict[str, Any]:
@@ -2775,27 +3098,38 @@ def _protocol_only_conformance_metadata(
                 "evidence": evidence,
             }
         )
+    findings = [
+        *privileged_service_findings,
+        *_provider_provenance_findings(
+            distribution=distribution,
+            invocation_provider_registrations=invocation_provider_registrations,
+        ),
+        runtime_context_finding,
+        task_manager_finding,
+        *_team_protocol_only_findings(
+            distribution=distribution,
+            team_protocol_only=team_protocol_only or {},
+            services=services,
+            runtime=runtime,
+        ),
+        *_kernel_assembly_findings(
+            distribution=distribution,
+            official_package_catalog_provenance=official_package_catalog_provenance or {},
+            resolved_active_package_graph_provenance=(
+                resolved_active_package_graph_provenance or {}
+            ),
+        ),
+    ]
     return {
         "schema_version": "1.0",
         "published_metadata_paths": [
             "runtime.services.metadata['protocol_only_conformance']",
             "runtime.metadata['protocol_only_conformance']",
         ],
-        "findings": [
-            *privileged_service_findings,
-            *_provider_provenance_findings(
-                distribution=distribution,
-                invocation_provider_registrations=invocation_provider_registrations,
-            ),
-            runtime_context_finding,
-            task_manager_finding,
-            *_team_protocol_only_findings(
-                distribution=distribution,
-                team_protocol_only=team_protocol_only or {},
-                services=services,
-                runtime=runtime,
-            ),
-        ],
+        "finding_schema": _protocol_only_finding_schema(),
+        "rule_sources": _protocol_only_rule_sources(),
+        "findings": findings,
+        "gate": _protocol_only_gate_metadata(findings),
     }
 
 
@@ -2820,6 +3154,14 @@ def _sync_compatibility_boundary_metadata(
     migration = services.metadata.get("migration")
     if not isinstance(migration, Mapping):
         migration = {}
+    official_package_catalog_provenance = services.metadata.get("official_package_catalog_provenance")
+    if not isinstance(official_package_catalog_provenance, Mapping):
+        official_package_catalog_provenance = {}
+    resolved_active_package_graph_provenance = services.metadata.get(
+        "resolved_active_package_graph_provenance"
+    )
+    if not isinstance(resolved_active_package_graph_provenance, Mapping):
+        resolved_active_package_graph_provenance = {}
     compatibility_boundaries = _compatibility_boundaries_metadata(
         compatibility_surfaces=compatibility_surfaces,
         package_lookup=package_lookup,
@@ -2839,6 +3181,8 @@ def _sync_compatibility_boundary_metadata(
             if isinstance(migration.get("team_protocol_only"), Mapping)
             else {}
         ),
+        official_package_catalog_provenance=official_package_catalog_provenance,
+        resolved_active_package_graph_provenance=resolved_active_package_graph_provenance,
         services=services,
         runtime=runtime,
     )
@@ -2979,22 +3323,7 @@ def _assemble_core_isolation_manager() -> Any:
 def _first_party_package_catalog(
     selected_packages: tuple[str, ...],
 ) -> dict[str, dict[str, Any]]:
-    catalog: dict[str, dict[str, Any]] = {}
-    for package_name in selected_packages:
-        spec = FIRST_PARTY_PACKAGE_SPECS[package_name]
-        entry: dict[str, Any] = {
-            "role": spec.role.value,
-            "description": spec.description,
-            "dependencies": list(spec.dependencies),
-        }
-        if spec.builtin_tools:
-            entry["builtin_tools"] = list(spec.builtin_tools)
-        if spec.builtin_agents:
-            entry["builtin_agents"] = list(spec.builtin_agents)
-        if spec.builtin_skills:
-            entry["builtin_skills"] = list(spec.builtin_skills)
-        catalog[package_name] = entry
-    return catalog
+    return official_runtime_package_catalog_metadata(selected_packages)
 
 
 def _team_bridge_replacement_matrix() -> list[dict[str, Any]]:

@@ -949,7 +949,9 @@ class RuntimeServices:
             "compatibility_surfaces",
             "compatibility_boundaries",
             "compatibility_projections",
+            "official_package_catalog_provenance",
             "package_service_protocols",
+            "resolved_active_package_graph_provenance",
             "protocol_only_conformance",
         ):
             mirror[key] = dict(self.metadata.get(key, {}))
