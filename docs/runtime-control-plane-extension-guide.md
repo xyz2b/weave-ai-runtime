@@ -568,6 +568,8 @@ sidecar 接入时必须遵守：
 
 - `runtime_context` 只应被当作 bridge 或只读 snapshot
 - 不要再通过共享 `runtime_context` mutation 写入 authoritative private state
+- 如果需要审计剩余 compat seam，直接看 `runtime.services.metadata["compatibility_boundaries"]`
+- 如果需要聚合 gate 结果，直接看 `runtime.services.metadata["protocol_only_conformance"]`
 
 也就是说：
 

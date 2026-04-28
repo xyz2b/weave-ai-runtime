@@ -531,18 +531,12 @@ def _normalize_optional_string(value: object) -> str | None:
     return normalized or None
 
 
-def _task_manager(context: ToolContext):
-    if context.task_manager is None and context.runtime_services is not None:
-        context.task_manager = context.runtime_services.task_manager
-    if context.task_manager is None:
-        context.task_manager = TaskManager()
-    return context.task_manager
-
-
 def _job_service(context: ToolContext):
     if context.runtime_services is not None:
         return context.runtime_services.job_service
-    return _task_manager(context).job_service
+    if context.task_manager is None:
+        context.task_manager = TaskManager()
+    return context.task_manager.job_service
 
 
 def _job_to_dict(task: Any) -> dict[str, Any]:

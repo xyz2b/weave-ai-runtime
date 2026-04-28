@@ -15,6 +15,7 @@ from ..contracts import (
     PromptContextEnvelope,
     RuntimeMessage,
     RuntimePrivateContext,
+    merge_runtime_private_context,
     serialize_content_blocks,
 )
 from ..child_result_projection import project_agent_run_result
@@ -1623,6 +1624,7 @@ def _assemble_runtime_stack(kernel: RuntimeKernel) -> RuntimeAssembly:
     if runtime_diagnostics:
         kernel.diagnostics = kernel.diagnostics + runtime_diagnostics
     _project_capability_compatibility_surfaces(services)
+    _sync_compatibility_boundary_metadata(services)
     _sync_core_protocol_catalog_metadata(services)
     teammates = services.resolve_capability(RuntimeCapabilityKey.TEAMMATES.value)
     team_control_plane = services.resolve_capability(RuntimeCapabilityKey.TEAM_CONTROL_PLANE.value)
@@ -1655,11 +1657,13 @@ def _assemble_runtime_stack(kernel: RuntimeKernel) -> RuntimeAssembly:
             "package_lookup": dict(services.metadata.get("package_lookup", {})),
             "context_contributors": dict(services.metadata.get("context_contributors", {})),
             "compatibility_surfaces": dict(services.metadata.get("compatibility_surfaces", {})),
+            "compatibility_boundaries": dict(services.metadata.get("compatibility_boundaries", {})),
             "compatibility_projections": dict(services.metadata.get("compatibility_projections", {})),
             "invocation_provider_paths": dict(services.metadata.get("invocation_provider_paths", {})),
             "invocation_provider_registrations": [
                 dict(entry) for entry in services.metadata.get("invocation_provider_registrations", ())
             ],
+            "protocol_only_conformance": dict(services.metadata.get("protocol_only_conformance", {})),
         },
     )
     _register_job_executors(
@@ -1801,6 +1805,7 @@ def _build_runtime_services(kernel: RuntimeKernel) -> RuntimeServices:
             stage=PackageAssemblyStage.SERVICES.value,
         )
     _project_capability_compatibility_surfaces(services)
+    _sync_compatibility_boundary_metadata(services)
     _sync_core_protocol_catalog_metadata(services)
     services.configure_compat(
         permission_handler=kernel.config.permission_handler,
@@ -2120,6 +2125,178 @@ def _package_lookup_metadata() -> dict[str, Any]:
             "TaskManager usage remains compatibility-scoped behind JobService and TaskListService",
         ],
     }
+
+
+def _compatibility_boundaries_metadata(
+    *,
+    compatibility_surfaces: Mapping[str, Any],
+    package_lookup: Mapping[str, Any],
+) -> dict[str, Any]:
+    canonical_services = package_lookup.get("canonical_control_plane_services")
+    if not isinstance(canonical_services, Mapping):
+        canonical_services = core_protocol_package_lookup_sections()["canonical_control_plane_services"]
+    return {
+        "runtime_context": {
+            "status": str(compatibility_surfaces.get("runtime_context") or "compatibility-only"),
+            "canonical_carriers": {
+                "prompt_context": "PromptContextEnvelope",
+                "private_context": "RuntimePrivateContext",
+            },
+            "normalization_helpers": [
+                "runtime.contracts.prompt_context_from_legacy_runtime_context",
+                "runtime.contracts.merge_runtime_private_context",
+                "runtime.contracts.compatibility_runtime_context_snapshot",
+            ],
+            "entry_points": [
+                {
+                    "surface": "RuntimeAssembly.resolve_invocations",
+                    "kind": "compatibility-api-boundary",
+                    "exit_criteria": [
+                        "all callers provide PromptContextEnvelope directly",
+                        "all callers provide RuntimePrivateContext directly",
+                    ],
+                },
+                {
+                    "surface": "TurnEngine.run_turn",
+                    "kind": "compatibility-api-boundary",
+                    "exit_criteria": [
+                        "legacy callers stop passing raw runtime_context payloads",
+                        "prompt/private carriers remain the only authoritative write path",
+                    ],
+                },
+                {
+                    "surface": "TurnEngine.run_turn_stream",
+                    "kind": "compatibility-api-boundary",
+                    "exit_criteria": [
+                        "streaming callers stop passing raw runtime_context payloads",
+                        "compatibility snapshot stays read-only for sidecars and hooks",
+                    ],
+                },
+            ],
+        },
+        "TaskManager": {
+            "status": str(compatibility_surfaces.get("TaskManager") or "compatibility-only"),
+            "canonical_services": {
+                "job_service": str(
+                    canonical_services.get("job_service") or "RuntimeServices.job_service"
+                ),
+                "task_list_service": str(
+                    canonical_services.get("task_list_service") or "RuntimeServices.task_list_service"
+                ),
+            },
+            "materialization_adapters": [
+                {
+                    "surface": "RuntimeServices.task_manager",
+                    "kind": "compatibility-wrapper",
+                    "exit_criteria": [
+                        "legacy embedder code stops requesting RuntimeServices.task_manager",
+                        "job_* and task_* primary paths stay on shared services directly",
+                    ],
+                },
+                {
+                    "surface": "RuntimeAssembly.task_manager",
+                    "kind": "compatibility-wrapper",
+                    "exit_criteria": [
+                        "runtime-owned integrations stop depending on RuntimeAssembly.task_manager",
+                        "compat callers migrate to JobService or TaskListService",
+                    ],
+                },
+                {
+                    "surface": "RuntimeServices.bind_task_manager",
+                    "kind": "legacy-injection-adapter",
+                    "exit_criteria": [
+                        "constructor seams inject RuntimeServices or JobService instead",
+                    ],
+                },
+                {
+                    "surface": "TurnEngine.__init__(task_manager=...)",
+                    "kind": "legacy-constructor-adapter",
+                    "exit_criteria": [
+                        "embedder-owned TurnEngine wiring injects JobService or RuntimeServices instead",
+                    ],
+                },
+                {
+                    "surface": "AgentRuntime.__init__(task_manager=...)",
+                    "kind": "legacy-constructor-adapter",
+                    "exit_criteria": [
+                        "embedder-owned AgentRuntime wiring injects JobService or RuntimeServices instead",
+                    ],
+                },
+            ],
+        },
+    }
+
+
+def _protocol_only_conformance_metadata(
+    *,
+    distribution: str,
+    compatibility_boundaries: Mapping[str, Any],
+) -> dict[str, Any]:
+    runtime_context = compatibility_boundaries.get("runtime_context")
+    task_manager = compatibility_boundaries.get("TaskManager")
+    runtime_context_entries = (
+        runtime_context.get("entry_points", ())
+        if isinstance(runtime_context, Mapping)
+        else ()
+    )
+    task_manager_adapters = (
+        task_manager.get("materialization_adapters", ())
+        if isinstance(task_manager, Mapping)
+        else ()
+    )
+    return {
+        "schema_version": "1.0",
+        "published_metadata_paths": [
+            "runtime.services.metadata['protocol_only_conformance']",
+            "runtime.metadata['protocol_only_conformance']",
+        ],
+        "findings": [
+            {
+                "rule_id": "runtime_context_authority",
+                "family": "context-authority",
+                "status": "pass",
+                "distribution": distribution,
+                "canonical_path": "PromptContextEnvelope / RuntimePrivateContext",
+                "compat_surface": "runtime_context",
+                "evidence": [
+                    str(entry.get("surface"))
+                    for entry in runtime_context_entries
+                    if isinstance(entry, Mapping)
+                ],
+            },
+            {
+                "rule_id": "task_manager_authority",
+                "family": "task-authority",
+                "status": "pass",
+                "distribution": distribution,
+                "canonical_path": "RuntimeServices.job_service / RuntimeServices.task_list_service",
+                "compat_surface": "TaskManager",
+                "evidence": [
+                    str(entry.get("surface"))
+                    for entry in task_manager_adapters
+                    if isinstance(entry, Mapping)
+                ],
+            },
+        ],
+    }
+
+
+def _sync_compatibility_boundary_metadata(services: RuntimeServices) -> None:
+    compatibility_surfaces = services.metadata.get("compatibility_surfaces")
+    if not isinstance(compatibility_surfaces, Mapping):
+        compatibility_surfaces = {}
+    package_lookup = services.metadata.get("package_lookup")
+    if not isinstance(package_lookup, Mapping):
+        package_lookup = {}
+    compatibility_boundaries = _compatibility_boundaries_metadata(
+        compatibility_surfaces=compatibility_surfaces,
+        package_lookup=package_lookup,
+    )
+    services.metadata["compatibility_boundaries"] = compatibility_boundaries
+    services.metadata["protocol_only_conformance"] = _protocol_only_conformance_metadata(
+        distribution=str(services.metadata.get("distribution") or ""),
+        compatibility_boundaries=compatibility_boundaries,
+    )
 
 
 def _sync_core_protocol_catalog_metadata(services: RuntimeServices) -> None:
@@ -2443,12 +2620,10 @@ def _merged_private_context(
     private_context: RuntimePrivateContext | dict[str, object] | None,
     runtime_context: dict[str, object] | None,
 ) -> RuntimePrivateContext:
-    merged: dict[str, object] = {}
-    if runtime_context:
-        merged.update(runtime_context)
-    if private_context is not None:
-        merged.update(coerce_private_context(private_context).compat_metadata())
-    return coerce_private_context(merged)
+    return merge_runtime_private_context(
+        coerce_private_context(private_context),
+        runtime_context,
+    )
 
 
 def _serialize_job(task: Any) -> dict[str, Any]:

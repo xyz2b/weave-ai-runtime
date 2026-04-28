@@ -32,6 +32,8 @@ class ManagedTask:
 
 
 class TaskManager:
+    """Legacy compatibility facade over the shared job and task-list services."""
+
     def __init__(self, *, job_service: DefaultJobService | None = None) -> None:
         self._job_service = job_service or DefaultJobService()
         self._stop_handlers: dict[str, Callable[[ManagedTask], Any]] = {}

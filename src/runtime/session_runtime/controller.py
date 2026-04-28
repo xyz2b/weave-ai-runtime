@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, AsyncIterator, Mapping
@@ -15,7 +15,7 @@ from ..contracts import (
     RuntimeMessage,
     RuntimePrivateContext,
     coerce_request_override_state,
-    private_context_from_legacy_runtime_context,
+    merge_runtime_private_context,
     SessionCommand,
     SessionCommandType,
     SessionState,
@@ -100,7 +100,7 @@ class SessionController:
         self._closed = False
         self._close_task: asyncio.Task[None] | None = None
         self._close_callback = close_callback
-        self._session_private_context: dict[str, Any] = {}
+        self._session_private_context = RuntimePrivateContext()
         self.state.metadata.setdefault(
             "permission_context",
             PermissionContext(
@@ -629,27 +629,22 @@ class SessionController:
         self._session_open_dispatched = True
 
     def _apply_ingress_private_updates(self, private_updates: dict[str, Any]) -> None:
-        for key, value in private_updates.items():
-            normalized_key = str(key)
-            copied_value = _copy_ingress_private_value(value)
-            self._session_private_context[normalized_key] = _copy_ingress_private_value(
-                copied_value
-            )
-            self.state.metadata[normalized_key] = copied_value
+        normalized_updates = {
+            str(key): _copy_ingress_private_value(value)
+            for key, value in private_updates.items()
+        }
+        self._session_private_context = merge_runtime_private_context(
+            self._session_private_context,
+            private_updates=normalized_updates,
+        )
+        for key, value in normalized_updates.items():
+            self.state.metadata[key] = _copy_ingress_private_value(value)
         self._session_scope.private_context = self._session_scope_private_context()
 
-    def _base_runtime_private_context(self) -> dict[str, Any]:
-        return {
-            str(key): _copy_ingress_private_value(value)
-            for key, value in self._session_private_context.items()
-        }
-
     def _session_scope_private_context(self) -> RuntimePrivateContext:
-        return private_context_from_legacy_runtime_context(
-            {
-                **self._base_runtime_private_context(),
-                "permission_context": self.state.metadata.get("permission_context"),
-            }
+        return replace(
+            self._session_private_context,
+            permission_context=self.state.metadata.get("permission_context"),
         )
 
     def _session_prompt_context(self) -> PromptContextEnvelope:
@@ -692,12 +687,13 @@ class SessionController:
         self,
         private_updates: Mapping[str, Any],
     ) -> RuntimePrivateContext:
-        merged = self._base_runtime_private_context()
-        merged.update(
-            {str(key): _copy_ingress_private_value(value) for key, value in private_updates.items()}
+        return merge_runtime_private_context(
+            self._session_scope_private_context(),
+            private_updates={
+                str(key): _copy_ingress_private_value(value)
+                for key, value in private_updates.items()
+            },
         )
-        merged["permission_context"] = self.state.metadata.get("permission_context")
-        return private_context_from_legacy_runtime_context(merged)
 
     async def _load_persisted_session_metadata(self) -> None:
         if not hasattr(self._transcript_store, "load_session_metadata"):
@@ -717,19 +713,24 @@ class SessionController:
         )
 
     def _restore_resumable_private_context(self) -> None:
+        extensions = dict(self._session_private_context.extensions)
         for key in _PERSISTED_SESSION_PRIVATE_CONTEXT_KEYS:
             value = self.state.metadata.get(key)
             if value is None:
-                self._session_private_context.pop(key, None)
+                extensions.pop(key, None)
                 continue
-            self._session_private_context[key] = _copy_ingress_private_value(value)
+            extensions[key] = _copy_ingress_private_value(value)
         resumable_override = self.state.metadata.get("resumable_request_override")
         if isinstance(resumable_override, dict):
-            self._session_private_context["request_override"] = _copy_ingress_private_value(
+            extensions["request_override"] = _copy_ingress_private_value(
                 resumable_override
             )
         else:
-            self._session_private_context.pop("request_override", None)
+            extensions.pop("request_override", None)
+        self._session_private_context = replace(
+            self._session_private_context,
+            extensions=extensions,
+        )
         self._session_scope.private_context = self._session_scope_private_context()
 
     def _sync_terminal_control_plane_metadata(self, terminal: Any) -> None:

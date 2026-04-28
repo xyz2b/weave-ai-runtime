@@ -9,6 +9,7 @@ from runtime.definitions import (
     SkillDefinition,
 )
 from runtime.registries import AgentRegistry, SkillRegistry, ToolRegistry
+from runtime.runtime_services import RuntimeServices
 from runtime.tasking import TaskManager, TaskStatus
 from runtime.tool_runtime import ToolCall, ToolCallStatus, ToolContext, ToolScheduler
 
@@ -182,3 +183,39 @@ def test_builtin_external_orchestration_and_task_tools(tmp_path: Path, monkeypat
     assert follow_up[0].output["task"]["status"] == "in_progress"
     assert follow_up[1].output["task"]["task_id"] == created_task_id
     assert follow_up[2].output["tasks"][0]["task_id"] == created_task_id
+
+
+def test_builtin_job_tools_use_job_service_without_materializing_task_manager(tmp_path: Path) -> None:
+    tool_registry = ToolRegistry()
+    for definition in load_builtin_pack(("runtime-core",)).tools:
+        tool_registry.register(definition)
+    services = RuntimeServices()
+    services.job_service.create_or_update_compat(
+        "job-1",
+        "background-check",
+        metadata={"session_id": "session"},
+    )
+    context = ToolContext(
+        session_id="session",
+        turn_id="turn",
+        agent_name="main-router",
+        cwd=tmp_path,
+        tool_registry=tool_registry,
+        runtime_services=services,
+    )
+    scheduler = ToolScheduler(tool_registry)
+
+    results = asyncio.run(
+        scheduler.run(
+            [
+                ToolCall("1", "job_list", {}),
+                ToolCall("2", "job_get", {"job_id": "job-1"}),
+            ],
+            context,
+        )
+    )
+
+    assert all(result.status == ToolCallStatus.SUCCESS for result in results)
+    assert results[0].output["jobs"][0]["job_id"] == "job-1"
+    assert results[1].output["job"]["job_id"] == "job-1"
+    assert services.tasks.manager is None

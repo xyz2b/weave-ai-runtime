@@ -13,7 +13,11 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Protocol, Sequence
 from uuid import uuid4
 
-from .contracts import RuntimePrivateContext, private_context_from_legacy_runtime_context, utc_now
+from .contracts import (
+    RuntimePrivateContext,
+    coerce_runtime_private_context,
+    utc_now,
+)
 
 TASK_LIST_ID_EXTENSION_KEY = "task_list_id"
 TASK_LIST_RESOLVED_ID_EXTENSION_KEY = "resolved_task_list_id"
@@ -957,11 +961,7 @@ class DefaultTaskListService:
 def coerce_private_context(
     value: RuntimePrivateContext | Mapping[str, Any] | None,
 ) -> RuntimePrivateContext:
-    if isinstance(value, RuntimePrivateContext):
-        return value
-    if isinstance(value, Mapping):
-        return private_context_from_legacy_runtime_context(value)
-    return RuntimePrivateContext()
+    return coerce_runtime_private_context(value)
 
 
 def resolve_task_list_id(

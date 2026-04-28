@@ -202,6 +202,8 @@ external package 的迁移口径也需要一起改：
 - `runtime.services.metadata["package_lookup"]`
 - `runtime.metadata["package_lookup"]`
 - `runtime.services.metadata["compatibility_surfaces"]`
+- `runtime.services.metadata["compatibility_boundaries"]`
+- `runtime.services.metadata["protocol_only_conformance"]`
 
 迁移时可以直接按这个分层理解：
 
@@ -214,6 +216,10 @@ external package 的迁移口径也需要一起改：
   - package-specific canonical capability key、host facet key、wrapper exit criteria 的 source of truth
 - `compatibility_surfaces`
   - retained compatibility helper / projection 的 source of truth
+- `compatibility_boundaries`
+  - raw `runtime_context` 与 `TaskManager` 剩余 whitelist / exit criteria 的 source of truth
+- `protocol_only_conformance`
+  - context-authority 与 task-authority finding 的 source of truth
 
 这意味着 `runtime.team.control_plane`、`runtime.team.workflows`、`TaskManager`、`RuntimeServices.team_*`、`BoundHostRuntime.list_team_workflows()` 仍然重要，但它们不属于 stable core protocol catalog 本身；它们要么继续在 `package_lookup` 里表达 canonical package path，要么继续在 `compatibility_surfaces` 里表达 wrapper status。
 

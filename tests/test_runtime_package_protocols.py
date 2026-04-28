@@ -1103,6 +1103,79 @@ def test_runtime_core_protocol_catalog_matches_adjacent_metadata_contracts(tmp_p
     )
 
 
+def test_runtime_publishes_compatibility_whitelists_and_protocol_only_findings(tmp_path: Path) -> None:
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            distribution=RuntimeDistribution.DEFAULT,
+        )
+    )
+
+    compatibility_boundaries = runtime.services.metadata["compatibility_boundaries"]
+    assert runtime.metadata["compatibility_boundaries"] == compatibility_boundaries
+    assert compatibility_boundaries["runtime_context"]["status"] == "compatibility-only"
+    assert compatibility_boundaries["runtime_context"]["canonical_carriers"] == {
+        "prompt_context": "PromptContextEnvelope",
+        "private_context": "RuntimePrivateContext",
+    }
+    assert [
+        entry["surface"]
+        for entry in compatibility_boundaries["runtime_context"]["entry_points"]
+    ] == [
+        "RuntimeAssembly.resolve_invocations",
+        "TurnEngine.run_turn",
+        "TurnEngine.run_turn_stream",
+    ]
+    assert compatibility_boundaries["TaskManager"]["status"] == "compatibility-only"
+    assert compatibility_boundaries["TaskManager"]["canonical_services"] == {
+        "job_service": "RuntimeServices.job_service",
+        "task_list_service": "RuntimeServices.task_list_service",
+    }
+    assert [
+        entry["surface"]
+        for entry in compatibility_boundaries["TaskManager"]["materialization_adapters"]
+    ] == [
+        "RuntimeServices.task_manager",
+        "RuntimeAssembly.task_manager",
+        "RuntimeServices.bind_task_manager",
+        "TurnEngine.__init__(task_manager=...)",
+        "AgentRuntime.__init__(task_manager=...)",
+    ]
+
+    conformance = runtime.services.metadata["protocol_only_conformance"]
+    assert runtime.metadata["protocol_only_conformance"] == conformance
+    assert conformance["schema_version"] == "1.0"
+    findings = {entry["rule_id"]: entry for entry in conformance["findings"]}
+    assert findings["runtime_context_authority"] == {
+        "rule_id": "runtime_context_authority",
+        "family": "context-authority",
+        "status": "pass",
+        "distribution": RuntimeDistribution.DEFAULT.value,
+        "canonical_path": "PromptContextEnvelope / RuntimePrivateContext",
+        "compat_surface": "runtime_context",
+        "evidence": [
+            "RuntimeAssembly.resolve_invocations",
+            "TurnEngine.run_turn",
+            "TurnEngine.run_turn_stream",
+        ],
+    }
+    assert findings["task_manager_authority"] == {
+        "rule_id": "task_manager_authority",
+        "family": "task-authority",
+        "status": "pass",
+        "distribution": RuntimeDistribution.DEFAULT.value,
+        "canonical_path": "RuntimeServices.job_service / RuntimeServices.task_list_service",
+        "compat_surface": "TaskManager",
+        "evidence": [
+            "RuntimeServices.task_manager",
+            "RuntimeAssembly.task_manager",
+            "RuntimeServices.bind_task_manager",
+            "TurnEngine.__init__(task_manager=...)",
+            "AgentRuntime.__init__(task_manager=...)",
+        ],
+    }
+
+
 def test_package_context_contributor_order_is_deterministic_across_packages(tmp_path: Path) -> None:
     original = runtime_kernel_module.official_runtime_package_manifests
 

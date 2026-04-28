@@ -323,6 +323,7 @@ def test_session_controller_passes_explicit_context_carriers_to_turn_engine(tmp_
     assert call["prompt_context"].session_hints == {"topic": "ops"}
     assert call["private_context"].extensions["host_hint"] == "keep-private"
     assert call["private_context"].permission_context is not None
+    assert controller.current_private_context().extensions["host_hint"] == "keep-private"
 
 
 def test_session_controller_streams_turn_events_until_idle(tmp_path: Path) -> None:
@@ -549,6 +550,7 @@ def test_session_controller_carries_local_only_private_updates_into_next_turn(tm
 
     request = model_client.requests[0]
     assert produced[-1].text == "turn reply"
+    assert controller.current_private_context().extensions["host_hint"] == "persist-me"
     assert request.private_context.extensions["host_hint"] == "persist-me"
     assert request.turn_context.prompt_context.session_hints == {}
     assert "host_hint: persist-me" not in request.system_prompt

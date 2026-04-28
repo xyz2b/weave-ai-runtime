@@ -36,9 +36,11 @@ from ..contracts import (
     TextBlock,
     ThinkingBlock,
     ToolUseBlock,
+    compatibility_runtime_context_snapshot,
     coerce_request_override_state,
     coerce_skill_request_override_state,
     deserialize_content_blocks,
+    merge_runtime_private_context,
     merge_request_override_state,
     merge_skill_request_override_state,
     private_context_from_legacy_runtime_context,
@@ -1152,6 +1154,8 @@ class TurnEngine:
     ) -> AsyncIterator[TurnStreamEvent]:
         max_iterations = agent.max_turns or 4
         state = TurnLoopState(working_messages=tuple(messages))
+        # Raw runtime_context is a compatibility input only; authoritative writes stay on the
+        # structured prompt/private carriers for the rest of the primary path.
         runtime_context = dict(runtime_context or {})
         prompt_context = _merge_prompt_context(
             prompt_context_from_legacy_runtime_context(runtime_context),
@@ -2633,24 +2637,12 @@ class TurnEngine:
         private_context: RuntimePrivateContext | None = None,
         prompt_context: PromptContextEnvelope | None = None,
     ) -> dict[str, object]:
-        merged = dict(self._runtime_services.metadata)
-        if runtime_context:
-            merged.update(runtime_context)
-        if prompt_context is not None:
-            merged["prompt_updates"] = dict(prompt_context.session_hints)
-            if prompt_context.compaction_summary is not None:
-                merged["compaction_summary"] = dict(prompt_context.compaction_summary)
-            if prompt_context.compaction_boundary is not None:
-                merged["compaction_boundary"] = dict(prompt_context.compaction_boundary)
-            if prompt_context.compaction_continuation is not None:
-                merged["compaction_continuation"] = dict(prompt_context.compaction_continuation)
-        if private_context is not None:
-            merged.update(private_context.compat_metadata())
-            if private_context.permission_context is not None:
-                merged["permission_context"] = private_context.permission_context
-            if private_context.policy_state is not None:
-                merged[EXECUTION_POLICY_STATE_KEY] = private_context.policy_state
-        return merged
+        return compatibility_runtime_context_snapshot(
+            runtime_context,
+            prompt_context=prompt_context,
+            private_context=private_context,
+            base_metadata=self._runtime_services.metadata,
+        )
 
     def _resolve_memory_scope(
         self,
@@ -3420,14 +3412,11 @@ def _merge_private_context_updates(
     private_updates: Mapping[str, Any] | None = None,
     diagnostics: Mapping[str, Any] | None = None,
 ) -> RuntimePrivateContext:
-    merged = private_context.compat_metadata()
-    if private_context.policy_state is not None:
-        merged[EXECUTION_POLICY_STATE_KEY] = private_context.policy_state
-    if private_updates:
-        merged.update({str(key): value for key, value in private_updates.items()})
-    if diagnostics:
-        merged.update({str(key): value for key, value in diagnostics.items()})
-    return private_context_from_legacy_runtime_context(merged)
+    return merge_runtime_private_context(
+        private_context,
+        private_updates=private_updates,
+        diagnostics=diagnostics,
+    )
 
 
 def _request_override_from_private_context(

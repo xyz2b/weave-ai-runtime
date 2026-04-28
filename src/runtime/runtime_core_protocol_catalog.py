@@ -169,8 +169,10 @@ class StableCoreProtocolCatalog:
         default_factory=lambda: {
             "package_lookup": "source of truth for package-specific canonical keys and wrapper status",
             "compatibility_surfaces": "source of truth for compatibility-only and bounded-compatibility helpers",
+            "compatibility_boundaries": "source of truth for the finite compatibility-only runtime_context and TaskManager whitelist",
             "compatibility_projections": "legacy projections that still delegate to canonical runtime capabilities",
             "invocation_provider_paths": "registry attachment guidance for builtin, package, and config-owned invocation providers",
+            "protocol_only_conformance": "source of truth for structured protocol-only authority findings",
         }
     )
     protocols: tuple[StableCoreProtocolEntry, ...] = ()

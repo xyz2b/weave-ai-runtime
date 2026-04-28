@@ -334,6 +334,59 @@ def private_context_from_legacy_runtime_context(
     )
 
 
+def coerce_runtime_private_context(
+    value: RuntimePrivateContext | Mapping[str, Any] | None,
+) -> RuntimePrivateContext:
+    if isinstance(value, RuntimePrivateContext):
+        return value
+    if isinstance(value, Mapping):
+        return private_context_from_legacy_runtime_context(value)
+    return RuntimePrivateContext()
+
+
+def merge_runtime_private_context(
+    private_context: RuntimePrivateContext | Mapping[str, Any] | None = None,
+    runtime_context: Mapping[str, Any] | None = None,
+    *,
+    private_updates: Mapping[str, Any] | None = None,
+    diagnostics: Mapping[str, Any] | None = None,
+) -> RuntimePrivateContext:
+    merged: dict[str, Any] = {}
+    if runtime_context:
+        merged.update({str(key): value for key, value in runtime_context.items()})
+    merged.update(coerce_runtime_private_context(private_context).compat_metadata())
+    if private_updates:
+        merged.update({str(key): value for key, value in private_updates.items()})
+    if diagnostics:
+        merged.update({str(key): value for key, value in diagnostics.items()})
+    return private_context_from_legacy_runtime_context(merged)
+
+
+def compatibility_runtime_context_snapshot(
+    runtime_context: Mapping[str, Any] | None = None,
+    *,
+    prompt_context: PromptContextEnvelope | None = None,
+    private_context: RuntimePrivateContext | Mapping[str, Any] | None = None,
+    base_metadata: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    merged: dict[str, Any] = {}
+    if base_metadata:
+        merged.update({str(key): value for key, value in base_metadata.items()})
+    if runtime_context:
+        merged.update({str(key): value for key, value in runtime_context.items()})
+    if prompt_context is not None:
+        merged["prompt_updates"] = dict(prompt_context.session_hints)
+        if prompt_context.compaction_summary is not None:
+            merged["compaction_summary"] = dict(prompt_context.compaction_summary)
+        if prompt_context.compaction_boundary is not None:
+            merged["compaction_boundary"] = dict(prompt_context.compaction_boundary)
+        if prompt_context.compaction_continuation is not None:
+            merged["compaction_continuation"] = dict(prompt_context.compaction_continuation)
+    if private_context is not None:
+        merged.update(coerce_runtime_private_context(private_context).compat_metadata())
+    return merged
+
+
 def _coerce_optional_string(value: object) -> str | None:
     if isinstance(value, str):
         stripped = value.strip()
