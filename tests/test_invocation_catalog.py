@@ -29,6 +29,7 @@ from runtime.invocation_catalog import (
     PluginCommandInvocationProvider,
     SkillInvocationProvider,
     SlashCommandInvocationProvider,
+    build_invocation_resolution_context,
 )
 from runtime.permissions import PermissionContext
 from runtime.registries import InvocationRegistry, SkillRegistry, ToolRegistry
@@ -311,6 +312,26 @@ def test_prompt_context_attachments_feed_invocation_path_matching(tmp_path: Path
     )
 
     assert {entry.capability.name for entry in catalog.visible} == {"docs-helper"}
+
+
+def test_build_invocation_resolution_context_normalizes_legacy_runtime_context_maps(
+    tmp_path: Path,
+) -> None:
+    legacy_prompt_updates = {"topic": "ops"}
+
+    context = build_invocation_resolution_context(
+        session_id="session",
+        turn_id="turn",
+        cwd=tmp_path,
+        messages=(),
+        runtime_context={
+            "prompt_updates": legacy_prompt_updates,
+            "permission_context": PermissionContext(session_id="session"),
+        },
+    )
+
+    assert context.metadata["prompt_updates"] == {"topic": "ops"}
+    assert context.metadata["prompt_updates"] is not legacy_prompt_updates
 
 
 def test_runtime_main_thread_uses_resolved_visible_invocations(tmp_path: Path) -> None:

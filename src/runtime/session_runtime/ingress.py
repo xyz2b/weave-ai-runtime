@@ -38,6 +38,12 @@ _CONTROL_METADATA_KEYS = frozenset(
         "transcript_visible",
     }
 )
+_PRIVATE_ONLY_METADATA_KEYS = frozenset(
+    {
+        "execution_policy_state",
+        "permission_context",
+    }
+)
 
 
 @dataclass(slots=True)
@@ -269,7 +275,12 @@ def _coerce_message_role(value: object, *, fallback: MessageRole) -> MessageRole
 
 
 def _normalized_message_metadata(metadata: Mapping[str, Any], event_type: str) -> dict[str, Any]:
-    filtered = {str(key): value for key, value in metadata.items() if key not in _CONTROL_METADATA_KEYS}
+    filtered = {
+        str(key): value
+        for key, value in metadata.items()
+        if key not in _CONTROL_METADATA_KEYS
+        and key not in _PRIVATE_ONLY_METADATA_KEYS
+    }
     source = metadata.get("source")
     visibility = metadata.get("visibility")
     if isinstance(source, str) and source:

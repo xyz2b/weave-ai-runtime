@@ -1121,11 +1121,8 @@ def test_runtime_publishes_compatibility_whitelists_and_protocol_only_findings(t
     assert [
         entry["surface"]
         for entry in compatibility_boundaries["runtime_context"]["entry_points"]
-    ] == [
-        "RuntimeAssembly.resolve_invocations",
-        "TurnEngine.run_turn",
-        "TurnEngine.run_turn_stream",
-    ]
+    ] == list(runtime_kernel_module._runtime_context_compatibility_surfaces())
+    assert compatibility_boundaries["runtime_context"]["unclassified_surfaces"] == []
     assert compatibility_boundaries["TaskManager"]["status"] == "compatibility-only"
     assert compatibility_boundaries["TaskManager"]["canonical_services"] == {
         "job_service": "RuntimeServices.job_service",
@@ -1141,6 +1138,7 @@ def test_runtime_publishes_compatibility_whitelists_and_protocol_only_findings(t
         "TurnEngine.__init__(task_manager=...)",
         "AgentRuntime.__init__(task_manager=...)",
     ]
+    assert compatibility_boundaries["TaskManager"]["unclassified_surfaces"] == []
 
     conformance = runtime.services.metadata["protocol_only_conformance"]
     assert runtime.metadata["protocol_only_conformance"] == conformance
@@ -1153,11 +1151,7 @@ def test_runtime_publishes_compatibility_whitelists_and_protocol_only_findings(t
         "distribution": RuntimeDistribution.DEFAULT.value,
         "canonical_path": "PromptContextEnvelope / RuntimePrivateContext",
         "compat_surface": "runtime_context",
-        "evidence": [
-            "RuntimeAssembly.resolve_invocations",
-            "TurnEngine.run_turn",
-            "TurnEngine.run_turn_stream",
-        ],
+        "evidence": list(runtime_kernel_module._runtime_context_compatibility_surfaces()),
     }
     assert findings["task_manager_authority"] == {
         "rule_id": "task_manager_authority",
@@ -1174,6 +1168,43 @@ def test_runtime_publishes_compatibility_whitelists_and_protocol_only_findings(t
             "AgentRuntime.__init__(task_manager=...)",
         ],
     }
+
+
+def test_protocol_only_conformance_flags_unclassified_runtime_context_surfaces(
+    tmp_path: Path,
+) -> None:
+    def temporary_runtime_context_bridge(
+        self,
+        *,
+        runtime_context: dict[str, object] | None = None,
+    ) -> dict[str, object]:
+        return dict(runtime_context or {})
+
+    runtime_kernel_module.RuntimeAssembly.temporary_runtime_context_bridge = (
+        temporary_runtime_context_bridge
+    )
+    try:
+        runtime = assemble_runtime(
+            RuntimeConfig(
+                working_directory=tmp_path,
+                distribution=RuntimeDistribution.DEFAULT,
+            )
+        )
+    finally:
+        delattr(runtime_kernel_module.RuntimeAssembly, "temporary_runtime_context_bridge")
+
+    compatibility_boundaries = runtime.services.metadata["compatibility_boundaries"]
+    assert compatibility_boundaries["runtime_context"]["unclassified_surfaces"] == [
+        "RuntimeAssembly.temporary_runtime_context_bridge"
+    ]
+    findings = {
+        entry["rule_id"]: entry
+        for entry in runtime.services.metadata["protocol_only_conformance"]["findings"]
+    }
+    assert findings["runtime_context_authority"]["status"] == "fail"
+    assert findings["runtime_context_authority"]["unknown_surfaces"] == [
+        "RuntimeAssembly.temporary_runtime_context_bridge"
+    ]
 
 
 def test_package_context_contributor_order_is_deterministic_across_packages(tmp_path: Path) -> None:

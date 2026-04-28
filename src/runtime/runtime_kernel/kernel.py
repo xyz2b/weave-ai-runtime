@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import inspect
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, AsyncIterator, Mapping
@@ -2127,6 +2128,175 @@ def _package_lookup_metadata() -> dict[str, Any]:
     }
 
 
+_RUNTIME_CONTEXT_INVOCATION_BOUNDARIES = frozenset(
+    {
+        "RuntimeAssembly.resolve_invocations",
+        "RuntimeAssembly.resolve_session_invocations",
+        "RuntimeAssembly.visible_invocations",
+        "RuntimeAssembly.invocation_diagnostics",
+        "TurnEngine.resolve_invocation_catalog",
+    }
+)
+_RUNTIME_CONTEXT_TASK_LIST_BOUNDARIES = frozenset(
+    {
+        "RuntimeAssembly.resolve_task_list_id",
+        "RuntimeAssembly.create_task",
+        "RuntimeAssembly.get_task",
+        "RuntimeAssembly.update_task",
+        "RuntimeAssembly.claim_task",
+        "RuntimeAssembly.release_task",
+        "RuntimeAssembly.assign_next_task",
+        "RuntimeAssembly.block_task",
+        "RuntimeAssembly.unblock_task",
+        "RuntimeAssembly.archive_task",
+        "RuntimeAssembly.unarchive_task",
+        "RuntimeAssembly.delete_task",
+        "RuntimeAssembly.list_task_lists",
+        "RuntimeAssembly.get_task_list",
+        "RuntimeAssembly.watch_task_list",
+    }
+)
+_TASK_MANAGER_COMPATIBILITY_SURFACE_METADATA: dict[str, dict[str, Any]] = {
+    "RuntimeServices.task_manager": {
+        "kind": "compatibility-wrapper",
+        "exit_criteria": [
+            "legacy embedder code stops requesting RuntimeServices.task_manager",
+            "job_* and task_* primary paths stay on shared services directly",
+        ],
+    },
+    "RuntimeAssembly.task_manager": {
+        "kind": "compatibility-wrapper",
+        "exit_criteria": [
+            "runtime-owned integrations stop depending on RuntimeAssembly.task_manager",
+            "compat callers migrate to JobService or TaskListService",
+        ],
+    },
+    "RuntimeServices.bind_task_manager": {
+        "kind": "legacy-injection-adapter",
+        "exit_criteria": [
+            "constructor seams inject RuntimeServices or JobService instead",
+        ],
+    },
+    "TurnEngine.__init__(task_manager=...)": {
+        "kind": "legacy-constructor-adapter",
+        "exit_criteria": [
+            "embedder-owned TurnEngine wiring injects JobService or RuntimeServices instead",
+        ],
+    },
+    "AgentRuntime.__init__(task_manager=...)": {
+        "kind": "legacy-constructor-adapter",
+        "exit_criteria": [
+            "embedder-owned AgentRuntime wiring injects JobService or RuntimeServices instead",
+        ],
+    },
+}
+
+
+def _ordered_public_method_surfaces(
+    cls: type[Any],
+    *,
+    parameter_name: str,
+) -> tuple[str, ...]:
+    surfaces: list[str] = []
+    for name, member in cls.__dict__.items():
+        if name.startswith("_") or isinstance(member, property) or not callable(member):
+            continue
+        try:
+            signature = inspect.signature(member)
+        except (TypeError, ValueError):  # pragma: no cover - defensive introspection
+            continue
+        if parameter_name in signature.parameters:
+            surfaces.append(f"{cls.__name__}.{name}")
+    return tuple(surfaces)
+
+
+def _property_surface(
+    cls: type[Any],
+    property_name: str,
+) -> tuple[str, ...]:
+    return (
+        (f"{cls.__name__}.{property_name}",)
+        if isinstance(cls.__dict__.get(property_name), property)
+        else ()
+    )
+
+
+def _constructor_surface(
+    cls: type[Any],
+    *,
+    parameter_name: str,
+) -> tuple[str, ...]:
+    try:
+        signature = inspect.signature(cls.__init__)
+    except (TypeError, ValueError):  # pragma: no cover - defensive introspection
+        return ()
+    if parameter_name not in signature.parameters:
+        return ()
+    return (f"{cls.__name__}.__init__({parameter_name}=...)",)
+
+
+def _runtime_context_compatibility_surfaces() -> tuple[str, ...]:
+    return (
+        *_ordered_public_method_surfaces(RuntimeAssembly, parameter_name="runtime_context"),
+        *_ordered_public_method_surfaces(TurnEngine, parameter_name="runtime_context"),
+        *_ordered_public_method_surfaces(ContextAssembler, parameter_name="runtime_context"),
+    )
+
+
+def _task_manager_compatibility_surfaces() -> tuple[str, ...]:
+    return (
+        *_property_surface(RuntimeServices, "task_manager"),
+        *_property_surface(RuntimeAssembly, "task_manager"),
+        *_ordered_public_method_surfaces(RuntimeServices, parameter_name="task_manager"),
+        *_constructor_surface(TurnEngine, parameter_name="task_manager"),
+        *_constructor_surface(AgentRuntime, parameter_name="task_manager"),
+    )
+
+
+def _runtime_context_surface_metadata(surface: str) -> dict[str, Any] | None:
+    if surface in _RUNTIME_CONTEXT_INVOCATION_BOUNDARIES:
+        return {
+            "kind": "compatibility-api-boundary",
+            "exit_criteria": [
+                "callers provide PromptContextEnvelope directly",
+                "callers provide RuntimePrivateContext directly",
+            ],
+        }
+    if surface in _RUNTIME_CONTEXT_TASK_LIST_BOUNDARIES:
+        return {
+            "kind": "compatibility-api-boundary",
+            "exit_criteria": [
+                "callers provide RuntimePrivateContext directly for task-list resolution",
+                "raw runtime_context remains a boundary-only convenience input",
+            ],
+        }
+    if surface == "TurnEngine.run_turn":
+        return {
+            "kind": "compatibility-api-boundary",
+            "exit_criteria": [
+                "legacy callers stop passing raw runtime_context payloads",
+                "prompt/private carriers remain the only authoritative write path",
+            ],
+        }
+    if surface == "TurnEngine.run_turn_stream":
+        return {
+            "kind": "compatibility-api-boundary",
+            "exit_criteria": [
+                "streaming callers stop passing raw runtime_context payloads",
+                "compatibility snapshot stays read-only for sidecars and hooks",
+            ],
+        }
+    if surface == "ContextAssembler.assemble":
+        return {
+            "kind": "compatibility-helper-boundary",
+            "exit_criteria": [
+                "callers compose PromptContextEnvelope directly",
+                "legacy prompt hints stop flowing through runtime_context compatibility maps",
+            ],
+        }
+    return None
+
+
 def _compatibility_boundaries_metadata(
     *,
     compatibility_surfaces: Mapping[str, Any],
@@ -2135,6 +2305,45 @@ def _compatibility_boundaries_metadata(
     canonical_services = package_lookup.get("canonical_control_plane_services")
     if not isinstance(canonical_services, Mapping):
         canonical_services = core_protocol_package_lookup_sections()["canonical_control_plane_services"]
+    runtime_context_surfaces = _runtime_context_compatibility_surfaces()
+    runtime_context_unknown: list[str] = []
+    runtime_context_entries: list[dict[str, Any]] = []
+    for surface in runtime_context_surfaces:
+        surface_metadata = _runtime_context_surface_metadata(surface)
+        if surface_metadata is None:
+            runtime_context_unknown.append(surface)
+            surface_metadata = {
+                "kind": "unclassified-compatibility-surface",
+                "exit_criteria": [
+                    "classify this runtime_context compatibility boundary before relying on it",
+                ],
+            }
+        runtime_context_entries.append(
+            {
+                "surface": surface,
+                **surface_metadata,
+            }
+        )
+
+    task_manager_surfaces = _task_manager_compatibility_surfaces()
+    task_manager_unknown: list[str] = []
+    task_manager_entries: list[dict[str, Any]] = []
+    for surface in task_manager_surfaces:
+        surface_metadata = _TASK_MANAGER_COMPATIBILITY_SURFACE_METADATA.get(surface)
+        if surface_metadata is None:
+            task_manager_unknown.append(surface)
+            surface_metadata = {
+                "kind": "unclassified-compatibility-surface",
+                "exit_criteria": [
+                    "classify this TaskManager compatibility adapter before relying on it",
+                ],
+            }
+        task_manager_entries.append(
+            {
+                "surface": surface,
+                **surface_metadata,
+            }
+        )
     return {
         "runtime_context": {
             "status": str(compatibility_surfaces.get("runtime_context") or "compatibility-only"),
@@ -2147,32 +2356,8 @@ def _compatibility_boundaries_metadata(
                 "runtime.contracts.merge_runtime_private_context",
                 "runtime.contracts.compatibility_runtime_context_snapshot",
             ],
-            "entry_points": [
-                {
-                    "surface": "RuntimeAssembly.resolve_invocations",
-                    "kind": "compatibility-api-boundary",
-                    "exit_criteria": [
-                        "all callers provide PromptContextEnvelope directly",
-                        "all callers provide RuntimePrivateContext directly",
-                    ],
-                },
-                {
-                    "surface": "TurnEngine.run_turn",
-                    "kind": "compatibility-api-boundary",
-                    "exit_criteria": [
-                        "legacy callers stop passing raw runtime_context payloads",
-                        "prompt/private carriers remain the only authoritative write path",
-                    ],
-                },
-                {
-                    "surface": "TurnEngine.run_turn_stream",
-                    "kind": "compatibility-api-boundary",
-                    "exit_criteria": [
-                        "streaming callers stop passing raw runtime_context payloads",
-                        "compatibility snapshot stays read-only for sidecars and hooks",
-                    ],
-                },
-            ],
+            "entry_points": runtime_context_entries,
+            "unclassified_surfaces": list(runtime_context_unknown),
         },
         "TaskManager": {
             "status": str(compatibility_surfaces.get("TaskManager") or "compatibility-only"),
@@ -2184,45 +2369,8 @@ def _compatibility_boundaries_metadata(
                     canonical_services.get("task_list_service") or "RuntimeServices.task_list_service"
                 ),
             },
-            "materialization_adapters": [
-                {
-                    "surface": "RuntimeServices.task_manager",
-                    "kind": "compatibility-wrapper",
-                    "exit_criteria": [
-                        "legacy embedder code stops requesting RuntimeServices.task_manager",
-                        "job_* and task_* primary paths stay on shared services directly",
-                    ],
-                },
-                {
-                    "surface": "RuntimeAssembly.task_manager",
-                    "kind": "compatibility-wrapper",
-                    "exit_criteria": [
-                        "runtime-owned integrations stop depending on RuntimeAssembly.task_manager",
-                        "compat callers migrate to JobService or TaskListService",
-                    ],
-                },
-                {
-                    "surface": "RuntimeServices.bind_task_manager",
-                    "kind": "legacy-injection-adapter",
-                    "exit_criteria": [
-                        "constructor seams inject RuntimeServices or JobService instead",
-                    ],
-                },
-                {
-                    "surface": "TurnEngine.__init__(task_manager=...)",
-                    "kind": "legacy-constructor-adapter",
-                    "exit_criteria": [
-                        "embedder-owned TurnEngine wiring injects JobService or RuntimeServices instead",
-                    ],
-                },
-                {
-                    "surface": "AgentRuntime.__init__(task_manager=...)",
-                    "kind": "legacy-constructor-adapter",
-                    "exit_criteria": [
-                        "embedder-owned AgentRuntime wiring injects JobService or RuntimeServices instead",
-                    ],
-                },
-            ],
+            "materialization_adapters": task_manager_entries,
+            "unclassified_surfaces": list(task_manager_unknown),
         },
     }
 
@@ -2239,11 +2387,58 @@ def _protocol_only_conformance_metadata(
         if isinstance(runtime_context, Mapping)
         else ()
     )
+    runtime_context_unknown = (
+        [
+            str(surface)
+            for surface in runtime_context.get("unclassified_surfaces", ())
+        ]
+        if isinstance(runtime_context, Mapping)
+        else []
+    )
     task_manager_adapters = (
         task_manager.get("materialization_adapters", ())
         if isinstance(task_manager, Mapping)
         else ()
     )
+    task_manager_unknown = (
+        [
+            str(surface)
+            for surface in task_manager.get("unclassified_surfaces", ())
+        ]
+        if isinstance(task_manager, Mapping)
+        else []
+    )
+    runtime_context_finding: dict[str, Any] = {
+        "rule_id": "runtime_context_authority",
+        "family": "context-authority",
+        "status": "pass" if not runtime_context_unknown else "fail",
+        "distribution": distribution,
+        "canonical_path": "PromptContextEnvelope / RuntimePrivateContext",
+        "compat_surface": "runtime_context",
+        "evidence": [
+            str(entry.get("surface"))
+            for entry in runtime_context_entries
+            if isinstance(entry, Mapping)
+        ],
+    }
+    if runtime_context_unknown:
+        runtime_context_finding["unknown_surfaces"] = list(runtime_context_unknown)
+
+    task_manager_finding: dict[str, Any] = {
+        "rule_id": "task_manager_authority",
+        "family": "task-authority",
+        "status": "pass" if not task_manager_unknown else "fail",
+        "distribution": distribution,
+        "canonical_path": "RuntimeServices.job_service / RuntimeServices.task_list_service",
+        "compat_surface": "TaskManager",
+        "evidence": [
+            str(entry.get("surface"))
+            for entry in task_manager_adapters
+            if isinstance(entry, Mapping)
+        ],
+    }
+    if task_manager_unknown:
+        task_manager_finding["unknown_surfaces"] = list(task_manager_unknown)
     return {
         "schema_version": "1.0",
         "published_metadata_paths": [
@@ -2251,32 +2446,8 @@ def _protocol_only_conformance_metadata(
             "runtime.metadata['protocol_only_conformance']",
         ],
         "findings": [
-            {
-                "rule_id": "runtime_context_authority",
-                "family": "context-authority",
-                "status": "pass",
-                "distribution": distribution,
-                "canonical_path": "PromptContextEnvelope / RuntimePrivateContext",
-                "compat_surface": "runtime_context",
-                "evidence": [
-                    str(entry.get("surface"))
-                    for entry in runtime_context_entries
-                    if isinstance(entry, Mapping)
-                ],
-            },
-            {
-                "rule_id": "task_manager_authority",
-                "family": "task-authority",
-                "status": "pass",
-                "distribution": distribution,
-                "canonical_path": "RuntimeServices.job_service / RuntimeServices.task_list_service",
-                "compat_surface": "TaskManager",
-                "evidence": [
-                    str(entry.get("surface"))
-                    for entry in task_manager_adapters
-                    if isinstance(entry, Mapping)
-                ],
-            },
+            runtime_context_finding,
+            task_manager_finding,
         ],
     }
 

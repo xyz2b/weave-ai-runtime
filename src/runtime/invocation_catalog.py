@@ -11,6 +11,9 @@ from .contracts import (
     RuntimeMessage,
     RuntimePrivateContext,
     ToolResultBlock,
+    compatibility_runtime_context_snapshot,
+    merge_runtime_private_context,
+    prompt_context_from_legacy_runtime_context,
 )
 from .definitions import (
     DefinitionSource,
@@ -152,9 +155,17 @@ def build_invocation_resolution_context(
     runtime_context: Mapping[str, object] | None = None,
 ) -> InvocationResolutionContext:
     resolved_cwd = Path(cwd).resolve()
+    resolved_prompt_context = _merge_prompt_context(
+        prompt_context_from_legacy_runtime_context(runtime_context),
+        prompt_context,
+    )
+    resolved_private_context = merge_runtime_private_context(
+        private_context,
+        runtime_context,
+    )
     context_metadata = _invocation_context_metadata(
-        prompt_context=prompt_context,
-        private_context=private_context,
+        prompt_context=resolved_prompt_context,
+        private_context=resolved_private_context,
         runtime_context=runtime_context,
     )
     latest_prompt = _latest_prompt_message(messages)
@@ -165,10 +176,10 @@ def build_invocation_resolution_context(
 
     attachments = set(_coerce_string_sequence(context_metadata.get("attachments")))
     attachments.update(_coerce_string_sequence(_metadata_values(latest_prompt, "attachments")))
-    if prompt_context is not None:
+    if resolved_prompt_context.attachments:
         attachments.update(
             attachment.path
-            for attachment in prompt_context.attachments
+            for attachment in resolved_prompt_context.attachments
             if getattr(attachment, "path", None)
         )
     if latest_prompt is not None:
@@ -213,20 +224,51 @@ def _invocation_context_metadata(
     private_context: RuntimePrivateContext | Mapping[str, object] | None,
     runtime_context: Mapping[str, object] | None,
 ) -> dict[str, object]:
-    metadata: dict[str, object] = dict(runtime_context or {})
+    metadata = compatibility_runtime_context_snapshot(
+        runtime_context,
+        prompt_context=prompt_context,
+        private_context=private_context,
+    )
     if prompt_context is not None:
-        metadata.update(_mapping_metadata(prompt_context.session_hints))
         metadata.update(_mapping_metadata(prompt_context.extensions))
-    if isinstance(private_context, RuntimePrivateContext):
-        if private_context.permission_context is not None:
-            metadata["permission_context"] = private_context.permission_context
-        if private_context.policy_state is not None:
-            metadata["execution_policy_state"] = private_context.policy_state
-        metadata.update(_mapping_metadata(private_context.extensions))
-        metadata.update(_mapping_metadata(private_context.diagnostics))
-    elif isinstance(private_context, Mapping):
-        metadata.update(_mapping_metadata(private_context))
     return metadata
+
+
+def _merge_prompt_context(
+    compat_prompt_context: PromptContextEnvelope,
+    explicit_prompt_context: PromptContextEnvelope | None,
+) -> PromptContextEnvelope:
+    if explicit_prompt_context is None:
+        return compat_prompt_context
+    session_hints = dict(compat_prompt_context.session_hints)
+    session_hints.update(explicit_prompt_context.session_hints)
+    extensions = dict(compat_prompt_context.extensions)
+    extensions.update(explicit_prompt_context.extensions)
+    return PromptContextEnvelope(
+        memory_fragments=compat_prompt_context.memory_fragments + explicit_prompt_context.memory_fragments,
+        hook_fragments=compat_prompt_context.hook_fragments + explicit_prompt_context.hook_fragments,
+        compaction_fragments=(
+            compat_prompt_context.compaction_fragments + explicit_prompt_context.compaction_fragments
+        ),
+        attachments=compat_prompt_context.attachments + explicit_prompt_context.attachments,
+        session_hints=session_hints,
+        compaction_summary=(
+            explicit_prompt_context.compaction_summary
+            if explicit_prompt_context.compaction_summary is not None
+            else compat_prompt_context.compaction_summary
+        ),
+        compaction_boundary=(
+            explicit_prompt_context.compaction_boundary
+            if explicit_prompt_context.compaction_boundary is not None
+            else compat_prompt_context.compaction_boundary
+        ),
+        compaction_continuation=(
+            explicit_prompt_context.compaction_continuation
+            if explicit_prompt_context.compaction_continuation is not None
+            else compat_prompt_context.compaction_continuation
+        ),
+        extensions=extensions,
+    )
 
 
 def _mapping_metadata(value: Mapping[str, object] | None) -> dict[str, object]:
