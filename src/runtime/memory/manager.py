@@ -16,6 +16,7 @@ from uuid import uuid4
 from ..contracts import MessageRole, RuntimeMessage
 from ..definitions import AgentDefinition, MemoryScope
 from ..jobs import DefaultJobService, task_status_to_job_status
+from ..public_contract import ensure_canonical_workspace_root
 from ..runtime_services import SidecarContributionResult
 from ..tasking import TaskManager, TaskStatus
 from .config import (
@@ -226,7 +227,7 @@ class _BackgroundConsolidationPayload:
 class LongTermMemory:
     provider: MemoryProvider = field(default_factory=FileMemoryProvider)
     project_root: Path | None = None
-    user_root: Path = field(default_factory=lambda: Path.home() / ".runtime")
+    user_root: Path = field(default_factory=lambda: ensure_canonical_workspace_root(Path.home()))
     default_scope: MemoryScope = MemoryScope.PROJECT
     retrieval_limit: int = 3
     retrieval_policy: MemoryRetrievalPolicy = field(default_factory=MemoryRetrievalPolicy)
@@ -306,10 +307,10 @@ class LongTermMemory:
             memory_root = boundary_root / "memory"
         elif scope == MemoryScope.PROJECT:
             boundary_root = (self.project_root or working_dir).resolve()
-            memory_root = boundary_root / ".runtime" / "memory"
+            memory_root = ensure_canonical_workspace_root(boundary_root) / "memory"
         else:
             boundary_root = working_dir
-            memory_root = boundary_root / ".runtime" / "memory"
+            memory_root = ensure_canonical_workspace_root(boundary_root) / "memory"
         documents_dir = memory_root / "documents"
         manifests_dir = memory_root / "manifests"
         agents_dir = memory_root / "agents"
@@ -2631,7 +2632,7 @@ class LongTermMemoryService:
         self.manager = LongTermMemory(
             provider=provider or FileMemoryProvider(),
             project_root=project_root,
-            user_root=user_root or (Path.home() / ".runtime"),
+            user_root=user_root or ensure_canonical_workspace_root(Path.home()),
             default_scope=default_scope,
             retrieval_limit=retrieval_limit,
             retrieval_policy=retrieval_policy or MemoryRetrievalPolicy(),

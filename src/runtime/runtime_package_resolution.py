@@ -7,6 +7,7 @@ import re
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from .diagnostics import Diagnostic, DiagnosticSeverity
+from .public_contract import canonical_distribution_name, canonical_first_party_name
 from .runtime_package_manifests import RuntimePackageRegistrationReport
 from .runtime_package_protocols import RuntimePackageManifest, order_package_manifests
 
@@ -27,7 +28,11 @@ class RuntimePackageDependencyConstraint:
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "package_name", _require_non_empty(self.package_name, "package_name"))
+        object.__setattr__(
+            self,
+            "package_name",
+            canonical_first_party_name(_require_non_empty(self.package_name, "package_name")),
+        )
         object.__setattr__(self, "candidate_id", _normalize_optional_string(self.candidate_id))
         object.__setattr__(self, "version", _normalize_optional_string(self.version))
         object.__setattr__(self, "minimum_version", _normalize_optional_string(self.minimum_version))
@@ -91,7 +96,11 @@ class RuntimePackageCandidateDescriptor:
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "package_name", _require_non_empty(self.package_name, "package_name"))
+        object.__setattr__(
+            self,
+            "package_name",
+            canonical_first_party_name(_require_non_empty(self.package_name, "package_name")),
+        )
         object.__setattr__(self, "candidate_id", _require_non_empty(self.candidate_id, "candidate_id"))
         object.__setattr__(self, "dependency_constraints", tuple(self.dependency_constraints))
         object.__setattr__(self, "version", _normalize_optional_string(self.version))
@@ -100,8 +109,9 @@ class RuntimePackageCandidateDescriptor:
         object.__setattr__(self, "metadata", dict(self.metadata))
 
     def supports_distribution(self, distribution: str) -> bool:
+        normalized_distribution = canonical_distribution_name(distribution)
         allowed = tuple(
-            item
+            canonical_distribution_name(item)
             for item in (
                 _normalize_optional_string(raw)
                 for raw in self.compatibility.get("distributions", ())
@@ -109,22 +119,22 @@ class RuntimePackageCandidateDescriptor:
             if item is not None
         )
         denied = tuple(
-            item
+            canonical_distribution_name(item)
             for item in (
                 _normalize_optional_string(raw)
                 for raw in self.compatibility.get("excluded_distributions", ())
             )
             if item is not None
         )
-        if allowed and distribution not in allowed:
+        if allowed and normalized_distribution not in allowed:
             return False
-        if distribution in denied:
+        if normalized_distribution in denied:
             return False
         return True
 
     def compatibility_metadata(self) -> dict[str, Any]:
         allowed = tuple(
-            item
+            canonical_distribution_name(item)
             for item in (
                 _normalize_optional_string(raw)
                 for raw in self.compatibility.get("distributions", ())
@@ -132,7 +142,7 @@ class RuntimePackageCandidateDescriptor:
             if item is not None
         )
         denied = tuple(
-            item
+            canonical_distribution_name(item)
             for item in (
                 _normalize_optional_string(raw)
                 for raw in self.compatibility.get("excluded_distributions", ())
@@ -200,24 +210,36 @@ class RuntimePackageRequest:
     requested_packages: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "distribution", _require_non_empty(self.distribution, "distribution"))
-        object.__setattr__(self, "baseline_packages", tuple(str(name) for name in self.baseline_packages))
+        object.__setattr__(
+            self,
+            "distribution",
+            canonical_distribution_name(_require_non_empty(self.distribution, "distribution")),
+        )
+        object.__setattr__(
+            self,
+            "baseline_packages",
+            tuple(canonical_first_party_name(str(name)) for name in self.baseline_packages),
+        )
         object.__setattr__(
             self,
             "enabled_first_party_packages",
-            tuple(str(name) for name in self.enabled_first_party_packages),
+            tuple(canonical_first_party_name(str(name)) for name in self.enabled_first_party_packages),
         )
         object.__setattr__(
             self,
             "disabled_first_party_packages",
-            tuple(str(name) for name in self.disabled_first_party_packages),
+            tuple(canonical_first_party_name(str(name)) for name in self.disabled_first_party_packages),
         )
         object.__setattr__(
             self,
             "explicit_package_requests",
-            tuple(str(name) for name in self.explicit_package_requests),
+            tuple(canonical_first_party_name(str(name)) for name in self.explicit_package_requests),
         )
-        object.__setattr__(self, "requested_packages", tuple(str(name) for name in self.requested_packages))
+        object.__setattr__(
+            self,
+            "requested_packages",
+            tuple(canonical_first_party_name(str(name)) for name in self.requested_packages),
+        )
 
     def to_metadata(self) -> dict[str, Any]:
         return {
@@ -355,14 +377,33 @@ def build_runtime_package_request(
     selected_first_party_packages: Iterable[str] = (),
     first_party_package_names: Iterable[str] = (),
 ) -> RuntimePackageRequest:
-    normalized_baseline = tuple(str(name) for name in baseline_packages)
-    normalized_enabled = tuple(sorted({_require_non_empty(name, "enabled_package") for name in enabled_packages}))
-    normalized_disabled = tuple(sorted({_require_non_empty(name, "disabled_package") for name in disabled_packages}))
-    normalized_selected = tuple(str(name) for name in selected_first_party_packages)
-    normalized_explicit = tuple(
-        sorted({_require_non_empty(name, "explicit_package_request") for name in explicit_package_requests})
+    normalized_baseline = tuple(canonical_first_party_name(str(name)) for name in baseline_packages)
+    normalized_enabled = tuple(
+        sorted(
+            {
+                canonical_first_party_name(_require_non_empty(name, "enabled_package"))
+                for name in enabled_packages
+            }
+        )
     )
-    first_party_names = {str(name) for name in first_party_package_names}
+    normalized_disabled = tuple(
+        sorted(
+            {
+                canonical_first_party_name(_require_non_empty(name, "disabled_package"))
+                for name in disabled_packages
+            }
+        )
+    )
+    normalized_selected = tuple(canonical_first_party_name(str(name)) for name in selected_first_party_packages)
+    normalized_explicit = tuple(
+        sorted(
+            {
+                canonical_first_party_name(_require_non_empty(name, "explicit_package_request"))
+                for name in explicit_package_requests
+            }
+        )
+    )
+    first_party_names = {canonical_first_party_name(str(name)) for name in first_party_package_names}
     conflicting_first_party_requests = sorted(
         package_name
         for package_name in normalized_explicit
@@ -398,7 +439,7 @@ def build_runtime_package_catalog(
                     "origin": "first_party",
                     "source_kind": "official-catalog",
                     "source_ref": (
-                        "runtime.runtime_package_catalog:"
+                        "weavert.runtime_package_catalog:"
                         f"OFFICIAL_RUNTIME_PACKAGE_CATALOG['{manifest.name}']"
                     ),
                 },

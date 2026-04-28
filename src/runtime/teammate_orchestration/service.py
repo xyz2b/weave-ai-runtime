@@ -14,6 +14,7 @@ from ..definitions import IsolationMode, PermissionBehavior, PermissionMode
 from ..hosts.base import HostRuntime
 from ..jobs import JobScopeFilter, task_status_to_job_status
 from ..permissions import PermissionContext, PermissionOutcome, PermissionRequest
+from ..public_contract import ensure_canonical_workspace_root
 from ..team_control_plane import TeamRole
 from ..team_workflows import (
     RuntimeTeamWorkflowService,
@@ -321,7 +322,9 @@ class PersistentTeammateOrchestrator:
         self._config = config
         self._runtime_services = runtime_services
         self._execution_core = execution_core
-        mailbox_root = config.mailbox_root or (Path(project_root) / ".runtime" / "teammates")
+        mailbox_root = config.mailbox_root or (
+            ensure_canonical_workspace_root(project_root) / "teammates"
+        )
         self._mailbox = mailbox or FileBackedTeammateMailbox(
             mailbox_root,
             default_claim_lease_ms=config.claim_lease_ms,

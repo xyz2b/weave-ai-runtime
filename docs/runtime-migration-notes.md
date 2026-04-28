@@ -8,26 +8,26 @@
 
 推荐把它理解为三层装配体系：
 
-- `runtime-core`
-- `runtime-default`
-- `runtime-full`
+- `weavert-core`
+- `weavert-default`
+- `weavert-full`
 
 以及四类 first-party 包角色：
 
-- capability：`runtime-memory`、`runtime-team`
-- mechanism：`runtime-compaction`、`runtime-isolation`
-- adapter / provider：`runtime-hosts-reference`、`runtime-stores-file`、`runtime-openai`
-- profile / workflow：`runtime-devtools`、`runtime-builtin-workflows`、`runtime-planning`
+- capability：`weavert-memory`、`weavert-team`
+- mechanism：`weavert-compaction`、`weavert-isolation`
+- adapter / provider：`weavert-hosts-reference`、`weavert-stores-file`、`weavert-openai`
+- profile / workflow：`weavert-devtools`、`weavert-builtin-workflows`、`weavert-planning`
 
 当前还需要额外记住一条事实：
 
-- `planner` / `coordinator` / `worker` 已经由独立 `runtime-planning` 包发布
-- `runtime-full` 会自动装配它们，`runtime-default` 不会
-- 现有的只读 planning helper `plan` 仍然保留在 `runtime-devtools`
+- `planner` / `coordinator` / `worker` 已经由独立 `weavert-planning` 包发布
+- `weavert-full` 会自动装配它们，`weavert-default` 不会
+- 现有的只读 planning helper `plan` 仍然保留在 `weavert-devtools`
 
 ## 2. Workspace / Devtools Built-ins
 
-旧版本里经常被当作“默认总会在”的 workspace-oriented tools 和 coding agents，现在归到 `runtime-devtools`，并且只会在 `runtime-full` 中自动启用。
+旧版本里经常被当作“默认总会在”的 workspace-oriented tools 和 coding agents，现在归到 `weavert-devtools`，并且只会在 `weavert-full` 中自动启用。
 
 受影响的 built-ins 包括：
 
@@ -37,12 +37,12 @@
 如果你之前默认依赖这些 built-ins，有两种兼容路径：
 
 1. 直接使用 `RuntimeDistribution.FULL`
-2. 保持现有 distribution，但显式启用 `runtime-devtools`
+2. 保持现有 distribution，但显式启用 `weavert-devtools`
 
 运行时现在会提供两类迁移线索：
 
-- `runtime.kernel.diagnostics` 中的 `runtime_devtools_not_selected`
-- `runtime.services.metadata["migration"]` 中的 `devtools` 条目
+- `weavert.kernel.diagnostics` 中的 `runtime_devtools_not_selected`
+- `weavert.services.metadata["migration"]` 中的 `devtools` 条目
 
 ## 2.5 Planning Profile Terminology
 
@@ -52,21 +52,21 @@
 
 - `plan`
   - 当前 bundled 且可直接发现的 agent
-  - 属于 `runtime-devtools`
+  - 属于 `weavert-devtools`
   - 更接近只读分析、执行步骤拆解、实现前规划助手
 - `planner`
-  - `runtime-planning` 中的官方 shared task-list 维护 profile
+  - `weavert-planning` 中的官方 shared task-list 维护 profile
 - `coordinator`
-  - `runtime-planning` 中的官方 `task_* + job_*` 协调 profile
+  - `weavert-planning` 中的官方 `task_* + job_*` 协调 profile
 - `worker`
-  - `runtime-planning` 中的官方执行型 profile
+  - `weavert-planning` 中的官方执行型 profile
   - 默认不拥有 shared task list，也不会自动拿到 optional devtools 或 team 工具
 
 这意味着：
 
 - 现在没有“从旧 `plan` 自动迁移到某个已落地 `planner` 包”的硬迁移步骤
-- 需要只读分析 helper 时，继续把 `plan` 当作 `runtime-devtools` built-in 看待
-- 需要 shared plan workflow 时，优先使用 `runtime-planning` 提供的 `planner` / `coordinator` / `worker`，再按需要做 agent replacement 或 project override
+- 需要只读分析 helper 时，继续把 `plan` 当作 `weavert-devtools` built-in 看待
+- 需要 shared plan workflow 时，优先使用 `weavert-planning` 提供的 `planner` / `coordinator` / `worker`，再按需要做 agent replacement 或 project override
 
 ## 3. Hook Surface Tightening
 
@@ -105,30 +105,30 @@
 - `agent`
 - `prompt`
 
-这些结构化信息也会通过 `runtime.services.metadata["migration"]["hook_contract"]` 暴露。
+这些结构化信息也会通过 `weavert.services.metadata["migration"]["hook_contract"]` 暴露。
 
 ## 4. First-Party Package Ownership Changes
 
 以下能力所有权现在应按 package 来理解，而不是按 kernel 内部文件布局理解：
 
-- `remember` -> `runtime-memory`
-- `team_create` / `team_spawn` / `team_send` / `team_respond` / `team_delete` -> `runtime-team`
-- `verify` / `debug` / `stuck` / `batch` / `simplify` -> `runtime-builtin-workflows`
-- bundled OpenAI baseline -> `runtime-openai`
-- reference host implementations -> `runtime-hosts-reference`
-- file-backed transcript / job / task-list / team / workflow / mailbox stores -> `runtime-stores-file`
+- `remember` -> `weavert-memory`
+- `team_create` / `team_spawn` / `team_send` / `team_respond` / `team_delete` -> `weavert-team`
+- `verify` / `debug` / `stuck` / `batch` / `simplify` -> `weavert-builtin-workflows`
+- bundled OpenAI baseline -> `weavert-openai`
+- reference host implementations -> `weavert-hosts-reference`
+- file-backed transcript / job / task-list / team / workflow / mailbox stores -> `weavert-stores-file`
 
 关于 planning 这一块，当前 package ownership 已经显式落地：
 
-- shared planning primitive 仍应理解为 `runtime-core` 所有
-- `plan` 仍应理解为 `runtime-devtools` 所有
-- `planner` / `coordinator` / `worker` 现在由 `runtime-planning` 所有
+- shared planning primitive 仍应理解为 `weavert-core` 所有
+- `plan` 仍应理解为 `weavert-devtools` 所有
+- `planner` / `coordinator` / `worker` 现在由 `weavert-planning` 所有
 
 运行时会把当前已选 package 和其 builtin 所有权摘要写进：
 
-- `runtime.services.metadata["first_party_package_catalog"]`
-- `runtime.services.metadata["official_package_catalog_provenance"]`
-- `runtime.services.metadata["package_resolution"]`
+- `weavert.services.metadata["first_party_package_catalog"]`
+- `weavert.services.metadata["official_package_catalog_provenance"]`
+- `weavert.services.metadata["package_resolution"]`
 
 ## 4.5 Package Attachment Contract Changes
 
@@ -180,18 +180,18 @@ external package 的迁移口径也需要一起改：
 当前仓库里需要优先记住的 canonical lookup key / wrapper status 也可以直接按下面核对：
 
 - canonical capability keys
-  - `runtime.team.control_plane`
-  - `runtime.team.message_bus`
-  - `runtime.team.workflows`
+  - `weavert.team.control_plane`
+  - `weavert.team.message_bus`
+  - `weavert.team.workflows`
 - canonical host facet key
-  - `runtime.team.workflows`
+  - `weavert.team.workflows`
 - host facet authority semantics
   - team workflow list / respond 继续要求显式 `team_id` 或 `session_id` scope
   - 缺失 scope 或 scope 不匹配时应返回 scoped failure，而不是扩大到全局 team 视图
 - canonical extension event contract
   - `HostRuntime.emit_extension_event()`
-  - `runtime.hosts.HostExtensionEvent`
-  - namespace: `runtime.team`
+  - `weavert.hosts.HostExtensionEvent`
+  - namespace: `weavert.team`
 - canonical control-plane services
   - `RuntimeServices.job_service`
   - `RuntimeServices.task_list_service`
@@ -202,26 +202,26 @@ external package 的迁移口径也需要一起改：
 
 已删除的 team bridge replacement matrix 则发布在：
 
-- `runtime.services.metadata["migration"]["team_protocol_only"]["replacement_matrix"]`
-- `runtime.metadata["migration"]["team_protocol_only"]["replacement_matrix"]`
+- `weavert.services.metadata["migration"]["team_protocol_only"]["replacement_matrix"]`
+- `weavert.metadata["migration"]["team_protocol_only"]["replacement_matrix"]`
 
 这些信息现在也会直接写进：
 
-- `runtime.services.metadata["core_protocol_catalog"]`
-- `runtime.metadata["core_protocol_catalog"]`
-- `runtime.services.metadata["official_package_catalog_provenance"]`
-- `runtime.metadata["official_package_catalog_provenance"]`
-- `runtime.services.metadata["resolved_active_package_graph_provenance"]`
-- `runtime.metadata["resolved_active_package_graph_provenance"]`
-- `runtime.services.metadata["package_resolution"]`
-- `runtime.metadata["package_resolution"]`
-- `runtime.services.metadata["package_lookup"]`
-- `runtime.metadata["package_lookup"]`
-- `runtime.services.metadata["package_service_protocols"]`
-- `runtime.metadata["package_service_protocols"]`
-- `runtime.services.metadata["compatibility_surfaces"]`
-- `runtime.services.metadata["compatibility_boundaries"]`
-- `runtime.services.metadata["protocol_only_conformance"]`
+- `weavert.services.metadata["core_protocol_catalog"]`
+- `weavert.metadata["core_protocol_catalog"]`
+- `weavert.services.metadata["official_package_catalog_provenance"]`
+- `weavert.metadata["official_package_catalog_provenance"]`
+- `weavert.services.metadata["resolved_active_package_graph_provenance"]`
+- `weavert.metadata["resolved_active_package_graph_provenance"]`
+- `weavert.services.metadata["package_resolution"]`
+- `weavert.metadata["package_resolution"]`
+- `weavert.services.metadata["package_lookup"]`
+- `weavert.metadata["package_lookup"]`
+- `weavert.services.metadata["package_service_protocols"]`
+- `weavert.metadata["package_service_protocols"]`
+- `weavert.services.metadata["compatibility_surfaces"]`
+- `weavert.services.metadata["compatibility_boundaries"]`
+- `weavert.services.metadata["protocol_only_conformance"]`
 
 迁移时可以直接按这个分层理解：
 
@@ -246,18 +246,18 @@ external package 的迁移口径也需要一起改：
   - privileged-service-slot、context-authority、task-authority、provider-provenance、team-bridge 与 kernel-assembly finding 的 source of truth
   - 同时发布 shared finding schema、rule-source mapping 与 terminal gate status；embedder / CI 可直接通过 `RuntimeAssembly.query_assembly_view()` 读取同样的聚合摘要
 
-这意味着 `runtime.team.control_plane`、`runtime.team.workflows`、`TaskManager` 仍然重要，但它们不属于 stable core protocol catalog 本身；canonical package path 继续通过 capability / host facet / migration metadata 发布，而已经删除的 team bridge surface 不再继续写进 `compatibility_surfaces`。
+这意味着 `weavert.team.control_plane`、`weavert.team.workflows`、`TaskManager` 仍然重要，但它们不属于 stable core protocol catalog 本身；canonical package path 继续通过 capability / host facet / migration metadata 发布，而已经删除的 team bridge surface 不再继续写进 `compatibility_surfaces`。
 
 同样，memory / compaction / isolation 这三类 package-owned privileged service 也应按下面的口径迁移：
 
 - canonical metadata key
-  - `runtime.services.metadata["package_lookup"]["canonical_service_family_protocols"]`
+  - `weavert.services.metadata["package_lookup"]["canonical_service_family_protocols"]`
 - canonical resolver
   - `RuntimeServices.resolve_memory_service()`
   - `RuntimeServices.resolve_compaction_service()`
   - `RuntimeServices.resolve_isolation_service()`
 - detailed ownership / projection metadata
-  - `runtime.services.metadata["package_service_protocols"]`
+  - `weavert.services.metadata["package_service_protocols"]`
 - compatibility-only projection
   - `RuntimeServices.memory`
   - `RuntimeServices.compaction`
@@ -267,10 +267,10 @@ external package 的迁移口径也需要一起改：
 
 这次收尾之后，迁移不再只靠散落的 notes，而是可以直接看 runtime 发布的 closure state：
 
-- `runtime.query_closure_report()`
-- `runtime.query_compatibility_retirement()`
-- `runtime.query_persistence_profile()`
-- `runtime.query_isolation_readiness()`
+- `weavert.query_closure_report()`
+- `weavert.query_compatibility_retirement()`
+- `weavert.query_persistence_profile()`
+- `weavert.query_isolation_readiness()`
 
 其中最实用的一层是 `compatibility_retirement`。它会告诉你：
 
@@ -324,7 +324,7 @@ external package 的迁移口径也需要一起改：
 如果你之前这样注册自定义 provider：
 
 ```python
-runtime = assemble_runtime(
+weavert = assemble_runtime(
     RuntimeConfig(
         extra_invocation_providers=[repo_provider],
     )
@@ -334,7 +334,7 @@ runtime = assemble_runtime(
 现在应直接改成 provider-only runtime package：
 
 ```python
-from runtime.runtime_package_protocols import build_provider_only_invocation_package_manifest
+from weavert.runtime_package_protocols import build_provider_only_invocation_package_manifest
 
 provider_manifest = build_provider_only_invocation_package_manifest(
     name="runtime-provider-only",
@@ -342,7 +342,7 @@ provider_manifest = build_provider_only_invocation_package_manifest(
     provider=repo_provider,
 )
 
-runtime = assemble_runtime(
+weavert = assemble_runtime(
     RuntimeConfig(
         extra_package_manifests=(provider_manifest,),
         requested_packages={"runtime-provider-only"},
@@ -353,16 +353,16 @@ runtime = assemble_runtime(
 迁移时建议按下面理解：
 
 - provider-only package 仍然是 ordinary runtime package，不是新的 manifest taxonomy
-- 默认最小 shape 是 role=`provider` + dependency=`runtime-core` + `PackageContribution.invocation_providers`
+- 默认最小 shape 是 role=`provider` + dependency=`weavert-core` + `PackageContribution.invocation_providers`
 - provider 注册顺序固定为 built-in skill baseline -> package contribution；package tier 内部再按 contribution `order`、package dependency order、contribution name 稳定排序
 - 如果一个 package 里需要多个 provider，就回到普通 `PackageContribution(invocation_providers=(...))` 写法，而不是再找 config bypass
 
 ## 5. Recommended Upgrade Checklist
 
-- 如果你依赖 workspace tools，先切到 `runtime-full` 再逐步收窄
-- 如果你依赖 `plan`，继续把它视为 `runtime-devtools` helper；不要把它误当成 shared planning contract 本身
-- 如果你要构建 shared plan workflow，优先启用 `runtime-planning`，再围绕 `task_*` / `job_*` 与自定义 agent profile 做收窄或扩展
+- 如果你依赖 workspace tools，先切到 `weavert-full` 再逐步收窄
+- 如果你依赖 `plan`，继续把它视为 `weavert-devtools` helper；不要把它误当成 shared planning contract 本身
+- 如果你要构建 shared plan workflow，优先启用 `weavert-planning`，再围绕 `task_*` / `job_*` 与自定义 agent profile 做收窄或扩展
 - 如果你暴露 hooks 给第三方，优先只承诺 stable phases + `callback`
-- 如果你在 host、store、provider 侧做定制，优先通过 package-level seams 注入，而不是 patch `runtime-core`
-- 如果你还在使用旧 team helper，优先按 `runtime.services.metadata["migration"]["team_protocol_only"]["replacement_matrix"]` 改到 capability、host facet 或 `HostRuntime.emit_extension_event()` 路径
-- 如果你需要定位当前 runtime 的边界状态，先看 `runtime.kernel.diagnostics` 和 `runtime.services.metadata`
+- 如果你在 host、store、provider 侧做定制，优先通过 package-level seams 注入，而不是 patch `weavert-core`
+- 如果你还在使用旧 team helper，优先按 `weavert.services.metadata["migration"]["team_protocol_only"]["replacement_matrix"]` 改到 capability、host facet 或 `HostRuntime.emit_extension_event()` 路径
+- 如果你需要定位当前 runtime 的边界状态，先看 `weavert.kernel.diagnostics` 和 `weavert.services.metadata`

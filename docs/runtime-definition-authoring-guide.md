@@ -40,7 +40,7 @@ Runtime 通过 `DefinitionSourcePaths` 发现 definitions。
 
 ```text
 your-project/
-└── .runtime/
+└── .weavert/
     ├── tools/
     │   ├── my_tool.py
     │   └── my_tool.yaml
@@ -66,8 +66,8 @@ your-project/
 
 那么 Runtime 默认会接入：
 
-- `~/.runtime`
-- `<project>/.runtime`
+- `~/.weavert`
+- `<project>/.weavert`
 
 ## 3. 命名冲突与覆盖规则
 
@@ -87,7 +87,7 @@ bundled > user > project
 
 1. 自定义能力优先使用新名字，而不是复用 bundled 同名 definition
 2. 如果你在嵌入 Runtime 的 Python 装配层中确实要替换 bundled definition，应使用 `BuiltinPackConfig`
-3. 如果只是项目接入方，默认不要假设 `.runtime/` 里的同名文件能覆盖 builtins
+3. 如果只是项目接入方，默认不要假设 `.weavert/` 里的同名文件能覆盖 builtins
 
 ## 4. Tool 规范
 
@@ -116,7 +116,7 @@ Python tool module 需要导出以下三种形式之一：
 最小例子：
 
 ```python
-from runtime.definitions import ToolDefinition, ToolTraits
+from weavert.definitions import ToolDefinition, ToolTraits
 
 
 async def execute(tool_input, context):
@@ -533,7 +533,7 @@ printf 'hello'
 更进一步：
 
 - Runtime 还支持动态 skill roots
-- 当前 session 观察到更深层路径时，更深层 `.runtime/skills/` 可以进入能力图
+- 当前 session 观察到更深层路径时，更深层 `.weavert/skills/` 可以进入能力图
 
 所以 skill authoring 最好显式考虑“路径上下文”，而不是只看文件是否存在。
 
@@ -550,9 +550,9 @@ printf 'hello'
 
 使用：
 
-- `runtime.resolve_invocations(...)`
-- `runtime.visible_invocations(session)`
-- `runtime.invocation_diagnostics(session)`
+- `weavert.resolve_invocations(...)`
+- `weavert.visible_invocations(session)`
+- `weavert.invocation_diagnostics(session)`
 
 检查：
 

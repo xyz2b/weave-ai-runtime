@@ -109,26 +109,26 @@ Runtime 核心流转本身由框架收口，用户通常不应该改 `TurnEngine
 
 关于分发语义，当前应这样理解：
 
-- `runtime-core`
+- `weavert-core`
   - 只保证 kernel、`main-router` root boot path、core built-ins 和稳定扩展契约
-- `runtime-default`
-  - 在 `runtime-core` 上叠加 first-party memory 与 team capability 包
-- `runtime-full`
-  - 在 `runtime-default` 上叠加 devtools、workflow、planning、provider、adapter、mechanism 包
-  - `runtime-planning` 已经作为独立 profile / workflow 包落地，并默认包含在 `runtime-full` 中
+- `weavert-default`
+  - 在 `weavert-core` 上叠加 first-party memory 与 team capability 包
+- `weavert-full`
+  - 在 `weavert-default` 上叠加 devtools、workflow、planning、provider、adapter、mechanism 包
+  - `weavert-planning` 已经作为独立 profile / workflow 包落地，并默认包含在 `weavert-full` 中
 
 如果你是从旧默认 built-ins 或旧 hook 面迁移过来，建议同时阅读 `docs/runtime-migration-notes.md`。  
-特别是 `read`、`glob`、`grep`、`edit`、`write`、`bash`、`web_fetch`、`web_search`、`explore`、`plan`、`verification` 现在都属于 `runtime-devtools`，默认只在 `runtime-full` 中自动启用。
+特别是 `read`、`glob`、`grep`、`edit`、`write`、`bash`、`web_fetch`、`web_search`、`explore`、`plan`、`verification` 现在都属于 `weavert-devtools`，默认只在 `weavert-full` 中自动启用。
 
 这里有一个容易混淆但必须先分清的边界：
 
 - `plan`
   - 当前真实存在的 bundled agent
-  - 属于 `runtime-devtools`
+  - 属于 `weavert-devtools`
   - 更接近 read-only planning helper
 - `planner` / `coordinator` / `worker`
   - 当前文档已经在用的角色化 profile 词汇
-  - 已经由 `runtime-planning` 作为官方 built-ins 装配，默认随 `runtime-full` 提供
+  - 已经由 `weavert-planning` 作为官方 built-ins 装配，默认随 `weavert-full` 提供
 
 普通接入方默认应该围绕这些稳定边界扩展：
 
@@ -147,7 +147,7 @@ Runtime 核心流转本身由框架收口，用户通常不应该改 `TurnEngine
 - runtime 会先校验 manifest shape、trust boundary 与官方 first-party reserved name；通过校验的 external manifest 会先进入 local package candidate catalog
 - 当前不支持 override mode，也不会自动扫描目录、remote discovery、package install 或 Python environment dependency management
 - 被拒绝的 external manifest 不会进入 candidate catalog；未被选择进 resolved graph 的 admitted external candidate 也不会进入 built-ins / services / runtime contribution
-- 诊断与 provenance 会单独发布到 `runtime.services.metadata["package_registration"]` 和 `runtime.metadata["package_registration"]`
+- 诊断与 provenance 会单独发布到 `weavert.services.metadata["package_registration"]` 和 `weavert.metadata["package_registration"]`
 
 如果你要让某个 admitted external package 真正进入当前 runtime，还需要通过
 `RuntimeConfig.requested_packages` 按 package name 显式请求它：
@@ -178,7 +178,7 @@ Runtime 核心流转本身由框架收口，用户通常不应该改 `TurnEngine
 
 ### 2.3 宿主入口：`BoundHostRuntime`
 
-当你要接入的不只是模型调用，而是一个真正的交互宿主时，应从 `runtime.bind_host(host)` 进入。
+当你要接入的不只是模型调用，而是一个真正的交互宿主时，应从 `weavert.bind_host(host)` 进入。
 
 适合这类场景：
 
@@ -226,9 +226,9 @@ Runtime 核心流转本身由框架收口，用户通常不应该改 `TurnEngine
 当前官方包已经按这一思路装配：
 
 - built-ins 由 package contribution 注册
-- OpenAI provider / route baseline 由 `runtime-openai` contribution 注册
-- file-backed core stores 由 `runtime-stores-file` contribution 注册
-- team control-plane object 与 workflow host facet 由 `runtime-team` contribution 注册
+- OpenAI provider / route baseline 由 `weavert-openai` contribution 注册
+- file-backed core stores 由 `weavert-stores-file` contribution 注册
+- team control-plane object 与 workflow host facet 由 `weavert-team` contribution 注册
 
 如果你要接的是本地 external package，也应走同一条 manifest + contribution path，只是注册入口变成
 `RuntimeConfig.extra_package_manifests`，而不是修改 `FIRST_PARTY_PACKAGE_SPECS`、
@@ -236,32 +236,32 @@ Runtime 核心流转本身由框架收口，用户通常不应该改 `TurnEngine
 
 如果你在做自定义 integration，推荐把“包边界”理解成：
 
-- 不是“某段代码从 `runtime-core/` 挪到别的目录”
+- 不是“某段代码从 `weavert-core/` 挪到别的目录”
 - 而是“这段能力能否通过 manifest + contribution + lookup contract 独立接入”
 - capability lookup / host-facet lookup / lifecycle participant 才是 package-owned runtime behavior 的 canonical path
 - ingress `completion_receipts` 现在也是 package-owned post-ingress ack 的 canonical attachment path
 - runtime-owned team path 现在只走 capability lookup、host facet、lifecycle participant 与 generic extension event contract
-- 已删除的 `RuntimeServices.team_*`、`RuntimeAssembly.team_*`、bound-host workflow helper 与旧 host bridge 都通过 `runtime.services.metadata["migration"]["team_protocol_only"]["replacement_matrix"]` 发布 replacement matrix
+- 已删除的 `RuntimeServices.team_*`、`RuntimeAssembly.team_*`、bound-host workflow helper 与旧 host bridge 都通过 `weavert.services.metadata["migration"]["team_protocol_only"]["replacement_matrix"]` 发布 replacement matrix
 
 当前 runtime metadata 也会显式标这些边界：
 
-- `runtime.services.metadata["core_protocol_catalog"]`：stable core protocol catalog，包含 schema version、owner、binding boundary、canonical binding surface、discovery surface 与 compatibility status
-- `runtime.services.metadata["official_package_catalog_provenance"]`：manifest-backed 官方 first-party package catalog、distribution defaults、assembly entrypoint provenance 与退役 kernel helper
-- `runtime.services.metadata["resolved_active_package_graph_provenance"]`：当前 runtime active graph 的 resolved order、source provenance 与 assembly entrypoint
-- `runtime.services.metadata["package_registration"]`：external package accepted / rejected registration、diagnostics、provenance、trust-boundary details
-- `runtime.services.metadata["package_resolution"]`：raw candidate catalog、resolution request inputs、resolved graph 与 structured diagnostics
-- `runtime.services.metadata["package_manifests"]`：真正进入装配的 resolved manifest inventory
-- `runtime.services.metadata["package_lookup"]`：canonical capability / host-facet / lifecycle / receipt path
-- `runtime.services.metadata["invocation_provider_paths"]`：built-in baseline、package canonical path、package contribution ordering
-- `runtime.services.metadata["invocation_provider_registrations"]`：当前 runtime 里实际生效的 provider 注册顺序、owner、origin 与 registration metadata
-- `runtime.services.metadata["protocol_only_conformance"]`：聚合后的 protocol-only finding、shared finding schema、rule-source mapping 与 terminal gate status
-- `runtime.metadata["core_protocol_catalog"]`：`RuntimeAssembly` 侧同步暴露的 stable core protocol catalog
-- `runtime.metadata["official_package_catalog_provenance"]` / `runtime.metadata["resolved_active_package_graph_provenance"]`：`RuntimeAssembly` 侧同步暴露的官方 catalog ownership 与 resolved active graph provenance
-- `runtime.metadata["package_registration"]` / `runtime.metadata["package_resolution"]` / `runtime.metadata["package_manifests"]`：`RuntimeAssembly` 侧同步暴露的 external registration diagnostics、resolved-graph metadata 与 active manifest inventory
-- `runtime.metadata["package_lookup"]`：`RuntimeAssembly` 侧同步暴露的 owner-layer lookup guidance
-- `runtime.metadata["migration"]`：`RuntimeAssembly` 侧同步暴露的 breaking migration metadata，包括 team protocol-only replacement matrix
-- `runtime.services.metadata["compatibility_surfaces"]`：仍保留但非 canonical 的 wrapper / projection
-- `runtime.services.metadata["compatibility_projections"]`：当前 projection 仍映射到哪些 capability key（不再包含已删除的 team control / message / workflow projection）
+- `weavert.services.metadata["core_protocol_catalog"]`：stable core protocol catalog，包含 schema version、owner、binding boundary、canonical binding surface、discovery surface 与 compatibility status
+- `weavert.services.metadata["official_package_catalog_provenance"]`：manifest-backed 官方 first-party package catalog、distribution defaults、assembly entrypoint provenance 与退役 kernel helper
+- `weavert.services.metadata["resolved_active_package_graph_provenance"]`：当前 runtime active graph 的 resolved order、source provenance 与 assembly entrypoint
+- `weavert.services.metadata["package_registration"]`：external package accepted / rejected registration、diagnostics、provenance、trust-boundary details
+- `weavert.services.metadata["package_resolution"]`：raw candidate catalog、resolution request inputs、resolved graph 与 structured diagnostics
+- `weavert.services.metadata["package_manifests"]`：真正进入装配的 resolved manifest inventory
+- `weavert.services.metadata["package_lookup"]`：canonical capability / host-facet / lifecycle / receipt path
+- `weavert.services.metadata["invocation_provider_paths"]`：built-in baseline、package canonical path、package contribution ordering
+- `weavert.services.metadata["invocation_provider_registrations"]`：当前 runtime 里实际生效的 provider 注册顺序、owner、origin 与 registration metadata
+- `weavert.services.metadata["protocol_only_conformance"]`：聚合后的 protocol-only finding、shared finding schema、rule-source mapping 与 terminal gate status
+- `weavert.metadata["core_protocol_catalog"]`：`RuntimeAssembly` 侧同步暴露的 stable core protocol catalog
+- `weavert.metadata["official_package_catalog_provenance"]` / `weavert.metadata["resolved_active_package_graph_provenance"]`：`RuntimeAssembly` 侧同步暴露的官方 catalog ownership 与 resolved active graph provenance
+- `weavert.metadata["package_registration"]` / `weavert.metadata["package_resolution"]` / `weavert.metadata["package_manifests"]`：`RuntimeAssembly` 侧同步暴露的 external registration diagnostics、resolved-graph metadata 与 active manifest inventory
+- `weavert.metadata["package_lookup"]`：`RuntimeAssembly` 侧同步暴露的 owner-layer lookup guidance
+- `weavert.metadata["migration"]`：`RuntimeAssembly` 侧同步暴露的 breaking migration metadata，包括 team protocol-only replacement matrix
+- `weavert.services.metadata["compatibility_surfaces"]`：仍保留但非 canonical 的 wrapper / projection
+- `weavert.services.metadata["compatibility_projections"]`：当前 projection 仍映射到哪些 capability key（不再包含已删除的 team control / message / workflow projection）
 
 其中 stable core protocol catalog 当前固定覆盖下面几类 runtime-owned seam：
 
@@ -283,15 +283,15 @@ Runtime 核心流转本身由框架收口，用户通常不应该改 `TurnEngine
 其中 package-owned team / workflow lookup 当前应按下面的 machine-readable contract 理解：
 
 - canonical capability keys
-  - `runtime.team.control_plane`
-  - `runtime.team.message_bus`
-  - `runtime.team.workflows`
+  - `weavert.team.control_plane`
+  - `weavert.team.message_bus`
+  - `weavert.team.workflows`
 - canonical host facet key
-  - `runtime.team.workflows`
+  - `weavert.team.workflows`
 - canonical extension event contract
   - `HostRuntime.emit_extension_event()`
-  - `runtime.hosts.HostExtensionEvent`
-  - namespace: `runtime.team`
+  - `weavert.hosts.HostExtensionEvent`
+  - namespace: `weavert.team`
 - canonical control-plane services
   - `RuntimeServices.job_service`
   - `RuntimeServices.task_list_service`
@@ -308,8 +308,8 @@ Runtime 核心流转本身由框架收口，用户通常不应该改 `TurnEngine
 
 team-specific breaking replacement matrix 则发布在：
 
-- `runtime.services.metadata["migration"]["team_protocol_only"]["replacement_matrix"]`
-- `runtime.metadata["migration"]["team_protocol_only"]["replacement_matrix"]`
+- `weavert.services.metadata["migration"]["team_protocol_only"]["replacement_matrix"]`
+- `weavert.metadata["migration"]["team_protocol_only"]["replacement_matrix"]`
 
 判断一个 wrapper 是否还该继续保留，可以先看这几个 exit criteria：
 
@@ -371,15 +371,15 @@ team-specific breaking replacement matrix 则发布在：
 ```python
 from pathlib import Path
 
-from runtime.runtime_kernel import RuntimeConfig, assemble_runtime
+from weavert.runtime_kernel import RuntimeConfig, assemble_runtime
 
 
 async def main() -> None:
     config = RuntimeConfig.for_project(Path("/your/project"))
     config.model_client = my_model_client
 
-    runtime = assemble_runtime(config)
-    messages = await runtime.run_prompt(
+    weavert = assemble_runtime(config)
+    messages = await weavert.run_prompt(
         "帮我概览当前项目结构",
         session_id="demo-session",
     )
@@ -389,7 +389,7 @@ async def main() -> None:
 这条路径的特点：
 
 - 只需要提供 `model_client`
-- `for_project()` 默认接入 `~/.runtime` 和 `<project>/.runtime`
+- `for_project()` 默认接入 `~/.weavert` 和 `<project>/.weavert`
 - builtins 会先加载，再叠加 user / project definitions
 - `run_prompt()` 和 `stream_prompt()` 会负责 helper-owned session close
 
@@ -402,22 +402,22 @@ async def main() -> None:
 ```python
 from pathlib import Path
 
-from runtime.hosts.reference import SdkHostRuntime
-from runtime.runtime_kernel import RuntimeConfig, assemble_runtime
+from weavert.hosts.reference import SdkHostRuntime
+from weavert.runtime_kernel import RuntimeConfig, assemble_runtime
 
 
 async def main() -> None:
     config = RuntimeConfig.for_project(Path("/your/project"))
     config.model_client = my_model_client
 
-    runtime = assemble_runtime(config)
+    weavert = assemble_runtime(config)
     host = SdkHostRuntime(
         name="sdk",
         ask_user_handler=lambda question, options=None: "yes",
         permission_handler=my_permission_handler,
     )
 
-    async with runtime.bind_host(host) as bound:
+    async with weavert.bind_host(host) as bound:
         async for event in bound.stream_prompt(
             "检查当前目录里是否有风险改动",
             session_id="host-session",
@@ -457,7 +457,7 @@ flowchart LR
 
 ```text
 your-project/
-└── .runtime/
+└── .weavert/
     ├── tools/
     │   ├── hello.py
     │   └── grep.yaml
@@ -489,17 +489,17 @@ skills/review/SKILL.md -> frontmatter + content
 ```python
 from pathlib import Path
 
-from runtime.definitions import DefinitionSource
-from runtime.runtime_kernel import DefinitionSourcePaths, RuntimeConfig, assemble_runtime
+from weavert.definitions import DefinitionSource
+from weavert.runtime_kernel import DefinitionSourcePaths, RuntimeConfig, assemble_runtime
 
 config = RuntimeConfig(
     working_directory=Path("/your/project"),
     model_client=my_model_client,
     discovery_sources=(
-        DefinitionSourcePaths(DefinitionSource.PROJECT, Path("/your/project/.runtime")),
+        DefinitionSourcePaths(DefinitionSource.PROJECT, Path("/your/project/.weavert")),
     ),
 )
-runtime = assemble_runtime(config)
+weavert = assemble_runtime(config)
 ```
 
 ## 5. 建议直接写进接入文档的目录与能力规则
@@ -525,7 +525,7 @@ builtins
 
 ### 5.2 默认内置能力
 
-当前默认 bundled pack（`runtime-full`）至少提供：
+当前默认 bundled pack（`weavert-full`）至少提供：
 
 - 默认 agent
   - `main-router`
@@ -639,13 +639,13 @@ builtins
 - host 即使完全不做 task UI，runtime 语义也应成立。
 - task discipline 是 runtime-owned policy，可选启用，但不应依赖某个特定 host 或 agent prompt 才成立。
 
-官方 planning UX 现在已经收口到 `runtime-planning`，而它的自然边界仍然应该是：
+官方 planning UX 现在已经收口到 `weavert-planning`，而它的自然边界仍然应该是：
 
-- `runtime-core`
+- `weavert-core`
   - 继续拥有 `TaskListService`
   - 继续拥有 `task_*` / `job_*`
   - 继续拥有 host task/job bridge 与 readiness/orchestration 语义
-- `runtime-planning`
+- `weavert-planning`
   - 只拥有 `planner` / `coordinator` / `worker` 这类 first-party role UX
   - 不重新定义 shared planning primitive 的权威语义
 
@@ -733,7 +733,7 @@ builtins
 推荐方式：
 
 ```python
-from runtime import JobExecutorBinding, JobStartResult, JobStatus, JobStopResult, RuntimeConfig
+from weavert import JobExecutorBinding, JobStartResult, JobStatus, JobStopResult, RuntimeConfig
 
 
 class ArchiveExecutor:
@@ -752,7 +752,7 @@ class ArchiveExecutor:
 
 config = RuntimeConfig.for_project(project_root)
 config.job_executors["archive"] = JobExecutorBinding(executor=ArchiveExecutor())
-runtime = assemble_runtime(config)
+weavert = assemble_runtime(config)
 ```
 
 关键约束：
@@ -848,14 +848,14 @@ config.metadata.setdefault(
 
 这是当前 Runtime 一个很值得在文档中强调的能力。
 
-skill 不只来自项目根的 `.runtime/skills/`。  
-当 session 已经观察到更深层目录路径时，Runtime 会把这些路径附近更深层的 `.runtime/skills/` 也纳入能力图。
+skill 不只来自项目根的 `.weavert/skills/`。  
+当 session 已经观察到更深层目录路径时，Runtime 会把这些路径附近更深层的 `.weavert/skills/` 也纳入能力图。
 
 例如：
 
 ```text
-repo/.runtime/skills/review
-repo/packages/app/.runtime/skills/review
+repo/.weavert/skills/review
+repo/packages/app/.weavert/skills/review
 ```
 
 当当前 session 已观察到 `packages/app/src/main.py` 时，深层 skill root 可以成为当前上下文下的有效 skill source，并优先于根目录的同名 skill。
@@ -974,7 +974,7 @@ Runtime 当前明确区分：
 一个更完整的 v1 例子现在可以直接把 context window ownership 放在 route / provider 层，而不是 agent 自己维护：
 
 ```python
-from runtime import (
+from weavert import (
     ModelContextWindowProfile,
     ModelProviderBinding,
     ModelRouteBinding,
@@ -1033,7 +1033,7 @@ config.default_model_route = "research"
 当前可通过两种方式声明式接入：
 
 - `RuntimeConfig.memory_config`
-- `.runtime/memory/config.yaml`
+- `.weavert/memory/config.yaml`
 
 这层适合：
 
@@ -1050,9 +1050,9 @@ config.default_model_route = "research"
 最轻量的写法是复用 `build_provider_only_invocation_package_manifest()`：
 
 ```python
-from runtime.invocation_catalog import StaticInvocationProvider
-from runtime.runtime_kernel import RuntimeConfig, assemble_runtime
-from runtime.runtime_package_protocols import build_provider_only_invocation_package_manifest
+from weavert.invocation_catalog import StaticInvocationProvider
+from weavert.runtime_kernel import RuntimeConfig, assemble_runtime
+from weavert.runtime_package_protocols import build_provider_only_invocation_package_manifest
 
 provider_manifest = build_provider_only_invocation_package_manifest(
     name="runtime-provider-only",
@@ -1060,7 +1060,7 @@ provider_manifest = build_provider_only_invocation_package_manifest(
     provider=StaticInvocationProvider("repo-commands", (...)),
 )
 
-runtime = assemble_runtime(
+weavert = assemble_runtime(
     RuntimeConfig(
         extra_package_manifests=(provider_manifest,),
         requested_packages={"runtime-provider-only"},
@@ -1071,7 +1071,7 @@ runtime = assemble_runtime(
 这个模板默认使用 ordinary manifest shape：
 
 - role：`provider`
-- 常见 baseline dependency：`runtime-core`
+- 常见 baseline dependency：`weavert-core`
 - custom provider registration path：`PackageContribution.invocation_providers`
 
 runtime 会按固定顺序注册 provider：built-in skill baseline -> package contribution。package contribution tier 内部再按 contribution `order`、package dependency order、contribution name 稳定排序。
@@ -1103,7 +1103,7 @@ legacy `RuntimeServices.memory.collect()`、`RuntimeServices.hooks.collect()`、
 - `RuntimeServices.resolve_isolation_service()`
 
 对应的 canonical metadata key 会发布在
-`runtime.services.metadata["package_lookup"]["canonical_service_family_protocols"]`；旧的
+`weavert.services.metadata["package_lookup"]["canonical_service_family_protocols"]`；旧的
 `RuntimeServices.memory`、`RuntimeServices.compaction`、`RuntimeServices.isolation`
 只保留为 compatibility projection。
 
@@ -1214,20 +1214,20 @@ leader 接收 teammate collaboration message 时，默认策略是：
 
 当前应该先按 **persistence profile** 来判断，而不是按“我猜默认实现是什么”来判断：
 
-- `runtime-core`
+- `weavert-core`
   - transcript: `non_durable`
   - child runs: `non_durable`
-- `runtime-default`
+- `weavert-default`
   - transcript: `non_durable`
   - child runs: `non_durable`
-- `runtime-full`
+- `weavert-full`
   - transcript: `durable`
   - child runs: `durable`
 
 最稳妥的做法是直接看：
 
-- `runtime.query_persistence_profile()`
-- `runtime.services.metadata["closure_report"]["persistence_profile"]`
+- `weavert.query_persistence_profile()`
+- `weavert.services.metadata["closure_report"]["persistence_profile"]`
 
 如果你的产品需要比当前 distribution 更强或不同的持久化 contract，再显式接自己的
 `TranscriptStore` / `ChildRunStore` / 相关 store。
@@ -1250,8 +1250,8 @@ leader 接收 teammate collaboration message 时，默认策略是：
 
 如果你需要确认当前 assembly 是否仍在容忍这些 compat seam，直接看：
 
-- `runtime.query_compatibility_retirement()`
-- `runtime.query_closure_report()`
+- `weavert.query_compatibility_retirement()`
+- `weavert.query_closure_report()`
 
 ### 9.5 先看 `closure_report`，再决定是否继续依赖 compat surface
 
@@ -1264,10 +1264,10 @@ leader 接收 teammate collaboration message 时，默认策略是：
 
 最直接的检查入口是：
 
-- `runtime.query_closure_report()`
-- `runtime.query_compatibility_retirement()`
-- `runtime.query_persistence_profile()`
-- `runtime.query_isolation_readiness()`
+- `weavert.query_closure_report()`
+- `weavert.query_compatibility_retirement()`
+- `weavert.query_persistence_profile()`
+- `weavert.query_isolation_readiness()`
 
 如果 embedder 需要一次性拿完整聚合视图，可以直接读：
 
@@ -1282,20 +1282,20 @@ leader 接收 teammate collaboration message 时，默认策略是：
   -> RuntimeConfig.for_project()
   -> config.model_client = ...
   -> assemble_runtime(config)
-  -> runtime.run_prompt() / runtime.stream_prompt()
+  -> weavert.run_prompt() / weavert.stream_prompt()
 
 目标 B：我要长会话
   -> assemble_runtime(config)
-  -> runtime.create_session()
+  -> weavert.create_session()
   -> session.start() / enqueue_event() / stream_until_idle()
 
 目标 C：我要 CLI / UI / SDK 宿主
   -> assemble_runtime(config)
-  -> runtime.bind_host(host)
+  -> weavert.bind_host(host)
   -> bound.run_prompt() / bound.stream_prompt()
 
 目标 D：我要自定义能力
-  -> .runtime/tools|agents|skills
+  -> .weavert/tools|agents|skills
   -> DefinitionSourcePaths(...)
   -> resolve_invocations() / visible_invocations()
 
@@ -1303,7 +1303,7 @@ leader 接收 teammate collaboration message 时，默认策略是：
   -> model_routes + default_model_route
 
 目标 F：我要可调记忆策略
-  -> memory_config 或 .runtime/memory/config.yaml
+  -> memory_config 或 .weavert/memory/config.yaml
 ```
 
 ## 11. 推荐在产品文档里直接引用的结论

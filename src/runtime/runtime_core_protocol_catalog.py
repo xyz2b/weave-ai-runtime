@@ -179,8 +179,8 @@ class StableCoreProtocolEntry:
 class StableCoreProtocolCatalog:
     schema_version: str = CORE_PROTOCOL_CATALOG_SCHEMA_VERSION
     published_metadata_paths: tuple[str, ...] = (
-        "runtime.services.metadata['core_protocol_catalog']",
-        "runtime.metadata['core_protocol_catalog']",
+        "weavert.services.metadata['core_protocol_catalog']",
+        "weavert.metadata['core_protocol_catalog']",
     )
     adjacent_metadata: dict[str, str] = field(
         default_factory=lambda: {
@@ -277,7 +277,7 @@ def _stable_core_protocol_entries(
     )
     return (
         StableCoreProtocolEntry(
-            protocol_id="runtime.transcript.store",
+            protocol_id="weavert.transcript.store",
             canonical_name="TranscriptStore",
             owner=_runtime_core_owner("RuntimeConfig.transcript_store"),
             binding_boundary=CoreProtocolBindingBoundary.CONFIG_OWNED,
@@ -294,7 +294,7 @@ def _stable_core_protocol_entries(
             },
         ),
         StableCoreProtocolEntry(
-            protocol_id="runtime.job.service",
+            protocol_id="weavert.job.service",
             canonical_name="JobService",
             owner=_runtime_core_owner("RuntimeServices.job_service"),
             binding_boundary=CoreProtocolBindingBoundary.SERVICE_OWNED,
@@ -325,7 +325,7 @@ def _stable_core_protocol_entries(
             },
         ),
         StableCoreProtocolEntry(
-            protocol_id="runtime.task-list.service",
+            protocol_id="weavert.task-list.service",
             canonical_name="TaskListService",
             owner=_runtime_core_owner("RuntimeServices.task_list_service"),
             binding_boundary=CoreProtocolBindingBoundary.SERVICE_OWNED,
@@ -356,7 +356,7 @@ def _stable_core_protocol_entries(
             },
         ),
         StableCoreProtocolEntry(
-            protocol_id="runtime.permission.service",
+            protocol_id="weavert.permission.service",
             canonical_name="PermissionService",
             owner=_runtime_core_owner("RuntimeServices.permissions"),
             binding_boundary=CoreProtocolBindingBoundary.SERVICE_OWNED,
@@ -364,7 +364,7 @@ def _stable_core_protocol_entries(
             discovery_surface="RuntimeServices.permissions",
         ),
         StableCoreProtocolEntry(
-            protocol_id="runtime.elicitation.service",
+            protocol_id="weavert.elicitation.service",
             canonical_name="ElicitationService",
             owner=_runtime_core_owner("RuntimeServices.elicitation"),
             binding_boundary=CoreProtocolBindingBoundary.SERVICE_OWNED,
@@ -372,7 +372,7 @@ def _stable_core_protocol_entries(
             discovery_surface="RuntimeServices.elicitation",
         ),
         StableCoreProtocolEntry(
-            protocol_id="runtime.context-contributors.registry",
+            protocol_id="weavert.context-contributors.registry",
             canonical_name="ContextContributorRegistry",
             owner=_runtime_core_owner("RuntimeServices.context_contributor_execution_plan"),
             binding_boundary=CoreProtocolBindingBoundary.REGISTRY_OWNED,
@@ -383,7 +383,7 @@ def _stable_core_protocol_entries(
             ),
             discovery_surface=(
                 f"{_require_string(context_contributors, 'registry', field_name='canonical_context_contributors.registry')}"
-                " / runtime.services.metadata['context_contributors']"
+                " / weavert.services.metadata['context_contributors']"
             ),
             compatibility_status=CoreProtocolCompatibilityStatus.STABLE_WITH_COMPATIBILITY,
             retained_surfaces=(
@@ -417,7 +417,7 @@ def _stable_core_protocol_entries(
             },
         ),
         StableCoreProtocolEntry(
-            protocol_id="runtime.invocation-provider.registry",
+            protocol_id="weavert.invocation-provider.registry",
             canonical_name="InvocationProviderRegistry",
             owner=_runtime_core_owner("InvocationRegistry.register_provider"),
             binding_boundary=CoreProtocolBindingBoundary.REGISTRY_OWNED,
@@ -426,7 +426,7 @@ def _stable_core_protocol_entries(
                 "package_contributions",
                 field_name="canonical_invocation_providers.package_contributions",
             ),
-            discovery_surface="RuntimeAssembly.resolve_invocations / runtime.services.metadata['invocation_provider_registrations']",
+            discovery_surface="RuntimeAssembly.resolve_invocations / weavert.services.metadata['invocation_provider_registrations']",
             compatibility_status=CoreProtocolCompatibilityStatus.STABLE,
             metadata={
                 "builtin_baseline": _require_string(
@@ -447,11 +447,11 @@ def _stable_core_protocol_entries(
                     invocation_provider_paths.get("package_ordering"),
                     field_name="invocation_provider_paths.package_ordering",
                 ),
-                "path_metadata": "runtime.services.metadata['invocation_provider_paths']",
+                "path_metadata": "weavert.services.metadata['invocation_provider_paths']",
             },
         ),
         StableCoreProtocolEntry(
-            protocol_id="runtime.host.binding",
+            protocol_id="weavert.host.binding",
             canonical_name="HostRuntime",
             owner=_runtime_core_owner("RuntimeAssembly.bind_host"),
             binding_boundary=CoreProtocolBindingBoundary.HOST_BOUND,
@@ -467,7 +467,7 @@ def _stable_core_protocol_entries(
 
 def _runtime_core_owner(surface: str) -> PackageOwnership:
     return PackageOwnership(
-        package_name="runtime-core",
+        package_name="weavert-core",
         package_role="core",
         surface=surface,
     )

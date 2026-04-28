@@ -53,8 +53,8 @@ def test_worktree_isolation_adapter_materializes_and_cleans_local_lease(tmp_path
     (source / "nested" / "note.txt").write_text("nested", encoding="utf-8")
     (source / ".git").mkdir()
     (source / ".git" / "ignored.txt").write_text("ignored", encoding="utf-8")
-    (source / ".runtime").mkdir()
-    (source / ".runtime" / "ignored.txt").write_text("ignored", encoding="utf-8")
+    (source / ".weavert").mkdir()
+    (source / ".weavert" / "ignored.txt").write_text("ignored", encoding="utf-8")
 
     manager = IsolationManager(
         adapters={
@@ -78,7 +78,7 @@ def test_worktree_isolation_adapter_materializes_and_cleans_local_lease(tmp_path
     assert (lease.working_directory / "keep.txt").read_text(encoding="utf-8") == "hello"
     assert (lease.working_directory / "nested" / "note.txt").read_text(encoding="utf-8") == "nested"
     assert not (lease.working_directory / ".git").exists()
-    assert not (lease.working_directory / ".runtime").exists()
+    assert not (lease.working_directory / ".weavert").exists()
 
     asyncio.run(manager.cleanup(lease))
 

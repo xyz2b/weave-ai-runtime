@@ -37,7 +37,7 @@ class OfficialRuntimePackageCatalogEntry:
                 self,
                 "source_ref",
                 (
-                    "runtime.runtime_package_catalog:"
+                    "weavert.runtime_package_catalog:"
                     f"OFFICIAL_RUNTIME_PACKAGE_CATALOG['{self.manifest.name}']"
                 ),
             )
@@ -100,7 +100,7 @@ class OfficialRuntimeDistributionCatalogEntry:
                 self,
                 "source_ref",
                 (
-                    "runtime.runtime_package_catalog:"
+                    "weavert.runtime_package_catalog:"
                     f"OFFICIAL_RUNTIME_DISTRIBUTIONS['{self.name}']"
                 ),
             )
@@ -151,11 +151,11 @@ def _official_manifest(
 
 
 OFFICIAL_RUNTIME_PACKAGE_CATALOG: dict[str, OfficialRuntimePackageCatalogEntry] = {
-    "runtime-core": _official_manifest(
-        name="runtime-core",
+    "weavert-core": _official_manifest(
+        name="weavert-core",
         role="core",
         description="Kernel assembly, root boot path, runtime control surfaces, and core built-ins.",
-        assembly_entrypoint="runtime.runtime_package_manifests:assemble_runtime_core_package",
+        assembly_entrypoint="weavert.runtime_package_manifests:assemble_runtime_core_package",
         builtin_tools=(
             "agent",
             "skill",
@@ -178,103 +178,103 @@ OFFICIAL_RUNTIME_PACKAGE_CATALOG: dict[str, OfficialRuntimePackageCatalogEntry] 
             "job_stop",
         ),
         builtin_agents=("main-router", "general-purpose"),
-        distribution_defaults=("runtime-core", "runtime-default", "runtime-full"),
+        distribution_defaults=("weavert-core", "weavert-default", "weavert-full"),
     ),
-    "runtime-memory": _official_manifest(
-        name="runtime-memory",
+    "weavert-memory": _official_manifest(
+        name="weavert-memory",
         role="capability",
         description="First-party memory capability package.",
-        dependencies=("runtime-core",),
-        assembly_entrypoint="runtime.runtime_package_manifests:assemble_runtime_memory_package",
+        dependencies=("weavert-core",),
+        assembly_entrypoint="weavert.runtime_package_manifests:assemble_runtime_memory_package",
         builtin_skills=("remember",),
-        distribution_defaults=("runtime-default", "runtime-full"),
+        distribution_defaults=("weavert-default", "weavert-full"),
     ),
-    "runtime-team": _official_manifest(
-        name="runtime-team",
+    "weavert-team": _official_manifest(
+        name="weavert-team",
         role="capability",
         description="First-party team control and teammate orchestration capability package.",
-        dependencies=("runtime-core",),
-        assembly_entrypoint="runtime.runtime_package_manifests:assemble_runtime_team_package",
+        dependencies=("weavert-core",),
+        assembly_entrypoint="weavert.runtime_package_manifests:assemble_runtime_team_package",
         builtin_tools=("team_create", "team_spawn", "team_send", "team_respond", "team_delete"),
-        distribution_defaults=("runtime-default", "runtime-full"),
+        distribution_defaults=("weavert-default", "weavert-full"),
     ),
-    "runtime-compaction": _official_manifest(
-        name="runtime-compaction",
+    "weavert-compaction": _official_manifest(
+        name="weavert-compaction",
         role="mechanism",
         description="First-party compaction strategies and manager package.",
-        dependencies=("runtime-core",),
-        assembly_entrypoint="runtime.runtime_package_manifests:assemble_runtime_compaction_package",
-        distribution_defaults=("runtime-full",),
+        dependencies=("weavert-core",),
+        assembly_entrypoint="weavert.runtime_package_manifests:assemble_runtime_compaction_package",
+        distribution_defaults=("weavert-full",),
     ),
-    "runtime-isolation": _official_manifest(
-        name="runtime-isolation",
+    "weavert-isolation": _official_manifest(
+        name="weavert-isolation",
         role="mechanism",
         description="First-party isolation adapters package.",
-        dependencies=("runtime-core",),
-        assembly_entrypoint="runtime.runtime_package_manifests:assemble_runtime_isolation_package",
-        distribution_defaults=("runtime-full",),
+        dependencies=("weavert-core",),
+        assembly_entrypoint="weavert.runtime_package_manifests:assemble_runtime_isolation_package",
+        distribution_defaults=("weavert-full",),
     ),
-    "runtime-openai": _official_manifest(
-        name="runtime-openai",
+    "weavert-openai": _official_manifest(
+        name="weavert-openai",
         role="provider",
         description="First-party OpenAI provider integration package.",
-        dependencies=("runtime-core",),
-        assembly_entrypoint="runtime.runtime_package_manifests:assemble_runtime_openai_package",
-        distribution_defaults=("runtime-full",),
+        dependencies=("weavert-core",),
+        assembly_entrypoint="weavert.runtime_package_manifests:assemble_runtime_openai_package",
+        distribution_defaults=("weavert-full",),
     ),
-    "runtime-hosts-reference": _official_manifest(
-        name="runtime-hosts-reference",
+    "weavert-hosts-reference": _official_manifest(
+        name="weavert-hosts-reference",
         role="adapter",
         description="First-party reference host implementations package.",
-        dependencies=("runtime-core",),
-        assembly_entrypoint="runtime.runtime_package_manifests:assemble_runtime_hosts_reference_package",
-        distribution_defaults=("runtime-full",),
+        dependencies=("weavert-core",),
+        assembly_entrypoint="weavert.runtime_package_manifests:assemble_runtime_hosts_reference_package",
+        distribution_defaults=("weavert-full",),
     ),
-    "runtime-stores-file": _official_manifest(
-        name="runtime-stores-file",
+    "weavert-stores-file": _official_manifest(
+        name="weavert-stores-file",
         role="adapter",
         description="First-party file-backed runtime store implementations package.",
-        dependencies=("runtime-core",),
-        assembly_entrypoint="runtime.runtime_package_manifests:assemble_runtime_stores_file_package",
-        distribution_defaults=("runtime-full",),
+        dependencies=("weavert-core",),
+        assembly_entrypoint="weavert.runtime_package_manifests:assemble_runtime_stores_file_package",
+        distribution_defaults=("weavert-full",),
     ),
-    "runtime-builtin-workflows": _official_manifest(
-        name="runtime-builtin-workflows",
+    "weavert-builtin-workflows": _official_manifest(
+        name="weavert-builtin-workflows",
         role="profile_workflow",
         description="First-party reusable workflow skills package.",
-        dependencies=("runtime-core",),
+        dependencies=("weavert-core",),
         assembly_entrypoint=(
-            "runtime.runtime_package_manifests:assemble_runtime_builtin_workflows_package"
+            "weavert.runtime_package_manifests:assemble_runtime_builtin_workflows_package"
         ),
         builtin_skills=("verify", "debug", "stuck", "batch", "simplify"),
-        distribution_defaults=("runtime-full",),
+        distribution_defaults=("weavert-full",),
     ),
-    "runtime-planning": _official_manifest(
-        name="runtime-planning",
+    "weavert-planning": _official_manifest(
+        name="weavert-planning",
         role="profile_workflow",
         description="First-party planning profile and workflow agent package.",
-        dependencies=("runtime-core",),
-        assembly_entrypoint="runtime.runtime_package_manifests:assemble_runtime_planning_package",
+        dependencies=("weavert-core",),
+        assembly_entrypoint="weavert.runtime_package_manifests:assemble_runtime_planning_package",
         builtin_agents=("planner", "coordinator", "worker"),
-        distribution_defaults=("runtime-full",),
+        distribution_defaults=("weavert-full",),
     ),
-    "runtime-devtools": _official_manifest(
-        name="runtime-devtools",
+    "weavert-devtools": _official_manifest(
+        name="weavert-devtools",
         role="profile_workflow",
         description="First-party workspace and coding-oriented built-ins package.",
-        dependencies=("runtime-core",),
-        assembly_entrypoint="runtime.runtime_package_manifests:assemble_runtime_devtools_package",
+        dependencies=("weavert-core",),
+        assembly_entrypoint="weavert.runtime_package_manifests:assemble_runtime_devtools_package",
         builtin_tools=("read", "glob", "grep", "edit", "write", "bash", "web_fetch", "web_search"),
         builtin_agents=("explore", "plan", "verification"),
-        distribution_defaults=("runtime-full",),
+        distribution_defaults=("weavert-full",),
     ),
 }
 
 
 _OFFICIAL_RUNTIME_DISTRIBUTION_DESCRIPTIONS: dict[str, str] = {
-    "runtime-core": "Minimal runnable kernel distribution.",
-    "runtime-default": "Supported baseline distribution with first-party memory and team capabilities.",
-    "runtime-full": "Supported full first-party distribution.",
+    "weavert-core": "Minimal runnable kernel distribution.",
+    "weavert-default": "Supported baseline distribution with first-party memory and team capabilities.",
+    "weavert-full": "Supported full first-party distribution.",
 }
 
 
@@ -348,10 +348,10 @@ def official_runtime_package_catalog_provenance() -> dict[str, Any]:
     return {
         "schema_version": OFFICIAL_RUNTIME_PACKAGE_CATALOG_SCHEMA_VERSION,
         "provider_kind": "manifest-backed",
-        "provider_path": "runtime.runtime_package_catalog:official_runtime_package_catalog",
+        "provider_path": "weavert.runtime_package_catalog:official_runtime_package_catalog",
         "published_metadata_paths": [
-            "runtime.services.metadata['official_package_catalog_provenance']",
-            "runtime.metadata['official_package_catalog_provenance']",
+            "weavert.services.metadata['official_package_catalog_provenance']",
+            "weavert.metadata['official_package_catalog_provenance']",
         ],
         "entries": {
             package_name: entry.to_provenance()
@@ -362,12 +362,12 @@ def official_runtime_package_catalog_provenance() -> dict[str, Any]:
             for name, entry in OFFICIAL_RUNTIME_DISTRIBUTIONS.items()
         },
         "retired_kernel_helpers": [
-            "runtime.runtime_package_manifests.assembly_function_name",
-            "runtime.runtime_kernel.kernel._first_party_package_catalog",
+            "weavert.runtime_package_manifests.assembly_function_name",
+            "weavert.runtime_kernel.kernel._first_party_package_catalog",
         ],
         "retired_compatibility_views": [
-            "runtime.package_profiles.FIRST_PARTY_PACKAGE_SPECS",
-            "runtime.package_profiles.RUNTIME_DISTRIBUTION_SPECS",
+            "weavert.package_profiles.FIRST_PARTY_PACKAGE_SPECS",
+            "weavert.package_profiles.RUNTIME_DISTRIBUTION_SPECS",
         ],
     }
 

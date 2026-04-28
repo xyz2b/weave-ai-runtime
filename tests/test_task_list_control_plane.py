@@ -58,7 +58,7 @@ def _build_tool_runtime(
 
 
 def test_task_list_service_persists_and_resolves_scope(tmp_path: Path) -> None:
-    store_root = tmp_path / ".runtime" / "task_lists"
+    store_root = tmp_path / ".weavert" / "task_lists"
     service = DefaultTaskListService(store=FileTaskListStore(store_root))
 
     session_list_id = asyncio.run(service.resolve_list_id(session_id="session-a"))
@@ -315,7 +315,7 @@ def test_task_list_service_enforces_retirement_lifecycle_and_archive_visibility(
 
 
 def test_file_task_list_store_uses_atomic_replace_and_ignores_interrupted_temp_files(tmp_path: Path) -> None:
-    store = FileTaskListStore(tmp_path / ".runtime" / "task_lists")
+    store = FileTaskListStore(tmp_path / ".weavert" / "task_lists")
     service = DefaultTaskListService(store=store)
 
     async def scenario():
@@ -357,7 +357,7 @@ def test_task_update_schema_rejects_orchestration_fields() -> None:
 
 
 def test_task_tools_surface_structured_errors_and_strict_validation(tmp_path: Path) -> None:
-    task_lists = DefaultTaskListService(store=FileTaskListStore(tmp_path / ".runtime" / "task_lists"))
+    task_lists = DefaultTaskListService(store=FileTaskListStore(tmp_path / ".weavert" / "task_lists"))
     task_discipline = TaskDisciplineSidecar(task_lists=task_lists)
     runtime_services = RuntimeServices(
         task_lists=task_lists,

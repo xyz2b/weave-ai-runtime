@@ -12,6 +12,7 @@ from ..team_control_plane import FileBackedTeamStore
 from ..team_message_bus import FileBackedTeamMessageBus
 from ..team_workflows import FileBackedTeamWorkflowStore
 from ..teammate_orchestration import FileBackedTeammateMailbox
+from ..public_contract import ensure_canonical_workspace_root
 from .child_runs import FileChildRunStore
 
 
@@ -40,7 +41,7 @@ def assemble_team_file_store_bundle(
     project_root: Path,
     teammate_config: TeammateOrchestrationConfig | None = None,
 ) -> TeamFileStoreBundle:
-    runtime_root = Path(project_root).resolve() / ".runtime"
+    runtime_root = ensure_canonical_workspace_root(project_root)
     config = teammate_config or TeammateOrchestrationConfig()
     mailbox_root = config.mailbox_root or (runtime_root / "teammates")
     return TeamFileStoreBundle(
@@ -61,7 +62,7 @@ def assemble_file_store_bundle(
     project_root: Path,
     teammate_config: TeammateOrchestrationConfig | None = None,
 ) -> RuntimeFileStoreBundle:
-    runtime_root = Path(project_root).resolve() / ".runtime"
+    runtime_root = ensure_canonical_workspace_root(project_root)
     team_bundle = assemble_team_file_store_bundle(
         project_root=project_root,
         teammate_config=teammate_config,

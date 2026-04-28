@@ -232,7 +232,7 @@ class TeamEvent:
         }
 
 
-TEAM_EXTENSION_EVENT_NAMESPACE = "runtime.team"
+TEAM_EXTENSION_EVENT_NAMESPACE = "weavert.team"
 TEAM_EXTENSION_EVENT_SCHEMA_VERSION = "1.0"
 
 

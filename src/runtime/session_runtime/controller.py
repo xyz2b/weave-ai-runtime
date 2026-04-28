@@ -36,6 +36,7 @@ from ..hooks import (
     SessionStartPayload,
 )
 from ..permissions import PermissionContext
+from ..public_contract import workspace_skill_root_candidates
 from ..runtime_package_protocols import PackageLifecyclePhase
 from ..runtime_services import DefaultTranscriptService, RuntimeServices
 from ..tool_runtime import SessionScope
@@ -1267,8 +1268,10 @@ def _discover_dynamic_skill_roots(
         cursor = resolved if resolved.is_dir() else resolved.parent
         resolved_cwd = session_cwd.resolve()
         while True:
-            candidate = (cursor / ".runtime" / "skills").resolve()
-            if candidate.is_dir():
+            for candidate in workspace_skill_root_candidates(cursor):
+                candidate = candidate.resolve()
+                if not candidate.is_dir():
+                    continue
                 record = ledger.setdefault(
                     str(candidate),
                     {

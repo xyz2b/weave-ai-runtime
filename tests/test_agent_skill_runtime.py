@@ -238,7 +238,7 @@ def test_agent_tool_v1_contract_normalizes_and_returns_structured_payload(tmp_pa
     request = model_client.requests[0]
     prepared_cwd = Path(request.turn_context.cwd)
     assert prepared_cwd != workspace.resolve()
-    assert prepared_cwd.parent == (workspace / ".runtime" / "isolation" / "worktree").resolve()
+    assert prepared_cwd.parent == (workspace / ".weavert" / "isolation" / "worktree").resolve()
     assert request.metadata["isolation"]["metadata"]["source_working_directory"] == str(
         workspace.resolve()
     )
@@ -402,7 +402,7 @@ def test_agent_tool_rejects_unknown_model_route(tmp_path: Path) -> None:
 
 
 def test_skill_tool_executes_dynamic_overlay_skill_from_session_view(tmp_path: Path) -> None:
-    nested_skill_dir = tmp_path / "packages" / "app" / ".runtime" / "skills" / "review"
+    nested_skill_dir = tmp_path / "packages" / "app" / ".weavert" / "skills" / "review"
     observed = tmp_path / "packages" / "app" / "src" / "main.py"
     nested_skill_dir.mkdir(parents=True)
     observed.parent.mkdir(parents=True)
@@ -421,7 +421,7 @@ review body
             working_directory=tmp_path,
             model_client=FakeModelClient([]),
             discovery_sources=(
-                DefinitionSourcePaths(DefinitionSource.PROJECT, tmp_path / ".runtime"),
+                DefinitionSourcePaths(DefinitionSource.PROJECT, tmp_path / ".weavert"),
             ),
             builtins=BuiltinPackConfig(
                 skills_enabled=False,

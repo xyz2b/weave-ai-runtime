@@ -554,7 +554,7 @@ def test_turn_engine_context_control_plane_observes_late_compaction_rebind() -> 
             key=RuntimeCapabilityKey.COMPACTION_MANAGER.value,
             value=replacement,
             owner=PackageOwnership(
-                package_name="runtime-compaction-override",
+                package_name="weavert-compaction-override",
                 package_role="capability",
                 surface="capability",
             ),

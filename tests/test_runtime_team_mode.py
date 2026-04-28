@@ -399,13 +399,13 @@ def test_team_message_bus_routes_messages_and_emits_events(tmp_path: Path) -> No
     assert control.correlation_id == "corr-1"
     assert any("shutdown_request" in notification.text for notification in host.notifications)
     assert any(
-        event.namespace == "runtime.team" and event.event_type == "team.message.routed"
+        event.namespace == "weavert.team" and event.event_type == "team.message.routed"
         for event in host.extension_events
     )
 
     routed_messages = bus.store.list_messages(team.team_id, recipient_member_id=bravo.member_id)
     assert {message.message_id for message in routed_messages} >= {broadcast.message_id, direct.message_id}
-    assert (tmp_path / ".runtime" / "team_messages" / "teams" / team.team_id / "messages" / f"{broadcast.message_id}.json").exists()
+    assert (tmp_path / ".weavert" / "team_messages" / "teams" / team.team_id / "messages" / f"{broadcast.message_id}.json").exists()
     assert list(teammates.mailbox.ensure_paths(team.team_id, alpha.member_id).done.glob("*.json"))
     assert list(teammates.mailbox.ensure_paths(team.team_id, bravo.member_id).done.glob("*.json"))
 
@@ -652,6 +652,6 @@ def test_permission_bridge_routes_correlated_team_control_messages(tmp_path: Pat
     assert control_messages[0].sender.member_id == member.member_id
     assert all(envelope.sender.member_id == team.leader_member_id for envelope in control_messages[1:])
     assert any(
-        event.namespace == "runtime.team" and event.event_type == "team.message.routed"
+        event.namespace == "weavert.team" and event.event_type == "team.message.routed"
         for event in host.extension_events
     )

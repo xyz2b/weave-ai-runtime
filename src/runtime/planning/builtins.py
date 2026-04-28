@@ -15,7 +15,7 @@ def _planning_profile_metadata(
 ) -> dict[str, object]:
     metadata: dict[str, object] = {
         "planning_profile_kind": kind,
-        "shared_planning_primitives_owner": "runtime-core",
+        "shared_planning_primitives_owner": "weavert-core",
     }
     if tool_selectors:
         metadata["planning_profile_tool_selectors"] = list(tool_selectors)

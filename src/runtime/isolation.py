@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from .definitions import IsolationMode
+from .public_contract import ensure_canonical_workspace_root
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,7 +110,7 @@ class WorktreeIsolationAdapter(BaseIsolationAdapter):
     mode: IsolationMode = IsolationMode.WORKTREE
 
     async def prepare(self, request: IsolationRequest) -> IsolationLease:
-        lease_root = request.cwd / ".runtime" / "isolation" / "worktree"
+        lease_root = ensure_canonical_workspace_root(request.cwd) / "isolation" / "worktree"
         lease_id = _lease_identifier(request)
         prepared_target = lease_root / lease_id
         if prepared_target.exists():
@@ -288,7 +289,7 @@ def _slugify(value: object) -> str:
 def _materialize_worktree(source: Path, target: Path) -> int:
     copied_entries = 0
     for entry in source.iterdir():
-        if entry.name in {".git", ".runtime", "__pycache__"}:
+        if entry.name in {".git", ".runtime", ".weavert", "__pycache__"}:
             continue
         destination = target / entry.name
         if entry.is_dir():

@@ -565,8 +565,8 @@ def test_observed_paths_activate_skills_and_preserve_policy_narrowing(tmp_path: 
 def test_runtime_discovers_nested_skill_roots_and_prefers_deeper_project_skills(
     tmp_path: Path,
 ) -> None:
-    root_skill_dir = tmp_path / ".runtime" / "skills" / "review"
-    nested_skill_dir = tmp_path / "packages" / "app" / ".runtime" / "skills" / "review"
+    root_skill_dir = tmp_path / ".weavert" / "skills" / "review"
+    nested_skill_dir = tmp_path / "packages" / "app" / ".weavert" / "skills" / "review"
     observed = tmp_path / "packages" / "app" / "src" / "main.py"
     root_skill_dir.mkdir(parents=True)
     nested_skill_dir.mkdir(parents=True)
@@ -596,7 +596,7 @@ nested review
             working_directory=tmp_path,
             model_client=FakeModelClient([]),
             discovery_sources=(
-                DefinitionSourcePaths(DefinitionSource.PROJECT, tmp_path / ".runtime"),
+                DefinitionSourcePaths(DefinitionSource.PROJECT, tmp_path / ".weavert"),
             ),
             builtins=BuiltinPackConfig(skills_enabled=False),
         )
@@ -619,7 +619,7 @@ nested review
     assert resolved is not None
     assert resolved.diagnostics.visible is True
     assert resolved.diagnostics.metadata["skill_root"] == str(
-        (tmp_path / "packages" / "app" / ".runtime" / "skills").resolve()
+        (tmp_path / "packages" / "app" / ".weavert" / "skills").resolve()
     )
     effective_skill = resolved.definition.metadata["skill_definition"]
     assert isinstance(effective_skill, SkillDefinition)
@@ -627,7 +627,7 @@ nested review
 
 
 def test_runtime_reloads_dynamic_skill_root_after_skill_edit(tmp_path: Path) -> None:
-    nested_skill_dir = tmp_path / "packages" / "app" / ".runtime" / "skills" / "review"
+    nested_skill_dir = tmp_path / "packages" / "app" / ".weavert" / "skills" / "review"
     observed = tmp_path / "packages" / "app" / "src" / "main.py"
     nested_skill_dir.mkdir(parents=True)
     observed.parent.mkdir(parents=True)
@@ -648,7 +648,7 @@ version one
             working_directory=tmp_path,
             model_client=FakeModelClient([]),
             discovery_sources=(
-                DefinitionSourcePaths(DefinitionSource.PROJECT, tmp_path / ".runtime"),
+                DefinitionSourcePaths(DefinitionSource.PROJECT, tmp_path / ".weavert"),
             ),
             builtins=BuiltinPackConfig(skills_enabled=False),
         )
@@ -694,7 +694,7 @@ version two
 
 
 def test_session_resume_restores_dynamic_skill_roots_from_observed_paths(tmp_path: Path) -> None:
-    nested_skill_dir = tmp_path / "services" / "api" / ".runtime" / "skills" / "api-review"
+    nested_skill_dir = tmp_path / "services" / "api" / ".weavert" / "skills" / "api-review"
     observed = tmp_path / "services" / "api" / "src" / "handler.py"
     nested_skill_dir.mkdir(parents=True)
     observed.parent.mkdir(parents=True)
@@ -714,7 +714,7 @@ api review
             working_directory=tmp_path,
             model_client=FakeModelClient([]),
             discovery_sources=(
-                DefinitionSourcePaths(DefinitionSource.PROJECT, tmp_path / ".runtime"),
+                DefinitionSourcePaths(DefinitionSource.PROJECT, tmp_path / ".weavert"),
             ),
             builtins=BuiltinPackConfig(skills_enabled=False),
         )
@@ -740,7 +740,7 @@ api review
     assert session.state.metadata["observed_paths"] == [str(observed)]
     assert session.state.metadata["skill_dynamic_roots"] == [
         {
-            "root": str((tmp_path / "services" / "api" / ".runtime" / "skills").resolve()),
+            "root": str((tmp_path / "services" / "api" / ".weavert" / "skills").resolve()),
             "source": "project",
             "discovered_from": [str(observed)],
         }

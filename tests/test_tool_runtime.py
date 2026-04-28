@@ -206,7 +206,7 @@ def test_guarded_memory_roots_use_canonical_memory_resolver(tmp_path: Path) -> N
         def resolve_memory_service(self):
             return getattr(self, "_canonical_memory", object.__getattribute__(self, "memory"))
 
-    guarded_root = tmp_path / ".runtime" / "memory" / "shared"
+    guarded_root = tmp_path / ".weavert" / "memory" / "shared"
     canonical_memory = RecordingMemoryService((guarded_root,))
     services = ResolverOnlyRuntimeServices(canonical_memory)
     context = ToolContext(

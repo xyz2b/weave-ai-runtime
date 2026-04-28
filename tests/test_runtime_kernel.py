@@ -166,24 +166,24 @@ def test_distribution_profiles_publish_expected_builtin_ownership(tmp_path: Path
     default_pack = load_builtin_pack(default_config.selected_first_party_packages())
     full_pack = load_builtin_pack(full_config.selected_first_party_packages())
 
-    assert core_config.selected_first_party_packages() == ("runtime-core",)
+    assert core_config.selected_first_party_packages() == ("weavert-core",)
     assert default_config.selected_first_party_packages() == (
-        "runtime-core",
-        "runtime-memory",
-        "runtime-team",
+        "weavert-core",
+        "weavert-memory",
+        "weavert-team",
     )
     assert full_config.selected_first_party_packages() == (
-        "runtime-core",
-        "runtime-memory",
-        "runtime-team",
-        "runtime-compaction",
-        "runtime-isolation",
-        "runtime-openai",
-        "runtime-hosts-reference",
-        "runtime-stores-file",
-        "runtime-builtin-workflows",
-        "runtime-planning",
-        "runtime-devtools",
+        "weavert-core",
+        "weavert-memory",
+        "weavert-team",
+        "weavert-compaction",
+        "weavert-isolation",
+        "weavert-openai",
+        "weavert-hosts-reference",
+        "weavert-stores-file",
+        "weavert-builtin-workflows",
+        "weavert-planning",
+        "weavert-devtools",
     )
 
     core_tool_names = {tool.name for tool in core_pack.tools}
@@ -202,8 +202,8 @@ def test_distribution_profiles_publish_expected_builtin_ownership(tmp_path: Path
     assert "read" not in default_tool_names
     assert default_agent_names == {"general-purpose", "main-router"}
     assert default_skill_names == {"remember"}
-    assert next(tool for tool in default_pack.tools if tool.name == "team_spawn").metadata["builtin_owner"] == "runtime-team"
-    assert next(skill for skill in default_pack.skills if skill.name == "remember").metadata["builtin_owner"] == "runtime-memory"
+    assert next(tool for tool in default_pack.tools if tool.name == "team_spawn").metadata["builtin_owner"] == "weavert-team"
+    assert next(skill for skill in default_pack.skills if skill.name == "remember").metadata["builtin_owner"] == "weavert-memory"
 
     full_tool_names = {tool.name for tool in full_pack.tools}
     full_agent_names = {agent.name for agent in full_pack.agents}
@@ -214,20 +214,20 @@ def test_distribution_profiles_publish_expected_builtin_ownership(tmp_path: Path
     assert "coordinator" in full_agent_names
     assert "worker" in full_agent_names
     assert "verify" in full_skill_names
-    assert next(tool for tool in full_pack.tools if tool.name == "read").metadata["builtin_owner"] == "runtime-devtools"
-    assert next(agent for agent in full_pack.agents if agent.name == "verification").metadata["builtin_owner"] == "runtime-devtools"
+    assert next(tool for tool in full_pack.tools if tool.name == "read").metadata["builtin_owner"] == "weavert-devtools"
+    assert next(agent for agent in full_pack.agents if agent.name == "verification").metadata["builtin_owner"] == "weavert-devtools"
     planner = next(agent for agent in full_pack.agents if agent.name == "planner")
     coordinator = next(agent for agent in full_pack.agents if agent.name == "coordinator")
     worker = next(agent for agent in full_pack.agents if agent.name == "worker")
     plan = next(agent for agent in full_pack.agents if agent.name == "plan")
-    assert planner.metadata["builtin_owner"] == "runtime-planning"
-    assert coordinator.metadata["builtin_owner"] == "runtime-planning"
-    assert worker.metadata["builtin_owner"] == "runtime-planning"
+    assert planner.metadata["builtin_owner"] == "weavert-planning"
+    assert coordinator.metadata["builtin_owner"] == "weavert-planning"
+    assert worker.metadata["builtin_owner"] == "weavert-planning"
     assert planner.tools == ("task_*",)
     assert coordinator.tools == ("task_*", "job_*", "agent")
     assert worker.tools == ("agent", "ask_user", "skill", "sleep")
     assert worker.disallowed_tools == ()
-    assert plan.metadata["builtin_owner"] == "runtime-devtools"
+    assert plan.metadata["builtin_owner"] == "weavert-devtools"
 
 
 def test_runtime_planning_worker_profile_requires_explicit_optional_tool_composition(tmp_path: Path) -> None:
@@ -290,28 +290,28 @@ def test_runtime_core_build_does_not_import_optional_package_modules(
     first_party_loading = importlib.import_module("runtime.first_party_loading")
     original_import_module = first_party_loading.import_module
     blocked_modules = {
-        "runtime.compaction.package",
-        "runtime.devtools.builtins",
-        "runtime.hosts.package",
-        "runtime.isolation_package",
-        "runtime.memory.builtins",
-        "runtime.memory.package",
-        "runtime.openai_package",
-        "runtime.planning.builtins",
-        "runtime.stores_file.package",
-        "runtime.team.builtins",
-        "runtime.team.assembly",
-        "runtime.builtin_workflows.builtins",
+        "weavert.compaction.package",
+        "weavert.devtools.builtins",
+        "weavert.hosts.package",
+        "weavert.isolation_package",
+        "weavert.memory.builtins",
+        "weavert.memory.package",
+        "weavert.openai_package",
+        "weavert.planning.builtins",
+        "weavert.stores_file.package",
+        "weavert.team.builtins",
+        "weavert.team.assembly",
+        "weavert.builtin_workflows.builtins",
     }
 
     def guarded_import_module(name: str, package: str | None = None):
         if name in blocked_modules:
-            raise AssertionError(f"runtime-core should not import optional package module {name}")
+            raise AssertionError(f"weavert-core should not import optional package module {name}")
         return original_import_module(name, package)
 
     monkeypatch.setattr(first_party_loading, "import_module", guarded_import_module)
 
-    pack = load_builtin_pack(("runtime-core",))
+    pack = load_builtin_pack(("weavert-core",))
     kernel = build_runtime_kernel(
         RuntimeConfig(
             working_directory=tmp_path,
@@ -319,8 +319,8 @@ def test_runtime_core_build_does_not_import_optional_package_modules(
         )
     )
 
-    assert pack.packages == ("runtime-core",)
-    assert kernel.first_party_packages == ("runtime-core",)
+    assert pack.packages == ("weavert-core",)
+    assert kernel.first_party_packages == ("weavert-core",)
 
 
 def test_distribution_profiles_expose_expected_visible_invocations(tmp_path: Path) -> None:
@@ -443,7 +443,7 @@ def test_runtime_core_distribution_remains_runnable_without_memory_or_devtools(t
 
     assert produced[-1].text == "core reply"
     assert runtime.kernel.distribution == RuntimeDistribution.CORE.value
-    assert runtime.kernel.first_party_packages == ("runtime-core",)
+    assert runtime.kernel.first_party_packages == ("weavert-core",)
     assert runtime.kernel.agent_registry.get("main-router").description == "core replacement router"
     assert runtime.kernel.tool_registry.get("read") is None
     assert runtime.kernel.tool_registry.get("team_spawn") is None
@@ -465,9 +465,9 @@ def test_runtime_default_distribution_wires_team_capability_out_of_the_box(tmp_p
     team_create = runtime.kernel.tool_registry.get("team_create")
     assert team_create is not None
     assert runtime.kernel.first_party_packages == (
-        "runtime-core",
-        "runtime-memory",
-        "runtime-team",
+        "weavert-core",
+        "weavert-memory",
+        "weavert-team",
     )
     assert runtime.teammates is not None
     assert _team_capability(runtime, RuntimeCapabilityKey.TEAM_CONTROL_PLANE) is not None
@@ -532,13 +532,13 @@ def test_non_full_distributions_publish_devtools_and_planning_migration_diagnost
             diag for diag in runtime.kernel.diagnostics if diag.code == "runtime_planning_not_selected"
         )
         assert devtools_diagnostic.details["target_distribution"] == RuntimeDistribution.FULL.value
-        assert devtools_diagnostic.details["target_package"] == "runtime-devtools"
+        assert devtools_diagnostic.details["target_package"] == "weavert-devtools"
         assert "read" in devtools_diagnostic.details["tools"]
         assert "verification" in devtools_diagnostic.details["agents"]
         assert planning_diagnostic.details["target_distribution"] == RuntimeDistribution.FULL.value
-        assert planning_diagnostic.details["target_package"] == "runtime-planning"
+        assert planning_diagnostic.details["target_package"] == "weavert-planning"
         assert "planner" in planning_diagnostic.details["agents"]
-        assert planning_diagnostic.details["shared_primitives_owner"] == "runtime-core"
+        assert planning_diagnostic.details["shared_primitives_owner"] == "weavert-core"
         assert runtime.services.metadata["migration"]["devtools"]["selected"] is False
         assert runtime.services.metadata["migration"]["planning_profiles"]["selected"] is False
 
@@ -595,8 +595,8 @@ def test_distribution_profiles_gate_runtime_mechanisms_and_store_defaults(tmp_pa
     )
 
     assert full_runtime.services.metadata["migration"]["hook_contract"]["stable_handler_kinds"] == ["callback"]
-    assert "runtime-hosts-reference" in full_runtime.services.metadata["first_party_package_catalog"]
-    assert "runtime-planning" in full_runtime.services.metadata["first_party_package_catalog"]
+    assert "weavert-hosts-reference" in full_runtime.services.metadata["first_party_package_catalog"]
+    assert "weavert-planning" in full_runtime.services.metadata["first_party_package_catalog"]
     assert full_runtime.services.metadata["migration"]["planning_profiles"]["selected"] is True
     assert full_runtime.services.metadata["reference_hosts"] == ["cli", "sdk"]
 
@@ -832,32 +832,32 @@ def test_runtime_planning_package_can_be_explicitly_enabled_and_disabled(tmp_pat
     core_with_planning = RuntimeConfig(
         working_directory=tmp_path / "core-with-planning",
         distribution=RuntimeDistribution.CORE,
-        enabled_packages={"runtime-planning"},
+        enabled_packages={"weavert-planning"},
     )
     full_without_planning = RuntimeConfig(
         working_directory=tmp_path / "full-without-planning",
         distribution=RuntimeDistribution.FULL,
-        disabled_packages={"runtime-planning"},
+        disabled_packages={"weavert-planning"},
     )
 
     core_with_planning_pack = load_builtin_pack(core_with_planning.selected_first_party_packages())
     full_without_planning_pack = load_builtin_pack(full_without_planning.selected_first_party_packages())
 
-    assert core_with_planning.selected_first_party_packages() == ("runtime-core", "runtime-planning")
+    assert core_with_planning.selected_first_party_packages() == ("weavert-core", "weavert-planning")
     assert "planner" in {agent.name for agent in core_with_planning_pack.agents}
     assert "coordinator" in {agent.name for agent in core_with_planning_pack.agents}
     assert "worker" in {agent.name for agent in core_with_planning_pack.agents}
     assert full_without_planning.selected_first_party_packages() == (
-        "runtime-core",
-        "runtime-memory",
-        "runtime-team",
-        "runtime-compaction",
-        "runtime-isolation",
-        "runtime-openai",
-        "runtime-hosts-reference",
-        "runtime-stores-file",
-        "runtime-builtin-workflows",
-        "runtime-devtools",
+        "weavert-core",
+        "weavert-memory",
+        "weavert-team",
+        "weavert-compaction",
+        "weavert-isolation",
+        "weavert-openai",
+        "weavert-hosts-reference",
+        "weavert-stores-file",
+        "weavert-builtin-workflows",
+        "weavert-devtools",
     )
     assert "planner" not in {agent.name for agent in full_without_planning_pack.agents}
     assert "coordinator" not in {agent.name for agent in full_without_planning_pack.agents}
@@ -865,7 +865,7 @@ def test_runtime_planning_package_can_be_explicitly_enabled_and_disabled(tmp_pat
 
 
 def test_runtime_core_preserves_task_and_job_primitives_without_planning_package() -> None:
-    core_pack = load_builtin_pack(("runtime-core",))
+    core_pack = load_builtin_pack(("weavert-core",))
 
     core_tool_names = {tool.name for tool in core_pack.tools}
     core_agent_names = {agent.name for agent in core_pack.agents}
@@ -888,7 +888,7 @@ def test_runtime_core_import_surface_does_not_eagerly_load_reference_hosts(tmp_p
         [
             sys.executable,
             "-c",
-            "import sys; import runtime.runtime_kernel; print('runtime.hosts.reference' in sys.modules)",
+            "import sys; import weavert.runtime_kernel; print('weavert.hosts.reference' in sys.modules)",
         ],
         cwd=repo_root,
         env=env,
@@ -898,6 +898,59 @@ def test_runtime_core_import_surface_does_not_eagerly_load_reference_hosts(tmp_p
     )
 
     assert result.stdout.strip() == "False"
+
+
+def test_weavert_import_root_aliases_runtime_modules() -> None:
+    weavert_module = importlib.import_module("weavert")
+    runtime_module = importlib.import_module("runtime")
+    weavert_kernel = importlib.import_module("weavert.runtime_kernel")
+    runtime_kernel = importlib.import_module("runtime.runtime_kernel")
+
+    assert weavert_module.RuntimeConfig is runtime_module.RuntimeConfig
+    assert weavert_kernel is runtime_kernel
+    assert weavert_kernel.assemble_runtime is runtime_kernel.assemble_runtime
+
+
+def test_runtime_config_for_project_uses_canonical_weavert_roots_and_migrates_legacy_workspace(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    user_home = tmp_path / "user-home"
+    project_root = tmp_path / "project"
+    user_skill_dir = user_home / ".runtime" / "skills" / "user-review"
+    project_skill_dir = project_root / ".runtime" / "skills" / "project-review"
+    user_skill_dir.mkdir(parents=True)
+    project_skill_dir.mkdir(parents=True)
+    user_skill_dir.joinpath("SKILL.md").write_text(
+        """
+---
+description: user review skill
+---
+user review body
+""".strip(),
+        encoding="utf-8",
+    )
+    project_skill_dir.joinpath("SKILL.md").write_text(
+        """
+---
+description: project review skill
+---
+project review body
+""".strip(),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr("runtime.runtime_kernel.config.Path.home", lambda: user_home)
+
+    config = RuntimeConfig.for_project(project_root)
+    kernel = build_runtime_kernel(config)
+
+    assert config.discovery_sources[0].root == user_home / ".weavert"
+    assert config.discovery_sources[1].root == project_root / ".weavert"
+    assert (user_home / ".weavert" / "skills" / "user-review" / "SKILL.md").exists()
+    assert (project_root / ".weavert" / "skills" / "project-review" / "SKILL.md").exists()
+    assert kernel.skill_registry.get("user-review") is not None
+    assert kernel.skill_registry.get("project-review") is not None
 
 
 def test_runtime_builtin_workflow_pack_remains_runnable_without_devtools_package(tmp_path: Path) -> None:
@@ -914,7 +967,7 @@ def test_runtime_builtin_workflow_pack_remains_runnable_without_devtools_package
         RuntimeConfig(
             working_directory=tmp_path,
             distribution=RuntimeDistribution.CORE,
-            enabled_packages={"runtime-builtin-workflows"},
+            enabled_packages={"weavert-builtin-workflows"},
             model_client=model_client,
         )
     )

@@ -9,6 +9,11 @@ from .definitions import AgentDefinition, InvocationProvider, SkillDefinition, T
 from .diagnostics import Diagnostic
 from .first_party_loading import load_object
 from .jobs import JobExecutorBinding
+from .public_contract import (
+    canonical_distribution_name,
+    canonical_first_party_name,
+    canonical_public_namespace,
+)
 
 
 class PackageAssemblyStage(StrEnum):
@@ -36,18 +41,18 @@ class ContextContributorPromptChannel(StrEnum):
 
 
 class RuntimeCapabilityKey(StrEnum):
-    MEMORY_SERVICE = "runtime.memory.service"
-    COMPACTION_MANAGER = "runtime.compaction.manager"
-    ISOLATION_MANAGER = "runtime.isolation.manager"
-    REFERENCE_HOST_TYPES = "runtime.hosts.reference_types"
-    TEAMMATES = "runtime.team.teammates"
-    TEAM_CONTROL_PLANE = "runtime.team.control_plane"
-    TEAM_MESSAGE_BUS = "runtime.team.message_bus"
-    TEAM_WORKFLOWS = "runtime.team.workflows"
+    MEMORY_SERVICE = "weavert.memory.service"
+    COMPACTION_MANAGER = "weavert.compaction.manager"
+    ISOLATION_MANAGER = "weavert.isolation.manager"
+    REFERENCE_HOST_TYPES = "weavert.hosts.reference_types"
+    TEAMMATES = "weavert.team.teammates"
+    TEAM_CONTROL_PLANE = "weavert.team.control_plane"
+    TEAM_MESSAGE_BUS = "weavert.team.message_bus"
+    TEAM_WORKFLOWS = "weavert.team.workflows"
 
 
 class RuntimeHostFacetKey(StrEnum):
-    TEAM_WORKFLOWS = "runtime.team.workflows"
+    TEAM_WORKFLOWS = "weavert.team.workflows"
 
 
 @dataclass(frozen=True, slots=True)
@@ -269,7 +274,11 @@ class InvocationProviderFactoryContext:
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "distribution", _require_non_empty(self.distribution, "distribution"))
+        object.__setattr__(
+            self,
+            "distribution",
+            canonical_distribution_name(_require_non_empty(self.distribution, "distribution")),
+        )
         object.__setattr__(self, "working_directory", Path(self.working_directory))
         object.__setattr__(self, "resources", dict(self.resources))
         object.__setattr__(self, "metadata", dict(self.metadata))
@@ -371,10 +380,18 @@ class RuntimePackageManifest:
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "name", _require_non_empty(self.name, "name"))
+        object.__setattr__(
+            self,
+            "name",
+            canonical_first_party_name(_require_non_empty(self.name, "name")),
+        )
         object.__setattr__(self, "role", _require_non_empty(self.role, "role"))
         object.__setattr__(self, "description", str(self.description))
-        object.__setattr__(self, "dependencies", tuple(str(name) for name in self.dependencies))
+        object.__setattr__(
+            self,
+            "dependencies",
+            tuple(canonical_first_party_name(str(name)) for name in self.dependencies),
+        )
         object.__setattr__(self, "metadata", dict(self.metadata))
 
     def assemble(self, context: "PackageContext") -> PackageContribution:
@@ -406,8 +423,16 @@ class PackageContext:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "stage", PackageAssemblyStage(self.stage))
-        object.__setattr__(self, "distribution", _require_non_empty(self.distribution, "distribution"))
-        object.__setattr__(self, "selected_packages", tuple(str(name) for name in self.selected_packages))
+        object.__setattr__(
+            self,
+            "distribution",
+            canonical_distribution_name(_require_non_empty(self.distribution, "distribution")),
+        )
+        object.__setattr__(
+            self,
+            "selected_packages",
+            tuple(canonical_first_party_name(str(name)) for name in self.selected_packages),
+        )
         object.__setattr__(self, "working_directory", Path(self.working_directory))
         object.__setattr__(self, "resources", dict(self.resources))
         object.__setattr__(self, "metadata", dict(self.metadata))
@@ -440,7 +465,7 @@ def build_provider_only_invocation_package_manifest(
     factory: Callable[[InvocationProviderFactoryContext], InvocationProvider] | None = None,
     description: str = "Provider-only runtime package.",
     role: str = "provider",
-    dependencies: Sequence[str] = ("runtime-core",),
+    dependencies: Sequence[str] = ("weavert-core",),
     order: int = 0,
     manifest_metadata: Mapping[str, Any] | None = None,
     contribution_metadata: Mapping[str, Any] | None = None,
@@ -451,7 +476,10 @@ def build_provider_only_invocation_package_manifest(
     normalized_role = _require_non_empty(role, "role")
     if (provider is None) == (factory is None):
         raise ValueError("Provider-only package template requires exactly one of provider or factory")
-    normalized_dependencies = tuple(str(item) for item in (dependencies or ("runtime-core",)))
+    normalized_dependencies = tuple(
+        canonical_first_party_name(str(item))
+        for item in (dependencies or ("weavert-core",))
+    )
     manifest_entry_metadata = dict(manifest_metadata or {})
     manifest_entry_metadata.setdefault("invocation_providers", [normalized_provider_name])
     manifest_entry_metadata.setdefault("package_pattern", "provider-only")
@@ -514,7 +542,7 @@ class CapabilityRegistry:
     _bindings: dict[str, CapabilityBinding] = field(default_factory=dict)
 
     def bind(self, binding: CapabilityBinding, *, override: bool = True) -> CapabilityBinding | None:
-        normalized = _require_non_empty(binding.key, "binding.key")
+        normalized = canonical_public_namespace(_require_non_empty(binding.key, "binding.key"))
         previous = self._bindings.get(normalized)
         if previous is not None and not override:
             raise ValueError(f"Capability '{normalized}' is already registered")
@@ -522,7 +550,7 @@ class CapabilityRegistry:
         return previous
 
     def binding(self, key: str) -> CapabilityBinding | None:
-        return self._bindings.get(_require_non_empty(key, "key"))
+        return self._bindings.get(canonical_public_namespace(_require_non_empty(key, "key")))
 
     def resolve(self, key: str, default: Any = None) -> Any:
         binding = self.binding(key)
@@ -656,7 +684,7 @@ class HostFacetRegistry:
     _bindings: dict[str, HostFacetBinding] = field(default_factory=dict)
 
     def register(self, binding: HostFacetBinding, *, override: bool = True) -> HostFacetBinding | None:
-        normalized = _require_non_empty(binding.name, "binding.name")
+        normalized = canonical_public_namespace(_require_non_empty(binding.name, "binding.name"))
         previous = self._bindings.get(normalized)
         if previous is not None and not override:
             raise ValueError(f"Host facet '{normalized}' is already registered")
@@ -664,7 +692,7 @@ class HostFacetRegistry:
         return previous
 
     def binding(self, name: str) -> HostFacetBinding | None:
-        return self._bindings.get(_require_non_empty(name, "name"))
+        return self._bindings.get(canonical_public_namespace(_require_non_empty(name, "name")))
 
     def resolve(self, name: str) -> HostFacetResolution:
         binding = self.binding(name)
@@ -702,7 +730,7 @@ class IngressReceiptRegistry:
         *,
         override: bool = True,
     ) -> IngressReceiptHandlerBinding | None:
-        normalized = _require_non_empty(binding.kind, "binding.kind")
+        normalized = canonical_public_namespace(_require_non_empty(binding.kind, "binding.kind"))
         previous = self._bindings.get(normalized)
         if previous is not None and not override:
             raise ValueError(f"Ingress receipt handler '{normalized}' is already registered")
@@ -710,7 +738,7 @@ class IngressReceiptRegistry:
         return previous
 
     def binding(self, kind: str) -> IngressReceiptHandlerBinding | None:
-        return self._bindings.get(_require_non_empty(kind, "kind"))
+        return self._bindings.get(canonical_public_namespace(_require_non_empty(kind, "kind")))
 
     def resolve(self, kind: str) -> Callable[..., Any] | None:
         binding = self.binding(kind)
@@ -728,7 +756,7 @@ def order_package_manifests(
     package_names: Sequence[str],
     manifest_catalog: Mapping[str, RuntimePackageManifest],
 ) -> tuple[RuntimePackageManifest, ...]:
-    requested = tuple(str(name) for name in package_names)
+    requested = tuple(canonical_first_party_name(str(name)) for name in package_names)
     requested_set = set(requested)
     ordered: list[RuntimePackageManifest] = []
     visiting: set[str] = set()

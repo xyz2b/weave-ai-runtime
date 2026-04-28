@@ -887,7 +887,7 @@ def _coerce_mapping(value: object) -> dict[str, Any]:
 def _delivery_ack_receipt(*, team_id: str, message_id: str, delivery_id: str) -> dict[str, Any]:
     return {
         "receipt_id": delivery_id,
-        "kind": "runtime.team.delivery_ack",
+        "kind": "weavert.team.delivery_ack",
         "payload": {
             "team_id": team_id,
             "message_id": message_id,

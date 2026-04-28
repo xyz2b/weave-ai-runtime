@@ -37,7 +37,7 @@ class FakeResponse:
 
 def _build_runtime(tmp_path: Path) -> tuple[ToolRegistry, ToolScheduler, ToolContext]:
     tool_registry = ToolRegistry()
-    for definition in load_builtin_pack(("runtime-core", "runtime-devtools")).tools:
+    for definition in load_builtin_pack(("weavert-core", "weavert-devtools")).tools:
         tool_registry.register(definition)
 
     agent_registry = AgentRegistry()
@@ -187,7 +187,7 @@ def test_builtin_external_orchestration_and_task_tools(tmp_path: Path, monkeypat
 
 def test_builtin_job_tools_use_job_service_without_materializing_task_manager(tmp_path: Path) -> None:
     tool_registry = ToolRegistry()
-    for definition in load_builtin_pack(("runtime-core",)).tools:
+    for definition in load_builtin_pack(("weavert-core",)).tools:
         tool_registry.register(definition)
     services = RuntimeServices()
     services.job_service.create_or_update_compat(

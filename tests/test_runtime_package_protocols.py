@@ -34,12 +34,12 @@ from runtime.runtime_kernel import (
     build_runtime_kernel,
 )
 from runtime.runtime_core_protocol_catalog import CORE_PROTOCOL_CATALOG_SCHEMA_VERSION
-from runtime.runtime_package_catalog import (
+from weavert.runtime_package_catalog import (
     official_runtime_distribution_catalog,
     official_runtime_package_catalog,
 )
-from runtime.runtime_package_manifests import official_runtime_package_manifests
-from runtime.runtime_package_resolution import (
+from weavert.runtime_package_manifests import official_runtime_package_manifests
+from weavert.runtime_package_resolution import (
     PACKAGE_CANDIDATE_METADATA_KEY,
     RuntimePackageResolutionError,
 )
@@ -136,11 +136,11 @@ def _require_team_workflow_facet(target):
 
 
 def test_official_runtime_package_manifests_follow_dependency_order() -> None:
-    manifests = official_runtime_package_manifests(("runtime-team", "runtime-core"))
+    manifests = official_runtime_package_manifests(("weavert-team", "weavert-core"))
 
     assert tuple(manifest.name for manifest in manifests) == (
-        "runtime-core",
-        "runtime-team",
+        "weavert-core",
+        "weavert-team",
     )
 
 
@@ -159,7 +159,7 @@ def test_external_package_registration_accepts_manifest_entrypoints_and_publishe
         name="runtime-external",
         role="capability",
         description="External runtime package",
-        dependencies=("runtime-core",),
+        dependencies=("weavert-core",),
         assembly_entrypoint=assemble_external,
     )
     sys.modules[module_name] = module
@@ -177,8 +177,8 @@ def test_external_package_registration_accepts_manifest_entrypoints_and_publishe
     accepted = runtime.services.metadata["package_registration"]["accepted"]
     resolution = runtime.services.metadata["package_resolution"]
 
-    assert runtime.kernel.first_party_packages == ("runtime-core",)
-    assert tuple(manifest.name for manifest in runtime.kernel.package_manifests) == ("runtime-core",)
+    assert runtime.kernel.first_party_packages == ("weavert-core",)
+    assert tuple(manifest.name for manifest in runtime.kernel.package_manifests) == ("weavert-core",)
     assert observed_stages == []
     assert accepted == [
         {
@@ -187,7 +187,7 @@ def test_external_package_registration_accepts_manifest_entrypoints_and_publishe
                 "name": "runtime-external",
                 "role": "capability",
                 "description": "External runtime package",
-                "dependencies": ["runtime-core"],
+                "dependencies": ["weavert-core"],
                 "invocation_providers": [],
             },
             "provenance": {
@@ -207,10 +207,10 @@ def test_external_package_registration_accepts_manifest_entrypoints_and_publishe
     ]
     assert runtime.services.metadata["package_registration"]["rejected"] == []
     assert "runtime-external" not in runtime.services.metadata["package_manifests"]
-    assert runtime.services.metadata["package_service_contributions"] == ["runtime-core"]
-    assert set(resolution["candidate_catalog"]) == {"runtime-core", "runtime-external"}
-    assert resolution["resolved_graph"]["order"] == ["runtime-core"]
-    assert set(resolution["resolved_graph"]["packages"]) == {"runtime-core"}
+    assert runtime.services.metadata["package_service_contributions"] == ["weavert-core"]
+    assert set(resolution["candidate_catalog"]) == {"weavert-core", "runtime-external"}
+    assert resolution["resolved_graph"]["order"] == ["weavert-core"]
+    assert set(resolution["resolved_graph"]["packages"]) == {"weavert-core"}
     assert runtime.metadata["package_registration"] == runtime.services.metadata["package_registration"]
     assert runtime.metadata["package_resolution"] == runtime.services.metadata["package_resolution"]
 
@@ -229,7 +229,7 @@ def test_external_package_registration_accepts_single_entrypoint_string_config_f
     module.external_manifest = RuntimePackageManifest(
         name="runtime-external",
         role="capability",
-        dependencies=("runtime-core",),
+        dependencies=("weavert-core",),
         assembly_entrypoint=assemble_external,
     )
     sys.modules[module_name] = module
@@ -251,7 +251,7 @@ def test_external_package_registration_accepts_single_entrypoint_string_config_f
     assert [record["package_name"] for record in registration["accepted"]] == ["runtime-external"]
     assert registration["rejected"] == []
     assert tuple(manifest.name for manifest in runtime.kernel.package_manifests) == (
-        "runtime-core",
+        "weavert-core",
         "runtime-external",
     )
     assert observed_stages == [
@@ -260,7 +260,7 @@ def test_external_package_registration_accepts_single_entrypoint_string_config_f
         PackageAssemblyStage.RUNTIME.value,
     ]
     assert resolution["request"]["explicit_package_requests"] == ["runtime-external"]
-    assert resolution["resolved_graph"]["order"] == ["runtime-core", "runtime-external"]
+    assert resolution["resolved_graph"]["order"] == ["weavert-core", "runtime-external"]
     assert resolution["resolved_graph"]["packages"]["runtime-external"]["candidate_id"] == (
         "external::runtime-external#0"
     )
@@ -286,7 +286,7 @@ def test_package_resolution_selects_one_candidate_graph_and_keeps_raw_catalog_se
                 RuntimePackageManifest(
                     name="runtime-shared",
                     role="capability",
-                    dependencies=("runtime-core",),
+                    dependencies=("weavert-core",),
                     assembly_entrypoint=assemble_candidate("shared-v1"),
                     metadata=_package_candidate_metadata(
                         candidate_id="runtime-shared-v1",
@@ -296,7 +296,7 @@ def test_package_resolution_selects_one_candidate_graph_and_keeps_raw_catalog_se
                 RuntimePackageManifest(
                     name="runtime-shared",
                     role="capability",
-                    dependencies=("runtime-core",),
+                    dependencies=("weavert-core",),
                     assembly_entrypoint=assemble_candidate("shared-v2"),
                     metadata=_package_candidate_metadata(
                         candidate_id="runtime-shared-v2",
@@ -306,7 +306,7 @@ def test_package_resolution_selects_one_candidate_graph_and_keeps_raw_catalog_se
                 RuntimePackageManifest(
                     name="runtime-external-app",
                     role="capability",
-                    dependencies=("runtime-core",),
+                    dependencies=("weavert-core",),
                     assembly_entrypoint=assemble_candidate("app"),
                     metadata=_package_candidate_metadata(
                         candidate_id="runtime-external-app",
@@ -332,7 +332,7 @@ def test_package_resolution_selects_one_candidate_graph_and_keeps_raw_catalog_se
         "runtime-external-app",
     ]
     assert tuple(manifest.name for manifest in runtime.kernel.package_manifests) == (
-        "runtime-core",
+        "weavert-core",
         "runtime-shared",
         "runtime-external-app",
     )
@@ -349,17 +349,17 @@ def test_package_resolution_selects_one_candidate_graph_and_keeps_raw_catalog_se
         "runtime-shared-v2"
     )
     assert resolution["resolved_graph"]["packages"]["runtime-external-app"]["manifest"]["dependencies"] == [
-        "runtime-core",
+        "weavert-core",
         "runtime-shared",
     ]
     assert set(runtime.services.metadata["package_manifests"]) == {
-        "runtime-core",
+        "weavert-core",
         "runtime-shared",
         "runtime-external-app",
     }
     assert runtime.services.metadata["package_lookup"]
     assert runtime.services.metadata["core_protocol_catalog"]
-    assert runtime.services.metadata["first_party_package_catalog"]["runtime-core"]["role"] == "core"
+    assert runtime.services.metadata["first_party_package_catalog"]["weavert-core"]["role"] == "core"
     assert runtime.metadata["package_resolution"] == runtime.services.metadata["package_resolution"]
 
 
@@ -383,7 +383,7 @@ def test_package_resolution_backtracks_across_requested_roots_to_find_satisfiabl
                 RuntimePackageManifest(
                     name="runtime-shared",
                     role="capability",
-                    dependencies=("runtime-core",),
+                    dependencies=("weavert-core",),
                     assembly_entrypoint=assemble_candidate("shared-v1"),
                     metadata=_package_candidate_metadata(
                         candidate_id="shared-v1",
@@ -392,7 +392,7 @@ def test_package_resolution_backtracks_across_requested_roots_to_find_satisfiabl
                 RuntimePackageManifest(
                     name="runtime-shared",
                     role="capability",
-                    dependencies=("runtime-core",),
+                    dependencies=("weavert-core",),
                     assembly_entrypoint=assemble_candidate("shared-v2"),
                     metadata=_package_candidate_metadata(
                         candidate_id="shared-v2",
@@ -401,7 +401,7 @@ def test_package_resolution_backtracks_across_requested_roots_to_find_satisfiabl
                 RuntimePackageManifest(
                     name="runtime-a-feature",
                     role="capability",
-                    dependencies=("runtime-core",),
+                    dependencies=("weavert-core",),
                     assembly_entrypoint=assemble_candidate("feature-v1"),
                     metadata=_package_candidate_metadata(
                         candidate_id="feature-v1",
@@ -416,7 +416,7 @@ def test_package_resolution_backtracks_across_requested_roots_to_find_satisfiabl
                 RuntimePackageManifest(
                     name="runtime-a-feature",
                     role="capability",
-                    dependencies=("runtime-core",),
+                    dependencies=("weavert-core",),
                     assembly_entrypoint=assemble_candidate("feature-v2"),
                     metadata=_package_candidate_metadata(
                         candidate_id="feature-v2",
@@ -431,7 +431,7 @@ def test_package_resolution_backtracks_across_requested_roots_to_find_satisfiabl
                 RuntimePackageManifest(
                     name="runtime-z-app",
                     role="capability",
-                    dependencies=("runtime-core",),
+                    dependencies=("weavert-core",),
                     assembly_entrypoint=assemble_candidate("app"),
                     metadata=_package_candidate_metadata(
                         candidate_id="app",
@@ -478,7 +478,7 @@ def test_external_package_registration_rejects_reserved_first_party_name(tmp_pat
             distribution=RuntimeDistribution.CORE,
             extra_package_manifests=(
                 RuntimePackageManifest(
-                    name="runtime-core",
+                    name="weavert-core",
                     role="capability",
                     dependencies=(),
                     assembly_entrypoint=assemble_external,
@@ -489,11 +489,11 @@ def test_external_package_registration_rejects_reserved_first_party_name(tmp_pat
 
     rejected = runtime.services.metadata["package_registration"]["rejected"]
     assert len(rejected) == 1
-    assert rejected[0]["package_name"] == "runtime-core"
+    assert rejected[0]["package_name"] == "weavert-core"
     assert rejected[0]["diagnostics"][0]["code"] == (
         "runtime_external_package_reserved_name_collision"
     )
-    assert tuple(manifest.name for manifest in runtime.kernel.package_manifests) == ("runtime-core",)
+    assert tuple(manifest.name for manifest in runtime.kernel.package_manifests) == ("weavert-core",)
     assert observed_stages == []
 
 
@@ -545,7 +545,7 @@ def test_package_resolution_rejects_duplicate_candidate_ids_before_assembly(
                     RuntimePackageManifest(
                         name="runtime-shared",
                         role="capability",
-                        dependencies=("runtime-core",),
+                        dependencies=("weavert-core",),
                         assembly_entrypoint=assemble_external,
                         metadata=_package_candidate_metadata(
                             candidate_id="shared-duplicate",
@@ -555,7 +555,7 @@ def test_package_resolution_rejects_duplicate_candidate_ids_before_assembly(
                     RuntimePackageManifest(
                         name="runtime-shared",
                         role="capability",
-                        dependencies=("runtime-core",),
+                        dependencies=("weavert-core",),
                         assembly_entrypoint=assemble_external,
                         metadata=_package_candidate_metadata(
                             candidate_id="shared-duplicate",
@@ -565,7 +565,7 @@ def test_package_resolution_rejects_duplicate_candidate_ids_before_assembly(
                     RuntimePackageManifest(
                         name="runtime-app",
                         role="capability",
-                        dependencies=("runtime-core",),
+                        dependencies=("weavert-core",),
                         assembly_entrypoint=assemble_external,
                         metadata=_package_candidate_metadata(
                             candidate_id="runtime-app",
@@ -643,19 +643,19 @@ def test_package_resolution_reports_conflicting_constraints_before_assembly(
                     RuntimePackageManifest(
                         name="runtime-shared",
                         role="capability",
-                        dependencies=("runtime-core",),
+                        dependencies=("weavert-core",),
                         metadata=_package_candidate_metadata(candidate_id="runtime-shared-v1"),
                     ),
                     RuntimePackageManifest(
                         name="runtime-shared",
                         role="capability",
-                        dependencies=("runtime-core",),
+                        dependencies=("weavert-core",),
                         metadata=_package_candidate_metadata(candidate_id="runtime-shared-v2"),
                     ),
                     RuntimePackageManifest(
                         name="runtime-uses-one",
                         role="capability",
-                        dependencies=("runtime-core",),
+                        dependencies=("weavert-core",),
                         metadata=_package_candidate_metadata(
                             dependencies=(
                                 {
@@ -668,7 +668,7 @@ def test_package_resolution_reports_conflicting_constraints_before_assembly(
                     RuntimePackageManifest(
                         name="runtime-uses-two",
                         role="capability",
-                        dependencies=("runtime-core",),
+                        dependencies=("weavert-core",),
                         metadata=_package_candidate_metadata(
                             dependencies=(
                                 {
@@ -700,10 +700,10 @@ def test_package_resolution_reports_incompatible_candidate_before_assembly(
                     RuntimePackageManifest(
                         name="runtime-external",
                         role="capability",
-                        dependencies=("runtime-core",),
+                        dependencies=("weavert-core",),
                         metadata=_package_candidate_metadata(
                             candidate_id="runtime-external-full-only",
-                            compatibility={"distributions": ["runtime-full"]},
+                            compatibility={"distributions": ["weavert-full"]},
                         ),
                     ),
                 ),
@@ -888,7 +888,7 @@ def test_runtime_services_prefer_team_capabilities_over_compatibility_slots() ->
     capability_message_bus = object()
     capability_workflows = object()
     owner = PackageOwnership(
-        package_name="runtime-team",
+        package_name="weavert-team",
         package_role="capability",
         surface="capability",
     )
@@ -952,20 +952,25 @@ def test_manifest_backed_team_runtime_registers_capabilities_and_host_facet(tmp_
     assert {
         participant.name
         for participant in runtime.services.lifecycle_participants(PackageLifecyclePhase.RUNTIME_RECOVERY)
-    } == {"runtime-team-recover-pending-workflows"}
+    } == {"weavert-team-recover-pending-workflows"}
     assert {
         participant.name
         for participant in runtime.services.lifecycle_participants(PackageLifecyclePhase.SESSION_OPEN)
-    } == {"runtime-team-replay-pending-leader-messages"}
-    assert runtime.services.metadata["package_ingress_receipt_owners"]["runtime.team.delivery_ack"]["package_name"] == "runtime-team"
+    } == {"weavert-team-replay-pending-leader-messages"}
+    assert (
+        runtime.services.metadata["package_ingress_receipt_owners"]["weavert.team.delivery_ack"][
+            "package_name"
+        ]
+        == "weavert-team"
+    )
     facet = runtime.services.resolve_host_facet(RuntimeHostFacetKey.TEAM_WORKFLOWS.value)
     assert facet.available is True
     listed = asyncio.run(facet.facet.list_workflows(team_id="team-missing", session_id=None, pending_only=True))
     assert listed == ()
     assert runtime.services.metadata["migration"]["team_protocol_only"]["extension_event_contract"] == {
         "emit": "HostRuntime.emit_extension_event",
-        "envelope": "runtime.hosts.HostExtensionEvent",
-        "namespace": "runtime.team",
+        "envelope": "weavert.hosts.HostExtensionEvent",
+        "namespace": "weavert.team",
         "schema_version": "1.0",
         "unknown_namespace_behavior": "ignore_or_handle_generically",
     }
@@ -984,31 +989,31 @@ def test_runtime_core_protocol_catalog_is_published_separately_from_package_look
 
     assert catalog["schema_version"] == CORE_PROTOCOL_CATALOG_SCHEMA_VERSION
     assert catalog["published_metadata_paths"] == [
-        "runtime.services.metadata['core_protocol_catalog']",
-        "runtime.metadata['core_protocol_catalog']",
+        "weavert.services.metadata['core_protocol_catalog']",
+        "weavert.metadata['core_protocol_catalog']",
     ]
     assert catalog["adjacent_metadata"]["package_lookup"] == (
         "source of truth for package-specific canonical keys and wrapper status"
     )
     assert runtime.metadata["core_protocol_catalog"] == catalog
     assert set(protocols) == {
-        "runtime.transcript.store",
-        "runtime.job.service",
-        "runtime.task-list.service",
-        "runtime.permission.service",
-        "runtime.elicitation.service",
-        "runtime.context-contributors.registry",
-        "runtime.invocation-provider.registry",
-        "runtime.host.binding",
+        "weavert.transcript.store",
+        "weavert.job.service",
+        "weavert.task-list.service",
+        "weavert.permission.service",
+        "weavert.elicitation.service",
+        "weavert.context-contributors.registry",
+        "weavert.invocation-provider.registry",
+        "weavert.host.binding",
     }
 
-    transcript = protocols["runtime.transcript.store"]
+    transcript = protocols["weavert.transcript.store"]
     assert transcript["canonical_name"] == "TranscriptStore"
     assert transcript["binding_boundary"] == "config-owned"
     assert transcript["canonical_binding_surface"] == "RuntimeConfig.transcript_store"
     assert transcript["discovery_surface"] == "RuntimeServices.transcript_store / RuntimeAssembly.transcript_store"
 
-    context_contributors = protocols["runtime.context-contributors.registry"]
+    context_contributors = protocols["weavert.context-contributors.registry"]
     assert context_contributors["compatibility_status"] == "stable-with-compatibility"
     assert context_contributors["retained_surfaces"] == [
         {"surface": "RuntimeServices.memory.collect", "status": "compatibility-only"},
@@ -1016,7 +1021,7 @@ def test_runtime_core_protocol_catalog_is_published_separately_from_package_look
         {"surface": "RuntimeServices.task_discipline.collect", "status": "compatibility-only"},
     ]
 
-    invocation_registry = protocols["runtime.invocation-provider.registry"]
+    invocation_registry = protocols["weavert.invocation-provider.registry"]
     assert invocation_registry["canonical_binding_surface"] == "PackageContribution.invocation_providers"
     assert invocation_registry["compatibility_status"] == "stable"
     assert invocation_registry.get("retained_surfaces") is None
@@ -1049,8 +1054,8 @@ def test_runtime_context_contributor_registry_exposes_canonical_stage_catalog(tm
 
     bindings = runtime.services.metadata["context_contributors"]["bindings"]
     binding_names = [entry["name"] for entry in bindings]
-    assert "runtime-memory.collect" in binding_names
-    assert "runtime-core.task_discipline.collect" in binding_names
+    assert "weavert-memory.collect" in binding_names
+    assert "weavert-core.task_discipline.collect" in binding_names
 
     lookup = runtime.services.metadata["package_lookup"]
     assert lookup["canonical_context_contributors"] == {
@@ -1132,7 +1137,7 @@ def test_runtime_core_protocol_catalog_keeps_package_capabilities_and_wrappers_o
     assert "BoundHostRuntime.list_team_workflows" not in runtime.services.metadata["package_lookup"][
         "compatibility_wrappers"
     ]
-    assert protocols["runtime.host.binding"]["metadata"]["extension_event_contract"] == (
+    assert protocols["weavert.host.binding"]["metadata"]["extension_event_contract"] == (
         "HostRuntime.emit_extension_event"
     )
 
@@ -1155,25 +1160,25 @@ def test_runtime_core_protocol_catalog_matches_adjacent_metadata_contracts(tmp_p
             surface = retained_surface["surface"]
             assert compatibility_surfaces[surface] == retained_surface["status"]
 
-    assert catalog["runtime.job.service"]["canonical_binding_surface"] == (
+    assert catalog["weavert.job.service"]["canonical_binding_surface"] == (
         package_lookup["canonical_control_plane_services"]["job_service"]
     )
-    assert catalog["runtime.task-list.service"]["canonical_binding_surface"] == (
+    assert catalog["weavert.task-list.service"]["canonical_binding_surface"] == (
         package_lookup["canonical_control_plane_services"]["task_list_service"]
     )
-    assert catalog["runtime.context-contributors.registry"]["canonical_binding_surface"] == (
+    assert catalog["weavert.context-contributors.registry"]["canonical_binding_surface"] == (
         package_lookup["canonical_context_contributors"]["package_contributions"]
     )
-    assert catalog["runtime.context-contributors.registry"]["metadata"]["stage_catalog"] == (
+    assert catalog["weavert.context-contributors.registry"]["metadata"]["stage_catalog"] == (
         package_lookup["canonical_context_contributors"]["stage_catalog"]
     )
-    assert catalog["runtime.invocation-provider.registry"]["canonical_binding_surface"] == (
+    assert catalog["weavert.invocation-provider.registry"]["canonical_binding_surface"] == (
         package_lookup["canonical_invocation_providers"]["package_contributions"]
     )
-    assert catalog["runtime.invocation-provider.registry"]["metadata"]["builtin_baseline"] == (
+    assert catalog["weavert.invocation-provider.registry"]["metadata"]["builtin_baseline"] == (
         package_lookup["canonical_invocation_providers"]["builtins"]
     )
-    assert catalog["runtime.invocation-provider.registry"]["metadata"]["builtin_baseline_status"] == (
+    assert catalog["weavert.invocation-provider.registry"]["metadata"]["builtin_baseline_status"] == (
         invocation_provider_paths["builtin_skill_baseline"]
     )
 
@@ -1331,11 +1336,11 @@ def test_runtime_publishes_compatibility_whitelists_and_protocol_only_findings(t
         "distribution": RuntimeDistribution.DEFAULT.value,
         "canonical_path": "HostRuntime.emit_extension_event",
         "compat_surface": "HostRuntime.emit_team_event",
-        "replacement_path": "HostRuntime.emit_extension_event(HostExtensionEvent(namespace='runtime.team', ...))",
+        "replacement_path": "HostRuntime.emit_extension_event(HostExtensionEvent(namespace='weavert.team', ...))",
         "availability": "team-present",
         "evidence": [
             "HostRuntime.emit_extension_event",
-            "runtime.team",
+            "weavert.team",
         ],
     }
     assert findings["compatibility_retirement_state"]["status"] == "pass"
@@ -1356,15 +1361,15 @@ def test_runtime_publishes_official_catalog_and_resolved_graph_provenance(tmp_pa
     assert catalog_provenance["schema_version"] == "1.0"
     assert catalog_provenance["provider_kind"] == "manifest-backed"
     assert catalog_provenance["provider_path"] == (
-        "runtime.runtime_package_catalog:official_runtime_package_catalog"
+        "weavert.runtime_package_catalog:official_runtime_package_catalog"
     )
-    assert "runtime.runtime_package_manifests.assembly_function_name" in (
+    assert "weavert.runtime_package_manifests.assembly_function_name" in (
         catalog_provenance["retired_kernel_helpers"]
     )
-    assert catalog_provenance["entries"]["runtime-core"]["assembly_entrypoint"] == (
-        "runtime.runtime_package_manifests:assemble_runtime_core_package"
+    assert catalog_provenance["entries"]["weavert-core"]["assembly_entrypoint"] == (
+        "weavert.runtime_package_manifests:assemble_runtime_core_package"
     )
-    assert catalog_provenance["distributions"]["runtime-full"]["packages"] == list(
+    assert catalog_provenance["distributions"]["weavert-full"]["packages"] == list(
         runtime.kernel.first_party_packages
     )
 
@@ -1380,7 +1385,7 @@ def test_runtime_publishes_official_catalog_and_resolved_graph_provenance(tmp_pa
         for entry in resolved_graph_provenance["resolved_packages"]
     )
     assert resolved_graph_provenance["resolved_packages"][0]["assembly_entrypoint"] == (
-        "runtime.runtime_package_manifests:assemble_runtime_core_package"
+        "weavert.runtime_package_manifests:assemble_runtime_core_package"
     )
 
     assembly_view = runtime.query_assembly_view()
@@ -1431,8 +1436,8 @@ def test_protocol_only_conformance_publishes_kernel_assembly_sources_and_gate(
     assert conformance["rule_sources"]["official_package_catalog_authority"] == {
         "family": "kernel-assembly",
         "source_path": (
-            "runtime.services.metadata['official_package_catalog_provenance'] / "
-            "runtime.services.metadata['resolved_active_package_graph_provenance']"
+            "weavert.services.metadata['official_package_catalog_provenance'] / "
+            "weavert.services.metadata['resolved_active_package_graph_provenance']"
         ),
     }
 
@@ -1442,12 +1447,12 @@ def test_protocol_only_conformance_publishes_kernel_assembly_sources_and_gate(
         "family": "kernel-assembly",
         "status": "pass",
         "distribution": RuntimeDistribution.DEFAULT.value,
-        "canonical_path": "runtime.runtime_package_catalog:official_runtime_package_catalog",
+        "canonical_path": "weavert.runtime_package_catalog:official_runtime_package_catalog",
         "replacement_path": "RuntimePackageManifest.assembly_entrypoint",
         "evidence": [
-            "runtime-core@runtime.runtime_package_manifests:assemble_runtime_core_package",
-            "runtime-memory@runtime.runtime_package_manifests:assemble_runtime_memory_package",
-            "runtime-team@runtime.runtime_package_manifests:assemble_runtime_team_package",
+            "weavert-core@weavert.runtime_package_manifests:assemble_runtime_core_package",
+            "weavert-memory@weavert.runtime_package_manifests:assemble_runtime_memory_package",
+            "weavert-team@weavert.runtime_package_manifests:assemble_runtime_team_package",
         ],
     }
 
@@ -1468,9 +1473,9 @@ def test_protocol_only_conformance_publishes_kernel_assembly_sources_and_gate(
     ]
     assert gate["green_criteria"] == {
         "required_distributions": [
-            "runtime-core",
-            "runtime-default",
-            "runtime-full",
+            "weavert-core",
+            "weavert-default",
+            "weavert-full",
         ],
         "required_optional_package_cases": [
             "team-present",
@@ -1481,9 +1486,9 @@ def test_protocol_only_conformance_publishes_kernel_assembly_sources_and_gate(
     }
     assert gate["current_assembly"]["distribution"] == RuntimeDistribution.DEFAULT.value
     assert gate["current_assembly"]["selected_packages"] == [
-        "runtime-core",
-        "runtime-memory",
-        "runtime-team",
+        "weavert-core",
+        "weavert-memory",
+        "weavert-team",
     ]
     assert gate["current_assembly"]["status"] == "pass"
     assert gate["current_assembly"]["family_status"]["compatibility-retirement"] == {
@@ -1500,60 +1505,60 @@ def test_protocol_only_conformance_publishes_kernel_assembly_sources_and_gate(
     }
     assert gate["matrix_cases"] == [
         {
-            "case_id": "runtime-core",
-            "distribution": "runtime-core",
+            "case_id": "weavert-core",
+            "distribution": "weavert-core",
             "availability": ["team-absent"],
-            "selected_packages": ["runtime-core"],
+            "selected_packages": ["weavert-core"],
             "status": "pass",
         },
         {
-            "case_id": "runtime-default",
-            "distribution": "runtime-default",
+            "case_id": "weavert-default",
+            "distribution": "weavert-default",
             "availability": ["team-present"],
-            "selected_packages": ["runtime-core", "runtime-memory", "runtime-team"],
+            "selected_packages": ["weavert-core", "weavert-memory", "weavert-team"],
             "status": "pass",
         },
         {
-            "case_id": "runtime-full",
-            "distribution": "runtime-full",
+            "case_id": "weavert-full",
+            "distribution": "weavert-full",
             "availability": ["team-present"],
             "selected_packages": [
-                "runtime-core",
-                "runtime-memory",
-                "runtime-team",
-                "runtime-compaction",
-                "runtime-isolation",
-                "runtime-openai",
-                "runtime-hosts-reference",
-                "runtime-stores-file",
-                "runtime-builtin-workflows",
-                "runtime-planning",
-                "runtime-devtools",
+                "weavert-core",
+                "weavert-memory",
+                "weavert-team",
+                "weavert-compaction",
+                "weavert-isolation",
+                "weavert-openai",
+                "weavert-hosts-reference",
+                "weavert-stores-file",
+                "weavert-builtin-workflows",
+                "weavert-planning",
+                "weavert-devtools",
             ],
             "status": "pass",
         },
         {
-            "case_id": "runtime-core+runtime-planning",
-            "distribution": "runtime-core",
+            "case_id": "weavert-core+weavert-planning",
+            "distribution": "weavert-core",
             "availability": ["explicit-package-enabled"],
-            "selected_packages": ["runtime-core", "runtime-planning"],
+            "selected_packages": ["weavert-core", "weavert-planning"],
             "status": "pass",
         },
         {
-            "case_id": "runtime-full-runtime-planning",
-            "distribution": "runtime-full",
+            "case_id": "weavert-full-weavert-planning",
+            "distribution": "weavert-full",
             "availability": ["explicit-package-disabled"],
             "selected_packages": [
-                "runtime-core",
-                "runtime-memory",
-                "runtime-team",
-                "runtime-compaction",
-                "runtime-isolation",
-                "runtime-openai",
-                "runtime-hosts-reference",
-                "runtime-stores-file",
-                "runtime-builtin-workflows",
-                "runtime-devtools",
+                "weavert-core",
+                "weavert-memory",
+                "weavert-team",
+                "weavert-compaction",
+                "weavert-isolation",
+                "weavert-openai",
+                "weavert-hosts-reference",
+                "weavert-stores-file",
+                "weavert-builtin-workflows",
+                "weavert-devtools",
             ],
             "status": "pass",
         },
@@ -1563,32 +1568,32 @@ def test_protocol_only_conformance_publishes_kernel_assembly_sources_and_gate(
         "rule_ids": ["task_manager_authority"],
         "cases": [
             {
-                "case_id": "runtime-core",
-                "distribution": "runtime-core",
+                "case_id": "weavert-core",
+                "distribution": "weavert-core",
                 "availability": ["team-absent"],
                 "status": "pass",
             },
             {
-                "case_id": "runtime-default",
-                "distribution": "runtime-default",
+                "case_id": "weavert-default",
+                "distribution": "weavert-default",
                 "availability": ["team-present"],
                 "status": "pass",
             },
             {
-                "case_id": "runtime-full",
-                "distribution": "runtime-full",
+                "case_id": "weavert-full",
+                "distribution": "weavert-full",
                 "availability": ["team-present"],
                 "status": "pass",
             },
             {
-                "case_id": "runtime-core+runtime-planning",
-                "distribution": "runtime-core",
+                "case_id": "weavert-core+weavert-planning",
+                "distribution": "weavert-core",
                 "availability": ["explicit-package-enabled"],
                 "status": "pass",
             },
             {
-                "case_id": "runtime-full-runtime-planning",
-                "distribution": "runtime-full",
+                "case_id": "weavert-full-weavert-planning",
+                "distribution": "weavert-full",
                 "availability": ["explicit-package-disabled"],
                 "status": "pass",
             },
@@ -1622,7 +1627,7 @@ def test_runtime_publishes_privileged_service_protocol_metadata_and_findings(tmp
 
     assert protocols["memory"]["canonical_key"] == RuntimeCapabilityKey.MEMORY_SERVICE.value
     assert protocols["memory"]["resolver"] == "RuntimeServices.resolve_memory_service"
-    assert protocols["memory"]["owner"]["package_name"] == "runtime-memory"
+    assert protocols["memory"]["owner"]["package_name"] == "weavert-memory"
     assert protocols["memory"]["compatibility_projection"] == {
         "surface": "RuntimeServices.memory",
         "status": "compatibility-only",
@@ -1634,7 +1639,7 @@ def test_runtime_publishes_privileged_service_protocol_metadata_and_findings(tmp
 
     assert protocols["compaction"]["canonical_key"] == RuntimeCapabilityKey.COMPACTION_MANAGER.value
     assert protocols["compaction"]["resolver"] == "RuntimeServices.resolve_compaction_service"
-    assert protocols["compaction"]["owner"]["package_name"] == "runtime-compaction"
+    assert protocols["compaction"]["owner"]["package_name"] == "weavert-compaction"
     assert protocols["compaction"]["compatibility_projection"] == {
         "surface": "RuntimeServices.compaction",
         "status": "compatibility-only",
@@ -1647,7 +1652,7 @@ def test_runtime_publishes_privileged_service_protocol_metadata_and_findings(tmp
 
     assert protocols["isolation"]["canonical_key"] == RuntimeCapabilityKey.ISOLATION_MANAGER.value
     assert protocols["isolation"]["resolver"] == "RuntimeServices.resolve_isolation_service"
-    assert protocols["isolation"]["owner"]["package_name"] == "runtime-isolation"
+    assert protocols["isolation"]["owner"]["package_name"] == "weavert-isolation"
     assert protocols["isolation"]["compatibility_projection"] == {
         "surface": "RuntimeServices.isolation",
         "status": "compatibility-only",
@@ -1723,11 +1728,11 @@ def test_runtime_publishes_team_bridge_findings_for_team_absent_distributions(tm
         "distribution": RuntimeDistribution.CORE.value,
         "canonical_path": "HostRuntime.emit_extension_event",
         "compat_surface": "HostRuntime.emit_team_event",
-        "replacement_path": "HostRuntime.emit_extension_event(HostExtensionEvent(namespace='runtime.team', ...))",
+        "replacement_path": "HostRuntime.emit_extension_event(HostExtensionEvent(namespace='weavert.team', ...))",
         "availability": "team-absent",
         "evidence": [
             "HostRuntime.emit_extension_event",
-            "runtime.team",
+            "weavert.team",
         ],
     }
 
@@ -1807,7 +1812,7 @@ def test_protocol_only_conformance_fails_without_published_service_family_metada
         "family": "kernel-assembly",
         "status": "fail",
         "distribution": RuntimeDistribution.DEFAULT.value,
-        "canonical_path": "runtime.runtime_package_catalog:official_runtime_package_catalog",
+        "canonical_path": "weavert.runtime_package_catalog:official_runtime_package_catalog",
         "replacement_path": "RuntimePackageManifest.assembly_entrypoint",
         "evidence": [],
     }
@@ -1883,52 +1888,52 @@ def test_protocol_only_gate_fails_when_task_manager_surfaces_escape_authority(tm
 @pytest.mark.parametrize(
     ("distribution", "enabled_packages", "disabled_packages", "expected_packages"),
     (
-        (RuntimeDistribution.CORE, set(), set(), ("runtime-core",)),
+        (RuntimeDistribution.CORE, set(), set(), ("weavert-core",)),
         (
             RuntimeDistribution.DEFAULT,
             set(),
             set(),
-            ("runtime-core", "runtime-memory", "runtime-team"),
+            ("weavert-core", "weavert-memory", "weavert-team"),
         ),
         (
             RuntimeDistribution.FULL,
             set(),
             set(),
             (
-                "runtime-core",
-                "runtime-memory",
-                "runtime-team",
-                "runtime-compaction",
-                "runtime-isolation",
-                "runtime-openai",
-                "runtime-hosts-reference",
-                "runtime-stores-file",
-                "runtime-builtin-workflows",
-                "runtime-planning",
-                "runtime-devtools",
+                "weavert-core",
+                "weavert-memory",
+                "weavert-team",
+                "weavert-compaction",
+                "weavert-isolation",
+                "weavert-openai",
+                "weavert-hosts-reference",
+                "weavert-stores-file",
+                "weavert-builtin-workflows",
+                "weavert-planning",
+                "weavert-devtools",
             ),
         ),
         (
             RuntimeDistribution.CORE,
-            {"runtime-planning"},
+            {"weavert-planning"},
             set(),
-            ("runtime-core", "runtime-planning"),
+            ("weavert-core", "weavert-planning"),
         ),
         (
             RuntimeDistribution.FULL,
             set(),
-            {"runtime-planning"},
+            {"weavert-planning"},
             (
-                "runtime-core",
-                "runtime-memory",
-                "runtime-team",
-                "runtime-compaction",
-                "runtime-isolation",
-                "runtime-openai",
-                "runtime-hosts-reference",
-                "runtime-stores-file",
-                "runtime-builtin-workflows",
-                "runtime-devtools",
+                "weavert-core",
+                "weavert-memory",
+                "weavert-team",
+                "weavert-compaction",
+                "weavert-isolation",
+                "weavert-openai",
+                "weavert-hosts-reference",
+                "weavert-stores-file",
+                "weavert-builtin-workflows",
+                "weavert-devtools",
             ),
         ),
     ),
@@ -1992,7 +1997,7 @@ def test_team_bridge_findings_fail_when_live_runtime_state_is_missing() -> None:
             package_service_protocols={},
             closure_report={},
             team_protocol_only=runtime_kernel_module._team_protocol_only_migration_metadata(
-                selected_packages=("runtime-core", "runtime-memory", "runtime-team"),
+                selected_packages=("weavert-core", "weavert-memory", "weavert-team"),
             ),
             services=StubServices(),
             runtime=StubRuntime(),
@@ -2071,13 +2076,13 @@ def test_package_context_contributor_order_is_deterministic_across_packages(tmp_
         "pkg-alpha": RuntimePackageManifest(
             name="pkg-alpha",
             role="capability",
-            dependencies=("runtime-core",),
+            dependencies=("weavert-core",),
             assembly_entrypoint=assemble_package("zzz.context"),
         ),
         "pkg-beta": RuntimePackageManifest(
             name="pkg-beta",
             role="capability",
-            dependencies=("runtime-core",),
+            dependencies=("weavert-core",),
             assembly_entrypoint=assemble_package("aaa.context"),
         ),
     }
@@ -2165,19 +2170,19 @@ def test_privileged_service_compatibility_slot_writes_rebind_canonical_capabilit
     assert runtime.services.require_capability(RuntimeCapabilityKey.COMPACTION_MANAGER.value) is replacement_compaction
     assert runtime.services.require_capability(RuntimeCapabilityKey.ISOLATION_MANAGER.value) is replacement_isolation
     assert runtime.services.metadata["package_service_protocols"]["memory"]["owner"] == {
-        "package_name": "runtime-core",
+        "package_name": "weavert-core",
         "package_role": "compatibility",
         "surface": "compatibility_projection",
         "metadata": {"compatibility_surface": "RuntimeServices.memory"},
     }
     assert runtime.services.metadata["package_service_protocols"]["compaction"]["owner"] == {
-        "package_name": "runtime-core",
+        "package_name": "weavert-core",
         "package_role": "compatibility",
         "surface": "compatibility_projection",
         "metadata": {"compatibility_surface": "RuntimeServices.compaction"},
     }
     assert runtime.services.metadata["package_service_protocols"]["isolation"]["owner"] == {
-        "package_name": "runtime-core",
+        "package_name": "weavert-core",
         "package_role": "compatibility",
         "surface": "compatibility_projection",
         "metadata": {"compatibility_surface": "RuntimeServices.isolation"},
@@ -2200,7 +2205,7 @@ def test_late_memory_capability_rebind_refreshes_published_protocol_metadata(tmp
             key=RuntimeCapabilityKey.MEMORY_SERVICE.value,
             value=replacement,
             owner=PackageOwnership(
-                package_name="runtime-memory-override",
+                package_name="weavert-memory-override",
                 package_role="capability",
                 surface="capability",
             ),
@@ -2209,7 +2214,7 @@ def test_late_memory_capability_rebind_refreshes_published_protocol_metadata(tmp
 
     assert runtime.services.memory is replacement
     assert runtime.services.metadata["package_service_protocols"]["memory"]["owner"] == {
-        "package_name": "runtime-memory-override",
+        "package_name": "weavert-memory-override",
         "package_role": "capability",
         "surface": "capability",
         "metadata": {},
@@ -2443,7 +2448,7 @@ def test_manifest_backed_core_runtime_still_boots_without_optional_packages(tmp_
     produced = asyncio.run(runtime.run_prompt("hello", session_id="core-manifest"))
 
     assert produced[-1].text == "core ok"
-    assert runtime.kernel.first_party_packages == ("runtime-core",)
+    assert runtime.kernel.first_party_packages == ("weavert-core",)
 
 
 def test_manifest_backed_openai_and_store_bindings_preserve_full_distribution_defaults(tmp_path: Path) -> None:
@@ -2462,14 +2467,14 @@ def test_manifest_backed_openai_and_store_bindings_preserve_full_distribution_de
     assert isinstance(runtime.services.job_service.store, FileJobStore)
     assert isinstance(runtime.services.task_list_service.store, FileTaskListStore)
     assert runtime.services.metadata["package_store_bindings"] == {
-        "transcript_store": "runtime-stores-file",
-        "child_run_store": "runtime-stores-file",
-        "job_store": "runtime-stores-file",
-        "task_list_store": "runtime-stores-file",
-        "team_store": "runtime-stores-file",
-        "team_message_store": "runtime-stores-file",
-        "team_workflow_store": "runtime-stores-file",
-        "teammate_mailbox": "runtime-stores-file",
+        "transcript_store": "weavert-stores-file",
+        "child_run_store": "weavert-stores-file",
+        "job_store": "weavert-stores-file",
+        "task_list_store": "weavert-stores-file",
+        "team_store": "weavert-stores-file",
+        "team_message_store": "weavert-stores-file",
+        "team_workflow_store": "weavert-stores-file",
+        "teammate_mailbox": "weavert-stores-file",
     }
 
 
@@ -2498,9 +2503,9 @@ def test_builtin_replacements_preserve_manifest_owned_builtin_metadata(tmp_path:
         )
     )
 
-    assert kernel.tool_registry.get("read").metadata["builtin_owner"] == "runtime-devtools"
+    assert kernel.tool_registry.get("read").metadata["builtin_owner"] == "weavert-devtools"
     assert kernel.tool_registry.get("read").metadata["builtin_owner_role"] == "profile_workflow"
-    assert kernel.agent_registry.get("verification").metadata["builtin_owner"] == "runtime-devtools"
+    assert kernel.agent_registry.get("verification").metadata["builtin_owner"] == "weavert-devtools"
     assert kernel.agent_registry.get("verification").metadata["builtin_owner_role"] == "profile_workflow"
 
 
@@ -2583,7 +2588,7 @@ def test_provider_only_runtime_packages_publish_pre_session_catalogs_and_metadat
                 "name": "runtime-provider-only",
                 "role": "provider",
                 "description": "Provider-only runtime package.",
-                "dependencies": ["runtime-core"],
+                "dependencies": ["weavert-core"],
                 "invocation_providers": ["package-commands"],
             },
             "provenance": {
@@ -2722,7 +2727,7 @@ def test_provider_only_runtime_packages_assemble_consistently_across_distributio
     assert runtime.services.metadata["package_manifests"]["runtime-provider-only"] == {
         "role": "provider",
         "description": "Provider-only runtime package.",
-        "dependencies": ["runtime-core"],
+        "dependencies": ["weavert-core"],
         "invocation_providers": ["distribution-provider"],
     }
     session = runtime.create_session(session_id=f"provider-only-{distribution.value}", cwd=tmp_path)
@@ -2816,14 +2821,14 @@ def test_package_invocation_providers_share_replacement_and_conflict_diagnostics
             RuntimePackageManifest(
                 name="runtime-provider-base",
                 role="provider",
-                dependencies=("runtime-core",),
+                dependencies=("weavert-core",),
                 assembly_entrypoint=assemble_base_package,
                 metadata={"invocation_providers": ["override-source", "package-conflicts"]},
             ),
             RuntimePackageManifest(
                 name="runtime-provider-override",
                 role="provider",
-                dependencies=("runtime-core", "runtime-provider-base"),
+                dependencies=("weavert-core", "runtime-provider-base"),
                 assembly_entrypoint=assemble_override_package,
                 metadata={"invocation_providers": ["override-source", "override-conflicts"]},
             ),
@@ -2921,14 +2926,14 @@ def test_package_invocation_provider_order_is_deterministic_across_packages(tmp_
             "pkg-lower": RuntimePackageManifest(
                 name="pkg-lower",
                 role="capability",
-                dependencies=("runtime-core",),
+                dependencies=("weavert-core",),
                 assembly_entrypoint=assemble_lower_order_package,
                 metadata={"invocation_providers": ["shared-provider"]},
             ),
             "pkg-higher": RuntimePackageManifest(
                 name="pkg-higher",
                 role="capability",
-                dependencies=("runtime-core",),
+                dependencies=("weavert-core",),
                 assembly_entrypoint=assemble_higher_order_package,
                 metadata={"invocation_providers": ["shared-provider"]},
             ),
@@ -2936,7 +2941,7 @@ def test_package_invocation_provider_order_is_deterministic_across_packages(tmp_
 
         def patched_manifests(selected_packages):
             return (
-                *original(("runtime-core",)),
+                *original(("weavert-core",)),
                 *(manifests[name] for name in package_order),
             )
 
@@ -3004,7 +3009,7 @@ def test_session_start_waits_for_async_runtime_recovery_participants(tmp_path: P
             RuntimePackageManifest(
                 name="runtime-test",
                 role="capability",
-                dependencies=("runtime-core",),
+                dependencies=("weavert-core",),
                 assembly_entrypoint=assemble_test_package,
             ),
         )
@@ -3051,7 +3056,7 @@ def test_runtime_stage_package_diagnostics_extend_kernel_diagnostics(tmp_path: P
             RuntimePackageManifest(
                 name="runtime-test",
                 role="capability",
-                dependencies=("runtime-core",),
+                dependencies=("weavert-core",),
                 assembly_entrypoint=assemble_test_package,
             ),
         )

@@ -270,7 +270,7 @@ def test_runtime_config_registers_direct_and_factory_job_executors(tmp_path: Pat
 
     def build_factory(executor_kind, binding, kernel, services):
         _ = binding, services
-        factory_calls.append((executor_kind, kernel.config.runtime_id))
+        factory_calls.append((executor_kind, kernel.config.weavert_id))
         return _ImmediateExecutor("factory")
 
     runtime = assemble_runtime(

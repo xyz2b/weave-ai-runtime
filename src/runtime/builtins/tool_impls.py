@@ -714,6 +714,6 @@ def _is_relative_to(path: Path, root: Path) -> bool:
 def _looks_like_memory_directory(path: Path) -> bool:
     parts = path.resolve().parts
     for index in range(len(parts) - 1):
-        if parts[index] == ".runtime" and parts[index + 1] == "memory":
+        if parts[index] in {".runtime", ".weavert"} and parts[index + 1] == "memory":
             return True
     return False

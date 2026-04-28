@@ -874,7 +874,7 @@ class RuntimeServices:
                         owner=self._legacy_context_contributor_owner(
                             surface=_LEGACY_MEMORY_CONTEXT_SURFACE,
                             capability_key=RuntimeCapabilityKey.MEMORY_SERVICE.value,
-                            default_package_name="runtime-core",
+                            default_package_name="weavert-core",
                             default_package_role="core",
                         ),
                         metadata={
@@ -893,7 +893,7 @@ class RuntimeServices:
                         contributor=hooks,
                         owner=self._legacy_context_contributor_owner(
                             surface=_LEGACY_HOOK_CONTEXT_SURFACE,
-                            default_package_name="runtime-core",
+                            default_package_name="weavert-core",
                             default_package_role="core",
                         ),
                         metadata={
@@ -916,7 +916,7 @@ class RuntimeServices:
                         contributor=task_discipline,
                         owner=self._legacy_context_contributor_owner(
                             surface=_LEGACY_TASK_DISCIPLINE_CONTEXT_SURFACE,
-                            default_package_name="runtime-core",
+                            default_package_name="weavert-core",
                             default_package_role="core",
                         ),
                         metadata={
@@ -991,7 +991,7 @@ class RuntimeServices:
 
     def _compatibility_projection_owner(self, field_name: str) -> PackageOwnership:
         return PackageOwnership(
-            package_name="runtime-core",
+            package_name="weavert-core",
             package_role="compatibility",
             surface="compatibility_projection",
             metadata={"compatibility_surface": f"RuntimeServices.{field_name}"},

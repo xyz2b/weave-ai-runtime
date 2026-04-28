@@ -174,7 +174,7 @@ async def web_fetch_tool(tool_input: dict[str, Any], _: ToolContext) -> dict[str
     timeout = tool_input.get("timeout_ms", 10_000) / 1000
 
     def fetch() -> dict[str, Any]:
-        request = urllib.request.Request(tool_input["url"], headers={"User-Agent": "ai-agent-runtime/0.1"})
+        request = urllib.request.Request(tool_input["url"], headers={"User-Agent": "weavert/0.1"})
         with urllib.request.urlopen(request, timeout=timeout) as response:
             body = response.read().decode("utf-8", errors="replace")
             return {
@@ -198,7 +198,7 @@ async def web_search_tool(tool_input: dict[str, Any], _: ToolContext) -> dict[st
     url = f"https://duckduckgo.com/html/?{encoded}"
 
     def search() -> dict[str, Any]:
-        request = urllib.request.Request(url, headers={"User-Agent": "ai-agent-runtime/0.1"})
+        request = urllib.request.Request(url, headers={"User-Agent": "weavert/0.1"})
         with urllib.request.urlopen(request, timeout=10) as response:
             html = response.read().decode("utf-8", errors="replace")
         results = []

@@ -27,6 +27,7 @@ from ..package_profiles import (
     normalize_runtime_distribution,
     resolve_first_party_package_names,
 )
+from ..public_contract import ensure_canonical_workspace_root
 from ..runtime_package_manifests import RuntimePackageRegistrationSource
 from ..team_config import TeammateOrchestrationConfig
 from ..turn_engine.models import ModelClient, NormalizedModelCapabilities, TranscriptStore
@@ -255,8 +256,8 @@ class RuntimeConfig:
 
     @classmethod
     def for_project(cls, project_root: Path) -> "RuntimeConfig":
-        user_root = Path.home() / ".runtime"
-        project_runtime_dir = project_root / ".runtime"
+        user_root = ensure_canonical_workspace_root(Path.home())
+        project_runtime_dir = ensure_canonical_workspace_root(project_root)
         return cls(
             working_directory=project_root,
             discovery_sources=(

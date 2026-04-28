@@ -109,6 +109,7 @@ from ..registries import (
     ToolRegistry,
 )
 from ..runtime_services import DefaultTranscriptService, NoopCompactionService, NoopMemoryService, RuntimeServices
+from ..public_contract import workspace_skill_root_candidates
 from ..stores_file import FileChildRunStore
 from ..task_discipline import TaskDisciplineSidecar
 from ..task_lists import (
@@ -1425,9 +1426,10 @@ def _discover_roots_for_observed_path(
     resolved_cwd = session_cwd.resolve()
     discovered: list[str] = []
     while True:
-        candidate = (cursor / ".runtime" / "skills").resolve()
-        if candidate.is_dir():
-            discovered.append(str(candidate))
+        for candidate in workspace_skill_root_candidates(cursor):
+            candidate = candidate.resolve()
+            if candidate.is_dir():
+                discovered.append(str(candidate))
         if cursor == resolved_cwd:
             break
         if resolved_cwd not in cursor.parents:
@@ -2171,16 +2173,16 @@ def _resolved_active_package_graph_provenance_metadata(
     metadata: dict[str, Any] = {
         "schema_version": "1.0",
         "published_metadata_paths": [
-            "runtime.services.metadata['resolved_active_package_graph_provenance']",
-            "runtime.metadata['resolved_active_package_graph_provenance']",
+            "weavert.services.metadata['resolved_active_package_graph_provenance']",
+            "weavert.metadata['resolved_active_package_graph_provenance']",
         ],
         "distribution": distribution,
         "selected_first_party_packages": list(selected_packages),
         "resolved_order": resolved_order,
         "resolved_packages": resolved_packages,
         "source_paths": {
-            "official_catalog": "runtime.services.metadata['official_package_catalog_provenance']",
-            "resolution_report": "runtime.services.metadata['package_resolution']",
+            "official_catalog": "weavert.services.metadata['official_package_catalog_provenance']",
+            "resolution_report": "weavert.services.metadata['package_resolution']",
         },
     }
     if distribution_entry is not None:
@@ -2258,7 +2260,7 @@ def _package_lookup_metadata() -> dict[str, Any]:
         "canonical_post_ingress_path": "completion_receipts",
         "canonical_extension_event_contract": {
             "emit": "HostRuntime.emit_extension_event",
-            "envelope": "runtime.hosts.HostExtensionEvent",
+            "envelope": "weavert.hosts.HostExtensionEvent",
             "unknown_namespace_behavior": "ignore_or_handle_generically",
         },
         "compatibility_wrappers": [
@@ -2530,9 +2532,9 @@ def _compatibility_boundaries_metadata(
                 "private_context": "RuntimePrivateContext",
             },
             "normalization_helpers": [
-                "runtime.contracts.prompt_context_from_legacy_runtime_context",
-                "runtime.contracts.merge_runtime_private_context",
-                "runtime.contracts.compatibility_runtime_context_snapshot",
+                "weavert.contracts.prompt_context_from_legacy_runtime_context",
+                "weavert.contracts.merge_runtime_private_context",
+                "weavert.contracts.compatibility_runtime_context_snapshot",
             ],
             "entry_points": runtime_context_entries,
             "unclassified_surfaces": list(runtime_context_unknown),
@@ -2828,7 +2830,7 @@ def _persistence_profile_metadata(
     runtime: RuntimeAssembly | None = None,
 ) -> dict[str, Any]:
     distribution = str(services.metadata.get("distribution") or "")
-    profile_kind = "production_oriented" if distribution == "runtime-full" else "lightweight"
+    profile_kind = "production_oriented" if distribution == "weavert-full" else "lightweight"
     team_control_plane = services.resolve_team_control_plane()
     team_store = getattr(team_control_plane, "store", None) if team_control_plane is not None else None
     run_store = getattr(getattr(runtime, "agent_runtime", None), "run_store", None)
@@ -2863,11 +2865,11 @@ def _persistence_profile_metadata(
         "memory": _memory_durability_entry(services.resolve_memory_service()),
     }
     findings: list[str] = []
-    if distribution == "runtime-full":
+    if distribution == "weavert-full":
         if surfaces["transcript"]["durability"] != PersistenceDurabilityState.DURABLE.value:
-            findings.append("runtime-full requires a durable transcript store")
+            findings.append("weavert-full requires a durable transcript store")
         if surfaces["child_runs"]["durability"] != PersistenceDurabilityState.DURABLE.value:
-            findings.append("runtime-full requires a durable child-run store")
+            findings.append("weavert-full requires a durable child-run store")
     return {
         "schema_version": "1.0",
         "profile_name": distribution or "custom",
@@ -2934,8 +2936,8 @@ def _closure_report_metadata(
     return {
         "schema_version": "1.0",
         "published_metadata_paths": [
-            "runtime.services.metadata['closure_report']",
-            "runtime.metadata['closure_report']",
+            "weavert.services.metadata['closure_report']",
+            "weavert.metadata['closure_report']",
         ],
         "status": status.value,
         "closure_green": status is ClosureStatus.GREEN,
@@ -3069,7 +3071,7 @@ def _team_protocol_only_findings(
         "availability": "team-present" if team_selected else "team-absent",
         "evidence": [
             "HostRuntime.emit_extension_event",
-            str(extension_contract.get("namespace") or "runtime.team"),
+            str(extension_contract.get("namespace") or "weavert.team"),
         ],
     }
 
@@ -3209,9 +3211,9 @@ _PROTOCOL_ONLY_REQUIRED_GATE_FAMILIES = (
 )
 _PROTOCOL_ONLY_GATE_GREEN_CRITERIA = {
     "required_distributions": [
-        "runtime-core",
-        "runtime-default",
-        "runtime-full",
+        "weavert-core",
+        "weavert-default",
+        "weavert-full",
     ],
     "required_optional_package_cases": [
         "team-present",
@@ -3222,38 +3224,38 @@ _PROTOCOL_ONLY_GATE_GREEN_CRITERIA = {
 }
 _PROTOCOL_ONLY_MATRIX_CASES = (
     {
-        "case_id": "runtime-core",
-        "distribution": "runtime-core",
+        "case_id": "weavert-core",
+        "distribution": "weavert-core",
         "enabled_packages": (),
         "disabled_packages": (),
         "availability": ("team-absent",),
     },
     {
-        "case_id": "runtime-default",
-        "distribution": "runtime-default",
+        "case_id": "weavert-default",
+        "distribution": "weavert-default",
         "enabled_packages": (),
         "disabled_packages": (),
         "availability": ("team-present",),
     },
     {
-        "case_id": "runtime-full",
-        "distribution": "runtime-full",
+        "case_id": "weavert-full",
+        "distribution": "weavert-full",
         "enabled_packages": (),
         "disabled_packages": (),
         "availability": ("team-present",),
     },
     {
-        "case_id": "runtime-core+runtime-planning",
-        "distribution": "runtime-core",
-        "enabled_packages": ("runtime-planning",),
+        "case_id": "weavert-core+weavert-planning",
+        "distribution": "weavert-core",
+        "enabled_packages": ("weavert-planning",),
         "disabled_packages": (),
         "availability": ("explicit-package-enabled",),
     },
     {
-        "case_id": "runtime-full-runtime-planning",
-        "distribution": "runtime-full",
+        "case_id": "weavert-full-weavert-planning",
+        "distribution": "weavert-full",
         "enabled_packages": (),
-        "disabled_packages": ("runtime-planning",),
+        "disabled_packages": ("weavert-planning",),
         "availability": ("explicit-package-disabled",),
     },
 )
@@ -3308,12 +3310,12 @@ def _kernel_assembly_findings(
         if not str(entry.get("assembly_entrypoint") or "")
     ]
     legacy_helper_retired = (
-        "runtime.runtime_package_manifests.assembly_function_name" in retired_helpers
+        "weavert.runtime_package_manifests.assembly_function_name" in retired_helpers
     )
     status = (
         "pass"
         if provider_kind == "manifest-backed"
-        and provider_path == "runtime.runtime_package_catalog:official_runtime_package_catalog"
+        and provider_path == "weavert.runtime_package_catalog:official_runtime_package_catalog"
         and legacy_helper_retired
         and not missing_catalog_entries
         and not missing_entrypoints
@@ -3324,7 +3326,7 @@ def _kernel_assembly_findings(
         "family": "kernel-assembly",
         "status": status,
         "distribution": distribution,
-        "canonical_path": "runtime.runtime_package_catalog:official_runtime_package_catalog",
+        "canonical_path": "weavert.runtime_package_catalog:official_runtime_package_catalog",
         "replacement_path": "RuntimePackageManifest.assembly_entrypoint",
         "evidence": evidence,
     }
@@ -3341,58 +3343,58 @@ def _protocol_only_rule_sources() -> dict[str, dict[str, Any]]:
     return {
         "memory_service_slot_authority": {
             "family": "privileged-service-slot",
-            "source_path": "runtime.services.metadata['package_service_protocols']['memory']",
+            "source_path": "weavert.services.metadata['package_service_protocols']['memory']",
         },
         "compaction_service_slot_authority": {
             "family": "privileged-service-slot",
-            "source_path": "runtime.services.metadata['package_service_protocols']['compaction']",
+            "source_path": "weavert.services.metadata['package_service_protocols']['compaction']",
         },
         "isolation_service_slot_authority": {
             "family": "privileged-service-slot",
-            "source_path": "runtime.services.metadata['package_service_protocols']['isolation']",
+            "source_path": "weavert.services.metadata['package_service_protocols']['isolation']",
         },
         "invocation_provider_provenance": {
             "family": "provider-provenance",
-            "source_path": "runtime.services.metadata['invocation_provider_registrations']",
+            "source_path": "weavert.services.metadata['invocation_provider_registrations']",
         },
         "runtime_context_authority": {
             "family": "context-authority",
-            "source_path": "runtime.services.metadata['compatibility_boundaries']['runtime_context']",
+            "source_path": "weavert.services.metadata['compatibility_boundaries']['runtime_context']",
         },
         "task_manager_authority": {
             "family": "task-authority",
-            "source_path": "runtime.services.metadata['compatibility_boundaries']['TaskManager']",
+            "source_path": "weavert.services.metadata['compatibility_boundaries']['TaskManager']",
         },
         "team_runtime_projection_authority": {
             "family": "team-bridge",
-            "source_path": "runtime.services.metadata['migration']['team_protocol_only']",
+            "source_path": "weavert.services.metadata['migration']['team_protocol_only']",
         },
         "team_workflow_wrapper_authority": {
             "family": "team-bridge",
-            "source_path": "runtime.services.metadata['migration']['team_protocol_only']",
+            "source_path": "weavert.services.metadata['migration']['team_protocol_only']",
         },
         "team_host_event_bridge_authority": {
             "family": "team-bridge",
-            "source_path": "runtime.services.metadata['migration']['team_protocol_only']",
+            "source_path": "weavert.services.metadata['migration']['team_protocol_only']",
         },
         "official_package_catalog_authority": {
             "family": "kernel-assembly",
             "source_path": (
-                "runtime.services.metadata['official_package_catalog_provenance'] / "
-                "runtime.services.metadata['resolved_active_package_graph_provenance']"
+                "weavert.services.metadata['official_package_catalog_provenance'] / "
+                "weavert.services.metadata['resolved_active_package_graph_provenance']"
             ),
         },
         "compatibility_retirement_state": {
             "family": "compatibility-retirement",
-            "source_path": "runtime.services.metadata['closure_report']['compatibility_retirement']",
+            "source_path": "weavert.services.metadata['closure_report']['compatibility_retirement']",
         },
         "persistence_profile_state": {
             "family": "persistence-profile",
-            "source_path": "runtime.services.metadata['closure_report']['persistence_profile']",
+            "source_path": "weavert.services.metadata['closure_report']['persistence_profile']",
         },
         "isolation_readiness_state": {
             "family": "isolation-readiness",
-            "source_path": "runtime.services.metadata['closure_report']['isolation_readiness']",
+            "source_path": "weavert.services.metadata['closure_report']['isolation_readiness']",
         },
     }
 
@@ -3775,7 +3777,7 @@ def _protocol_only_conformance_metadata(
                 else "fail"
             ),
             "distribution": distribution,
-            "canonical_path": "runtime.metadata['closure_report']['compatibility_retirement']",
+            "canonical_path": "weavert.metadata['closure_report']['compatibility_retirement']",
             "evidence": [
                 str(item.get("family") or "")
                 for item in compatibility_retirement.get("families", ())
@@ -3787,7 +3789,7 @@ def _protocol_only_conformance_metadata(
             "family": "persistence-profile",
             "status": "pass" if persistence_profile.get("status") == "pass" else "fail",
             "distribution": distribution,
-            "canonical_path": "runtime.metadata['closure_report']['persistence_profile']",
+            "canonical_path": "weavert.metadata['closure_report']['persistence_profile']",
             "evidence": [
                 f"{name}:{entry.get('durability')}"
                 for name, entry in persistence_profile.get("surfaces", {}).items()
@@ -3799,7 +3801,7 @@ def _protocol_only_conformance_metadata(
             "family": "isolation-readiness",
             "status": "pass" if isolation_readiness.get("status") == "pass" else "fail",
             "distribution": distribution,
-            "canonical_path": "runtime.metadata['closure_report']['isolation_readiness']",
+            "canonical_path": "weavert.metadata['closure_report']['isolation_readiness']",
             "evidence": [
                 f"{name}:{entry.get('status')}"
                 for name, entry in isolation_readiness.get("modes", {}).items()
@@ -3821,8 +3823,8 @@ def _protocol_only_conformance_metadata(
     return {
         "schema_version": "1.0",
         "published_metadata_paths": [
-            "runtime.services.metadata['protocol_only_conformance']",
-            "runtime.metadata['protocol_only_conformance']",
+            "weavert.services.metadata['protocol_only_conformance']",
+            "weavert.metadata['protocol_only_conformance']",
         ],
         "finding_schema": _protocol_only_finding_schema(),
         "rule_sources": _protocol_only_rule_sources(),
@@ -4028,8 +4030,8 @@ def _schedule_job_recovery(job_service: DefaultJobService) -> None:
 
 
 def _assemble_core_isolation_manager() -> Any:
-    manager_type = load_object("runtime.isolation:IsolationManager")
-    adapter_type = load_object("runtime.isolation:BaseIsolationAdapter")
+    manager_type = load_object("weavert.isolation:IsolationManager")
+    adapter_type = load_object("weavert.isolation:BaseIsolationAdapter")
     return manager_type(adapters={IsolationMode.NONE: adapter_type()})
 
 
@@ -4045,22 +4047,22 @@ def _team_bridge_replacement_matrix() -> list[dict[str, Any]]:
             "surface": "RuntimeServices.team_control_plane",
             "status": "removed",
             "replacement_path": "RuntimeServices.resolve_team_control_plane()",
-            "team_present_semantics": "returns the canonical runtime.team.control_plane capability",
-            "team_absent_semantics": "returns None because runtime-team is not selected",
+            "team_present_semantics": "returns the canonical weavert.team.control_plane capability",
+            "team_absent_semantics": "returns None because weavert-team is not selected",
         },
         {
             "surface": "RuntimeServices.team_message_bus",
             "status": "removed",
             "replacement_path": "RuntimeServices.resolve_team_message_bus()",
-            "team_present_semantics": "returns the canonical runtime.team.message_bus capability",
-            "team_absent_semantics": "returns None because runtime-team is not selected",
+            "team_present_semantics": "returns the canonical weavert.team.message_bus capability",
+            "team_absent_semantics": "returns None because weavert-team is not selected",
         },
         {
             "surface": "RuntimeServices.team_workflows",
             "status": "removed",
             "replacement_path": "RuntimeServices.resolve_team_workflows()",
-            "team_present_semantics": "returns the canonical runtime.team.workflows capability",
-            "team_absent_semantics": "returns None because runtime-team is not selected",
+            "team_present_semantics": "returns the canonical weavert.team.workflows capability",
+            "team_absent_semantics": "returns None because weavert-team is not selected",
         },
         {
             "surface": "RuntimeAssembly.team_control_plane",
@@ -4068,8 +4070,8 @@ def _team_bridge_replacement_matrix() -> list[dict[str, Any]]:
             "replacement_path": (
                 "RuntimeAssembly.resolve_capability(RuntimeCapabilityKey.TEAM_CONTROL_PLANE.value)"
             ),
-            "team_present_semantics": "resolves the canonical runtime.team.control_plane capability",
-            "team_absent_semantics": "returns None because runtime-team is not selected",
+            "team_present_semantics": "resolves the canonical weavert.team.control_plane capability",
+            "team_absent_semantics": "returns None because weavert-team is not selected",
         },
         {
             "surface": "RuntimeAssembly.team_message_bus",
@@ -4077,8 +4079,8 @@ def _team_bridge_replacement_matrix() -> list[dict[str, Any]]:
             "replacement_path": (
                 "RuntimeAssembly.resolve_capability(RuntimeCapabilityKey.TEAM_MESSAGE_BUS.value)"
             ),
-            "team_present_semantics": "resolves the canonical runtime.team.message_bus capability",
-            "team_absent_semantics": "returns None because runtime-team is not selected",
+            "team_present_semantics": "resolves the canonical weavert.team.message_bus capability",
+            "team_absent_semantics": "returns None because weavert-team is not selected",
         },
         {
             "surface": "RuntimeAssembly.team_workflows",
@@ -4086,8 +4088,8 @@ def _team_bridge_replacement_matrix() -> list[dict[str, Any]]:
             "replacement_path": (
                 "RuntimeAssembly.resolve_capability(RuntimeCapabilityKey.TEAM_WORKFLOWS.value)"
             ),
-            "team_present_semantics": "resolves the canonical runtime.team.workflows capability",
-            "team_absent_semantics": "returns None because runtime-team is not selected",
+            "team_present_semantics": "resolves the canonical weavert.team.workflows capability",
+            "team_absent_semantics": "returns None because weavert-team is not selected",
         },
         {
             "surface": "BoundHostRuntime.list_team_workflows",
@@ -4106,9 +4108,9 @@ def _team_bridge_replacement_matrix() -> list[dict[str, Any]]:
         {
             "surface": "HostRuntime.emit_team_event",
             "status": "removed",
-            "replacement_path": "HostRuntime.emit_extension_event(HostExtensionEvent(namespace='runtime.team', ...))",
+            "replacement_path": "HostRuntime.emit_extension_event(HostExtensionEvent(namespace='weavert.team', ...))",
             "team_present_semantics": "team packages emit namespace-scoped extension events",
-            "team_absent_semantics": "no runtime.team extension events are emitted",
+            "team_absent_semantics": "no weavert.team extension events are emitted",
         },
     ]
 
@@ -4118,7 +4120,7 @@ def _team_protocol_only_migration_metadata(
     selected_packages: tuple[str, ...],
 ) -> dict[str, Any]:
     return {
-        "team_package_selected": "runtime-team" in selected_packages,
+        "team_package_selected": "weavert-team" in selected_packages,
         "capability_keys": {
             "team_control_plane": RuntimeCapabilityKey.TEAM_CONTROL_PLANE.value,
             "team_message_bus": RuntimeCapabilityKey.TEAM_MESSAGE_BUS.value,
@@ -4129,8 +4131,8 @@ def _team_protocol_only_migration_metadata(
         },
         "extension_event_contract": {
             "emit": "HostRuntime.emit_extension_event",
-            "envelope": "runtime.hosts.HostExtensionEvent",
-            "namespace": "runtime.team",
+            "envelope": "weavert.hosts.HostExtensionEvent",
+            "namespace": "weavert.team",
             "schema_version": "1.0",
             "unknown_namespace_behavior": "ignore_or_handle_generically",
         },
@@ -4148,21 +4150,21 @@ def _migration_metadata(
     metadata: dict[str, Any] = {
         "distribution": distribution,
         "devtools": {
-            "selected": "runtime-devtools" in selected_packages,
-            "target_distribution": "runtime-full",
-            "target_package": "runtime-devtools",
-            "tools": list(FIRST_PARTY_PACKAGE_SPECS["runtime-devtools"].builtin_tools),
-            "agents": list(FIRST_PARTY_PACKAGE_SPECS["runtime-devtools"].builtin_agents),
+            "selected": "weavert-devtools" in selected_packages,
+            "target_distribution": "weavert-full",
+            "target_package": "weavert-devtools",
+            "tools": list(FIRST_PARTY_PACKAGE_SPECS["weavert-devtools"].builtin_tools),
+            "agents": list(FIRST_PARTY_PACKAGE_SPECS["weavert-devtools"].builtin_agents),
         },
         "planning_profiles": {
-            "selected": "runtime-planning" in selected_packages,
-            "target_distribution": "runtime-full",
-            "target_package": "runtime-planning",
-            "agents": list(FIRST_PARTY_PACKAGE_SPECS["runtime-planning"].builtin_agents),
-            "shared_primitives_owner": "runtime-core",
+            "selected": "weavert-planning" in selected_packages,
+            "target_distribution": "weavert-full",
+            "target_package": "weavert-planning",
+            "agents": list(FIRST_PARTY_PACKAGE_SPECS["weavert-planning"].builtin_agents),
+            "shared_primitives_owner": "weavert-core",
             "shared_primitives": ["task_*", "job_*"],
             "helper_agent": "plan",
-            "helper_package": "runtime-devtools",
+            "helper_package": "weavert-devtools",
         },
         "hook_contract": {
             "stable_public_phases": stable_phases,
@@ -4171,17 +4173,17 @@ def _migration_metadata(
             "advanced_handler_kinds": [kind.value for kind in ADVANCED_HOOK_HANDLER_KINDS],
         },
         "capability_packages": {
-            "remember": "runtime-memory",
-            "team_create": "runtime-team",
-            "team_spawn": "runtime-team",
-            "team_send": "runtime-team",
-            "team_respond": "runtime-team",
-            "team_delete": "runtime-team",
-            "verify": "runtime-builtin-workflows",
-            "debug": "runtime-builtin-workflows",
-            "stuck": "runtime-builtin-workflows",
-            "batch": "runtime-builtin-workflows",
-            "simplify": "runtime-builtin-workflows",
+            "remember": "weavert-memory",
+            "team_create": "weavert-team",
+            "team_spawn": "weavert-team",
+            "team_send": "weavert-team",
+            "team_respond": "weavert-team",
+            "team_delete": "weavert-team",
+            "verify": "weavert-builtin-workflows",
+            "debug": "weavert-builtin-workflows",
+            "stuck": "weavert-builtin-workflows",
+            "batch": "weavert-builtin-workflows",
+            "simplify": "weavert-builtin-workflows",
         },
         "package_lookup": _package_lookup_metadata(),
         "team_protocol_only": _team_protocol_only_migration_metadata(
@@ -4197,44 +4199,44 @@ def _package_migration_diagnostics(
     distribution: str,
 ) -> tuple[Diagnostic, ...]:
     diagnostics: list[Diagnostic] = []
-    if "runtime-devtools" not in selected_packages:
+    if "weavert-devtools" not in selected_packages:
         diagnostics.append(
             Diagnostic(
                 severity=DiagnosticSeverity.WARNING,
                 code="runtime_devtools_not_selected",
                 message=(
                     "Workspace-oriented tools and coding agents now live in "
-                    "runtime-devtools and are only included automatically in "
-                    "runtime-full."
+                    "weavert-devtools and are only included automatically in "
+                    "weavert-full."
                 ),
                 details={
                     "distribution": distribution,
-                    "target_package": "runtime-devtools",
-                    "target_distribution": "runtime-full",
-                    "tools": list(FIRST_PARTY_PACKAGE_SPECS["runtime-devtools"].builtin_tools),
-                    "agents": list(FIRST_PARTY_PACKAGE_SPECS["runtime-devtools"].builtin_agents),
+                    "target_package": "weavert-devtools",
+                    "target_distribution": "weavert-full",
+                    "tools": list(FIRST_PARTY_PACKAGE_SPECS["weavert-devtools"].builtin_tools),
+                    "agents": list(FIRST_PARTY_PACKAGE_SPECS["weavert-devtools"].builtin_agents),
                 },
             )
         )
-    if "runtime-planning" not in selected_packages:
+    if "weavert-planning" not in selected_packages:
         diagnostics.append(
             Diagnostic(
                 severity=DiagnosticSeverity.WARNING,
                 code="runtime_planning_not_selected",
                 message=(
-                    "Official shared-planning profiles now live in runtime-planning and are only "
-                    "included automatically in runtime-full; core task/job primitives remain in "
-                    "runtime-core."
+                    "Official shared-planning profiles now live in weavert-planning and are only "
+                    "included automatically in weavert-full; core task/job primitives remain in "
+                    "weavert-core."
                 ),
                 details={
                     "distribution": distribution,
-                    "target_package": "runtime-planning",
-                    "target_distribution": "runtime-full",
-                    "agents": list(FIRST_PARTY_PACKAGE_SPECS["runtime-planning"].builtin_agents),
-                    "shared_primitives_owner": "runtime-core",
+                    "target_package": "weavert-planning",
+                    "target_distribution": "weavert-full",
+                    "agents": list(FIRST_PARTY_PACKAGE_SPECS["weavert-planning"].builtin_agents),
+                    "shared_primitives_owner": "weavert-core",
                     "shared_primitives": ["task_*", "job_*"],
                     "helper_agent": "plan",
-                    "helper_package": "runtime-devtools",
+                    "helper_package": "weavert-devtools",
                 },
             )
         )

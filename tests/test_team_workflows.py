@@ -717,7 +717,7 @@ def test_permission_workflow_rejection_skips_host_permission_call(tmp_path: Path
     assert record.status.value == "rejected"
     assert host.requests == []
     assert any(
-        event.namespace == "runtime.team" and event.event_type == "team.workflow.rejected"
+        event.namespace == "weavert.team" and event.event_type == "team.workflow.rejected"
         for event in host.extension_events
     )
 
@@ -785,7 +785,7 @@ def test_permission_workflow_timeout_denies_without_host_permission_call(tmp_pat
     assert record.status.value == "timed_out"
     assert host.requests == []
     assert any(
-        event.namespace == "runtime.team" and event.event_type == "team.workflow.timed_out"
+        event.namespace == "weavert.team" and event.event_type == "team.workflow.timed_out"
         for event in host.extension_events
     )
 

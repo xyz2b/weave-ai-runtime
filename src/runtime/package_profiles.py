@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 
+from .public_contract import canonical_distribution_name, canonical_first_party_name
 from .runtime_package_catalog import (
     official_runtime_distribution_catalog,
     official_runtime_package_catalog,
@@ -20,9 +21,9 @@ class FirstPartyPackageRole(StrEnum):
 
 
 class RuntimeDistribution(StrEnum):
-    CORE = "runtime-core"
-    DEFAULT = "runtime-default"
-    FULL = "runtime-full"
+    CORE = "weavert-core"
+    DEFAULT = "weavert-default"
+    FULL = "weavert-full"
 
 
 DEFAULT_RUNTIME_DISTRIBUTION = RuntimeDistribution.FULL
@@ -87,7 +88,7 @@ RUNTIME_DISTRIBUTION_SPECS: dict[RuntimeDistribution, RuntimeDistributionSpec] =
 def normalize_runtime_distribution(value: RuntimeDistribution | str) -> RuntimeDistribution:
     if isinstance(value, RuntimeDistribution):
         return value
-    return RuntimeDistribution(str(value))
+    return RuntimeDistribution(canonical_distribution_name(str(value)))
 
 
 def distribution_spec(value: RuntimeDistribution | str) -> RuntimeDistributionSpec:
@@ -101,14 +102,14 @@ def resolve_first_party_package_names(
     disabled_packages: set[str] | tuple[str, ...] | list[str] = (),
 ) -> tuple[str, ...]:
     resolved_distribution = normalize_runtime_distribution(distribution)
-    enabled = {str(name) for name in enabled_packages}
-    disabled = {str(name) for name in disabled_packages}
+    enabled = {canonical_first_party_name(str(name)) for name in enabled_packages}
+    disabled = {canonical_first_party_name(str(name)) for name in disabled_packages}
     known_packages = set(official_runtime_package_names())
     unknown = sorted((enabled | disabled) - known_packages)
     if unknown:
         raise ValueError(f"Unknown first-party package(s): {', '.join(unknown)}")
-    if "runtime-core" in disabled:
-        raise ValueError("runtime-core cannot be disabled")
+    if RuntimeDistribution.CORE.value in disabled:
+        raise ValueError(f"{RuntimeDistribution.CORE.value} cannot be disabled")
     requested = set(distribution_spec(resolved_distribution).packages)
     requested.update(enabled)
     requested.difference_update(disabled)

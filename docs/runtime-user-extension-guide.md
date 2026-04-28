@@ -25,7 +25,7 @@
 - `agent`
 - `skill`
 
-这三类能力通过 `.runtime/` 目录发现，不要求你改 runtime 内核源码。
+这三类能力通过 `.weavert/` 目录发现，不要求你改 runtime 内核源码。
 
 ### 1.2 第二层：控制面与接入层
 
@@ -60,7 +60,7 @@
 
 ```text
 your-project/
-└── .runtime/
+└── .weavert/
     ├── tools/
     ├── agents/
     └── skills/
@@ -77,20 +77,20 @@ your-project/
 ```python
 from pathlib import Path
 
-from runtime.runtime_kernel import RuntimeConfig
+from weavert.runtime_kernel import RuntimeConfig
 
 config = RuntimeConfig.for_project(Path("/your/project"))
 ```
 
 runtime 会自动接入：
 
-- `~/.runtime`
-- `<project>/.runtime`
+- `~/.weavert`
+- `<project>/.weavert`
 
 用户视角怎么扩：
 
-1. 想给所有项目复用的能力，放到 `~/.runtime`。
-2. 只想给当前项目使用的能力，放到 `<project>/.runtime`。
+1. 想给所有项目复用的能力，放到 `~/.weavert`。
+2. 只想给当前项目使用的能力，放到 `<project>/.weavert`。
 3. 不想走默认目录时，手工构造 `RuntimeConfig.discovery_sources`。
 
 ### 2.2 Tool：最直接的可执行扩展点
@@ -113,7 +113,7 @@ Tool '<name>' has no execution handler
 
 用户视角怎么扩：
 
-1. 在 `.runtime/tools/` 下新增一个 `.py` 文件。
+1. 在 `.weavert/tools/` 下新增一个 `.py` 文件。
 2. 导出 `TOOL_DEFINITION`、`TOOL` 或 `build_tool_definition()`。
 3. 至少提供：
    - `name`
@@ -150,7 +150,7 @@ Tool '<name>' has no execution handler
 
 用户视角怎么扩：
 
-1. 在 `.runtime/agents/` 下新增一个 `.md` 文件。
+1. 在 `.weavert/agents/` 下新增一个 `.md` 文件。
 2. frontmatter 写策略字段。
 3. 正文写该 agent 的系统 prompt。
 4. 用 `agent_name="your-agent"` 创建 session 或执行 prompt。
@@ -180,7 +180,7 @@ Tool '<name>' has no execution handler
 - runtime 会先校验 manifest shape、trust boundary 与官方 first-party reserved name；通过校验的 external manifest 会先进入 local package candidate catalog
 - 当前不支持 override mode，也不会自动扫目录找 package、remote discovery、package install 或 Python environment dependency management
 - external package 只有在被 `RuntimeConfig.requested_packages` 或 active resolved graph 依赖到时，才会进入 built-ins / services / runtime contribution
-- 诊断、provenance 与拒绝原因会发布到 `runtime.services.metadata["package_registration"]` / `runtime.metadata["package_registration"]`；resolved graph 与 resolution diagnostics 会单独发布到 `package_resolution`
+- 诊断、provenance 与拒绝原因会发布到 `weavert.services.metadata["package_registration"]` / `weavert.metadata["package_registration"]`；resolved graph 与 resolution diagnostics 会单独发布到 `package_resolution`
 
 这意味着 package boundary 现在更接近：
 
@@ -189,8 +189,8 @@ Tool '<name>' has no execution handler
 
 同时要把 stable core protocol catalog 和 package capability 分开看。当前 runtime 会把 stable core protocol 单独发布到：
 
-- `runtime.services.metadata["core_protocol_catalog"]`
-- `runtime.metadata["core_protocol_catalog"]`
+- `weavert.services.metadata["core_protocol_catalog"]`
+- `weavert.metadata["core_protocol_catalog"]`
 
 对扩展方最重要的是先判断自己碰到的是哪一种 seam：
 
@@ -210,7 +210,7 @@ Tool '<name>' has no execution handler
   - `HostRuntime`
   - 首选 bind path: `RuntimeAssembly.bind_host()`
 
-如果一个 surface 只出现在 `package_lookup`、`migration.team_protocol_only.replacement_matrix` 或 `compatibility_surfaces` 里，而不在 `core_protocol_catalog` 里，就不要把它误当成 stable core protocol。典型例子包括 `runtime.team.*` capability、已删除的 team bridge replacement、`TaskManager` facade，以及 `HostRuntime.emit_extension_event()` 这类 package-owned host egress contract。
+如果一个 surface 只出现在 `package_lookup`、`migration.team_protocol_only.replacement_matrix` 或 `compatibility_surfaces` 里，而不在 `core_protocol_catalog` 里，就不要把它误当成 stable core protocol。典型例子包括 `weavert.team.*` capability、已删除的 team bridge replacement、`TaskManager` facade，以及 `HostRuntime.emit_extension_event()` 这类 package-owned host egress contract。
 
 对扩展方的直接含义是：
 
@@ -241,7 +241,7 @@ Tool '<name>' has no execution handler
 
 用户视角怎么扩：
 
-1. 在 `.runtime/skills/<slug>/SKILL.md` 下写技能内容。
+1. 在 `.weavert/skills/<slug>/SKILL.md` 下写技能内容。
 2. 用 frontmatter 控制它是否：
    - 用户可主动调用
    - 模型可自动调用
@@ -283,11 +283,11 @@ bundled > user > project
 这里先明确一个边界，避免把“profile 命名”和“当前 bundled agent 名字”混在一起：
 
 - 当前真正已经 bundled 的 planning helper 是 `plan`
-  - 属于 `runtime-devtools`
+  - 属于 `weavert-devtools`
   - 更接近只读分析 / 步骤拆解助手
 - 本节使用的 `planner` / `coordinator` / `worker`
-  - 已由 `runtime-planning` 作为官方 package-owned built-ins 发布
-  - 在 `runtime-full` 中会自动装配；在 `runtime-default` 中仍需显式启用 `runtime-planning`
+  - 已由 `weavert-planning` 作为官方 package-owned built-ins 发布
+  - 在 `weavert-full` 中会自动装配；在 `weavert-default` 中仍需显式启用 `weavert-planning`
 
 规划型 agent：
 
@@ -360,7 +360,7 @@ owner、dependency edge 和 retirement 都应走专门的 task lifecycle / orche
 - `planner` / `coordinator` 只是消费这个 primitive 的官方 profile
 - user-defined agent 是否参与 task workflow，由 `tools` 和 prompt 决定，而不是由 builtin agent 类型决定
 
-这些官方 profile 现在已经收口到 `runtime-planning`，而且它们仍然应该停留在 higher-level profile / workflow 层，而不是把 `TaskListService`、`task_*`、`job_*` 从 core 移走。
+这些官方 profile 现在已经收口到 `weavert-planning`，而且它们仍然应该停留在 higher-level profile / workflow 层，而不是把 `TaskListService`、`task_*`、`job_*` 从 core 移走。
 
 对 framework author 来说，下面几条最好视为硬边界：
 
@@ -427,7 +427,7 @@ owner、dependency edge 和 retirement 都应走专门的 task lifecycle / orche
 - `child_run_continuation`
 - `delegation`
 
-这里尤其要注意：`task_discipline` 当前应被理解为 runtime-owned control-plane policy，而不是某个 planner profile 私有 metadata。即使 `runtime-planning` 已经作为独立 planning UX 包落地，这条策略在第一阶段也更适合继续留在 core。
+这里尤其要注意：`task_discipline` 当前应被理解为 runtime-owned control-plane policy，而不是某个 planner profile 私有 metadata。即使 `weavert-planning` 已经作为独立 planning UX 包落地，这条策略在第一阶段也更适合继续留在 core。
 
 其中 `delegation` 是 child execution 的正式策略入口：
 
@@ -479,7 +479,7 @@ config.metadata.setdefault(
 用户视角怎么扩：
 
 1. 自己实现一个 host 类。
-2. 用 `runtime.bind_host(host)` 绑定。
+2. 用 `weavert.bind_host(host)` 绑定。
 3. 在 host 里接权限弹窗、用户输入框、turn 事件回放、通知显示。
 
 ### 3.3 HookBus：稳定生命周期节点的注入面
@@ -522,7 +522,7 @@ advanced public phase 包括：
 
 用户视角怎么扩：
 
-1. 想给所有 session 默认挂一个 hook，用 `runtime.register_hook(...)` 或 `RuntimeConfig(hooks=...)`。
+1. 想给所有 session 默认挂一个 hook，用 `weavert.register_hook(...)` 或 `RuntimeConfig(hooks=...)`。
 2. 想给宿主统一挂策略，用 `bound.register_hook(...)`。
 3. 想只影响当前会话，用 `session.register_hook(...)`。
 4. 想只影响当前 turn，用 `session.register_turn_hook(...)`，但把它视为 advanced surface。
@@ -559,8 +559,8 @@ sidecar 可以返回：
 
 你可以扩：
 
-- `runtime.services.permissions`
-- `runtime.services.elicitation`
+- `weavert.services.permissions`
+- `weavert.services.elicitation`
 - host 的 `request_permission()`
 - host 的 `request_elicitation()`
 
@@ -569,7 +569,7 @@ sidecar 可以返回：
 1. 规则审批，优先扩 `PermissionContext` + `PermissionRule`。
 2. 人工审批，优先实现 host 的 `request_permission()`。
 3. 表单、下拉框、多选，优先实现 host 的 `request_elicitation()`。
-4. 想替换整套行为，再直接替换 `runtime.services.permissions` 或 `runtime.services.elicitation`。
+4. 想替换整套行为，再直接替换 `weavert.services.permissions` 或 `weavert.services.elicitation`。
 
 ### 3.6 tool_refresh_callback：动态刷新工具池
 
@@ -578,7 +578,7 @@ sidecar 可以返回：
 正式扩展点是：
 
 - `RuntimeConfig.tool_refresh_callback`
-- `runtime.services.tool_catalog`
+- `weavert.services.tool_catalog`
 
 工具内部可触发：
 
@@ -625,14 +625,14 @@ Invocation catalog 不只接 skill。
 用户视角怎么扩：
 
 1. 把自定义 provider 包装成 ordinary provider-only runtime package，并通过 `PackageContribution.invocation_providers` 注册。
-2. 最小 manifest shape 可以直接复用 `runtime.runtime_package_protocols.build_provider_only_invocation_package_manifest()`；默认 role 是 `provider`，普通 baseline dependency 是 `runtime-core`。
+2. 最小 manifest shape 可以直接复用 `weavert.runtime_package_protocols.build_provider_only_invocation_package_manifest()`；默认 role 是 `provider`，普通 baseline dependency 是 `weavert-core`。
 3. 用 `RuntimeConfig.extra_package_manifests` + `RuntimeConfig.requested_packages` 把这个 manifest 接入当前 runtime。
 4. 用 `resolve_invocations()` / `visible_invocations()` / `invocation_diagnostics()` 给 UI 提供统一能力图。
 
 ```python
-from runtime.invocation_catalog import StaticInvocationProvider
-from runtime.runtime_kernel import RuntimeConfig, assemble_runtime
-from runtime.runtime_package_protocols import build_provider_only_invocation_package_manifest
+from weavert.invocation_catalog import StaticInvocationProvider
+from weavert.runtime_kernel import RuntimeConfig, assemble_runtime
+from weavert.runtime_package_protocols import build_provider_only_invocation_package_manifest
 
 provider_manifest = build_provider_only_invocation_package_manifest(
     name="runtime-provider-only",
@@ -640,7 +640,7 @@ provider_manifest = build_provider_only_invocation_package_manifest(
     provider=StaticInvocationProvider("repo-commands", (...)),
 )
 
-runtime = assemble_runtime(
+weavert = assemble_runtime(
     RuntimeConfig(
         extra_package_manifests=(provider_manifest,),
         requested_packages={"runtime-provider-only"},
@@ -657,8 +657,8 @@ runtime 会按固定顺序注册 provider：
 
 调试时可看：
 
-- `runtime.services.metadata["invocation_provider_paths"]`
-- `runtime.services.metadata["invocation_provider_registrations"]`
+- `weavert.services.metadata["invocation_provider_paths"]`
+- `weavert.services.metadata["invocation_provider_registrations"]`
 
 ## 4. 基础设施与持久化扩展点
 
@@ -678,8 +678,8 @@ runtime 会按固定顺序注册 provider：
 
 如果你想先判断当前 distribution 默认 durable 到什么程度，不要靠猜，直接看：
 
-- `runtime.query_persistence_profile()`
-- `runtime.services.metadata["closure_report"]["persistence_profile"]`
+- `weavert.query_persistence_profile()`
+- `weavert.services.metadata["closure_report"]["persistence_profile"]`
 
 ### 4.2 ChildRunStore：子 agent / child run 持久化
 
@@ -692,8 +692,8 @@ runtime 会按固定顺序注册 provider：
 
 默认实现取决于 distribution：
 
-- `runtime-core` / `runtime-default`：默认是内存版
-- `runtime-full`：默认绑定 first-party durable file-backed child-run store
+- `weavert-core` / `weavert-default`：默认是内存版
+- `weavert-full`：默认绑定 first-party durable file-backed child-run store
 
 用户视角怎么扩：
 
@@ -722,7 +722,7 @@ waiting parent session 被 terminal child run 唤醒，是 runtime continuation 
 你可以通过两种方式调 memory：
 
 - `RuntimeConfig.memory_config`
-- `.runtime/memory/config.yaml`
+- `.weavert/memory/config.yaml`
 
 可调项包括：
 
@@ -744,7 +744,7 @@ Memory 默认是 file-backed。
 需要注意：
 
 - 当前没有 `RuntimeConfig.memory_provider` 这样的直接配置槽位。
-- 如果你想替换 `MemoryProvider`，最实际的接法是先 `assemble_runtime()`，再替换 `runtime.services.memory`。
+- 如果你想替换 `MemoryProvider`，最实际的接法是先 `assemble_runtime()`，再替换 `weavert.services.memory`。
 
 ### 4.5 teammate_orchestration：持久协作 agent 壳
 
@@ -790,13 +790,13 @@ Memory 默认是 file-backed。
 文件：
 
 ```text
-.runtime/tools/check_file.py
+.weavert/tools/check_file.py
 ```
 
 代码：
 
 ```python
-from runtime import ToolDefinition, ToolTraits
+from weavert import ToolDefinition, ToolTraits
 
 
 async def execute(tool_input, context):
@@ -833,12 +833,12 @@ TOOL_DEFINITION = ToolDefinition(
 ```python
 from pathlib import Path
 
-from runtime.runtime_kernel import RuntimeConfig, assemble_runtime
+from weavert.runtime_kernel import RuntimeConfig, assemble_runtime
 
 config = RuntimeConfig.for_project(Path("/your/project"))
 config.model_client = my_model_client
 
-runtime = assemble_runtime(config)
+weavert = assemble_runtime(config)
 ```
 
 适用建议：
@@ -851,7 +851,7 @@ runtime = assemble_runtime(config)
 文件：
 
 ```text
-.runtime/agents/reviewer.md
+.weavert/agents/reviewer.md
 ```
 
 内容：
@@ -880,7 +880,7 @@ Prefer concise findings with concrete evidence.
 如何调用：
 
 ```python
-messages = await runtime.run_prompt(
+messages = await weavert.run_prompt(
     "Review the current changes.",
     session_id="review-session",
     agent_name="reviewer",
@@ -898,7 +898,7 @@ messages = await runtime.run_prompt(
 文件：
 
 ```text
-.runtime/skills/review-python/SKILL.md
+.weavert/skills/review-python/SKILL.md
 ```
 
 内容：
@@ -947,10 +947,10 @@ If no issue is found, say so explicitly.
 ```python
 from pathlib import Path
 
-from runtime import PermissionBehavior, PermissionOutcome
-from runtime.elicitation import ElicitationResponse
-from runtime.hosts import HostRuntime
-from runtime.runtime_kernel import RuntimeConfig, assemble_runtime
+from weavert import PermissionBehavior, PermissionOutcome
+from weavert.elicitation import ElicitationResponse
+from weavert.hosts import HostRuntime
+from weavert.runtime_kernel import RuntimeConfig, assemble_runtime
 
 
 class MyHost:
@@ -991,9 +991,9 @@ class MyHost:
 config = RuntimeConfig.for_project(Path("/your/project"))
 config.model_client = my_model_client
 
-runtime = assemble_runtime(config)
+weavert = assemble_runtime(config)
 
-async with runtime.bind_host(MyHost()) as bound:
+async with weavert.bind_host(MyHost()) as bound:
     async for event in bound.stream_prompt(
         "Check the workspace for risky edits.",
         session_id="host-demo",
@@ -1015,18 +1015,18 @@ async with runtime.bind_host(MyHost()) as bound:
 ```python
 from pathlib import Path
 
-from runtime.runtime_kernel import RuntimeConfig, assemble_runtime
-from runtime.session_runtime import FileTranscriptStore
+from weavert.runtime_kernel import RuntimeConfig, assemble_runtime
+from weavert.session_runtime import FileTranscriptStore
 
 project_root = Path("/your/project")
 
 config = RuntimeConfig.for_project(project_root)
 config.model_client = my_model_client
 config.transcript_store = FileTranscriptStore(
-    project_root / ".runtime" / "transcripts"
+    project_root / ".weavert" / "transcripts"
 )
 
-runtime = assemble_runtime(config)
+weavert = assemble_runtime(config)
 ```
 
 说明：
@@ -1041,7 +1041,7 @@ runtime = assemble_runtime(config)
 最小接法是：
 
 1. 先装配 runtime。
-2. 再替换 `runtime.services.memory`。
+2. 再替换 `weavert.services.memory`。
 3. 最好在创建 session 之前完成替换。
 
 代码：
@@ -1049,14 +1049,14 @@ runtime = assemble_runtime(config)
 ```python
 from pathlib import Path
 
-from runtime.definitions import MemoryScope
-from runtime.memory import (
+from weavert.definitions import MemoryScope
+from weavert.memory import (
     LongTermMemoryService,
     MemoryDocument,
     MemoryEntry,
     MemoryProvider,
 )
-from runtime.runtime_kernel import RuntimeConfig, assemble_runtime
+from weavert.runtime_kernel import RuntimeConfig, assemble_runtime
 
 
 class InMemoryMemoryProvider:
@@ -1122,8 +1122,8 @@ project_root = Path("/your/project")
 config = RuntimeConfig.for_project(project_root)
 config.model_client = my_model_client
 
-runtime = assemble_runtime(config)
-runtime.services.memory = LongTermMemoryService(
+weavert = assemble_runtime(config)
+weavert.services.memory = LongTermMemoryService(
     provider=InMemoryMemoryProvider(),
     project_root=project_root,
     memory_config=config.memory_config,
@@ -1133,7 +1133,7 @@ runtime.services.memory = LongTermMemoryService(
 说明：
 
 - `TranscriptStore` 可以在装配前通过 config 注入。
-- `MemoryProvider` 当前更适合在装配后替换 `runtime.services.memory`。
+- `MemoryProvider` 当前更适合在装配后替换 `weavert.services.memory`。
 - 如果你已经有自定义 `LongTermMemory` 实例，也可以直接传 `manager=...` 给 `LongTermMemoryService`。
 
 ## 7. 从用户目标倒推扩展方式
@@ -1175,7 +1175,7 @@ runtime.services.memory = LongTermMemoryService(
   -> ChildRunStore
 
 我想检查当前 runtime 还剩哪些 legacy / durability / isolation gap
-  -> `runtime.query_closure_report()` / `runtime.query_persistence_profile()` / `runtime.query_isolation_readiness()`
+  -> `weavert.query_closure_report()` / `weavert.query_persistence_profile()` / `weavert.query_isolation_readiness()`
 
 我想替换记忆后端
   -> MemoryProvider + LongTermMemoryService
@@ -1186,11 +1186,11 @@ runtime.services.memory = LongTermMemoryService(
 
 ## 8. 推荐实践
 
-1. 先从 `.runtime/tools`、`.runtime/agents`、`.runtime/skills` 扩展，不要一上来改 runtime 内核。
+1. 先从 `.weavert/tools`、`.weavert/agents`、`.weavert/skills` 扩展，不要一上来改 runtime 内核。
 2. 需要产品接入时，优先用 `bind_host()`，不要自己重写 session/turn 循环。
 3. 想插入业务控制逻辑时，优先用 `HookBus` 或 sidecar collect，而不是改 `TurnEngine`。
 4. 想替换 builtin，不要赌同名覆盖，直接用 `BuiltinPackConfig`。
-5. 想替换 memory provider 时，记住当前没有 `RuntimeConfig.memory_provider`，应替换 `runtime.services.memory`。
+5. 想替换 memory provider 时，记住当前没有 `RuntimeConfig.memory_provider`，应替换 `weavert.services.memory`。
 
 ## 9. 相关文档
 
