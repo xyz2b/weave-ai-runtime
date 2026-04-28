@@ -48,7 +48,7 @@ The runtime SHALL distinguish provider-attempt completion from turn completion, 
 - **THEN** the runtime SHALL emit exactly one turn-final terminal reason for that turn and SHALL emit no later turn events after that final terminal
 
 #### Scenario: `engine.py` does not use `TERMINAL(tool_use)` for continuation
-- **WHEN** [engine.py](/Users/xyzjiao/AIProject/AIAgentRuntime/src/runtime/turn_engine/engine.py) handles an assistant attempt that stops because the model emitted tool use
+- **WHEN** [engine.py](/Users/xyzjiao/AIProject/AIRUNTIME/src/runtime/turn_engine/engine.py) handles an assistant attempt that stops because the model emitted tool use
 - **THEN** it SHALL surface that as an attempt outcome or equivalent non-terminal signal, and SHALL NOT emit the host-facing final `TERMINAL` event until the turn actually finishes
 
 ### Requirement: Attempt-finished payload is explicit and stable
@@ -144,7 +144,7 @@ The runtime SHALL project session state, child-run status, and similar outer sta
 - **THEN** that field SHALL be derived from the explicit terminal reason and SHALL NOT be used as the authoritative input for session or child-run status projection
 
 #### Scenario: `agent_execution_service.py:202` projects child-run state from terminal reason
-- **WHEN** [agent_execution_service.py](/Users/xyzjiao/AIProject/AIAgentRuntime/src/runtime/agent_execution_service.py#L202) classifies the result of `run_turn()`
+- **WHEN** [agent_execution_service.py](/Users/xyzjiao/AIProject/AIRUNTIME/src/runtime/agent_execution_service.py#L202) classifies the result of `run_turn()`
 - **THEN** it SHALL map child-run status from the explicit turn terminal reason, and SHALL NOT infer `MAX_TURNS` only because `completed` is `false`
 
 ### Requirement: TurnResult keeps attempt-level and turn-level semantics separate
@@ -232,4 +232,3 @@ The runtime SHALL define, for each public effect field allowed on a public phase
 #### Scenario: Elicitation result is consumed before host fallback
 - **WHEN** an `Elicitation` hook produces `elicitation_result`
 - **THEN** the runtime SHALL satisfy the active elicitation request from that hook result before invoking any fallback host-side elicitation handler
-

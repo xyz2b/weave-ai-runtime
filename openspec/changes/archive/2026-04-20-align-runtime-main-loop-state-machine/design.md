@@ -132,7 +132,7 @@ Alternatives considered:
 
 ### 3A. 明确定义 `TurnLoopState`，而不是继续依赖局部变量和 metadata bag
 
-从参考实现在 [query.ts](/Users/xyzjiao/AIProject/AIAgentRuntime/cc-src/query.ts#L203) 中显式维护的 `State`，我们的 turn loop 也必须有一个 loop-carried state，只是保持当前 Python runtime 的模块化拆分，而不是复制单文件巨型对象。规范上，`TurnLoopState` 至少包含：
+从参考实现在 [query.ts](/Users/xyzjiao/AIProject/AIRUNTIME/cc-src/query.ts#L203) 中显式维护的 `State`，我们的 turn loop 也必须有一个 loop-carried state，只是保持当前 Python runtime 的模块化拆分，而不是复制单文件巨型对象。规范上，`TurnLoopState` 至少包含：
 
 - `phase`: 当前 `TurnPhase`
 - `iteration`: 当前 continuation 序号，对应参考实现的 `turnCount`
@@ -165,7 +165,7 @@ Alternatives considered:
 | `advance_or_finish` | 提交 `TurnTransition` 或 `TurnTerminal`，更新 `TurnLoopState` 并决定是否进入下一 iteration | `prepare`、`terminal` |
 | `terminal` | 发出 turn terminal event 并结束 turn async generator | 无 |
 
-这套 phase 划分直接吸收参考实现在 [query.ts](/Users/xyzjiao/AIProject/AIAgentRuntime/cc-src/query.ts#L369)、[query.ts](/Users/xyzjiao/AIProject/AIAgentRuntime/cc-src/query.ts#L560)、[query.ts](/Users/xyzjiao/AIProject/AIAgentRuntime/cc-src/query.ts#L1267) 上的 join-point 设计，但避免把所有逻辑都重新塞回一个 `query.ts`。
+这套 phase 划分直接吸收参考实现在 [query.ts](/Users/xyzjiao/AIProject/AIRUNTIME/cc-src/query.ts#L369)、[query.ts](/Users/xyzjiao/AIProject/AIRUNTIME/cc-src/query.ts#L560)、[query.ts](/Users/xyzjiao/AIProject/AIRUNTIME/cc-src/query.ts#L1267) 上的 join-point 设计，但避免把所有逻辑都重新塞回一个 `query.ts`。
 
 ### 3C. 明确定义合法状态流转
 
@@ -196,7 +196,7 @@ turn loop 的合法流转如下：
 - `stream_attempt` 不能跳过 `replay_tools` 直接把 tool results 伪装成下一条用户命令。
 - `stop_phase` 不能直接把 session 置为 `WAITING`；它只能产出 turn terminal 或 transition，session 投影由外层 controller 负责。
 
-### 3D. continuation reason 与 recovery action 必须是显式枚举参考实现在 [query.ts](/Users/xyzjiao/AIProject/AIAgentRuntime/cc-src/query.ts#L1110)、[query.ts](/Users/xyzjiao/AIProject/AIAgentRuntime/cc-src/query.ts#L1162)、[query.ts](/Users/xyzjiao/AIProject/AIAgentRuntime/cc-src/query.ts#L1217)、[query.ts](/Users/xyzjiao/AIProject/AIAgentRuntime/cc-src/query.ts#L1246)、[query.ts](/Users/xyzjiao/AIProject/AIAgentRuntime/cc-src/query.ts#L1302)、[query.ts](/Users/xyzjiao/AIProject/AIAgentRuntime/cc-src/query.ts#L1338)、[query.ts](/Users/xyzjiao/AIProject/AIAgentRuntime/cc-src/query.ts#L1725) 中把 continuation 原因显式写进 `state.transition.reason`。我们的设计也要做到这一点。
+### 3D. continuation reason 与 recovery action 必须是显式枚举参考实现在 [query.ts](/Users/xyzjiao/AIProject/AIRUNTIME/cc-src/query.ts#L1110)、[query.ts](/Users/xyzjiao/AIProject/AIRUNTIME/cc-src/query.ts#L1162)、[query.ts](/Users/xyzjiao/AIProject/AIRUNTIME/cc-src/query.ts#L1217)、[query.ts](/Users/xyzjiao/AIProject/AIRUNTIME/cc-src/query.ts#L1246)、[query.ts](/Users/xyzjiao/AIProject/AIRUNTIME/cc-src/query.ts#L1302)、[query.ts](/Users/xyzjiao/AIProject/AIRUNTIME/cc-src/query.ts#L1338)、[query.ts](/Users/xyzjiao/AIProject/AIRUNTIME/cc-src/query.ts#L1725) 中把 continuation 原因显式写进 `state.transition.reason`。我们的设计也要做到这一点。
 
 `TurnRecoveryAction` 统一限制为：
 
@@ -240,12 +240,12 @@ Why:
 - 只有这样，session controller、child-run store、host UI 才不会把“本次请求结束”误判成“本个 turn 结束”。
 - 这也是参考实现虽然内部有多次 continuation，但外部仍然是单个 query terminal 的关键语义。
 
-第一阶段的实现落点必须直接对应到 [engine.py](/Users/xyzjiao/AIProject/AIAgentRuntime/src/runtime/turn_engine/engine.py)：
+第一阶段的实现落点必须直接对应到 [engine.py](/Users/xyzjiao/AIProject/AIRUNTIME/src/runtime/turn_engine/engine.py)：
 
-- [engine.py](/Users/xyzjiao/AIProject/AIAgentRuntime/src/runtime/turn_engine/engine.py) 中当前 host-facing `TurnStreamEventType.TERMINAL` 的语义必须改成“仅 turn-final”
-- [engine.py](/Users/xyzjiao/AIProject/AIAgentRuntime/src/runtime/turn_engine/engine.py) 中当前用 `TERMINAL(stop_reason=\"tool_use\")` 表示 attempt 结束的做法必须移除
-- [engine.py](/Users/xyzjiao/AIProject/AIAgentRuntime/src/runtime/turn_engine/engine.py) 必须保证 `max_turns`、`error`、`interrupted`、`blocked` 都走显式 final terminal 出口
-- [engine.py](/Users/xyzjiao/AIProject/AIAgentRuntime/src/runtime/turn_engine/engine.py) 必须保证 final terminal 之后不再产出任何 turn event
+- [engine.py](/Users/xyzjiao/AIProject/AIRUNTIME/src/runtime/turn_engine/engine.py) 中当前 host-facing `TurnStreamEventType.TERMINAL` 的语义必须改成“仅 turn-final”
+- [engine.py](/Users/xyzjiao/AIProject/AIRUNTIME/src/runtime/turn_engine/engine.py) 中当前用 `TERMINAL(stop_reason=\"tool_use\")` 表示 attempt 结束的做法必须移除
+- [engine.py](/Users/xyzjiao/AIProject/AIRUNTIME/src/runtime/turn_engine/engine.py) 必须保证 `max_turns`、`error`、`interrupted`、`blocked` 都走显式 final terminal 出口
+- [engine.py](/Users/xyzjiao/AIProject/AIRUNTIME/src/runtime/turn_engine/engine.py) 必须保证 final terminal 之后不再产出任何 turn event
 
 ### 3F. `ATTEMPT_FINISHED` contract 必须写死，避免重新退回旧 `TERMINAL`
 
@@ -316,7 +316,7 @@ Alternatives considered:
 - 把所有 stop 后处理都搬进 `TurnEngine`。拒绝，因为 session file layout、resume artifact 和 transcript store 仍然是 session concern。
 - 保持当前 controller 从 transcript diff 推断 turn outcome。拒绝，因为这会让新的 recovery/budget 语义很难稳定。
 
-### 5A. turn terminal reason 与 session status projection 必须显式定义参考实现在 [query.ts](/Users/xyzjiao/AIProject/AIAgentRuntime/cc-src/query.ts#L646)、[query.ts](/Users/xyzjiao/AIProject/AIAgentRuntime/cc-src/query.ts#L996)、[query.ts](/Users/xyzjiao/AIProject/AIAgentRuntime/cc-src/query.ts#L1051)、[query.ts](/Users/xyzjiao/AIProject/AIAgentRuntime/cc-src/query.ts#L1175)、[query.ts](/Users/xyzjiao/AIProject/AIAgentRuntime/cc-src/query.ts#L1264)、[query.ts](/Users/xyzjiao/AIProject/AIAgentRuntime/cc-src/query.ts#L1279)、[query.ts](/Users/xyzjiao/AIProject/AIAgentRuntime/cc-src/query.ts#L1515)、[query.ts](/Users/xyzjiao/AIProject/AIAgentRuntime/cc-src/query.ts#L1520)、[query.ts](/Users/xyzjiao/AIProject/AIAgentRuntime/cc-src/query.ts#L1711) 中把 turn terminal reason 写得很明确。我们的 runtime 也需要同样明确，但把 turn terminal 与 session status 投影拆开。
+### 5A. turn terminal reason 与 session status projection 必须显式定义参考实现在 [query.ts](/Users/xyzjiao/AIProject/AIRUNTIME/cc-src/query.ts#L646)、[query.ts](/Users/xyzjiao/AIProject/AIRUNTIME/cc-src/query.ts#L996)、[query.ts](/Users/xyzjiao/AIProject/AIRUNTIME/cc-src/query.ts#L1051)、[query.ts](/Users/xyzjiao/AIProject/AIRUNTIME/cc-src/query.ts#L1175)、[query.ts](/Users/xyzjiao/AIProject/AIRUNTIME/cc-src/query.ts#L1264)、[query.ts](/Users/xyzjiao/AIProject/AIRUNTIME/cc-src/query.ts#L1279)、[query.ts](/Users/xyzjiao/AIProject/AIRUNTIME/cc-src/query.ts#L1515)、[query.ts](/Users/xyzjiao/AIProject/AIRUNTIME/cc-src/query.ts#L1520)、[query.ts](/Users/xyzjiao/AIProject/AIRUNTIME/cc-src/query.ts#L1711) 中把 turn terminal reason 写得很明确。我们的 runtime 也需要同样明确，但把 turn terminal 与 session status 投影拆开。
 
 第一阶段要求支持的 `TurnTerminalReason` 至少包括：
 
@@ -406,10 +406,10 @@ Why:
 - 这类布尔投影会把完全不同的恢复路径和用户含义压扁到一个状态里，host 无法做出正确动作。
 - 参考实现风格 runtime 的重点正是“终态原因显式化”，而不是让上层继续靠 heuristics 猜。
 
-第一阶段的实现落点必须直接对应到 [agent_execution_service.py](/Users/xyzjiao/AIProject/AIAgentRuntime/src/runtime/agent_execution_service.py#L202)：
+第一阶段的实现落点必须直接对应到 [agent_execution_service.py](/Users/xyzjiao/AIProject/AIRUNTIME/src/runtime/agent_execution_service.py#L202)：
 
-- [agent_execution_service.py](/Users/xyzjiao/AIProject/AIAgentRuntime/src/runtime/agent_execution_service.py#L202) 不能再使用 `turn_result.completed` 作为 child-run status 的主判断条件
-- [agent_execution_service.py](/Users/xyzjiao/AIProject/AIAgentRuntime/src/runtime/agent_execution_service.py#L202) 必须改成读取显式 `TurnTerminalReason`
+- [agent_execution_service.py](/Users/xyzjiao/AIProject/AIRUNTIME/src/runtime/agent_execution_service.py#L202) 不能再使用 `turn_result.completed` 作为 child-run status 的主判断条件
+- [agent_execution_service.py](/Users/xyzjiao/AIProject/AIRUNTIME/src/runtime/agent_execution_service.py#L202) 必须改成读取显式 `TurnTerminalReason`
 - 在保持现有 `AgentRunStatus` 枚举不扩展的前提下，最小正确映射应为：
 
 | Turn terminal reason | Child-run projection |
@@ -449,12 +449,12 @@ Why:
 
 | Area | Current implementation | Target contract | Impact |
 | --- | --- | --- | --- |
-| [engine.py](/Users/xyzjiao/AIProject/AIAgentRuntime/src/runtime/turn_engine/engine.py) event surface | `TERMINAL` 同时承担 attempt-final 与 turn-final 语义 | `TERMINAL` 只表示 turn-final，attempt 结束改走 `ATTEMPT_FINISHED` 或等价非终态载体 | host、tests、controller 都会误判 turn 已结束 |
-| [engine.py](/Users/xyzjiao/AIProject/AIAgentRuntime/src/runtime/turn_engine/engine.py) tool continuation | assistant 输出 `tool_use` 时仍先发 `TERMINAL(stop_reason=\"tool_use\")` | `tool_use` 只能是 attempt outcome，不得冒充 final terminal | continuation path 与终态 path 混淆 |
-| [engine.py](/Users/xyzjiao/AIProject/AIAgentRuntime/src/runtime/turn_engine/engine.py) max-turn exit | `while iteration < max_iterations` 落出后没有显式 final terminal | `max_turns` 必须产出唯一 final `TurnTerminalReason` | child-run / host 无法稳定观察到真实终态 |
-| [engine.py](/Users/xyzjiao/AIProject/AIAgentRuntime/src/runtime/turn_engine/engine.py) failure precedence | provider/model error 仍可能在 stop phase 被改写成 `blocked` | failure-class terminal 需要保留原语义，不能降级成 waiting/blocking | session 可能错误进入 `WAITING` |
-| [controller.py](/Users/xyzjiao/AIProject/AIAgentRuntime/src/runtime/session_runtime/controller.py) terminal consumption | 任意 `TERMINAL` 都会被当成当前 turn 的最终终态 | 只能消费 turn-final terminal；attempt outcome 不应驱动 session 投影 | session memory/persistence 会基于错误终态运行 |
-| [agent_execution_service.py](/Users/xyzjiao/AIProject/AIAgentRuntime/src/runtime/agent_execution_service.py#L202) child-run projection | `completed=False` 一律推断成 `MAX_TURNS` | child-run status 必须基于显式 `TurnTerminalReason` 映射 | `error` / `blocked` / `interrupted` 被错误记成 `max_turns` |
+| [engine.py](/Users/xyzjiao/AIProject/AIRUNTIME/src/runtime/turn_engine/engine.py) event surface | `TERMINAL` 同时承担 attempt-final 与 turn-final 语义 | `TERMINAL` 只表示 turn-final，attempt 结束改走 `ATTEMPT_FINISHED` 或等价非终态载体 | host、tests、controller 都会误判 turn 已结束 |
+| [engine.py](/Users/xyzjiao/AIProject/AIRUNTIME/src/runtime/turn_engine/engine.py) tool continuation | assistant 输出 `tool_use` 时仍先发 `TERMINAL(stop_reason=\"tool_use\")` | `tool_use` 只能是 attempt outcome，不得冒充 final terminal | continuation path 与终态 path 混淆 |
+| [engine.py](/Users/xyzjiao/AIProject/AIRUNTIME/src/runtime/turn_engine/engine.py) max-turn exit | `while iteration < max_iterations` 落出后没有显式 final terminal | `max_turns` 必须产出唯一 final `TurnTerminalReason` | child-run / host 无法稳定观察到真实终态 |
+| [engine.py](/Users/xyzjiao/AIProject/AIRUNTIME/src/runtime/turn_engine/engine.py) failure precedence | provider/model error 仍可能在 stop phase 被改写成 `blocked` | failure-class terminal 需要保留原语义，不能降级成 waiting/blocking | session 可能错误进入 `WAITING` |
+| [controller.py](/Users/xyzjiao/AIProject/AIRUNTIME/src/runtime/session_runtime/controller.py) terminal consumption | 任意 `TERMINAL` 都会被当成当前 turn 的最终终态 | 只能消费 turn-final terminal；attempt outcome 不应驱动 session 投影 | session memory/persistence 会基于错误终态运行 |
+| [agent_execution_service.py](/Users/xyzjiao/AIProject/AIRUNTIME/src/runtime/agent_execution_service.py#L202) child-run projection | `completed=False` 一律推断成 `MAX_TURNS` | child-run status 必须基于显式 `TurnTerminalReason` 映射 | `error` / `blocked` / `interrupted` 被错误记成 `max_turns` |
 | `TurnResult` 聚合 contract | `attempts[]` 与 `stop_reason` 都依赖旧 `TERMINAL` 事件面 | `attempts[]` attempt-scoped，`stop_reason` turn-final only | non-streaming helper 延续旧歧义 |
 
 ### 6. 增加统一的 budget / recovery policy surface
@@ -536,13 +536,13 @@ Alternatives considered:
 
 这些偏差不能乱序修复，否则很容易出现半迁移状态。推荐实施顺序固定为：
 
-1. 先改 [engine.py](/Users/xyzjiao/AIProject/AIAgentRuntime/src/runtime/turn_engine/engine.py) 的事件面：
+1. 先改 [engine.py](/Users/xyzjiao/AIProject/AIRUNTIME/src/runtime/turn_engine/engine.py) 的事件面：
    收回 host-facing `TERMINAL`，引入 `ATTEMPT_FINISHED` 或等价 attempt-level carrier。
-2. 再改 [engine.py](/Users/xyzjiao/AIProject/AIAgentRuntime/src/runtime/turn_engine/engine.py) 的退出路径：
+2. 再改 [engine.py](/Users/xyzjiao/AIProject/AIRUNTIME/src/runtime/turn_engine/engine.py) 的退出路径：
    保证 `max_turns`、`error`、`interrupted`、`blocked` 全部产出唯一 final terminal。
 3. 再改 `TurnResult` 聚合：
    把 `attempts[]` 与 `stop_reason` 的层级语义拆开，清理 `completed` 的派生规则。
-4. 再改 [controller.py](/Users/xyzjiao/AIProject/AIAgentRuntime/src/runtime/session_runtime/controller.py) 和 [agent_execution_service.py](/Users/xyzjiao/AIProject/AIAgentRuntime/src/runtime/agent_execution_service.py#L202) 的状态投影：
+4. 再改 [controller.py](/Users/xyzjiao/AIProject/AIRUNTIME/src/runtime/session_runtime/controller.py) 和 [agent_execution_service.py](/Users/xyzjiao/AIProject/AIRUNTIME/src/runtime/agent_execution_service.py#L202) 的状态投影：
    统一切到 terminal-reason-driven classification。
 5. 最后迁 host adapter、golden tests、background agent flow、非流式 helper 断言。
 
@@ -574,7 +574,7 @@ Rollback strategy:
 当前已知的主要 breaking surface 包括：
 
 - 所有直接消费 `TurnStreamEventType.TERMINAL` 的 host/client
-- [controller.py](/Users/xyzjiao/AIProject/AIAgentRuntime/src/runtime/session_runtime/controller.py) 的 turn terminal 消费逻辑
+- [controller.py](/Users/xyzjiao/AIProject/AIRUNTIME/src/runtime/session_runtime/controller.py) 的 turn terminal 消费逻辑
 - `run_turn()` 的调用方对 `TurnResult.stop_reason` 和 `TurnResult.attempts[]` 的假设
 - background child-run / run store / notification flow
 - `test_query_turn_stream.py`、`test_query_runtime_protocol_golden.py`、`test_streaming_tool_runtime.py` 等锁定旧事件语义的测试
