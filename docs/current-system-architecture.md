@@ -1,6 +1,6 @@
 # 当前系统架构
 
-本文档基于截至 `2026-04-27` 的仓库实现、`openspec/changes/archive/` 中的历史变更，以及 `docs/` 中已有的补充约定整理当前系统架构。当前 OpenSpec 没有 active change，因此本文描述的是系统的收敛态实现，而不是某个提案中的目标态。
+本文档基于截至 `2026-04-28` 的仓库实现、`openspec/changes/archive/` 中的历史变更，以及 `docs/` 中已有的补充约定整理当前系统架构。自 `2026-04-28` 起，仓库已经重新打开 active change `complete-runtime-microkernel-closure-and-hardening`，因此本文会同时区分两层语义：一层是已经落地的收敛态实现，另一层是仍在收尾的 microkernel closure / hardening 工作。
 
 ## 1. 文档目的
 
@@ -909,15 +909,45 @@ workflow 协议层现在也已经从 transport 层显式拆开：
 - child-run observability
 - layered memory runtime v2
 - runtime-owned team control plane + message bus + teammate shell
+- manifest-backed package assembly + protocol-only conformance gate
 
-仍应视为“契约已立、实现深度仍可继续加厚”的部分包括：
+也就是说，**主骨架其实已经完成**。现在还没法把整个目标图宣布为“彻底完成”，不是因为 kernel / session / turn spine 还没立住，而是因为还差最后一层 **closure / hardening**。
 
-- `WORKTREE` 和 `REMOTE` isolation 目前仍偏 stub
-- transcript 和 child runs 默认不是 durable store
-- provider route contract 已完整，但具体 provider 仍依赖外部注入
-- team mode 已经有正式 control plane / bus / tool contract，但 teammate 执行仍然复用共享 execution core
+### 14.1 为什么做了两轮、十来个 change 还没算真正收尾
 
-### 14.1 边界收敛 gate
+当前剩余问题已经不再是“大方向没实现”，而是 3 类收尾问题还没有一次性做完：
+
+1. **compatibility retirement 还没终局化**
+   - `TaskManager` 仍保留为 compatibility facade
+   - shared `runtime_context` 仍保留 legacy bridge 语义
+   - `RuntimeServices.memory`、`RuntimeServices.compaction`、`RuntimeServices.isolation`、`RuntimeServices.teammates` 仍然存在 compatibility projection
+   - 少量 team / agent-owned hook legacy authoring surface 仍然是“可用但不应再扩”的状态
+   - 这意味着主路径虽然已经 protocol-only，但默认公开面还没有完全从 legacy surface 退干净
+
+2. **mechanism package 的实现深度还没补齐**
+   - `WORKTREE` 和 `REMOTE` isolation 目前仍偏 stub
+   - 也就是说，runtime 已经有 isolation control plane contract，但 first-party mechanism package 还没有把这两类 mode 做成 production-grade semantics
+   - 这是目前最明显的“架构对了、实现还不够硬”的残留点
+
+3. **persistence profile / recovery story 还没产品化收口**
+   - transcript 和 child runs 默认不一定 durable
+   - memory 已经有较强的 durable story，但 child-run history 还没有同等级的 first-party bundled durable path
+   - distribution 之间确实已经有差异化装配，但“哪种 runtime shape 默认 durable 到什么程度”还没有被单独提升成清晰的 runtime product contract
+
+还有一类问题需要单独说明：
+
+- **provider / package ecosystem 仍有刻意保留的非目标项**
+  - provider route contract 已完整，但具体 provider 仍依赖外部注入
+  - package install / publish、remote discovery、Python environment package management 仍然不在这条收尾线里
+  - 这些点会影响“平台生态是否完整”，但**不是**当前 target graph 成立与否的最后 blocker
+
+所以，前面十来个 change 没有白做；它们已经把“包通过协议接入微内核”这件事的主结构搭起来了。真正还差的是：
+
+- 把 legacy 残留变成明确 retirement policy，而不是继续长期悬着
+- 把 stub mechanism 补成 honest / hardened implementation
+- 把 durability 从“可以手工接”升级成“有清晰 first-party profile”
+
+### 14.2 边界收敛 gate
 
 当前仍保留少量 compat bridge，但收敛原则已经稳定：
 
@@ -925,6 +955,26 @@ workflow 协议层现在也已经从 transport 层显式拆开：
 - 共享 `runtime_context` 只应作为 legacy 输入桥接或只读 compat snapshot
 - 任何新增 shared `runtime_context` authoritative write 都应视为 rollout blocker
 - `TaskManager` 和共享 `runtime_context` 都应被视为 owner-layer boundary leak 的 compat path，而不只是普通旧 API
+- protocol-only gate 为绿，并不自动等于 rollout terminal complete；如果 compatibility projection、stub isolation、durability profile 还没收口，仍只能算“结构完成、收尾未完”
+
+### 14.3 当前 active change 的收尾范围
+
+当前 active change `complete-runtime-microkernel-closure-and-hardening` 专门负责把上面剩余的 3 类问题一次性收口：
+
+- compatibility retirement
+  - 把 legacy surface inventory、legacy mode、migration target 和 closure status 单独发布出来
+- persistence profiles
+  - 把 transcript / child-run durability 提升成显式 runtime contract，而不是隐含默认值
+- isolation hardening
+  - 把 `worktree` 做成真实 local lease，把 `remote` 从假成功 stub 改成 adapter-backed 或 structured not-available
+- closure metadata + conformance
+  - 把“当前 runtime 还剩多少 legacy、durability 到什么程度、isolation 是否 hardened”变成可查询、可测试、可 gate 的输出
+
+这个 change 完成之前，更准确的判断应该是：
+
+- **目标图主干：已实现**
+- **协议接入面：已实现**
+- **terminal closure / hardening：进行中**
 
 ## 15. 历史演化主线
 
