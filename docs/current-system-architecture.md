@@ -1,6 +1,6 @@
 # 当前系统架构
 
-本文档基于截至 `2026-04-28` 的仓库实现、`openspec/changes/archive/` 中的历史变更，以及 `docs/` 中已有的补充约定整理当前系统架构。自 `2026-04-28` 起，仓库已经重新打开 active change `complete-runtime-microkernel-closure-and-hardening`，因此本文会同时区分两层语义：一层是已经落地的收敛态实现，另一层是仍在收尾的 microkernel closure / hardening 工作。
+本文档基于截至 `2026-04-28` 的仓库实现、`openspec/changes/archive/` 中的历史变更，以及 `docs/` 中已有的补充约定整理当前系统架构。`complete-runtime-microkernel-closure-and-hardening` 已经把 microkernel closure / hardening 这条收尾线补齐，因此本文会同时区分两层语义：一层是收尾前的历史语境，另一层是当前已经落地的收敛态实现。
 
 ## 1. 文档目的
 
