@@ -1,16 +1,16 @@
 import asyncio
 from pathlib import Path
 
-from runtime.contracts import MessageRole, RuntimeMessage, ToolResultBlock, ToolUseBlock
-from runtime.registries import ToolRegistry
-from runtime.session_runtime import (
+from weavert.contracts import MessageRole, RuntimeMessage, ToolResultBlock, ToolUseBlock
+from weavert.registries import ToolRegistry
+from weavert.session_runtime import (
     FileTranscriptStore,
     InboundEvent,
     InboundEventType,
     SessionController,
 )
-from runtime.turn_engine import ModelStreamEvent, ModelStreamEventType, TurnEngine, TurnStreamEventType
-from runtime.turn_engine.message_protocol import normalize_messages_for_api
+from weavert.turn_engine import ModelStreamEvent, ModelStreamEventType, TurnEngine, TurnStreamEventType
+from weavert.turn_engine.message_protocol import normalize_messages_for_api
 
 from .runtime_protocol_harness import (
     InterruptibleCaptureModelClient,

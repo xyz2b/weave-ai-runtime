@@ -2,10 +2,10 @@ import asyncio
 import time
 from pathlib import Path
 
-import runtime.tool_runtime as tool_runtime_module
-from runtime.builtins import tool_impls as builtins_tool_impls
-from runtime.permissions import PermissionContext
-from runtime.definitions import (
+import weavert.tool_runtime as tool_runtime_module
+from weavert.builtins import tool_impls as builtins_tool_impls
+from weavert.permissions import PermissionContext
+from weavert.definitions import (
     AgentDefinition,
     PermissionBehavior,
     PermissionDecision,
@@ -14,9 +14,9 @@ from runtime.definitions import (
     ToolTraits,
     ValidationOutcome,
 )
-from runtime.registries import ToolRegistry
-from runtime.runtime_services import RuntimeServices
-from runtime.tool_runtime import (
+from weavert.registries import ToolRegistry
+from weavert.runtime_services import RuntimeServices
+from weavert.tool_runtime import (
     ToolCall,
     ToolCallStatus,
     ToolContext,

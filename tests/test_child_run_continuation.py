@@ -1,17 +1,17 @@
 import asyncio
 from pathlib import Path
 
-from runtime.agent_execution import AgentExecutionSpec, AgentRunStatus, InMemoryChildRunStore, SpawnMode
-from runtime.agent_execution_service import AgentExecutionService
-from runtime.agent_runtime import AgentInvocation
-from runtime.contracts import MessageRole, RuntimeMessage
-from runtime.definitions import AgentDefinition, IsolationMode
-from runtime.isolation import IsolationLease
-from runtime.registries import AgentRegistry, SkillRegistry, ToolRegistry
-from runtime.runtime_services import RuntimeServices
-from runtime.session_runtime import FileTranscriptStore, SessionController
-from runtime.session_runtime.models import SessionStatus
-from runtime.turn_engine import ModelRequest, ModelStreamEvent, ModelStreamEventType, TurnEngine, TurnStreamEventType
+from weavert.agent_execution import AgentExecutionSpec, AgentRunStatus, InMemoryChildRunStore, SpawnMode
+from weavert.agent_execution_service import AgentExecutionService
+from weavert.agent_runtime import AgentInvocation
+from weavert.contracts import MessageRole, RuntimeMessage
+from weavert.definitions import AgentDefinition, IsolationMode
+from weavert.isolation import IsolationLease
+from weavert.registries import AgentRegistry, SkillRegistry, ToolRegistry
+from weavert.runtime_services import RuntimeServices
+from weavert.session_runtime import FileTranscriptStore, SessionController
+from weavert.session_runtime.models import SessionStatus
+from weavert.turn_engine import ModelRequest, ModelStreamEvent, ModelStreamEventType, TurnEngine, TurnStreamEventType
 
 
 class FakeModelClient:

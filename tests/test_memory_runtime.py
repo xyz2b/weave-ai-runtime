@@ -7,24 +7,24 @@ from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from runtime.builtins import load_builtin_pack
-from runtime.contracts import MessageRole, RuntimeMessage
-from runtime.definitions import (
+from weavert.builtins import load_builtin_pack
+from weavert.contracts import MessageRole, RuntimeMessage
+from weavert.definitions import (
     AgentDefinition,
     MemoryScope,
     PermissionBehavior,
     PermissionDecision,
 )
-from runtime.execution_policy import build_root_execution_policy, resolve_agent_execution_policy
-from runtime.hooks import RuntimeHookPhase
-from runtime.jobs import (
+from weavert.execution_policy import build_root_execution_policy, resolve_agent_execution_policy
+from weavert.hooks import RuntimeHookPhase
+from weavert.jobs import (
     DefaultJobService,
     FileJobStore,
     JobNotStoppableError,
     JobScopeFilter,
     JobStatus,
 )
-from runtime.memory import (
+from weavert.memory import (
     MemoryEntry,
     MemoryManager,
     MemoryManagerService,
@@ -33,22 +33,22 @@ from runtime.memory import (
     MemoryRetrievalRankedHit,
     MemoryTurnResult,
 )
-from runtime.memory.schema import serialize_memory_artifact
-from runtime.permissions import PermissionContext
-from runtime.registries import AgentRegistry, ToolRegistry
-from runtime.runtime_kernel import BuiltinPackConfig, RuntimeConfig, assemble_runtime
-from runtime.runtime_kernel import RuntimeDistribution
-from runtime.runtime_services import RuntimeServices
-from runtime.session_runtime import (
+from weavert.memory.schema import serialize_memory_artifact
+from weavert.permissions import PermissionContext
+from weavert.registries import AgentRegistry, ToolRegistry
+from weavert.runtime_kernel import BuiltinPackConfig, RuntimeConfig, assemble_runtime
+from weavert.runtime_kernel import RuntimeDistribution
+from weavert.runtime_services import RuntimeServices
+from weavert.session_runtime import (
     InMemoryTranscriptStore,
     InboundEvent,
     InboundEventType,
     SessionController,
     SessionStatus,
 )
-from runtime.tasking import TaskManager, TaskStatus
-from runtime.tool_runtime import ToolCall, ToolCallStatus, ToolContext, ToolScheduler
-from runtime.turn_engine import (
+from weavert.tasking import TaskManager, TaskStatus
+from weavert.tool_runtime import ToolCall, ToolCallStatus, ToolContext, ToolScheduler
+from weavert.turn_engine import (
     ContextAssembler,
     ModelRequest,
     ModelStreamEvent,
@@ -3325,6 +3325,9 @@ def test_phase_one_and_two_contracts_hold_with_consolidation_enabled(tmp_path: P
 def _load_reference_memory_fixture(tmp_path: Path) -> Path:
     project_root = tmp_path / "project"
     shutil.copytree(_fixture_root(), project_root, dirs_exist_ok=True)
+    legacy_roots = sorted(project_root.rglob(".runtime"), key=lambda path: len(path.parts), reverse=True)
+    for legacy_root in legacy_roots:
+        legacy_root.rename(legacy_root.with_name(".weavert"))
     return project_root
 
 
@@ -3333,7 +3336,7 @@ def _fixture_root() -> Path:
 
 
 def _user_message(message_id: str, text: str):
-    from runtime.contracts import MessageRole, RuntimeMessage
+    from weavert.contracts import MessageRole, RuntimeMessage
 
     return RuntimeMessage(message_id=message_id, role=MessageRole.USER, content=text)
 

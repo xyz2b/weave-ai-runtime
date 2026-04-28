@@ -4,13 +4,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from runtime.agent_execution import AgentRunRecord, AgentRunStatus, SpawnMode
-from runtime.child_result_projection import summarize_child_run_record
-from runtime.agent_execution_service import _agent_run_status_from_turn_result
-from runtime.agent_runtime import AgentInvocation, AgentRuntime
-from runtime.context_window import ModelContextWindowProfile, RouteContextWindowPolicy, TokenEstimationHint
-from runtime.contracts import MessageRole, RuntimeMessage
-from runtime.definitions import (
+from weavert.agent_execution import AgentRunRecord, AgentRunStatus, SpawnMode
+from weavert.child_result_projection import summarize_child_run_record
+from weavert.agent_execution_service import _agent_run_status_from_turn_result
+from weavert.agent_runtime import AgentInvocation, AgentRuntime
+from weavert.context_window import ModelContextWindowProfile, RouteContextWindowPolicy, TokenEstimationHint
+from weavert.contracts import MessageRole, RuntimeMessage
+from weavert.definitions import (
     AgentDefinition,
     IsolationMode,
     PermissionBehavior,
@@ -18,13 +18,13 @@ from runtime.definitions import (
     ToolDefinition,
     ToolTraits,
 )
-from runtime.execution_policy import ChildResultProjectionMode, resolve_delegation_policy
-from runtime.hooks import RuntimeHookPhase
-from runtime.registries import AgentRegistry, SkillRegistry, ToolRegistry
-from runtime.runtime_kernel import ModelProviderBinding, ModelRouteBinding
-from runtime.runtime_services import RuntimeServices
-from runtime.tasking import TaskManager, TaskStatus
-from runtime.turn_engine import (
+from weavert.execution_policy import ChildResultProjectionMode, resolve_delegation_policy
+from weavert.hooks import RuntimeHookPhase
+from weavert.registries import AgentRegistry, SkillRegistry, ToolRegistry
+from weavert.runtime_kernel import ModelProviderBinding, ModelRouteBinding
+from weavert.runtime_services import RuntimeServices
+from weavert.tasking import TaskManager, TaskStatus
+from weavert.turn_engine import (
     ModelInvocationMode,
     ModelRequest,
     ModelStreamEvent,

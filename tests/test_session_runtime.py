@@ -3,31 +3,31 @@ from pathlib import Path
 
 import pytest
 
-from runtime.contracts import (
+from weavert.contracts import (
     MessageAttachment,
     MessageRole,
     RuntimeMessage,
     ToolResultBlock,
     ToolUseBlock,
 )
-from runtime.definitions import AgentDefinition, ToolDefinition, ToolTraits
-from runtime.hooks import RuntimeHookPhase
-from runtime.registries import ToolRegistry
-from runtime.runtime_package_protocols import (
+from weavert.definitions import AgentDefinition, ToolDefinition, ToolTraits
+from weavert.hooks import RuntimeHookPhase
+from weavert.registries import ToolRegistry
+from weavert.runtime_package_protocols import (
     IngressReceiptHandlerBinding,
     PackageLifecycleParticipant,
     PackageLifecyclePhase,
     PackageOwnership,
 )
-from runtime.runtime_services import RuntimeServices
-from runtime.session_runtime import (
+from weavert.runtime_services import RuntimeServices
+from weavert.session_runtime import (
     FileTranscriptStore,
     InboundEvent,
     InboundEventType,
     SessionController,
 )
-from runtime.session_runtime.models import SessionStatus
-from runtime.turn_engine import (
+from weavert.session_runtime.models import SessionStatus
+from weavert.turn_engine import (
     ModelRequest,
     ModelStreamEvent,
     ModelStreamEventType,

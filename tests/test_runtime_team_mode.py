@@ -1,7 +1,7 @@
 import asyncio
 from pathlib import Path
 
-from runtime import (
+from weavert import (
     AgentDefinition,
     BuiltinPackConfig,
     PermissionBehavior,
@@ -15,8 +15,8 @@ from runtime import (
     TeammateOrchestrationConfig,
     assemble_runtime,
 )
-from runtime.tool_runtime import ToolCall, ToolCallStatus, ToolContext, ToolScheduler
-from runtime.turn_engine import ModelRequest, ModelStreamEvent, ModelStreamEventType
+from weavert.tool_runtime import ToolCall, ToolCallStatus, ToolContext, ToolScheduler
+from weavert.turn_engine import ModelRequest, ModelStreamEvent, ModelStreamEventType
 
 
 class FakeModelClient:

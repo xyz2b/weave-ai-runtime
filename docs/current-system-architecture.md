@@ -887,7 +887,7 @@ workflow 协议层现在也已经从 transport 层显式拆开：
 - `RuntimeTeamWorkflowService`
   - 持有 durable workflow record、deadline、timeout / forced-close、responder validation 与 terminal outcome
   - `permission` 与 `shutdown` 复用同一个 request/response + stable `workflow_id` 协议形状
-  - `src/runtime/team_workflows.py` 提供集中式 schema / parse / serialize helper
+  - `src/weavert/team_workflows.py` 提供集中式 schema / parse / serialize helper
 - `RuntimeTeamMessageBus`
   - 只负责投递 direct / broadcast / control envelope
   - workflow envelope 复用同一个 `workflow_id` 作为 correlation id，但 transport 不是 workflow authority source of truth
@@ -1035,7 +1035,7 @@ workflow 协议层现在也已经从 transport 层显式拆开：
 
 本文基于以下材料整理：
 
-- `src/runtime/` 当前实现
+- `src/weavert/` 当前实现
 - `docs/runtime-control-plane-extension-guide.md`
 - `docs/layered-memory-runtime-v2.md`
 - `openspec/specs/` 中关于 ingress、prompt/private boundary、lifecycle ownership、memory 的规格
@@ -1280,40 +1280,40 @@ flowchart TB
 
 | 模块 | 主要职责 |
 |---|---|
-| `src/runtime/runtime_kernel/kernel.py` | runtime 装配总入口，负责 kernel、assembly、services、host binding、session helpers |
-| `src/runtime/runtime_kernel/config.py` | runtime 配置模型，包括 definition sources、host bindings、model routes |
-| `src/runtime/runtime_services/__init__.py` | control-plane spine，统一收口 hooks、permissions、memory、host、tasks、transcript |
-| `src/runtime/session_runtime/controller.py` | session 生命周期、event queue、transcript 持久化、session memory 后处理 |
-| `src/runtime/session_runtime/ingress.py` | ingress 协议与 admission 归一化 |
-| `src/runtime/turn_engine/engine.py` | turn 主状态机、request 组装、model invocation、tool continuation、recovery |
-| `src/runtime/turn_engine/control_plane.py` | context control plane 与 recovery 相关 contract 和实现 |
-| `src/runtime/turn_engine/composer.py` | prompt-safe context 组装 |
-| `src/runtime/invocation_catalog.py` | invocation visibility、path-aware skill 解析、catalog diagnostics |
-| `src/runtime/tool_runtime.py` | tool context、tool scheduler、tool execution facade |
-| `src/runtime/tool_executors.py` | 根据 provider capabilities 选择 tool executor tier |
-| `src/runtime/tool_orchestration.py` | tool call observe / resolve / execute / replay 的生命周期编排 |
-| `src/runtime/skill_runtime.py` | skill activation、inline/fork 语义、shell expansion、skill policy |
-| `src/runtime/agent_runtime.py` | agent invocation facade，与 turn engine 和 skill runtime 串联 |
-| `src/runtime/agent_execution_service.py` | child agent 执行控制面、route resolution、run record、isolation 准备 |
-| `src/runtime/memory/manager.py` | layered memory runtime v2 的 retrieval、extraction、consolidation 主体 |
-| `src/runtime/team_control_plane.py` | runtime-owned team registry、leader binding、persistent member records、runner manager |
-| `src/runtime/team_message_bus.py` | structured team message envelope、durable bus、leader ingress / teammate routing、team host events |
-| `src/runtime/teammate_orchestration/service.py` | persistent teammate shell、mailbox 消费、permission bridge、projection |
-| `src/runtime/hosts/base.py` | host contract、callback host、bound host runtime、managed session ownership |
+| `src/weavert/runtime_kernel/kernel.py` | runtime 装配总入口，负责 kernel、assembly、services、host binding、session helpers |
+| `src/weavert/runtime_kernel/config.py` | runtime 配置模型，包括 definition sources、host bindings、model routes |
+| `src/weavert/runtime_services/__init__.py` | control-plane spine，统一收口 hooks、permissions、memory、host、tasks、transcript |
+| `src/weavert/session_runtime/controller.py` | session 生命周期、event queue、transcript 持久化、session memory 后处理 |
+| `src/weavert/session_runtime/ingress.py` | ingress 协议与 admission 归一化 |
+| `src/weavert/turn_engine/engine.py` | turn 主状态机、request 组装、model invocation、tool continuation、recovery |
+| `src/weavert/turn_engine/control_plane.py` | context control plane 与 recovery 相关 contract 和实现 |
+| `src/weavert/turn_engine/composer.py` | prompt-safe context 组装 |
+| `src/weavert/invocation_catalog.py` | invocation visibility、path-aware skill 解析、catalog diagnostics |
+| `src/weavert/tool_runtime.py` | tool context、tool scheduler、tool execution facade |
+| `src/weavert/tool_executors.py` | 根据 provider capabilities 选择 tool executor tier |
+| `src/weavert/tool_orchestration.py` | tool call observe / resolve / execute / replay 的生命周期编排 |
+| `src/weavert/skill_runtime.py` | skill activation、inline/fork 语义、shell expansion、skill policy |
+| `src/weavert/agent_runtime.py` | agent invocation facade，与 turn engine 和 skill runtime 串联 |
+| `src/weavert/agent_execution_service.py` | child agent 执行控制面、route resolution、run record、isolation 准备 |
+| `src/weavert/memory/manager.py` | layered memory runtime v2 的 retrieval、extraction、consolidation 主体 |
+| `src/weavert/team_control_plane.py` | runtime-owned team registry、leader binding、persistent member records、runner manager |
+| `src/weavert/team_message_bus.py` | structured team message envelope、durable bus、leader ingress / teammate routing、team host events |
+| `src/weavert/teammate_orchestration/service.py` | persistent teammate shell、mailbox 消费、permission bridge、projection |
+| `src/weavert/hosts/base.py` | host contract、callback host、bound host runtime、managed session ownership |
 
 ## 19. 推荐阅读顺序
 
 如果要最快建立对当前系统的准确心智模型，推荐按这个顺序读代码：
 
-1. `src/runtime/runtime_kernel/kernel.py`
-2. `src/runtime/runtime_services/__init__.py`
-3. `src/runtime/session_runtime/controller.py`
-4. `src/runtime/session_runtime/ingress.py`
-5. `src/runtime/turn_engine/engine.py`
-6. `src/runtime/turn_engine/control_plane.py`
-7. `src/runtime/tool_orchestration.py`
-8. `src/runtime/skill_runtime.py`
-9. `src/runtime/agent_execution_service.py`
-10. `src/runtime/memory/manager.py`
+1. `src/weavert/runtime_kernel/kernel.py`
+2. `src/weavert/runtime_services/__init__.py`
+3. `src/weavert/session_runtime/controller.py`
+4. `src/weavert/session_runtime/ingress.py`
+5. `src/weavert/turn_engine/engine.py`
+6. `src/weavert/turn_engine/control_plane.py`
+7. `src/weavert/tool_orchestration.py`
+8. `src/weavert/skill_runtime.py`
+9. `src/weavert/agent_execution_service.py`
+10. `src/weavert/memory/manager.py`
 
 这个顺序的原因是：先建立装配和 ownership，再进入 turn 主循环，最后再看 tool、skill、agent、memory 这些横切能力如何挂接到主骨架。

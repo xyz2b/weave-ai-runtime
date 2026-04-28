@@ -105,7 +105,7 @@ class InMemoryTeammateMailbox:
         retry_backoff_ms: int = 0,
         root: Path | None = None,
     ) -> None:
-        self._root = (root or (Path.cwd() / ".runtime-in-memory" / "teammates")).resolve()
+        self._root = (root or (Path.cwd() / ".weavert-in-memory" / "teammates")).resolve()
         self._default_claim_lease_ms = default_claim_lease_ms
         self._default_retry_max_attempts = default_retry_max_attempts
         self._retry_backoff_ms = max(retry_backoff_ms, 0)

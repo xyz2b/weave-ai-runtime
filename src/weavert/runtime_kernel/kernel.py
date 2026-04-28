@@ -412,7 +412,7 @@ class RuntimeAssembly:
         return self.services.hook_bus.register_request(
             request,
             source_kind=HookSourceKind.RUNTIME_CONFIG,
-            owner=f"runtime:{self.kernel.config.runtime_id}",
+            owner=f"weavert:{self.kernel.config.runtime_id}",
             source_ref=self.kernel.config.runtime_id,
             default_scope_lifetime=HookScopeLifetime.SESSION_TEMPLATE,
         )
@@ -1893,7 +1893,7 @@ def _build_runtime_services(kernel: RuntimeKernel) -> RuntimeServices:
         services.hook_bus.register_document(
             hooks=kernel.config.hooks,
             source_kind=HookSourceKind.RUNTIME_CONFIG,
-            owner=f"runtime:{kernel.config.runtime_id}",
+            owner=f"weavert:{kernel.config.runtime_id}",
             source_ref=kernel.config.runtime_id,
             default_scope_lifetime=HookScopeLifetime.SESSION_TEMPLATE,
         )

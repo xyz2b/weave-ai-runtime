@@ -337,7 +337,7 @@ weavert = assemble_runtime(
 from weavert.runtime_package_protocols import build_provider_only_invocation_package_manifest
 
 provider_manifest = build_provider_only_invocation_package_manifest(
-    name="runtime-provider-only",
+    name="weavert-provider-only",
     provider_name="repo-commands",
     provider=repo_provider,
 )
@@ -345,7 +345,7 @@ provider_manifest = build_provider_only_invocation_package_manifest(
 weavert = assemble_runtime(
     RuntimeConfig(
         extra_package_manifests=(provider_manifest,),
-        requested_packages={"runtime-provider-only"},
+        requested_packages={"weavert-provider-only"},
     )
 )
 ```

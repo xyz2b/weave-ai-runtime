@@ -1,18 +1,18 @@
 import asyncio
 
-from runtime.compaction import CompactionPolicy, CompactionResult, evaluate_context_pressure
-from runtime.contracts import MessageRole, PromptContextEnvelope, RuntimePrivateContext, TextBlock, ToolResultBlock
-from runtime.definitions import AgentDefinition, ToolDefinition, ToolTraits
-from runtime.registries import ToolRegistry
-from runtime.runtime_package_protocols import (
+from weavert.compaction import CompactionPolicy, CompactionResult, evaluate_context_pressure
+from weavert.contracts import MessageRole, PromptContextEnvelope, RuntimePrivateContext, TextBlock, ToolResultBlock
+from weavert.definitions import AgentDefinition, ToolDefinition, ToolTraits
+from weavert.registries import ToolRegistry
+from weavert.runtime_package_protocols import (
     CapabilityBinding,
     ContextContributorBinding,
     ContextContributorStage,
     PackageOwnership,
     RuntimeCapabilityKey,
 )
-from runtime.runtime_services import RuntimeServices, SidecarContributionResult
-from runtime.turn_engine import (
+from weavert.runtime_services import RuntimeServices, SidecarContributionResult
+from weavert.turn_engine import (
     ContextAssembler,
     ModelRequest,
     ModelStreamEvent,

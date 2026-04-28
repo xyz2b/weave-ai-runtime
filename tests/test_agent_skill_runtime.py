@@ -4,9 +4,9 @@ from pathlib import Path
 
 import pytest
 
-from runtime.agent_runtime import AgentInvocation, AgentRuntime
-from runtime.contracts import MessageRole, RuntimeMessage, ToolResultBlock
-from runtime.definitions import (
+from weavert.agent_runtime import AgentInvocation, AgentRuntime
+from weavert.contracts import MessageRole, RuntimeMessage, ToolResultBlock
+from weavert.definitions import (
     AgentDefinition,
     DefinitionOrigin,
     DefinitionSource,
@@ -19,11 +19,11 @@ from runtime.definitions import (
     ToolDefinition,
     ToolTraits,
 )
-from runtime.hooks import RuntimeHookPhase
-from runtime.isolation import BaseIsolationAdapter, IsolationManager, IsolationRequest
-from runtime.permissions import PermissionTarget
-from runtime.registries import AgentRegistry, SkillRegistry, ToolRegistry
-from runtime.runtime_kernel import (
+from weavert.hooks import RuntimeHookPhase
+from weavert.isolation import BaseIsolationAdapter, IsolationManager, IsolationRequest
+from weavert.permissions import PermissionTarget
+from weavert.registries import AgentRegistry, SkillRegistry, ToolRegistry
+from weavert.runtime_kernel import (
     BuiltinPackConfig,
     DefinitionSourcePaths,
     ModelRouteBinding,
@@ -31,11 +31,11 @@ from runtime.runtime_kernel import (
     RuntimeDistribution,
     assemble_runtime,
 )
-from runtime.runtime_services import RuntimeServices
-from runtime.skill_runtime import SkillExecutor
-from runtime.tasking import TaskManager
-from runtime.tool_runtime import ToolCall, ToolCallStatus, ToolContext, ToolScheduler
-from runtime.turn_engine import (
+from weavert.runtime_services import RuntimeServices
+from weavert.skill_runtime import SkillExecutor
+from weavert.tasking import TaskManager
+from weavert.tool_runtime import ToolCall, ToolCallStatus, ToolContext, ToolScheduler
+from weavert.turn_engine import (
     ModelRequest,
     ModelStreamEvent,
     ModelStreamEventType,

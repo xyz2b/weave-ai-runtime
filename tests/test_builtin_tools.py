@@ -1,17 +1,17 @@
 import asyncio
 from pathlib import Path
 
-from runtime.builtins import load_builtin_pack
-from runtime.definitions import (
+from weavert.builtins import load_builtin_pack
+from weavert.definitions import (
     AgentDefinition,
     PermissionBehavior,
     PermissionDecision,
     SkillDefinition,
 )
-from runtime.registries import AgentRegistry, SkillRegistry, ToolRegistry
-from runtime.runtime_services import RuntimeServices
-from runtime.tasking import TaskManager, TaskStatus
-from runtime.tool_runtime import ToolCall, ToolCallStatus, ToolContext, ToolScheduler
+from weavert.registries import AgentRegistry, SkillRegistry, ToolRegistry
+from weavert.runtime_services import RuntimeServices
+from weavert.tasking import TaskManager, TaskStatus
+from weavert.tool_runtime import ToolCall, ToolCallStatus, ToolContext, ToolScheduler
 
 
 class FakeHeaders:
@@ -124,7 +124,7 @@ def test_builtin_external_orchestration_and_task_tools(tmp_path: Path, monkeypat
             )
         return FakeResponse("fetch body")
 
-    monkeypatch.setattr("runtime.builtins.tool_impls.urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("weavert.builtins.tool_impls.urllib.request.urlopen", fake_urlopen)
     context.task_manager.create(
         "job-1",
         title="background-check",

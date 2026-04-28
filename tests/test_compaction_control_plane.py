@@ -1,19 +1,19 @@
 import asyncio
 from pathlib import Path
 
-from runtime.agent_runtime import AgentInvocation, AgentRuntime
-from runtime.compaction import (
+from weavert.agent_runtime import AgentInvocation, AgentRuntime
+from weavert.compaction import (
     CompactionManager,
     CompactionStepResult,
     ContextPressure,
 )
-from runtime.contracts import MessageRole, RuntimeMessage, RuntimePrivateContext
-from runtime.definitions import AgentDefinition
-from runtime.registries import AgentRegistry, SkillRegistry, ToolRegistry
-from runtime.runtime_services import RuntimeServices
-from runtime.session_runtime import InMemoryTranscriptStore, InboundEvent, InboundEventType, SessionController
-from runtime.tasking import TaskManager
-from runtime.turn_engine import (
+from weavert.contracts import MessageRole, RuntimeMessage, RuntimePrivateContext
+from weavert.definitions import AgentDefinition
+from weavert.registries import AgentRegistry, SkillRegistry, ToolRegistry
+from weavert.runtime_services import RuntimeServices
+from weavert.session_runtime import InMemoryTranscriptStore, InboundEvent, InboundEventType, SessionController
+from weavert.tasking import TaskManager
+from weavert.turn_engine import (
     ModelRequest,
     ModelStreamEvent,
     ModelStreamEventType,
@@ -269,7 +269,7 @@ def test_session_resume_uses_rewritten_compacted_transcript() -> None:
     )
 
     async def seed() -> None:
-        from runtime.turn_engine import TranscriptEntry
+        from weavert.turn_engine import TranscriptEntry
 
         for message in seed_messages:
             await transcript_store.append(

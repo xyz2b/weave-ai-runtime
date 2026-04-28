@@ -4,8 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from runtime.definitions import IsolationMode
-from runtime.isolation import (
+from weavert.definitions import IsolationMode
+from weavert.isolation import (
     BaseIsolationAdapter,
     IsolationLease,
     IsolationManager,

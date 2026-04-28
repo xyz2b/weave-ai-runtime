@@ -289,7 +289,7 @@ def _slugify(value: object) -> str:
 def _materialize_worktree(source: Path, target: Path) -> int:
     copied_entries = 0
     for entry in source.iterdir():
-        if entry.name in {".git", ".runtime", ".weavert", "__pycache__"}:
+        if entry.name in {".git", ".weavert", "__pycache__"}:
             continue
         destination = target / entry.name
         if entry.is_dir():

@@ -1,7 +1,7 @@
 import asyncio
 from pathlib import Path
 
-from runtime.contracts import (
+from weavert.contracts import (
     MessageAttachment,
     MessageRole,
     PromptContextEnvelope,
@@ -9,7 +9,7 @@ from runtime.contracts import (
     RuntimePrivateContext,
     ToolResultBlock,
 )
-from runtime.definitions import (
+from weavert.definitions import (
     AgentDefinition,
     DefinitionOrigin,
     DefinitionSource,
@@ -23,25 +23,25 @@ from runtime.definitions import (
     SkillDefinition,
     SkillExecutionContext,
 )
-from runtime.execution_policy import ExecutionPolicy, ExecutionPolicyState
-from runtime.invocation_catalog import (
+from weavert.execution_policy import ExecutionPolicy, ExecutionPolicyState
+from weavert.invocation_catalog import (
     McpPromptInvocationProvider,
     PluginCommandInvocationProvider,
     SkillInvocationProvider,
     SlashCommandInvocationProvider,
     build_invocation_resolution_context,
 )
-from runtime.permissions import PermissionContext
-from runtime.registries import InvocationRegistry, SkillRegistry, ToolRegistry
-from runtime.runtime_kernel import (
+from weavert.permissions import PermissionContext
+from weavert.registries import InvocationRegistry, SkillRegistry, ToolRegistry
+from weavert.runtime_kernel import (
     BuiltinPackConfig,
     DefinitionSourcePaths,
     RuntimeConfig,
     assemble_runtime,
 )
-from runtime.turn_engine import TranscriptEntry
-from runtime.session_runtime import InboundEvent, InboundEventType
-from runtime.turn_engine import ModelRequest, ModelStreamEvent, ModelStreamEventType, TurnEngine
+from weavert.turn_engine import TranscriptEntry
+from weavert.session_runtime import InboundEvent, InboundEventType
+from weavert.turn_engine import ModelRequest, ModelStreamEvent, ModelStreamEventType, TurnEngine
 
 
 class FakeModelClient:

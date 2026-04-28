@@ -1,11 +1,11 @@
 import asyncio
 from pathlib import Path
 
-from runtime.agent_runtime import AgentRuntime
-from runtime.builtins.tools import builtin_tools
-from runtime.contracts import RuntimePrivateContext
-from runtime.hosts.base import NullHostAdapter
-from runtime.jobs import (
+from weavert.agent_runtime import AgentRuntime
+from weavert.builtins.tools import builtin_tools
+from weavert.contracts import RuntimePrivateContext
+from weavert.hosts.base import NullHostAdapter
+from weavert.jobs import (
     DefaultJobService,
     JobExecutorBinding,
     JobExecutorContext,
@@ -16,11 +16,11 @@ from runtime.jobs import (
     JobStopResult,
     JobSubmitRequest,
 )
-from runtime.registries import AgentRegistry, SkillRegistry, ToolRegistry
-from runtime.runtime_kernel import RuntimeConfig, assemble_runtime
-from runtime.tasking import TaskStatus
-from runtime.tool_runtime import ToolCall, ToolCallStatus, ToolContext, ToolScheduler
-from runtime.turn_engine.engine import TurnEngine
+from weavert.registries import AgentRegistry, SkillRegistry, ToolRegistry
+from weavert.runtime_kernel import RuntimeConfig, assemble_runtime
+from weavert.tasking import TaskStatus
+from weavert.tool_runtime import ToolCall, ToolCallStatus, ToolContext, ToolScheduler
+from weavert.turn_engine.engine import TurnEngine
 
 
 class _ImmediateExecutor:
@@ -84,7 +84,7 @@ def _job_tool_context(runtime, tmp_path: Path, *, session_id: str, team_id: str 
     for definition in builtin_tools():
         tool_registry.register(definition)
     async def allow_permissions(*args, **kwargs):
-        from runtime.definitions import PermissionBehavior, PermissionDecision
+        from weavert.definitions import PermissionBehavior, PermissionDecision
 
         _ = args, kwargs
         return PermissionDecision(PermissionBehavior.ALLOW)
@@ -174,7 +174,7 @@ def test_bound_host_watch_and_stop_use_shared_job_service(tmp_path: Path) -> Non
         runtime.task_manager.create(
             "job-1",
             title="background-watch",
-            metadata={"session_id": "session-watch", "kind": "background_agent", "run_id": "run-watch"},
+            metadata={"session_id": "session-watch"},
         )
         runtime.task_manager.register_stop_handler(
             "job-1",
@@ -270,7 +270,7 @@ def test_runtime_config_registers_direct_and_factory_job_executors(tmp_path: Pat
 
     def build_factory(executor_kind, binding, kernel, services):
         _ = binding, services
-        factory_calls.append((executor_kind, kernel.config.weavert_id))
+        factory_calls.append((executor_kind, kernel.config.runtime_id))
         return _ImmediateExecutor("factory")
 
     runtime = assemble_runtime(
@@ -278,6 +278,7 @@ def test_runtime_config_registers_direct_and_factory_job_executors(tmp_path: Pat
             runtime_id="job-executor-test",
             working_directory=tmp_path,
             discovery_sources=RuntimeConfig.for_project(tmp_path).discovery_sources,
+            _skip_protocol_only_matrix_evaluation=True,
             job_executors={
                 "direct-demo": JobExecutorBinding(executor=direct),
                 "factory-demo": JobExecutorBinding(factory=build_factory),

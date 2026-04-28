@@ -1,13 +1,13 @@
 import pytest
 
-from runtime.contracts import MessageRole, RuntimeMessage
-from runtime.runtime_services import RuntimeServices
-from runtime.session_runtime import (
+from weavert.contracts import MessageRole, RuntimeMessage
+from weavert.runtime_services import RuntimeServices
+from weavert.session_runtime import (
     InboundEvent,
     InboundEventType,
     SessionIngressProcessor,
 )
-from runtime.session_runtime.models import (
+from weavert.session_runtime.models import (
     IngressAdmission,
     IngressAdmissionKind,
     IngressReplayOutput,

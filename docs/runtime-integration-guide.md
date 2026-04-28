@@ -1055,7 +1055,7 @@ from weavert.runtime_kernel import RuntimeConfig, assemble_runtime
 from weavert.runtime_package_protocols import build_provider_only_invocation_package_manifest
 
 provider_manifest = build_provider_only_invocation_package_manifest(
-    name="runtime-provider-only",
+    name="weavert-provider-only",
     provider_name="repo-commands",
     provider=StaticInvocationProvider("repo-commands", (...)),
 )
@@ -1063,7 +1063,7 @@ provider_manifest = build_provider_only_invocation_package_manifest(
 weavert = assemble_runtime(
     RuntimeConfig(
         extra_package_manifests=(provider_manifest,),
-        requested_packages={"runtime-provider-only"},
+        requested_packages={"weavert-provider-only"},
     )
 )
 ```
@@ -1164,7 +1164,7 @@ workflow authority 和 transport 现在也已经拆开：
   - 继续负责 envelope transport 与 correlation
   - raw workflow payload 默认不作为 transcript-visible API surface
 - protocol helper
-  - request / response schema 的构造、解析、summary 统一收口在 `src/runtime/team_workflows.py`
+  - request / response schema 的构造、解析、summary 统一收口在 `src/weavert/team_workflows.py`
 
 ### 8.6 Leader Ingress Default
 

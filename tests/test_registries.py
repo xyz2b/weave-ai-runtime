@@ -1,13 +1,13 @@
 from pathlib import Path
 
-from runtime.definitions import (
+from weavert.definitions import (
     AgentDefinition,
     DefinitionOrigin,
     DefinitionSource,
     SkillDefinition,
     ToolDefinition,
 )
-from runtime.registries import AgentRegistry, SkillRegistry, ToolRegistry
+from weavert.registries import AgentRegistry, SkillRegistry, ToolRegistry
 
 
 def origin(source: DefinitionSource, name: str) -> DefinitionOrigin:

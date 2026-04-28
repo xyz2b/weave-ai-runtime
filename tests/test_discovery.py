@@ -1,8 +1,8 @@
 from pathlib import Path
 
-from runtime.definitions import DefinitionSource
-from runtime.registries import DefinitionDiscovery
-from runtime.runtime_kernel import DefinitionSourcePaths
+from weavert.definitions import DefinitionSource
+from weavert.registries import DefinitionDiscovery
+from weavert.runtime_kernel import DefinitionSourcePaths
 
 
 def test_definition_discovery_loads_tools_agents_and_skills(tmp_path: Path) -> None:
@@ -27,7 +27,7 @@ traits:
     )
     (tools_dir / "hello.py").write_text(
         """
-from runtime.definitions import ToolDefinition
+from weavert.definitions import ToolDefinition
 
 TOOL_DEFINITION = ToolDefinition(name="hello", description="Say hello")
 """.strip(),

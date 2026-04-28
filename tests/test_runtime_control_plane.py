@@ -1,28 +1,28 @@
 import asyncio
 from pathlib import Path
 
-from runtime.agent_runtime import AgentInvocation, AgentRuntime
-from runtime.control_plane import RuntimeControlPlaneContext
-from runtime.definitions import (
+from weavert.agent_runtime import AgentInvocation, AgentRuntime
+from weavert.control_plane import RuntimeControlPlaneContext
+from weavert.definitions import (
     AgentDefinition,
     PermissionBehavior,
     PermissionDecision,
     PermissionMode,
     SkillDefinition,
 )
-from runtime.elicitation import ElicitationRequest, SharedElicitationService
-from runtime.hooks import HookEffect, RuntimeHookPhase
-from runtime.permissions import (
+from weavert.elicitation import ElicitationRequest, SharedElicitationService
+from weavert.hooks import HookEffect, RuntimeHookPhase
+from weavert.permissions import (
     PermissionContext,
     PermissionEngine,
     PermissionRequest,
     PermissionTarget,
 )
-from runtime.registries import AgentRegistry, SkillRegistry, ToolRegistry
-from runtime.runtime_services import RuntimeServices
-from runtime.skill_runtime import SkillExecutor
-from runtime.tasking import TaskManager
-from runtime.turn_engine import ModelRequest, ModelStreamEvent, ModelStreamEventType, TurnEngine
+from weavert.registries import AgentRegistry, SkillRegistry, ToolRegistry
+from weavert.runtime_services import RuntimeServices
+from weavert.skill_runtime import SkillExecutor
+from weavert.tasking import TaskManager
+from weavert.turn_engine import ModelRequest, ModelStreamEvent, ModelStreamEventType, TurnEngine
 
 
 class FakeModelClient:

@@ -9,11 +9,11 @@ from typing import Any
 
 import pytest
 
-import runtime.runtime_kernel.kernel as runtime_kernel_module
-from runtime.contracts import MessageRole, RuntimeMessage
-from runtime.devtools.builtins import devtools_builtin_tools
-from runtime.diagnostics import Diagnostic, DiagnosticSeverity
-from runtime.definitions import (
+import weavert.runtime_kernel.kernel as runtime_kernel_module
+from weavert.contracts import MessageRole, RuntimeMessage
+from weavert.devtools.builtins import devtools_builtin_tools
+from weavert.diagnostics import Diagnostic, DiagnosticSeverity
+from weavert.definitions import (
     AgentDefinition,
     DefinitionOrigin,
     DefinitionSource,
@@ -23,17 +23,17 @@ from runtime.definitions import (
     InvocationTargetKind,
     InvocationVisibilityPolicy,
 )
-from runtime.hosts.base import NullHostAdapter
-from runtime.invocation_catalog import StaticInvocationProvider
-from runtime.jobs import FileJobStore
-from runtime.runtime_kernel import (
+from weavert.hosts.base import NullHostAdapter
+from weavert.invocation_catalog import StaticInvocationProvider
+from weavert.jobs import FileJobStore
+from weavert.runtime_kernel import (
     BuiltinPackConfig,
     RuntimeConfig,
     RuntimeDistribution,
     assemble_runtime,
     build_runtime_kernel,
 )
-from runtime.runtime_core_protocol_catalog import CORE_PROTOCOL_CATALOG_SCHEMA_VERSION
+from weavert.runtime_core_protocol_catalog import CORE_PROTOCOL_CATALOG_SCHEMA_VERSION
 from weavert.runtime_package_catalog import (
     official_runtime_distribution_catalog,
     official_runtime_package_catalog,
@@ -43,7 +43,7 @@ from weavert.runtime_package_resolution import (
     PACKAGE_CANDIDATE_METADATA_KEY,
     RuntimePackageResolutionError,
 )
-from runtime.runtime_package_protocols import (
+from weavert.runtime_package_protocols import (
     CapabilityBinding,
     ContextContributorBinding,
     HostFacetBinding,
@@ -61,11 +61,11 @@ from runtime.runtime_package_protocols import (
     RuntimePackageManifest,
     build_provider_only_invocation_package_manifest,
 )
-from runtime.runtime_services import RuntimeServices
-from runtime.session_runtime import FileTranscriptStore
-from runtime.stores_file import FileChildRunStore
-from runtime.task_lists import FileTaskListStore
-from runtime.turn_engine import ModelStreamEvent, ModelStreamEventType
+from weavert.runtime_services import RuntimeServices
+from weavert.session_runtime import FileTranscriptStore
+from weavert.stores_file import FileChildRunStore
+from weavert.task_lists import FileTaskListStore
+from weavert.turn_engine import ModelStreamEvent, ModelStreamEventType
 
 
 def _invocation_definition(
@@ -595,7 +595,7 @@ def test_external_package_registration_reports_trust_boundary_diagnostics(tmp_pa
         RuntimeConfig(
             working_directory=tmp_path,
             distribution=RuntimeDistribution.CORE,
-            extra_package_manifests=("runtime.devtools.builtins:devtools_builtin_tools",),
+            extra_package_manifests=("weavert.devtools.builtins:devtools_builtin_tools",),
         )
     )
 
@@ -2542,14 +2542,14 @@ def test_provider_only_runtime_packages_publish_pre_session_catalogs_and_metadat
             distribution=RuntimeDistribution.CORE,
             extra_package_manifests=(
                 build_provider_only_invocation_package_manifest(
-                    name="runtime-provider-only",
+                    name="weavert-provider-only",
                     provider_name="package-commands",
                     factory=build_package_provider,
                     order=5,
                     contribution_metadata={"package_channel": "test"},
                 ),
             ),
-            requested_packages={"runtime-provider-only"},
+            requested_packages={"weavert-provider-only"},
         )
     )
 
@@ -2577,15 +2577,15 @@ def test_provider_only_runtime_packages_publish_pre_session_catalogs_and_metadat
         "PackageContribution.invocation_providers"
     )
     assert visible_after_path["package-command"].capability.metadata["provider_owner"]["package_name"] == (
-        "runtime-provider-only"
+        "weavert-provider-only"
     )
 
     accepted = runtime.services.metadata["package_registration"]["accepted"]
     assert accepted == [
         {
-            "package_name": "runtime-provider-only",
+            "package_name": "weavert-provider-only",
             "manifest": {
-                "name": "runtime-provider-only",
+                "name": "weavert-provider-only",
                 "role": "provider",
                 "description": "Provider-only runtime package.",
                 "dependencies": ["weavert-core"],
@@ -2596,7 +2596,7 @@ def test_provider_only_runtime_packages_publish_pre_session_catalogs_and_metadat
                 "registration_path": "RuntimeConfig.extra_package_manifests",
                 "registration_index": 0,
                 "source_kind": "manifest",
-                "source_ref": "manifest:runtime-provider-only",
+                "source_ref": "manifest:weavert-provider-only",
             },
             "trust_boundary": {
                 "classification": "external",
@@ -2640,7 +2640,7 @@ def test_provider_only_runtime_packages_publish_pre_session_catalogs_and_metadat
     assert next(
         entry
         for entry in runtime.services.metadata["package_contributions"]
-        if entry["package_name"] == "runtime-provider-only"
+        if entry["package_name"] == "weavert-provider-only"
     )["invocation_providers"] == ["package-commands"]
     findings = {
         entry["rule_id"]: entry
@@ -2671,7 +2671,7 @@ def test_provider_only_runtime_packages_publish_pre_session_catalogs_and_metadat
                 "origin": "package",
                 "registration_path": "PackageContribution.invocation_providers",
                 "provider_tier": "package-contribution",
-                "package_name": "runtime-provider-only",
+                "package_name": "weavert-provider-only",
             }
         ],
     }
@@ -2697,7 +2697,7 @@ def test_provider_only_runtime_packages_assemble_consistently_across_distributio
             distribution=distribution,
             extra_package_manifests=(
                 build_provider_only_invocation_package_manifest(
-                    name="runtime-provider-only",
+                    name="weavert-provider-only",
                     provider_name="distribution-provider",
                     provider=StaticInvocationProvider(
                         "distribution-provider",
@@ -2711,7 +2711,7 @@ def test_provider_only_runtime_packages_assemble_consistently_across_distributio
                     ),
                 ),
             ),
-            requested_packages={"runtime-provider-only"},
+            requested_packages={"weavert-provider-only"},
         )
     )
 
@@ -2724,7 +2724,7 @@ def test_provider_only_runtime_packages_assemble_consistently_across_distributio
             "package-contribution",
         ),
     ]
-    assert runtime.services.metadata["package_manifests"]["runtime-provider-only"] == {
+    assert runtime.services.metadata["package_manifests"]["weavert-provider-only"] == {
         "role": "provider",
         "description": "Provider-only runtime package.",
         "dependencies": ["weavert-core"],

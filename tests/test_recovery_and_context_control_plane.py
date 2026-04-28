@@ -2,12 +2,12 @@ import asyncio
 import time
 from pathlib import Path
 
-from runtime.context_window import (
+from weavert.context_window import (
     MinimalRecoveryClassificationHints,
     RecoveryClassificationRule,
     ResolvedContextWindowSnapshot,
 )
-from runtime.contracts import (
+from weavert.contracts import (
     MessageAttachment,
     MessageRole,
     PromptContextEnvelope,
@@ -18,26 +18,26 @@ from runtime.contracts import (
     ToolUseBlock,
     merge_request_override_state,
 )
-from runtime.compaction import CompactionManager
-from runtime.definitions import AgentDefinition
-from runtime.hooks import HookBus, HookStopDisposition, RuntimeHookPhase
-from runtime.registries import ToolRegistry
-from runtime.runtime_services import NoopCompactionService, RuntimeServices
-from runtime.session_runtime import (
+from weavert.compaction import CompactionManager
+from weavert.definitions import AgentDefinition
+from weavert.hooks import HookBus, HookStopDisposition, RuntimeHookPhase
+from weavert.registries import ToolRegistry
+from weavert.runtime_services import NoopCompactionService, RuntimeServices
+from weavert.session_runtime import (
     FileTranscriptStore,
     InMemoryTranscriptStore,
     InboundEvent,
     InboundEventType,
     SessionController,
 )
-from runtime.turn_engine import (
+from weavert.turn_engine import (
     ModelRequest,
     ModelStreamEvent,
     ModelStreamEventType,
     TranscriptEntry,
     TurnEngine,
 )
-from runtime.turn_engine.control_plane import (
+from weavert.turn_engine.control_plane import (
     BudgetAction,
     BudgetDecision,
     BudgetPlan,
@@ -60,7 +60,7 @@ from runtime.turn_engine.control_plane import (
     invoke_budget_hook,
     normalize_attempt_outcome,
 )
-from runtime.turn_engine.engine import AttemptFinished
+from weavert.turn_engine.engine import AttemptFinished
 
 
 class SequencedModelClient:

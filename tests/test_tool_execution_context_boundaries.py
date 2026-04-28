@@ -2,25 +2,25 @@ import asyncio
 from pathlib import Path
 from typing import Any
 
-from runtime.contracts import MessageRole, RuntimeMessage, ToolResultBlock
-from runtime.definitions import (
+from weavert.contracts import MessageRole, RuntimeMessage, ToolResultBlock
+from weavert.definitions import (
     AgentDefinition,
     DefinitionOrigin,
     DefinitionSource,
     ToolDefinition,
     ToolTraits,
 )
-from runtime.registries import ToolRegistry
-from runtime.runtime_services import RuntimeServices
-from runtime.session_runtime import (
+from weavert.registries import ToolRegistry
+from weavert.runtime_services import RuntimeServices
+from weavert.session_runtime import (
     FileTranscriptStore,
     InboundEvent,
     InboundEventType,
     SessionController,
 )
-from runtime.tool_lifecycle import AppStateSet
-from runtime.tool_runtime import ToolCall, ToolContext, ToolScheduler
-from runtime.turn_engine import ModelStreamEvent, ModelStreamEventType, TurnEngine
+from weavert.tool_lifecycle import AppStateSet
+from weavert.tool_runtime import ToolCall, ToolContext, ToolScheduler
+from weavert.turn_engine import ModelStreamEvent, ModelStreamEventType, TurnEngine
 
 
 class BatchedModelClient:

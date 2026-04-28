@@ -2,10 +2,10 @@ import asyncio
 import json
 from pathlib import Path
 
-from runtime.contracts import MessageRole, RuntimeMessage, TextBlock, ToolResultBlock, ToolUseBlock
-from runtime.session_runtime import FileTranscriptStore
-from runtime.turn_engine import TranscriptEntry
-from runtime.turn_engine.message_protocol import normalize_messages_for_api
+from weavert.contracts import MessageRole, RuntimeMessage, TextBlock, ToolResultBlock, ToolUseBlock
+from weavert.session_runtime import FileTranscriptStore
+from weavert.turn_engine import TranscriptEntry
+from weavert.turn_engine.message_protocol import normalize_messages_for_api
 
 
 def test_transcript_store_round_trips_structured_blocks(tmp_path: Path) -> None:

@@ -1,6 +1,7 @@
 import asyncio
 import importlib
 import os
+import pkgutil
 import subprocess
 import sys
 from dataclasses import replace
@@ -8,14 +9,14 @@ from io import BytesIO
 from pathlib import Path
 from urllib.error import HTTPError
 
-from runtime.builtins import load_builtin_pack
-from runtime.builtins.tools import builtin_tools
-from runtime.devtools.builtins import devtools_builtin_tools
-from runtime.context_window import ModelContextWindowProfile, RouteContextWindowPolicy
-from runtime.contracts import MessageRole, RuntimeMessage, TextBlock
-from runtime.execution_policy import _narrow_tool_pool
-from runtime.agent_execution import AgentRunRecord, AgentRunStatus, InMemoryChildRunStore, SpawnMode
-from runtime.hooks import (
+from weavert.builtins import load_builtin_pack
+from weavert.builtins.tools import builtin_tools
+from weavert.devtools.builtins import devtools_builtin_tools
+from weavert.context_window import ModelContextWindowProfile, RouteContextWindowPolicy
+from weavert.contracts import MessageRole, RuntimeMessage, TextBlock
+from weavert.execution_policy import _narrow_tool_pool
+from weavert.agent_execution import AgentRunRecord, AgentRunStatus, InMemoryChildRunStore, SpawnMode
+from weavert.hooks import (
     HookActivationState,
     HookHandlerKind,
     HookHandlerManifest,
@@ -25,16 +26,16 @@ from runtime.hooks import (
     HookScopeLifetime,
     RuntimeHookPhase,
 )
-from runtime.openai_client import OPENAI_PROVIDER_NAME, OPENAI_ROUTE_NAME, _http_error_response
-from runtime.definitions import (
+from weavert.openai_client import OPENAI_PROVIDER_NAME, OPENAI_ROUTE_NAME, _http_error_response
+from weavert.definitions import (
     AgentDefinition,
     DefinitionOrigin,
     DefinitionSource,
     IsolationMode,
 )
-from runtime.hosts.base import NullHostAdapter
-from runtime.jobs import FileJobStore, InMemoryJobStore
-from runtime.runtime_kernel import (
+from weavert.hosts.base import NullHostAdapter
+from weavert.jobs import FileJobStore, InMemoryJobStore
+from weavert.runtime_kernel import (
     BuiltinPackConfig,
     DefinitionSourcePaths,
     HostBinding,
@@ -46,19 +47,19 @@ from runtime.runtime_kernel import (
     assemble_runtime,
     build_runtime_kernel,
 )
-from runtime.runtime_core_protocol_catalog import CORE_PROTOCOL_CATALOG_SCHEMA_VERSION
-from runtime.runtime_package_protocols import RuntimeCapabilityKey
-from runtime.runtime_services import NoopCompactionService, NoopMemoryService
-from runtime.session_runtime import FileTranscriptStore, InMemoryTranscriptStore
-from runtime.stores_file import FileChildRunStore
-from runtime.tasking import TaskManager
-from runtime.task_lists import FileTaskListStore, InMemoryTaskListStore
-from runtime.team_control_plane import InMemoryTeamStore
-from runtime.team_message_bus import InMemoryTeamMessageStore
-from runtime.team_workflows import InMemoryTeamWorkflowStore
-from runtime.teammate_orchestration.mailbox import InMemoryTeammateMailbox
-from runtime.tool_runtime import ToolContext
-from runtime.turn_engine import (
+from weavert.runtime_core_protocol_catalog import CORE_PROTOCOL_CATALOG_SCHEMA_VERSION
+from weavert.runtime_package_protocols import RuntimeCapabilityKey
+from weavert.runtime_services import NoopCompactionService, NoopMemoryService
+from weavert.session_runtime import FileTranscriptStore, InMemoryTranscriptStore
+from weavert.stores_file import FileChildRunStore
+from weavert.tasking import TaskManager
+from weavert.task_lists import FileTaskListStore, InMemoryTaskListStore
+from weavert.team_control_plane import InMemoryTeamStore
+from weavert.team_message_bus import InMemoryTeamMessageStore
+from weavert.team_workflows import InMemoryTeamWorkflowStore
+from weavert.teammate_orchestration.mailbox import InMemoryTeammateMailbox
+from weavert.tool_runtime import ToolContext
+from weavert.turn_engine import (
     ModelRequest,
     ModelStreamEvent,
     ModelStreamEventType,
@@ -255,8 +256,8 @@ def test_runtime_planning_worker_profile_requires_explicit_optional_tool_composi
 
 def test_core_builtin_catalog_excludes_optional_package_definitions() -> None:
     core_tool_names = {tool.name for tool in builtin_tools()}
-    from runtime.builtins.agents import builtin_agents
-    from runtime.builtins.skills import builtin_skills
+    from weavert.builtins.agents import builtin_agents
+    from weavert.builtins.skills import builtin_skills
 
     assert core_tool_names == {
         "agent",
@@ -287,7 +288,7 @@ def test_runtime_core_build_does_not_import_optional_package_modules(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    first_party_loading = importlib.import_module("runtime.first_party_loading")
+    first_party_loading = importlib.import_module("weavert.first_party_loading")
     original_import_module = first_party_loading.import_module
     blocked_modules = {
         "weavert.compaction.package",
@@ -900,25 +901,31 @@ def test_runtime_core_import_surface_does_not_eagerly_load_reference_hosts(tmp_p
     assert result.stdout.strip() == "False"
 
 
-def test_weavert_import_root_aliases_runtime_modules() -> None:
+def test_weavert_import_root_is_canonical_module_surface() -> None:
     weavert_module = importlib.import_module("weavert")
-    runtime_module = importlib.import_module("runtime")
     weavert_kernel = importlib.import_module("weavert.runtime_kernel")
-    runtime_kernel = importlib.import_module("runtime.runtime_kernel")
 
-    assert weavert_module.RuntimeConfig is runtime_module.RuntimeConfig
-    assert weavert_kernel is runtime_kernel
-    assert weavert_kernel.assemble_runtime is runtime_kernel.assemble_runtime
+    assert weavert_module.RuntimeConfig.__module__.startswith("weavert.")
+    assert weavert_kernel.__name__ == "weavert.runtime_kernel"
+    assert {"runtime_kernel", "hosts", "memory"}.issubset(
+        {module.name for module in pkgutil.iter_modules(weavert_module.__path__)}
+    )
+    try:
+        importlib.import_module("runtime")
+    except ModuleNotFoundError:
+        pass
+    else:  # pragma: no cover - defensive failure branch
+        raise AssertionError("legacy 'runtime' import root should not be importable")
 
 
-def test_runtime_config_for_project_uses_canonical_weavert_roots_and_migrates_legacy_workspace(
+def test_runtime_config_for_project_uses_canonical_weavert_roots(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
     user_home = tmp_path / "user-home"
     project_root = tmp_path / "project"
-    user_skill_dir = user_home / ".runtime" / "skills" / "user-review"
-    project_skill_dir = project_root / ".runtime" / "skills" / "project-review"
+    user_skill_dir = user_home / ".weavert" / "skills" / "user-review"
+    project_skill_dir = project_root / ".weavert" / "skills" / "project-review"
     user_skill_dir.mkdir(parents=True)
     project_skill_dir.mkdir(parents=True)
     user_skill_dir.joinpath("SKILL.md").write_text(
@@ -940,7 +947,7 @@ project review body
         encoding="utf-8",
     )
 
-    monkeypatch.setattr("runtime.runtime_kernel.config.Path.home", lambda: user_home)
+    monkeypatch.setattr("weavert.runtime_kernel.config.Path.home", lambda: user_home)
 
     config = RuntimeConfig.for_project(project_root)
     kernel = build_runtime_kernel(config)
@@ -1537,7 +1544,7 @@ def test_runtime_bundled_openai_route_honors_openai_model_override(
 
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     monkeypatch.setenv("OPENAI_MODEL", "gpt-env-override")
-    monkeypatch.setattr("runtime.openai_client._post_json", fake_post_json)
+    monkeypatch.setattr("weavert.openai_client._post_json", fake_post_json)
 
     runtime = assemble_runtime(RuntimeConfig(working_directory=tmp_path))
     produced = asyncio.run(runtime.run_prompt("Hello runtime", session_id="openai-env"))

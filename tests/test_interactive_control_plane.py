@@ -3,9 +3,9 @@ from pathlib import Path
 
 import pytest
 
-from runtime.builtins.tool_impls import ask_user_tool
-from runtime.contracts import MessageRole, RuntimeMessage, ToolResultBlock
-from runtime.definitions import (
+from weavert.builtins.tool_impls import ask_user_tool
+from weavert.contracts import MessageRole, RuntimeMessage, ToolResultBlock
+from weavert.definitions import (
     AgentDefinition,
     PermissionBehavior,
     PermissionDecision,
@@ -13,16 +13,16 @@ from runtime.definitions import (
     ToolDefinition,
     ToolTraits,
 )
-from runtime.elicitation import ElicitationRequest
-from runtime.hooks import HookBus, RuntimeHookPhase
-from runtime.hosts import SdkHostRuntime
-from runtime.permissions import PermissionContext
-from runtime.registries import ToolRegistry
-from runtime.runtime_kernel import RuntimeConfig, assemble_runtime
-from runtime.runtime_services import RuntimeServices
-from runtime.session_runtime import FileTranscriptStore, InboundEvent, InboundEventType, SessionController
-from runtime.tool_runtime import ToolCall, ToolContext, ToolScheduler
-from runtime.turn_engine import ModelRequest, ModelStreamEvent, ModelStreamEventType, TurnEngine
+from weavert.elicitation import ElicitationRequest
+from weavert.hooks import HookBus, RuntimeHookPhase
+from weavert.hosts import SdkHostRuntime
+from weavert.permissions import PermissionContext
+from weavert.registries import ToolRegistry
+from weavert.runtime_kernel import RuntimeConfig, assemble_runtime
+from weavert.runtime_services import RuntimeServices
+from weavert.session_runtime import FileTranscriptStore, InboundEvent, InboundEventType, SessionController
+from weavert.tool_runtime import ToolCall, ToolContext, ToolScheduler
+from weavert.turn_engine import ModelRequest, ModelStreamEvent, ModelStreamEventType, TurnEngine
 
 
 class BatchedModelClient:

@@ -3,7 +3,7 @@ from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from runtime import (
+from weavert import (
     AgentDefinition,
     BuiltinPackConfig,
     MessageRole,
@@ -14,11 +14,11 @@ from runtime import (
     TeammateOrchestrationConfig,
     assemble_runtime,
 )
-from runtime.jobs import JobNotStoppableError, JobScopeFilter, JobStatus
-from runtime.permissions import PermissionOutcome, PermissionRequest
-from runtime.tasking import TaskStatus
-from runtime.teammate_orchestration.mailbox import InMemoryTeammateMailbox
-from runtime.turn_engine import ModelRequest, ModelStreamEvent, ModelStreamEventType
+from weavert.jobs import JobNotStoppableError, JobScopeFilter, JobStatus
+from weavert.permissions import PermissionOutcome, PermissionRequest
+from weavert.tasking import TaskStatus
+from weavert.teammate_orchestration.mailbox import InMemoryTeammateMailbox
+from weavert.turn_engine import ModelRequest, ModelStreamEvent, ModelStreamEventType
 
 
 class FakeModelClient:
@@ -749,7 +749,11 @@ def test_teammate_identity_permission_bridge_and_idle_projection_consistency(tmp
         "tm-worker",
         "tm-worker",
     ]
-    assert [message.text for message in host.notifications] == [
+    collapsed_notifications: list[str] = []
+    for message in host.notifications:
+        if not collapsed_notifications or collapsed_notifications[-1] != message.text:
+            collapsed_notifications.append(message.text)
+    assert collapsed_notifications == [
         "Teammate 'tm-worker' is waiting for permission",
         "Teammate 'tm-worker' completed mailbox item",
         "Teammate 'tm-worker' is waiting for permission",

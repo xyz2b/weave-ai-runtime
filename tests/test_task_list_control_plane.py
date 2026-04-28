@@ -3,19 +3,19 @@ from pathlib import Path
 
 import pytest
 
-from runtime.builtins.tools import builtin_tools
-from runtime.contracts import ExecutionResult, ExecutionStatus, MessageRole, RuntimeMessage, RuntimePrivateContext
-from runtime.definitions import AgentDefinition, PermissionBehavior, PermissionDecision
-from runtime.execution_policy import ExecutionPolicy, ExecutionPolicyState
-from runtime.hosts.base import NullHostAdapter
-from runtime.memory.manager import LongTermMemory
-from runtime.permissions import PermissionContext
-from runtime.registries import SkillRegistry, ToolRegistry
-from runtime.runtime_kernel.config import RuntimeConfig
-from runtime.runtime_kernel.kernel import assemble_runtime
-from runtime.runtime_services import RuntimeServices
-from runtime.task_discipline import TaskDisciplineSidecar
-from runtime.task_lists import (
+from weavert.builtins.tools import builtin_tools
+from weavert.contracts import ExecutionResult, ExecutionStatus, MessageRole, RuntimeMessage, RuntimePrivateContext
+from weavert.definitions import AgentDefinition, PermissionBehavior, PermissionDecision
+from weavert.execution_policy import ExecutionPolicy, ExecutionPolicyState
+from weavert.hosts.base import NullHostAdapter
+from weavert.memory.manager import LongTermMemory
+from weavert.permissions import PermissionContext
+from weavert.registries import SkillRegistry, ToolRegistry
+from weavert.runtime_kernel.config import RuntimeConfig
+from weavert.runtime_kernel.kernel import assemble_runtime
+from weavert.runtime_services import RuntimeServices
+from weavert.task_discipline import TaskDisciplineSidecar
+from weavert.task_lists import (
     TASK_LIST_RESOLVED_ID_EXTENSION_KEY,
     DefaultTaskListService,
     FileTaskListStore,
@@ -26,8 +26,8 @@ from runtime.task_lists import (
     TaskListOwnerBusyError,
     TaskReadinessState,
 )
-from runtime.tasking import TaskManager, TaskStatus
-from runtime.tool_runtime import ToolCall, ToolCallStatus, ToolContext, ToolScheduler, validate_input_schema
+from weavert.tasking import TaskManager, TaskStatus
+from weavert.tool_runtime import ToolCall, ToolCallStatus, ToolContext, ToolScheduler, validate_input_schema
 
 
 def _build_tool_runtime(
@@ -948,7 +948,7 @@ def test_custom_agent_task_access_and_child_execution_inherit_task_list_scope(tm
     captured: dict[str, object] = {}
 
     async def fake_invoke(invocation):
-        from runtime.agent_runtime import AgentRunResult
+        from weavert.agent_runtime import AgentRunResult
 
         captured["task_list_id"] = invocation.metadata.get("task_list_id")
         return AgentRunResult(agent_name=invocation.agent_name, status="completed")

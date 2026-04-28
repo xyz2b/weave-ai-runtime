@@ -3,13 +3,13 @@ import time
 from pathlib import Path
 from typing import Any, Sequence
 
-from runtime.contracts import (
+from weavert.contracts import (
     MessageRole,
     RuntimeMessage,
     ToolResultBlock,
     ToolUseBlock,
 )
-from runtime.definitions import (
+from weavert.definitions import (
     AgentDefinition,
     InterruptBehavior,
     PermissionBehavior,
@@ -30,10 +30,10 @@ from runtime.definitions import (
     ToolUsePresentation,
     ValidationOutcome,
 )
-from runtime.memory.models import MemoryEntry
-from runtime.registries import ToolRegistry
-from runtime.tool_executors import select_tool_executor_tier
-from runtime.tool_lifecycle import (
+from weavert.memory.models import MemoryEntry
+from weavert.registries import ToolRegistry
+from weavert.tool_executors import select_tool_executor_tier
+from weavert.tool_lifecycle import (
     AppStateSet,
     CapabilityRefreshRequested,
     ContextUpdatePhase,
@@ -48,10 +48,10 @@ from runtime.tool_lifecycle import (
     ToolSchedulerLaneKind,
     TranscriptAttachmentAdded,
 )
-from runtime.tool_orchestration import StreamingToolOrchestrator
-from runtime.tool_resolution import resolve_tool_call
-from runtime.tool_runtime import ToolCall, ToolContext
-from runtime.turn_engine import (
+from weavert.tool_orchestration import StreamingToolOrchestrator
+from weavert.tool_resolution import resolve_tool_call
+from weavert.tool_runtime import ToolCall, ToolContext
+from weavert.turn_engine import (
     ModelInvocationMode,
     ModelRequest,
     ModelResponse,

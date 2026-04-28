@@ -1,10 +1,10 @@
 import asyncio
 from pathlib import Path
 
-from runtime.contracts import MessageRole
-from runtime.elicitation import ElicitationRequest
-from runtime.definitions import ToolDefinition
-from runtime.hooks import (
+from weavert.contracts import MessageRole
+from weavert.elicitation import ElicitationRequest
+from weavert.definitions import ToolDefinition
+from weavert.hooks import (
     ADVANCED_HOOK_HANDLER_KINDS,
     ADVANCED_HOOK_SOURCE_KINDS,
     ADVANCED_PUBLIC_PHASE_CONTRACTS,
@@ -27,11 +27,11 @@ from runtime.hooks import (
     is_advanced_phase,
     is_stable_public_phase,
 )
-from runtime.registries import ToolRegistry
-from runtime.runtime_kernel import RuntimeConfig, assemble_runtime
-from runtime.runtime_services import RuntimeServices
-from runtime.tool_runtime import ToolCall, ToolContext, ToolScheduler
-from runtime.turn_engine import ModelStreamEvent, ModelStreamEventType
+from weavert.registries import ToolRegistry
+from weavert.runtime_kernel import RuntimeConfig, assemble_runtime
+from weavert.runtime_services import RuntimeServices
+from weavert.tool_runtime import ToolCall, ToolContext, ToolScheduler
+from weavert.turn_engine import ModelStreamEvent, ModelStreamEventType
 
 from .runtime_protocol_harness import RequestCaptureModelClient
 
@@ -49,8 +49,8 @@ def test_public_phase_registry_rejects_internal_phase() -> None:
             handler=HookHandlerManifest(kind=HookHandlerKind.CALLBACK, callback=lambda _payload: None),
         ),
         source_kind=HookSourceKind.RUNTIME_CONFIG,
-        owner="runtime:test",
-        source_ref="runtime:test",
+        owner="weavert:test",
+        source_ref="weavert:test",
         session_id="session-a",
     )
 
@@ -136,8 +136,8 @@ def test_invalid_effect_contracts_and_unresolved_callbacks_are_rejected_before_a
             },
         ),
         source_kind=HookSourceKind.RUNTIME_CONFIG,
-        owner="runtime:invalid-effect",
-        source_ref="runtime:invalid-effect",
+        owner="weavert:invalid-effect",
+        source_ref="weavert:invalid-effect",
         session_id="session-a",
     )
     missing_binding_handle = bus.register_request(
@@ -606,8 +606,8 @@ def test_inventory_defaults_to_active_snapshot_and_can_include_inactive() -> Non
             ),
         ),
         source_kind=HookSourceKind.RUNTIME_CONFIG,
-        owner="runtime:rejected",
-        source_ref="runtime:rejected",
+        owner="weavert:rejected",
+        source_ref="weavert:rejected",
         session_id="session-a",
     )
     released_handle.release()

@@ -4,13 +4,13 @@ import asyncio
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from runtime.contracts import (
+from weavert.contracts import (
     PromptContextEnvelope,
     RuntimeMessage,
     RuntimePrivateContext,
     serialize_content_blocks,
 )
-from runtime.definitions import (
+from weavert.definitions import (
     AgentDefinition,
     IsolationMode,
     SkillDefinition,
@@ -18,17 +18,17 @@ from runtime.definitions import (
     ToolDefinition,
     ToolTraits,
 )
-from runtime.registries import ToolRegistry
-from runtime.runtime_kernel import BuiltinPackConfig, RuntimeAssembly, RuntimeConfig, assemble_runtime
-from runtime.session_runtime import SessionController
-from runtime.execution_policy import serialize_runtime_metadata
-from runtime.session_runtime.models import (
+from weavert.registries import ToolRegistry
+from weavert.runtime_kernel import BuiltinPackConfig, RuntimeAssembly, RuntimeConfig, assemble_runtime
+from weavert.session_runtime import SessionController
+from weavert.execution_policy import serialize_runtime_metadata
+from weavert.session_runtime.models import (
     IngressAdmission,
     IngressCompletionReceipt,
     IngressReplayOutput,
     SessionIngressResult,
 )
-from runtime.turn_engine import (
+from weavert.turn_engine import (
     ModelRequest,
     ModelStreamEvent,
     TranscriptEntry,
