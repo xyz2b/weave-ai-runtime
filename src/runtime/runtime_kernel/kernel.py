@@ -987,7 +987,7 @@ class RuntimeAssembly:
     ) -> tuple[dict[str, Any], ...]:
         await self.wait_until_ready()
         facet = self.services.resolve_team_workflow_host_facet()
-        if facet.available and facet.facet is not None:
+        if facet.available and facet.facet is not None and (team_id is not None or session_id is not None):
             records = await facet.facet.list_workflows(
                 team_id=team_id,
                 session_id=session_id,
@@ -1013,15 +1013,19 @@ class RuntimeAssembly:
         action: str,
         host_name: str | None = None,
         payload: Mapping[str, Any] | None = None,
+        team_id: str | None = None,
+        session_id: str | None = None,
     ) -> dict[str, Any]:
         await self.wait_until_ready()
         facet = self.services.resolve_team_workflow_host_facet()
-        if facet.available and facet.facet is not None:
+        if facet.available and facet.facet is not None and (team_id is not None or session_id is not None):
             record = await facet.facet.respond(
                 workflow_id,
                 action=action,
                 host_name=host_name,
                 payload=None if payload is None else dict(payload),
+                team_id=team_id,
+                session_id=session_id,
             )
             return _serialize_team_workflow_record(record)
         service = self.services.resolve_team_workflows()
@@ -1659,6 +1663,7 @@ def _assemble_runtime_stack(kernel: RuntimeKernel) -> RuntimeAssembly:
         },
     )
     services.attach_metadata_mirror(runtime.metadata)
+    _sync_compatibility_boundary_metadata(services, runtime=runtime)
     _register_job_executors(
         kernel=kernel,
         services=services,
@@ -2436,6 +2441,8 @@ def _team_protocol_only_findings(
     *,
     distribution: str,
     team_protocol_only: Mapping[str, Any],
+    services: RuntimeServices | None = None,
+    runtime: RuntimeAssembly | None = None,
 ) -> list[dict[str, Any]]:
     if not team_protocol_only:
         return []
@@ -2454,6 +2461,61 @@ def _team_protocol_only_findings(
     extension_contract = team_protocol_only.get("extension_event_contract")
     if not isinstance(extension_contract, Mapping):
         extension_contract = {}
+    capability_keys = team_protocol_only.get("capability_keys")
+    if not isinstance(capability_keys, Mapping):
+        capability_keys = {}
+    capability_available = {
+        name: (
+            services.resolve_capability(str(capability_keys.get(name) or ""))
+            if services is not None and capability_keys.get(name)
+            else None
+        )
+        for name in (
+            "team_control_plane",
+            "team_message_bus",
+            "team_workflows",
+        )
+    }
+    host_facet_resolution = (
+        services.resolve_team_workflow_host_facet()
+        if services is not None and hasattr(services, "resolve_team_workflow_host_facet")
+        else None
+    )
+    services_projection_absent = (
+        services is None
+        or all(
+            not hasattr(services, name)
+            for name in (
+                "team_control_plane",
+                "team_message_bus",
+                "team_workflows",
+            )
+        )
+    )
+    runtime_projection_absent = (
+        runtime is None
+        or all(
+            not hasattr(runtime, name)
+            for name in (
+                "team_control_plane",
+                "team_message_bus",
+                "team_workflows",
+            )
+        )
+    )
+    capability_state_matches_selection = (
+        all(value is not None for value in capability_available.values())
+        if team_selected
+        else all(value is None for value in capability_available.values())
+    )
+    host_facet_state_matches_selection = (
+        host_facet_resolution is not None
+        and host_facet_resolution.available is team_selected
+        and ((host_facet_resolution.facet is not None) if team_selected else (host_facet_resolution.facet is None))
+    )
+    extension_event_contract_live = (
+        services is not None and hasattr(getattr(services, "host", None), "emit_extension_event")
+    )
 
     workflow_surfaces = (
         "BoundHostRuntime.list_team_workflows",
@@ -2465,6 +2527,7 @@ def _team_protocol_only_findings(
         "status": (
             "pass"
             if all(surface in replacement_map for surface in workflow_surfaces)
+            and host_facet_state_matches_selection
             else "fail"
         ),
         "distribution": distribution,
@@ -2482,7 +2545,11 @@ def _team_protocol_only_findings(
     host_event_finding = {
         "rule_id": "team_host_event_bridge_authority",
         "family": "team-bridge",
-        "status": "pass" if host_event_surface in replacement_map else "fail",
+        "status": (
+            "pass"
+            if host_event_surface in replacement_map and extension_event_contract_live
+            else "fail"
+        ),
         "distribution": distribution,
         "canonical_path": "HostRuntime.emit_extension_event",
         "compat_surface": host_event_surface,
@@ -2511,6 +2578,9 @@ def _team_protocol_only_findings(
         "status": (
             "pass"
             if all(surface in replacement_map for surface in projection_surfaces)
+            and capability_state_matches_selection
+            and services_projection_absent
+            and runtime_projection_absent
             else "fail"
         ),
         "distribution": distribution,
@@ -2535,6 +2605,8 @@ def _protocol_only_conformance_metadata(
     compatibility_boundaries: Mapping[str, Any],
     package_service_protocols: Mapping[str, Any],
     team_protocol_only: Mapping[str, Any] | None = None,
+    services: RuntimeServices | None = None,
+    runtime: RuntimeAssembly | None = None,
 ) -> dict[str, Any]:
     runtime_context = compatibility_boundaries.get("runtime_context")
     task_manager = compatibility_boundaries.get("TaskManager")
@@ -2645,6 +2717,8 @@ def _protocol_only_conformance_metadata(
             *_team_protocol_only_findings(
                 distribution=distribution,
                 team_protocol_only=team_protocol_only or {},
+                services=services,
+                runtime=runtime,
             ),
         ],
     }
@@ -2654,7 +2728,11 @@ def _sync_package_service_protocol_metadata(services: RuntimeServices) -> None:
     services.metadata["package_service_protocols"] = _package_service_protocol_metadata(services)
 
 
-def _sync_compatibility_boundary_metadata(services: RuntimeServices) -> None:
+def _sync_compatibility_boundary_metadata(
+    services: RuntimeServices,
+    *,
+    runtime: RuntimeAssembly | None = None,
+) -> None:
     compatibility_surfaces = services.metadata.get("compatibility_surfaces")
     if not isinstance(compatibility_surfaces, Mapping):
         compatibility_surfaces = {}
@@ -2681,6 +2759,8 @@ def _sync_compatibility_boundary_metadata(services: RuntimeServices) -> None:
             if isinstance(migration.get("team_protocol_only"), Mapping)
             else {}
         ),
+        services=services,
+        runtime=runtime,
     )
 
 

@@ -43,6 +43,7 @@ from runtime.runtime_package_protocols import (
     CapabilityBinding,
     ContextContributorBinding,
     HostFacetBinding,
+    HostFacetResolution,
     IngressReceiptHandlerBinding,
     InvocationProviderContribution,
     PackageAssemblyStage,
@@ -953,7 +954,7 @@ def test_manifest_backed_team_runtime_registers_capabilities_and_host_facet(tmp_
     assert runtime.services.metadata["package_ingress_receipt_owners"]["runtime.team.delivery_ack"]["package_name"] == "runtime-team"
     facet = runtime.services.resolve_host_facet(RuntimeHostFacetKey.TEAM_WORKFLOWS.value)
     assert facet.available is True
-    listed = asyncio.run(facet.facet.list_workflows(team_id=None, session_id=None, pending_only=True))
+    listed = asyncio.run(facet.facet.list_workflows(team_id="team-missing", session_id=None, pending_only=True))
     assert listed == ()
     assert runtime.services.metadata["migration"]["team_protocol_only"]["extension_event_contract"] == {
         "emit": "HostRuntime.emit_extension_event",
@@ -1458,6 +1459,45 @@ def test_protocol_only_conformance_fails_without_published_service_family_metada
     }
 
 
+def test_team_bridge_findings_fail_when_live_runtime_state_is_missing() -> None:
+    class StubServices:
+        def __init__(self) -> None:
+            self.host = object()
+
+        def resolve_capability(self, key: str, default=None):
+            _ = key, default
+            return None
+
+        def resolve_team_workflow_host_facet(self):
+            return HostFacetResolution(
+                name=RuntimeHostFacetKey.TEAM_WORKFLOWS.value,
+                available=False,
+                code="not_available",
+            )
+
+    class StubRuntime:
+        pass
+
+    findings = {
+        entry["rule_id"]: entry
+        for entry in runtime_kernel_module._protocol_only_conformance_metadata(
+            distribution=RuntimeDistribution.DEFAULT.value,
+            compatibility_boundaries={},
+            package_service_protocols={},
+            team_protocol_only=runtime_kernel_module._team_protocol_only_migration_metadata(
+                selected_packages=("runtime-core", "runtime-memory", "runtime-team"),
+            ),
+            services=StubServices(),
+            runtime=StubRuntime(),
+        )["findings"]
+        if entry["family"] == "team-bridge"
+    }
+
+    assert findings["team_runtime_projection_authority"]["status"] == "fail"
+    assert findings["team_workflow_wrapper_authority"]["status"] == "fail"
+    assert findings["team_host_event_bridge_authority"]["status"] == "fail"
+
+
 def test_protocol_only_conformance_flags_unclassified_runtime_context_surfaces(
     tmp_path: Path,
 ) -> None:
@@ -1715,6 +1755,7 @@ def test_runtime_workflow_helpers_prefer_canonical_lookup_over_compatibility_slo
                 workflow.workflow_id,
                 action="reject",
                 host_name=bound.host.name,
+                session_id="leader-session",
             )
             return pending, updated
 
@@ -1779,7 +1820,9 @@ def test_bound_host_workflow_helpers_delegate_through_host_facet_without_capabil
 
     class FacetOnlyWorkflowHostFacet:
         def __init__(self) -> None:
-            self.respond_calls: list[tuple[str, str, str | None, dict[str, str] | None]] = []
+            self.respond_calls: list[
+                tuple[str, str, str | None, dict[str, str] | None, str | None, str | None]
+            ] = []
 
         async def list_workflows(
             self,
@@ -1803,8 +1846,10 @@ def test_bound_host_workflow_helpers_delegate_through_host_facet_without_capabil
             action: str,
             host_name: str | None = None,
             payload: dict[str, str] | None = None,
+            team_id: str | None = None,
+            session_id: str | None = None,
         ) -> FacetWorkflowRecord:
-            self.respond_calls.append((workflow_id, action, host_name, payload))
+            self.respond_calls.append((workflow_id, action, host_name, payload, team_id, session_id))
             return FacetWorkflowRecord(
                 workflow_id=workflow_id,
                 status="rejected",
@@ -1838,6 +1883,7 @@ def test_bound_host_workflow_helpers_delegate_through_host_facet_without_capabil
                 "workflow-facet",
                 action="reject",
                 host_name=bound.host.name,
+                session_id="leader-facet",
             )
             return listed, updated
 
@@ -1848,6 +1894,7 @@ def test_bound_host_workflow_helpers_delegate_through_host_facet_without_capabil
     assert listed[0].leader_session_id == "leader-facet"
     assert updated.workflow_id == "workflow-facet"
     assert updated.status == "rejected"
+    assert facet.respond_calls == [("workflow-facet", "reject", "compat", None, None, "leader-facet")]
     assert facet.respond_calls == [("workflow-facet", "reject", "compat", None)]
 
 

@@ -182,6 +182,9 @@ external package 的迁移口径也需要一起改：
   - `runtime.team.workflows`
 - canonical host facet key
   - `runtime.team.workflows`
+- host facet authority semantics
+  - team workflow list / respond 继续要求显式 `team_id` 或 `session_id` scope
+  - 缺失 scope 或 scope 不匹配时应返回 scoped failure，而不是扩大到全局 team 视图
 - canonical extension event contract
   - `HostRuntime.emit_extension_event()`
   - `runtime.hosts.HostExtensionEvent`

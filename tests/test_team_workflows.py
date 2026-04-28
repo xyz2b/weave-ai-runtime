@@ -1135,6 +1135,7 @@ def test_host_bridge_lists_and_resolves_pending_workflows(tmp_path: Path) -> Non
                 workflow.workflow_id,
                 action="reject",
                 host_name=bound.host.name,
+                session_id="leader-session",
             )
             return pending, updated
 
@@ -1243,6 +1244,7 @@ def test_host_workflow_operations_resolve_through_host_facet(tmp_path: Path) -> 
                 workflow.workflow_id,
                 action="reject",
                 host_name=bound.host.name,
+                session_id="leader-session",
             )
             return pending, updated
 
@@ -1251,6 +1253,153 @@ def test_host_workflow_operations_resolve_through_host_facet(tmp_path: Path) -> 
     assert pending
     assert pending[0].workflow_id == updated.workflow_id
     assert updated.status.value == "rejected"
+
+
+def test_host_workflow_facet_requires_explicit_matching_scope(tmp_path: Path) -> None:
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            model_client=None,
+            teammate_orchestration=TeammateOrchestrationConfig(enabled=True, heartbeat_interval_ms=10),
+        )
+    )
+    plane = _team_control_plane(runtime)
+    workflows = _team_workflows(runtime)
+    assert plane is not None
+    assert workflows is not None
+    host = ControlledPermissionHost()
+
+    async def scenario():
+        async with runtime.bind_host(host) as bound:
+            facet = _require_team_workflow_facet(bound)
+            team, _ = await plane.create_team(session_id="leader-session", extensions={}, name="ops")
+            member = await plane.register_member(
+                session_id="leader-session",
+                extensions={},
+                name="alpha",
+                agent_name="main-router",
+                execution_defaults={"cwd": str(tmp_path)},
+            )
+            workflow = await workflows.create_permission_workflow(
+                team=team,
+                requester_member_id=member.member_id,
+                requester_name=member.name,
+                responder_member_id=team.leader_member_id,
+                responder_name="leader",
+                request_payload={"permission_name": "bash", "permission_message": "approve?"},
+            )
+            missing_scope = None
+            missing_session = None
+            wrong_team = None
+            try:
+                await facet.respond(
+                    workflow.workflow_id,
+                    action="reject",
+                    host_name=bound.host.name,
+                )
+            except TeamWorkflowError as exc:
+                missing_scope = exc
+            try:
+                await facet.list_workflows(session_id="other-session", pending_only=True)
+            except TeamWorkflowError as exc:
+                missing_session = exc
+            try:
+                await facet.respond(
+                    workflow.workflow_id,
+                    action="reject",
+                    host_name=bound.host.name,
+                    team_id="other-team",
+                    session_id="leader-session",
+                )
+            except TeamWorkflowError as exc:
+                wrong_team = exc
+            updated = await facet.respond(
+                workflow.workflow_id,
+                action="reject",
+                host_name=bound.host.name,
+                session_id="leader-session",
+            )
+            return updated, missing_scope, missing_session, wrong_team
+
+    updated, missing_scope, missing_session, wrong_team = asyncio.run(scenario())
+
+    assert missing_scope is not None
+    assert missing_scope.code == "invalid_workflow_scope"
+    assert missing_session is not None
+    assert missing_session.code == "invalid_workflow_scope"
+    assert wrong_team is not None
+    assert wrong_team.code == "invalid_workflow_scope"
+    assert updated.status.value == "rejected"
+
+
+def test_host_workflow_facet_scope_blocks_cross_team_access(tmp_path: Path) -> None:
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            model_client=None,
+            teammate_orchestration=TeammateOrchestrationConfig(enabled=True, heartbeat_interval_ms=10),
+        )
+    )
+    plane = _team_control_plane(runtime)
+    workflows = _team_workflows(runtime)
+    assert plane is not None
+    assert workflows is not None
+    host = ControlledPermissionHost()
+
+    async def scenario():
+        async with runtime.bind_host(host) as bound:
+            facet = _require_team_workflow_facet(bound)
+            team_one, _ = await plane.create_team(session_id="leader-one", extensions={}, name="ops-one")
+            member_one = await plane.register_member(
+                session_id="leader-one",
+                extensions={},
+                name="alpha",
+                agent_name="main-router",
+                execution_defaults={"cwd": str(tmp_path)},
+            )
+            workflow_one = await workflows.create_permission_workflow(
+                team=team_one,
+                requester_member_id=member_one.member_id,
+                requester_name=member_one.name,
+                responder_member_id=team_one.leader_member_id,
+                responder_name="leader-one",
+                request_payload={"permission_name": "bash", "permission_message": "approve?"},
+            )
+            team_two, _ = await plane.create_team(session_id="leader-two", extensions={}, name="ops-two")
+            member_two = await plane.register_member(
+                session_id="leader-two",
+                extensions={},
+                name="beta",
+                agent_name="main-router",
+                execution_defaults={"cwd": str(tmp_path)},
+            )
+            workflow_two = await workflows.create_permission_workflow(
+                team=team_two,
+                requester_member_id=member_two.member_id,
+                requester_name=member_two.name,
+                responder_member_id=team_two.leader_member_id,
+                responder_name="leader-two",
+                request_payload={"permission_name": "git", "permission_message": "approve?"},
+            )
+            scoped = await facet.list_workflows(session_id="leader-one", pending_only=True)
+            denied = None
+            try:
+                await facet.respond(
+                    workflow_two.workflow_id,
+                    action="reject",
+                    host_name=bound.host.name,
+                    session_id="leader-one",
+                )
+            except TeamWorkflowError as exc:
+                denied = exc
+            return scoped, workflow_one.workflow_id, workflow_two.workflow_id, denied
+
+    scoped, workflow_one_id, workflow_two_id, denied = asyncio.run(scenario())
+
+    assert [record.workflow_id for record in scoped] == [workflow_one_id]
+    assert denied is not None
+    assert denied.code == "not_found"
+    assert denied.details["workflow_id"] == workflow_two_id
 
 
 def test_host_workflow_response_preserves_logical_actor_metadata(tmp_path: Path) -> None:
@@ -1293,6 +1442,7 @@ def test_host_workflow_response_preserves_logical_actor_metadata(tmp_path: Path)
                 workflow.workflow_id,
                 action="reject",
                 host_name=bound.host.name,
+                session_id="leader-session",
             )
         command = await _wait_for(
             lambda: (
@@ -1364,6 +1514,7 @@ def test_host_and_model_share_invalid_action_validation(tmp_path: Path) -> None:
                     workflow.workflow_id,
                     action="complete",
                     host_name=bound.host.name,
+                    session_id="leader-session",
                 )
             except TeamWorkflowError as exc:
                 return exc

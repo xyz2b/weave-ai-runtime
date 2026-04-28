@@ -283,6 +283,7 @@ runtime-owned team / workflow path 现在应把下面这些 surface 当 canonica
 - bound-host workflow helper -> `RuntimeHostFacetKey.TEAM_WORKFLOWS`
 - `HostRuntime.emit_team_event()` -> `HostRuntime.emit_extension_event(HostExtensionEvent(namespace="runtime.team", ...))`
 - `TaskManager` 仍然是 compatibility wrapper
+- host facet 的 workflow list / respond 仍然必须带 `team_id` 或 `session_id` scope；缺失或不匹配的 scope 必须失败，而不是放宽成跨 team authority
 
 team-absent 语义也需要保持明确：
 

@@ -44,7 +44,10 @@ class TeamWorkflowHostFacet:
         session_id: str | None = None,
         pending_only: bool | None = True,
     ) -> tuple[Any, ...]:
-        resolved_team_id = self._resolve_team_id(team_id=team_id, session_id=session_id)
+        resolved_team_id, _ = self._resolve_team_workflow_scope(
+            team_id=team_id,
+            session_id=session_id,
+        )
         return tuple(
             self.workflows.list_workflows(team_id=resolved_team_id, pending_only=pending_only)
         )
@@ -56,7 +59,18 @@ class TeamWorkflowHostFacet:
         action: str,
         host_name: str | None = None,
         payload: dict[str, Any] | None = None,
+        team_id: str | None = None,
+        session_id: str | None = None,
     ) -> Any:
+        resolved_team_id, resolved_session_id = self._resolve_team_workflow_scope(
+            team_id=team_id,
+            session_id=session_id,
+        )
+        self._resolve_scoped_workflow(
+            workflow_id,
+            team_id=resolved_team_id,
+            session_id=resolved_session_id,
+        )
         return await self.workflows.respond_host(
             workflow_id=workflow_id,
             action=action,
@@ -64,20 +78,71 @@ class TeamWorkflowHostFacet:
             payload=payload,
         )
 
-    def _resolve_team_id(
+    def _resolve_team_workflow_scope(
         self,
         *,
         team_id: str | None,
         session_id: str | None,
-    ) -> str | None:
-        if team_id is not None and str(team_id).strip():
-            return str(team_id).strip()
-        if session_id is None or not str(session_id).strip():
-            return None
-        if self.control_plane is None:
-            return None
-        team = self.control_plane.active_team_for_leader_session(str(session_id).strip())
-        return None if team is None else team.team_id
+    ) -> tuple[str | None, str | None]:
+        from .team_workflows import TeamWorkflowError
+
+        resolved_team_id = str(team_id).strip() if team_id is not None and str(team_id).strip() else None
+        resolved_session_id = (
+            str(session_id).strip() if session_id is not None and str(session_id).strip() else None
+        )
+        if resolved_team_id is None and resolved_session_id is None:
+            raise TeamWorkflowError(
+                "invalid_workflow_scope",
+                "Host workflow operations require a team_id or session_id scope",
+            )
+        if resolved_session_id is None:
+            return resolved_team_id, resolved_session_id
+        if self.control_plane is None or not hasattr(self.control_plane, "active_team_for_leader_session"):
+            return resolved_team_id, resolved_session_id
+        team = self.control_plane.active_team_for_leader_session(resolved_session_id)
+        if team is None:
+            raise TeamWorkflowError(
+                "invalid_workflow_scope",
+                "No active team is bound to that leader session",
+                session_id=resolved_session_id,
+            )
+        if resolved_team_id is not None and resolved_team_id != team.team_id:
+            raise TeamWorkflowError(
+                "invalid_workflow_scope",
+                "team_id does not match the active team for that leader session",
+                team_id=resolved_team_id,
+                session_id=resolved_session_id,
+                active_team_id=team.team_id,
+            )
+        return team.team_id, resolved_session_id
+
+    def _resolve_scoped_workflow(
+        self,
+        workflow_id: str,
+        *,
+        team_id: str | None,
+        session_id: str | None,
+    ) -> Any:
+        from .team_workflows import TeamWorkflowError
+
+        normalized_workflow_id = str(workflow_id).strip()
+        for record in self.workflows.list_workflows(team_id=team_id, pending_only=None):
+            if str(getattr(record, "workflow_id", "") or "") == normalized_workflow_id:
+                return record
+        if hasattr(self.workflows, "get"):
+            record = self.workflows.get(normalized_workflow_id)
+            if record is not None and (team_id is None or getattr(record, "team_id", None) == team_id):
+                return record
+        scope_details = {"workflow_id": normalized_workflow_id}
+        if team_id is not None:
+            scope_details["team_id"] = team_id
+        if session_id is not None:
+            scope_details["session_id"] = session_id
+        raise TeamWorkflowError(
+            "not_found",
+            f"Workflow '{normalized_workflow_id}' was not found in the requested team scope",
+            **scope_details,
+        )
 
 
 _OFFICIAL_RUNTIME_PACKAGE_MANIFESTS: dict[str, RuntimePackageManifest]
