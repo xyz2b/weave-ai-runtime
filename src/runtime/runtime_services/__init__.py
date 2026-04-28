@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping, Protocol, Sequence
 
@@ -351,14 +352,21 @@ class RuntimeServices:
         self.jobs = task_manager.job_service
         self.tasks = DefaultTaskService(task_manager)
         self._bind_job_runtime(task_manager.job_service, kernel=previous_kernel)
+        self.record_compatibility_usage(
+            family="task_manager",
+            surface="RuntimeServices.bind_task_manager",
+            access_label="TaskManager",
+        )
 
     @property
     def task_manager(self) -> TaskManager:
         if self.tasks.manager is None:  # pragma: no cover - defensive boundary
             self.tasks = DefaultTaskService(TaskManager(job_service=self.job_service))
-            accesses = self.metadata.setdefault("compatibility_accesses", [])
-            if isinstance(accesses, list) and "TaskManager" not in accesses:
-                accesses.append("TaskManager")
+        self.record_compatibility_usage(
+            family="task_manager",
+            surface="RuntimeServices.task_manager",
+            access_label="TaskManager",
+        )
         return self.tasks.manager
 
     @property
@@ -530,24 +538,62 @@ class RuntimeServices:
     def resolve_team_workflows(self) -> Any:
         return self.resolve_capability(RuntimeCapabilityKey.TEAM_WORKFLOWS.value)
 
+    def record_compatibility_usage(
+        self,
+        *,
+        family: str,
+        surface: str,
+        access_label: str | None = None,
+    ) -> None:
+        normalized_family = str(family).strip()
+        normalized_surface = str(surface).strip()
+        changed = False
+
+        raw_usage = self.metadata.get("compatibility_usage")
+        if not isinstance(raw_usage, dict):
+            raw_usage = {}
+            self.metadata["compatibility_usage"] = raw_usage
+            changed = True
+        family_usage = raw_usage.get(normalized_family)
+        if not isinstance(family_usage, list):
+            family_usage = (
+                [str(item) for item in family_usage if str(item).strip()]
+                if isinstance(family_usage, Sequence) and not isinstance(family_usage, (str, bytes))
+                else []
+            )
+            raw_usage[normalized_family] = family_usage
+            changed = True
+        if normalized_surface and normalized_surface not in family_usage:
+            family_usage.append(normalized_surface)
+            changed = True
+
+        if access_label is not None:
+            accesses = self.metadata.setdefault("compatibility_accesses", [])
+            if isinstance(accesses, list) and access_label not in accesses:
+                accesses.append(access_label)
+                changed = True
+
+        if changed:
+            self._refresh_published_protocol_metadata()
+
     def query_closure_report(self) -> dict[str, Any]:
         report = self.metadata.get("closure_report")
-        return dict(report) if isinstance(report, Mapping) else {}
+        return deepcopy(report) if isinstance(report, Mapping) else {}
 
     def query_compatibility_retirement(self) -> dict[str, Any]:
         report = self.query_closure_report()
         value = report.get("compatibility_retirement")
-        return dict(value) if isinstance(value, Mapping) else {}
+        return deepcopy(value) if isinstance(value, Mapping) else {}
 
     def query_persistence_profile(self) -> dict[str, Any]:
         report = self.query_closure_report()
         value = report.get("persistence_profile")
-        return dict(value) if isinstance(value, Mapping) else {}
+        return deepcopy(value) if isinstance(value, Mapping) else {}
 
     def query_isolation_readiness(self) -> dict[str, Any]:
         report = self.query_closure_report()
         value = report.get("isolation_readiness")
-        return dict(value) if isinstance(value, Mapping) else {}
+        return deepcopy(value) if isinstance(value, Mapping) else {}
 
     def register_lifecycle_participant(self, participant: PackageLifecycleParticipant) -> None:
         self.lifecycle_registry.register(participant)
@@ -981,7 +1027,7 @@ class RuntimeServices:
             "resolved_active_package_graph_provenance",
             "protocol_only_conformance",
         ):
-            mirror[key] = dict(self.metadata.get(key, {}))
+            mirror[key] = deepcopy(self.metadata.get(key, {}))
 
     def _serialize_package_owner(self, owner: PackageOwnership) -> dict[str, Any]:
         return {

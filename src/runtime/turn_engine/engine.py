@@ -773,6 +773,11 @@ class TurnEngine:
             self._runtime_services.context_assembler = prompt_composer
         if task_manager is not None:
             self._runtime_services.bind_task_manager(task_manager)
+            self._runtime_services.record_compatibility_usage(
+                family="task_manager",
+                surface="TurnEngine.__init__(task_manager=...)",
+                access_label="TaskManager",
+            )
         elif job_service is not None and self._runtime_services.job_service is not job_service:
             self._runtime_services.bind_job_service(job_service)
         if any(
@@ -2444,12 +2449,21 @@ class TurnEngine:
             for key, value in local_runtime_context.items()
             if original_runtime_context.get(key) != value
         }
-        runtime_context_updates, compat_write_diagnostics = _filter_legacy_runtime_context_updates(
+        runtime_context_updates, blocked_runtime_context_keys = _filter_legacy_runtime_context_updates(
             runtime_context_updates,
             runtime_metadata=self._runtime_services.metadata,
         )
-        contribution_private_updates, contribution_private_diagnostics = _split_sidecar_private_updates(
+        contribution_private_updates, blocked_contribution_keys = _filter_legacy_runtime_context_updates(
             contribution.private_updates
+            if isinstance(contribution.private_updates, Mapping)
+            else {},
+            runtime_metadata=self._runtime_services.metadata,
+        )
+        compat_write_diagnostics = _legacy_runtime_context_blocked_diagnostics(
+            [*blocked_runtime_context_keys, *blocked_contribution_keys]
+        )
+        contribution_private_updates, contribution_private_diagnostics = _split_sidecar_private_updates(
+            contribution_private_updates
         )
         compat_private_updates, compat_diagnostics = _split_sidecar_private_updates(
             runtime_context_updates
@@ -3576,7 +3590,7 @@ def _filter_legacy_runtime_context_updates(
     updates: Mapping[str, Any],
     *,
     runtime_metadata: Mapping[str, Any],
-) -> tuple[dict[str, Any], dict[str, Any]]:
+) -> tuple[dict[str, Any], tuple[str, ...]]:
     allowed_updates: dict[str, Any] = {}
     blocked_keys: list[str] = []
     legacy_enabled = _legacy_runtime_context_authority_enabled(runtime_metadata)
@@ -3589,17 +3603,19 @@ def _filter_legacy_runtime_context_updates(
             blocked_keys.append(normalized_key)
             continue
         allowed_updates[normalized_key] = value
-    diagnostics = (
-        {
-            "legacy_runtime_context_write_blocked": {
-                "blocked_keys": blocked_keys,
-                "migration_target": "RuntimePrivateContext / PromptContextEnvelope",
-            }
+    return allowed_updates, tuple(sorted(set(blocked_keys)))
+
+
+def _legacy_runtime_context_blocked_diagnostics(blocked_keys: Sequence[str]) -> dict[str, Any]:
+    normalized = sorted({str(key) for key in blocked_keys if str(key).strip()})
+    if not normalized:
+        return {}
+    return {
+        "legacy_runtime_context_write_blocked": {
+            "blocked_keys": normalized,
+            "migration_target": "RuntimePrivateContext / PromptContextEnvelope",
         }
-        if blocked_keys
-        else {}
-    )
-    return allowed_updates, diagnostics
+    }
 
 
 def _legacy_runtime_context_authority_enabled(runtime_metadata: Mapping[str, Any]) -> bool:

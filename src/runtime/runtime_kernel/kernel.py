@@ -374,6 +374,11 @@ class RuntimeAssembly:
     def task_manager(self) -> TaskManager:
         if self._task_manager is None:
             self._task_manager = self.services.task_manager
+        self.services.record_compatibility_usage(
+            family="task_manager",
+            surface="RuntimeAssembly.task_manager",
+            access_label="TaskManager",
+        )
         return self._task_manager
 
     def bind_host(self, host: HostAdapter) -> BoundHostRuntime:
@@ -2692,6 +2697,26 @@ def _compatibility_retirement_surface_entries(
     return []
 
 
+def _compatibility_usage_from_runtime_metadata(
+    metadata: Mapping[str, Any],
+) -> dict[str, tuple[str, ...]]:
+    raw = metadata.get("compatibility_usage")
+    if not isinstance(raw, Mapping):
+        return {}
+    usage: dict[str, tuple[str, ...]] = {}
+    for family, surfaces in raw.items():
+        if not isinstance(surfaces, Sequence) or isinstance(surfaces, (str, bytes)):
+            continue
+        normalized: list[str] = []
+        for surface in surfaces:
+            text = str(surface).strip()
+            if text and text not in normalized:
+                normalized.append(text)
+        if normalized:
+            usage[str(family)] = tuple(normalized)
+    return usage
+
+
 def _compatibility_retirement_metadata(services: RuntimeServices) -> dict[str, Any]:
     profile = _legacy_profile_from_runtime_metadata(services.metadata)
     compatibility_boundaries = services.metadata.get("compatibility_boundaries", {})
@@ -2706,11 +2731,15 @@ def _compatibility_retirement_metadata(services: RuntimeServices) -> dict[str, A
     compatibility_surfaces = services.metadata.get("compatibility_surfaces", {})
     if not isinstance(compatibility_surfaces, Mapping):
         compatibility_surfaces = {}
+    observed_usage = _compatibility_usage_from_runtime_metadata(services.metadata)
 
     families: list[dict[str, Any]] = []
     active_families: list[str] = []
     for definition in LEGACY_COMPATIBILITY_FAMILIES:
+        observed_surfaces = observed_usage.get(definition.family, ())
         activation = family_activation_state(definition.family, profile)
+        if observed_surfaces:
+            activation = ClosureActivationState.LEGACY_MODE_ENABLED
         if activation is ClosureActivationState.LEGACY_MODE_ENABLED:
             active_families.append(definition.family)
         surfaces = _compatibility_retirement_surface_entries(
@@ -2725,6 +2754,8 @@ def _compatibility_retirement_metadata(services: RuntimeServices) -> dict[str, A
                 **definition.to_metadata(),
                 "activation": activation.value,
                 "legacy_mode_enabled": profile.is_enabled(definition.family),
+                "compatibility_observed": bool(observed_surfaces),
+                "observed_surfaces": list(observed_surfaces),
                 "surfaces": surfaces,
             }
         )
@@ -2734,6 +2765,7 @@ def _compatibility_retirement_metadata(services: RuntimeServices) -> dict[str, A
         "inventory_complete": len(families) == len(LEGACY_COMPATIBILITY_FAMILIES),
         "legacy_profile": profile.to_metadata(),
         "active_families": active_families,
+        "observed_usage": {family: list(surfaces) for family, surfaces in observed_usage.items()},
         "families": families,
         "supported_hook_migration_paths": {
             "skill_and_invocation_definition_hooks": "normalized into HookRegistrationRequest before activation",

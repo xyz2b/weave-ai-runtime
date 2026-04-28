@@ -796,6 +796,98 @@ def test_authoritative_legacy_runtime_context_writes_can_be_legacy_enabled() -> 
     assert "legacy_runtime_context_write_blocked" not in request.private_context.diagnostics
 
 
+def test_authoritative_legacy_private_updates_are_blocked_by_default() -> None:
+    class LegacyAuthoritySidecar:
+        async def collect(self, **kwargs):
+            return SidecarContributionResult(
+                private_updates={"team_id": "compat-team", "sidecar": True}
+            )
+
+    model_client = BatchedModelClient(
+        [
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-legacy-private-blocked"}),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "done"}),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+            ]
+        ]
+    )
+    services = RuntimeServices(hooks=LegacyAuthoritySidecar(), context_assembler=ContextAssembler())
+    engine = TurnEngine(
+        model_client=model_client,
+        tool_registry=ToolRegistry(),
+        runtime_services=services,
+    )
+    agent = AgentDefinition(name="main-router", description="router", prompt="Answer")
+
+    asyncio.run(
+        engine.run_turn(
+            session_id="session",
+            turn_id="turn",
+            agent=agent,
+            cwd=".",
+            messages=[],
+            base_system_prompt="System",
+        )
+    )
+
+    request = model_client.requests[0]
+    assert "team_id" not in request.private_context.extensions
+    assert request.private_context.extensions["sidecar"] is True
+    assert request.private_context.diagnostics["legacy_runtime_context_write_blocked"] == {
+        "blocked_keys": ["team_id"],
+        "migration_target": "RuntimePrivateContext / PromptContextEnvelope",
+    }
+
+
+def test_authoritative_legacy_private_updates_can_be_legacy_enabled() -> None:
+    class LegacyAuthoritySidecar:
+        async def collect(self, **kwargs):
+            return SidecarContributionResult(
+                private_updates={"team_id": "compat-team", "sidecar": True}
+            )
+
+    model_client = BatchedModelClient(
+        [
+            [
+                ModelStreamEvent(
+                    ModelStreamEventType.MESSAGE_START,
+                    {"request_id": "req-legacy-private-enabled"},
+                ),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "done"}),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+            ]
+        ]
+    )
+    services = RuntimeServices(
+        hooks=LegacyAuthoritySidecar(),
+        context_assembler=ContextAssembler(),
+        metadata={"legacy_compatibility": {"enabled_families": ["runtime_context_authority"]}},
+    )
+    engine = TurnEngine(
+        model_client=model_client,
+        tool_registry=ToolRegistry(),
+        runtime_services=services,
+    )
+    agent = AgentDefinition(name="main-router", description="router", prompt="Answer")
+
+    asyncio.run(
+        engine.run_turn(
+            session_id="session",
+            turn_id="turn",
+            agent=agent,
+            cwd=".",
+            messages=[],
+            base_system_prompt="System",
+        )
+    )
+
+    request = model_client.requests[0]
+    assert request.private_context.extensions["team_id"] == "compat-team"
+    assert request.private_context.extensions["sidecar"] is True
+    assert "legacy_runtime_context_write_blocked" not in request.private_context.diagnostics
+
+
 def test_sidecar_prompt_and_private_channels_stay_separate() -> None:
     class StructuredSidecar:
         async def collect(self, **kwargs):

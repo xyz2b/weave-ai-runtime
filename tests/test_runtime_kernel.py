@@ -51,6 +51,7 @@ from runtime.runtime_package_protocols import RuntimeCapabilityKey
 from runtime.runtime_services import NoopCompactionService, NoopMemoryService
 from runtime.session_runtime import FileTranscriptStore, InMemoryTranscriptStore
 from runtime.stores_file import FileChildRunStore
+from runtime.tasking import TaskManager
 from runtime.task_lists import FileTaskListStore, InMemoryTaskListStore
 from runtime.team_control_plane import InMemoryTeamStore
 from runtime.team_message_bus import InMemoryTeamMessageStore
@@ -1067,10 +1068,66 @@ def test_runtime_task_manager_compatibility_wrapper_is_created_lazily(tmp_path: 
     assert runtime._task_manager is compat_task_manager
     assert compat_task_manager.job_service is runtime.services.job_service
     assert runtime.services.metadata["compatibility_accesses"] == ["TaskManager"]
+    assert runtime.query_closure_report()["status"] == "closure-red"
+    assert runtime.metadata["protocol_only_conformance"]["gate"]["status"] == "fail"
+    task_manager_usage = runtime.query_compatibility_retirement()["observed_usage"]["task_manager"]
+    assert set(task_manager_usage) == {
+        "RuntimeAssembly.task_manager",
+        "RuntimeServices.task_manager",
+    }
     assert runtime.services.metadata["package_lookup"]["canonical_control_plane_services"] == {
         "job_service": "RuntimeServices.job_service",
         "task_list_service": "RuntimeServices.task_list_service",
     }
+
+
+def test_binding_task_manager_marks_closure_report_and_gate_red(tmp_path: Path) -> None:
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            distribution=RuntimeDistribution.CORE,
+        )
+    )
+
+    runtime.services.bind_task_manager(TaskManager(job_service=runtime.services.job_service))
+
+    report = runtime.query_closure_report()
+
+    assert report["status"] == "closure-red"
+    assert runtime.metadata["protocol_only_conformance"]["gate"]["status"] == "fail"
+    assert "task_manager" in report["compatibility_retirement"]["active_families"]
+    assert "RuntimeServices.bind_task_manager" in report["compatibility_retirement"]["observed_usage"][
+        "task_manager"
+    ]
+
+
+def test_closure_queries_return_deep_copies_and_mirrors_do_not_share_nested_state(
+    tmp_path: Path,
+) -> None:
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            distribution=RuntimeDistribution.CORE,
+        )
+    )
+
+    report = runtime.services.query_closure_report()
+    report["compatibility_retirement"]["documented_families"].append("mutated-by-query")
+
+    assert "mutated-by-query" not in runtime.services.metadata["closure_report"][
+        "compatibility_retirement"
+    ]["documented_families"]
+    assert "mutated-by-query" not in runtime.query_closure_report()["compatibility_retirement"][
+        "documented_families"
+    ]
+
+    runtime.services.metadata["closure_report"]["compatibility_retirement"]["documented_families"].append(
+        "mutated-in-services"
+    )
+
+    assert "mutated-in-services" not in runtime.metadata["closure_report"]["compatibility_retirement"][
+        "documented_families"
+    ]
 
 
 def test_host_assembly_entrypoint_binds_host(tmp_path: Path) -> None:

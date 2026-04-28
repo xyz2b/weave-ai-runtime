@@ -87,6 +87,11 @@ class AgentRuntime:
         self._runtime_services = runtime_services or RuntimeServices(jobs=job_service)
         if task_manager is not None:
             self._runtime_services.bind_task_manager(task_manager)
+            self._runtime_services.record_compatibility_usage(
+                family="task_manager",
+                surface="AgentRuntime.__init__(task_manager=...)",
+                access_label="TaskManager",
+            )
         elif job_service is not None and self._runtime_services.job_service is not job_service:
             self._runtime_services.bind_job_service(job_service)
         self._run_store = run_store or InMemoryChildRunStore()
