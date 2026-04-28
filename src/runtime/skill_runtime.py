@@ -517,6 +517,9 @@ def _is_local_file_backed_skill(skill: SkillDefinition) -> bool:
 def _supports_permission_requests(host: Any) -> bool:
     if isinstance(host, CallbackHostAdapter):
         return host.permission_handler is not None
+    delegate = getattr(host, "_delegate", None)
+    if delegate is not None and delegate is not host:
+        return _supports_permission_requests(delegate)
     if type(host) is NullHostAdapter:
         return False
     return True

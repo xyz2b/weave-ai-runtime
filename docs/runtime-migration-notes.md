@@ -263,7 +263,46 @@ external package 的迁移口径也需要一起改：
   - `RuntimeServices.compaction`
   - `RuntimeServices.isolation`
 
-## 4.6 Explicit Non-Goals
+## 4.6 Closure Report、Legacy Mode 与最终替换矩阵
+
+这次收尾之后，迁移不再只靠散落的 notes，而是可以直接看 runtime 发布的 closure state：
+
+- `runtime.query_closure_report()`
+- `runtime.query_compatibility_retirement()`
+- `runtime.query_persistence_profile()`
+- `runtime.query_isolation_readiness()`
+
+其中最实用的一层是 `compatibility_retirement`。它会告诉你：
+
+- 哪个 family 已经 retired
+- 哪个 family 只能在 legacy mode 下继续容忍
+- 每个 family 的 migration target 是什么
+
+如果你只想查“旧 surface 该换成什么”，可以直接按下面这张表迁移：
+
+| 旧 surface / family | 当前状态 | canonical replacement |
+| --- | --- | --- |
+| `TaskManager` | compatibility-only / retired-by-default | `RuntimeServices.job_service` + `RuntimeServices.task_list_service` |
+| shared `runtime_context` authoritative write | legacy-mode-only | `PromptContextEnvelope` + `RuntimePrivateContext` |
+| `RuntimeServices.memory.collect()` / `hooks.collect()` / `task_discipline.collect()` | compatibility-only | `PackageContribution.context_contributors` |
+| `RuntimeServices.memory` | compatibility-only projection | `RuntimeServices.resolve_memory_service()` |
+| `RuntimeServices.compaction` | compatibility-only projection | `RuntimeServices.resolve_compaction_service()` |
+| `RuntimeServices.isolation` | compatibility-only projection | `RuntimeServices.resolve_isolation_service()` |
+| `RuntimeServices.teammates` / `RuntimeAssembly.teammates` | compatibility-only projection | `RuntimeAssembly.resolve_capability(RuntimeCapabilityKey.TEAMMATES.value)` |
+| agent-owned `AgentDefinition.hooks` | legacy-mode-only / rejected-by-default | runtime config / host / session API / skill hooks |
+
+同一个 `closure_report` 里还会把 persistence 与 isolation 一起发布出来：
+
+- lightweight profile 与 production-oriented profile 的 durability 差异
+- `worktree` / `remote` isolation 当前到底是 ready、not_configured 还是 not_available
+
+所以迁移时推荐顺序是：
+
+1. 先看 `closure_report`
+2. 再看 `compatibility_boundaries` / `package_service_protocols`
+3. 最后才决定是否真的需要显式开启某个 legacy family
+
+## 4.7 Explicit Non-Goals
 
 这次边界收敛明确不是下面这些事情：
 
@@ -279,7 +318,7 @@ external package 的迁移口径也需要一起改：
 - 继续把 `TaskManager` 当作 compatibility facade 处理
 - physical package split 留到后续边界和 public contract 更稳定时再谈
 
-## 4.7 Invocation Provider Package Migration
+## 4.8 Invocation Provider Package Migration
 
 `RuntimeConfig.extra_invocation_providers` 已经不再是 canonical assembly input。
 如果你之前这样注册自定义 provider：

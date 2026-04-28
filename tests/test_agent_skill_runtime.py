@@ -28,6 +28,7 @@ from runtime.runtime_kernel import (
     DefinitionSourcePaths,
     ModelRouteBinding,
     RuntimeConfig,
+    RuntimeDistribution,
     assemble_runtime,
 )
 from runtime.runtime_services import RuntimeServices
@@ -157,6 +158,7 @@ def test_agent_tool_v1_contract_normalizes_and_returns_structured_payload(tmp_pa
     runtime = assemble_runtime(
         RuntimeConfig(
             working_directory=tmp_path,
+            distribution=RuntimeDistribution.FULL,
             model_client=model_client,
             model_routes={
                 "reviewer-route": ModelRouteBinding(
@@ -234,7 +236,13 @@ def test_agent_tool_v1_contract_normalizes_and_returns_structured_payload(tmp_pa
     assert set(payload["terminal_metadata"]) - set(stable_terminal_metadata)
 
     request = model_client.requests[0]
-    assert request.turn_context.cwd == str(workspace.resolve())
+    prepared_cwd = Path(request.turn_context.cwd)
+    assert prepared_cwd != workspace.resolve()
+    assert prepared_cwd.parent == (workspace / ".runtime" / "isolation" / "worktree").resolve()
+    assert request.metadata["isolation"]["metadata"]["source_working_directory"] == str(
+        workspace.resolve()
+    )
+    assert request.metadata["isolation"]["metadata"]["prepared_target"] == str(prepared_cwd)
     assert request.model == "override-model"
     assert request.requested_model_route == "reviewer-route"
     assert request.resolved_model_route == "reviewer-route"
@@ -751,6 +759,7 @@ def test_assembled_runtime_executes_model_generated_agent_and_skill_tools(
     runtime = assemble_runtime(
         RuntimeConfig(
             working_directory=tmp_path,
+            distribution=RuntimeDistribution.FULL,
             model_client=model_client,
             builtins=BuiltinPackConfig(
                 extra_agents=[
@@ -1156,6 +1165,7 @@ def test_inline_skill_request_override_shapes_next_request_and_is_consumed_once(
     runtime = assemble_runtime(
         RuntimeConfig(
             working_directory=tmp_path,
+            distribution=RuntimeDistribution.FULL,
             model_client=model_client,
             builtins=BuiltinPackConfig(
                 agent_replacements={

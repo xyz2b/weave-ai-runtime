@@ -12,8 +12,9 @@ from runtime.builtins import load_builtin_pack
 from runtime.builtins.tools import builtin_tools
 from runtime.devtools.builtins import devtools_builtin_tools
 from runtime.context_window import ModelContextWindowProfile, RouteContextWindowPolicy
-from runtime.contracts import MessageRole
+from runtime.contracts import MessageRole, RuntimeMessage, TextBlock
 from runtime.execution_policy import _narrow_tool_pool
+from runtime.agent_execution import AgentRunRecord, AgentRunStatus, InMemoryChildRunStore, SpawnMode
 from runtime.hooks import (
     HookActivationState,
     HookHandlerKind,
@@ -29,6 +30,7 @@ from runtime.definitions import (
     AgentDefinition,
     DefinitionOrigin,
     DefinitionSource,
+    IsolationMode,
 )
 from runtime.hosts.base import NullHostAdapter
 from runtime.jobs import FileJobStore, InMemoryJobStore
@@ -48,6 +50,7 @@ from runtime.runtime_core_protocol_catalog import CORE_PROTOCOL_CATALOG_SCHEMA_V
 from runtime.runtime_package_protocols import RuntimeCapabilityKey
 from runtime.runtime_services import NoopCompactionService, NoopMemoryService
 from runtime.session_runtime import FileTranscriptStore, InMemoryTranscriptStore
+from runtime.stores_file import FileChildRunStore
 from runtime.task_lists import FileTaskListStore, InMemoryTaskListStore
 from runtime.team_control_plane import InMemoryTeamStore
 from runtime.team_message_bus import InMemoryTeamMessageStore
@@ -59,6 +62,7 @@ from runtime.turn_engine import (
     ModelStreamEvent,
     ModelStreamEventType,
     NormalizedModelCapabilities,
+    TranscriptEntry,
 )
 
 
@@ -568,6 +572,9 @@ def test_distribution_profiles_gate_runtime_mechanisms_and_store_defaults(tmp_pa
     assert isinstance(core_runtime.services.transcript_store, InMemoryTranscriptStore)
     assert isinstance(default_runtime.services.transcript_store, InMemoryTranscriptStore)
     assert isinstance(full_runtime.services.transcript_store, FileTranscriptStore)
+    assert isinstance(core_runtime.agent_runtime.run_store, InMemoryChildRunStore)
+    assert isinstance(default_runtime.agent_runtime.run_store, InMemoryChildRunStore)
+    assert isinstance(full_runtime.agent_runtime.run_store, FileChildRunStore)
 
     assert isinstance(core_runtime.services.job_service.store, InMemoryJobStore)
     assert isinstance(core_runtime.services.task_list_service.store, InMemoryTaskListStore)
@@ -579,12 +586,185 @@ def test_distribution_profiles_gate_runtime_mechanisms_and_store_defaults(tmp_pa
     assert isinstance(_team_capability(default_runtime, RuntimeCapabilityKey.TEAM_MESSAGE_BUS).store, InMemoryTeamMessageStore)
     assert isinstance(_team_capability(default_runtime, RuntimeCapabilityKey.TEAM_WORKFLOWS).store, InMemoryTeamWorkflowStore)
     assert isinstance(default_runtime.teammates.mailbox, InMemoryTeammateMailbox)
+    assert core_runtime.query_closure_report()["persistence_profile"]["surfaces"]["child_runs"]["durability"] == (
+        "non_durable"
+    )
+    assert full_runtime.query_closure_report()["persistence_profile"]["surfaces"]["child_runs"]["durability"] == (
+        "durable"
+    )
 
     assert full_runtime.services.metadata["migration"]["hook_contract"]["stable_handler_kinds"] == ["callback"]
     assert "runtime-hosts-reference" in full_runtime.services.metadata["first_party_package_catalog"]
     assert "runtime-planning" in full_runtime.services.metadata["first_party_package_catalog"]
     assert full_runtime.services.metadata["migration"]["planning_profiles"]["selected"] is True
     assert full_runtime.services.metadata["reference_hosts"] == ["cli", "sdk"]
+
+
+def test_runtime_persistence_profiles_publish_all_surfaces_consistently(tmp_path: Path) -> None:
+    expected_profiles = {
+        RuntimeDistribution.CORE: {
+            "profile_kind": "lightweight",
+            "surfaces": {
+                "transcript": {"durability": "non_durable", "provider": "InMemoryTranscriptStore"},
+                "child_runs": {"durability": "non_durable", "provider": "InMemoryChildRunStore"},
+                "jobs": {"durability": "non_durable", "provider": "InMemoryJobStore"},
+                "task_lists": {"durability": "non_durable", "provider": "InMemoryTaskListStore"},
+                "team_state": {"durability": "non_durable", "provider": None},
+                "memory": {"durability": "non_durable", "provider": None},
+            },
+        },
+        RuntimeDistribution.DEFAULT: {
+            "profile_kind": "lightweight",
+            "surfaces": {
+                "transcript": {"durability": "non_durable", "provider": "InMemoryTranscriptStore"},
+                "child_runs": {"durability": "non_durable", "provider": "InMemoryChildRunStore"},
+                "jobs": {"durability": "non_durable", "provider": "InMemoryJobStore"},
+                "task_lists": {"durability": "non_durable", "provider": "InMemoryTaskListStore"},
+                "team_state": {"durability": "non_durable", "provider": "InMemoryTeamStore"},
+                "memory": {"durability": "durable", "provider": "FileMemoryProvider"},
+            },
+        },
+        RuntimeDistribution.FULL: {
+            "profile_kind": "production_oriented",
+            "surfaces": {
+                "transcript": {"durability": "durable", "provider": "FileTranscriptStore"},
+                "child_runs": {"durability": "durable", "provider": "FileChildRunStore"},
+                "jobs": {"durability": "durable", "provider": "FileJobStore"},
+                "task_lists": {"durability": "durable", "provider": "FileTaskListStore"},
+                "team_state": {"durability": "durable", "provider": "FileBackedTeamStore"},
+                "memory": {"durability": "durable", "provider": "FileMemoryProvider"},
+            },
+        },
+    }
+
+    for distribution, expected in expected_profiles.items():
+        working_directory = tmp_path / distribution.value
+        working_directory.mkdir()
+        runtime = assemble_runtime(
+            RuntimeConfig(
+                working_directory=working_directory,
+                distribution=distribution,
+            )
+        )
+
+        profile = runtime.query_persistence_profile()
+
+        assert runtime.services.query_persistence_profile() == profile
+        assert profile["profile_name"] == distribution.value
+        assert profile["profile_kind"] == expected["profile_kind"]
+        assert profile["status"] == "pass"
+        for surface_name, surface_expectation in expected["surfaces"].items():
+            surface = profile["surfaces"][surface_name]
+            assert surface["durability"] == surface_expectation["durability"]
+            assert surface["provider"] == surface_expectation["provider"]
+
+
+def test_runtime_full_durable_transcript_and_child_run_history_survive_reassembly(
+    tmp_path: Path,
+) -> None:
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            distribution=RuntimeDistribution.FULL,
+        )
+    )
+
+    asyncio.run(
+        runtime.transcript_store.append(
+            TranscriptEntry(
+                session_id="session-durable",
+                turn_id="turn-1",
+                message=RuntimeMessage(
+                    message_id="assistant-1",
+                    role=MessageRole.ASSISTANT,
+                    content=(TextBlock(text="persist me"),),
+                ),
+            )
+        )
+    )
+    asyncio.run(
+        runtime.agent_runtime.run_store.upsert(
+            AgentRunRecord(
+                run_id="run-1",
+                parent_run_id=None,
+                session_id="session-durable",
+                parent_turn_id="turn-1",
+                turn_id="child-turn-1",
+                agent_name="delegate",
+                spawn_mode=SpawnMode.BACKGROUND,
+                status=AgentRunStatus.COMPLETED,
+                terminal_metadata={"result": "persisted"},
+            )
+        )
+    )
+
+    reassembled = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            distribution=RuntimeDistribution.FULL,
+        )
+    )
+    loaded_transcript = asyncio.run(reassembled.transcript_store.load("session-durable"))
+    loaded_child_runs = asyncio.run(reassembled.agent_runtime.run_store.list_by_session("session-durable"))
+
+    assert loaded_transcript.entries[0].message.text == "persist me"
+    assert loaded_child_runs[0].run_id == "run-1"
+    assert loaded_child_runs[0].status == AgentRunStatus.COMPLETED
+    assert loaded_child_runs[0].terminal_metadata == {"result": "persisted"}
+    assert reassembled.query_closure_report()["status"] == "closure-green"
+
+
+def test_runtime_full_worktree_isolation_prepares_real_local_lease_and_cleans_up(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "workspace").mkdir()
+    (tmp_path / "workspace" / "keep.txt").write_text("keep", encoding="utf-8")
+    (tmp_path / "workspace" / "nested").mkdir()
+    (tmp_path / "workspace" / "nested" / "note.txt").write_text("nested", encoding="utf-8")
+    (tmp_path / "workspace" / ".git").mkdir()
+    (tmp_path / "workspace" / ".git" / "ignored.txt").write_text("git", encoding="utf-8")
+
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path / "workspace",
+            distribution=RuntimeDistribution.FULL,
+        )
+    )
+    readiness = runtime.query_isolation_readiness()
+    manager = runtime.services.resolve_isolation_service()
+    lease = asyncio.run(
+        manager.prepare(
+            mode=IsolationMode.WORKTREE,
+            session_id="session-worktree",
+            agent_name="delegate",
+            cwd=tmp_path / "workspace",
+            metadata={"run_id": "run-worktree"},
+        )
+    )
+
+    assert readiness["modes"]["worktree"] == {
+        "status": "ready",
+        "effective_mode": "worktree",
+        "adapter": "WorktreeIsolationAdapter",
+        "lease_kind": "filesystem_local_copy",
+        "cleanup_owner": "runtime",
+        "cleanup_lifecycle": "child_run_exit",
+    }
+    assert lease.working_directory != tmp_path / "workspace"
+    assert lease.working_directory.exists()
+    assert (lease.working_directory / "keep.txt").read_text(encoding="utf-8") == "keep"
+    assert (lease.working_directory / "nested" / "note.txt").read_text(encoding="utf-8") == "nested"
+    assert not (lease.working_directory / ".git").exists()
+    assert lease.metadata["source_working_directory"] == str(tmp_path / "workspace")
+    assert lease.metadata["lease_kind"] == "filesystem_local_copy"
+    assert lease.metadata["cleanup_owner"] == "runtime"
+    assert lease.metadata["cleanup_lifecycle"] == "child_run_exit"
+    assert lease.lifecycle == ["prepared", "materialized"]
+
+    asyncio.run(manager.cleanup(lease))
+
+    assert lease.lifecycle[-2:] == ["cleaned", "released"]
+    assert not lease.working_directory.exists()
 
 
 def test_supported_distributions_publish_same_stable_core_protocol_catalog(tmp_path: Path) -> None:
@@ -753,7 +933,7 @@ def test_runtime_builtin_workflow_pack_remains_runnable_without_devtools_package
     assert result.agent_result.status == "completed"
 
 
-def test_agent_definition_hooks_emit_warning_and_are_not_registered(tmp_path: Path) -> None:
+def test_agent_definition_hooks_are_rejected_by_default_and_are_not_registered(tmp_path: Path) -> None:
     runtime = assemble_runtime(
         RuntimeConfig(
             working_directory=tmp_path,
@@ -781,9 +961,41 @@ def test_agent_definition_hooks_emit_warning_and_are_not_registered(tmp_path: Pa
     assert agent is not None
     assert agent.hooks == {}
     assert agent.metadata["ignored_agent_hooks"] == (RuntimeHookPhase.SESSION_START.value,)
-    assert agent.metadata["hook_surface_status"] == "compatibility-only"
-    assert any(diag.code == "agent_hooks_ignored" for diag in runtime.kernel.diagnostics)
+    assert agent.metadata["hook_surface_status"] == "rejected-by-default"
+    assert any(diag.code == "agent_hooks_rejected" for diag in runtime.kernel.diagnostics)
     assert session.list_hooks(HookInventoryQuery(include_inactive=True)) == ()
+
+
+def test_agent_definition_hooks_can_be_legacy_gated_explicitly(tmp_path: Path) -> None:
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            legacy_compatibility={"families": ["agent_owned_hooks"]},
+            builtins=BuiltinPackConfig(
+                extra_agents=[
+                    AgentDefinition(
+                        name="hook-agent",
+                        description="agent with gated hooks",
+                        prompt="Use compatibility surfaces.",
+                        hooks={
+                            RuntimeHookPhase.SESSION_START.value: {
+                                "handler": lambda _payload: None,
+                            }
+                        },
+                        origin=DefinitionOrigin(DefinitionSource.BUNDLED, path=Path("<hook-agent>")),
+                    )
+                ]
+            ),
+        )
+    )
+
+    agent = runtime.kernel.agent_registry.get("hook-agent")
+
+    assert agent is not None
+    assert agent.hooks == {}
+    assert agent.metadata["hook_surface_status"] == "legacy-mode-enabled"
+    assert "agent_owned_hooks" in runtime.query_compatibility_retirement()["active_families"]
+    assert runtime.query_closure_report()["status"] == "closure-red"
 
 
 def test_runtime_core_distribution_supports_stable_hooks_and_compatibility_diagnostics(

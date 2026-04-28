@@ -749,6 +749,7 @@ def assemble_runtime_stores_file_package(context: PackageContext) -> PackageCont
     return PackageContribution(
         store_bindings=(
             StoreBinding(slot="transcript_store", store=components.transcript_store, owner=owner),
+            StoreBinding(slot="child_run_store", store=components.child_run_store, owner=owner),
             StoreBinding(slot="job_store", store=components.job_store, owner=owner),
             StoreBinding(slot="task_list_store", store=components.task_list_store, owner=owner),
             StoreBinding(slot="team_store", store=components.team_store, owner=owner),

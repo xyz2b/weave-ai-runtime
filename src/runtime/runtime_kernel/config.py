@@ -249,6 +249,7 @@ class RuntimeConfig:
     memory_config: Mapping[str, Any] | None = None
     teammate_orchestration: TeammateOrchestrationConfig | None = None
     job_executors: dict[str, JobExecutorBinding] = field(default_factory=dict)
+    legacy_compatibility: Any = None
     metadata: dict[str, Any] = field(default_factory=dict)
     _skip_protocol_only_matrix_evaluation: bool = False
 

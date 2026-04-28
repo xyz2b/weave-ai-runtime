@@ -22,6 +22,7 @@ from ..context_window import (
     serialize_resolved_context_window_snapshot,
     serialize_route_context_window_policy,
 )
+from ..closure import LEGACY_RUNTIME_CONTEXT_AUTHORITATIVE_KEYS
 from ..contracts import (
     ContentBlock,
     ContentBlockType,
@@ -2443,6 +2444,10 @@ class TurnEngine:
             for key, value in local_runtime_context.items()
             if original_runtime_context.get(key) != value
         }
+        runtime_context_updates, compat_write_diagnostics = _filter_legacy_runtime_context_updates(
+            runtime_context_updates,
+            runtime_metadata=self._runtime_services.metadata,
+        )
         contribution_private_updates, contribution_private_diagnostics = _split_sidecar_private_updates(
             contribution.private_updates
         )
@@ -2451,7 +2456,8 @@ class TurnEngine:
         )
         private_updates = dict(compat_private_updates)
         private_updates.update(contribution_private_updates)
-        diagnostics = dict(compat_diagnostics)
+        diagnostics = dict(compat_write_diagnostics)
+        diagnostics.update(compat_diagnostics)
         diagnostics.update(contribution_private_diagnostics)
         diagnostics.update(contribution.diagnostics)
         return _SidecarJoinResult(
@@ -3564,6 +3570,46 @@ def _split_sidecar_private_updates(
             continue
         private_updates[normalized_key] = value
     return private_updates, diagnostics
+
+
+def _filter_legacy_runtime_context_updates(
+    updates: Mapping[str, Any],
+    *,
+    runtime_metadata: Mapping[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    allowed_updates: dict[str, Any] = {}
+    blocked_keys: list[str] = []
+    legacy_enabled = _legacy_runtime_context_authority_enabled(runtime_metadata)
+    for key, value in updates.items():
+        normalized_key = str(key)
+        if (
+            normalized_key in LEGACY_RUNTIME_CONTEXT_AUTHORITATIVE_KEYS
+            and not legacy_enabled
+        ):
+            blocked_keys.append(normalized_key)
+            continue
+        allowed_updates[normalized_key] = value
+    diagnostics = (
+        {
+            "legacy_runtime_context_write_blocked": {
+                "blocked_keys": blocked_keys,
+                "migration_target": "RuntimePrivateContext / PromptContextEnvelope",
+            }
+        }
+        if blocked_keys
+        else {}
+    )
+    return allowed_updates, diagnostics
+
+
+def _legacy_runtime_context_authority_enabled(runtime_metadata: Mapping[str, Any]) -> bool:
+    legacy = runtime_metadata.get("legacy_compatibility")
+    if not isinstance(legacy, Mapping):
+        return False
+    enabled = legacy.get("enabled_families", ())
+    if not isinstance(enabled, Sequence) or isinstance(enabled, (str, bytes)):
+        return False
+    return "runtime_context_authority" in {str(item) for item in enabled}
 
 
 def _merge_sidecar_diagnostics(

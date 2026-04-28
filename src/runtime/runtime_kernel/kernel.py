@@ -9,8 +9,19 @@ from pathlib import Path
 from typing import Any, AsyncIterator, Mapping, Sequence
 from uuid import uuid4
 
-from ..agent_execution import SpawnMode
+from ..agent_execution import InMemoryChildRunStore, SpawnMode
 from ..agent_runtime import AgentInvocation, AgentRunResult, AgentRuntime
+from ..closure import (
+    ClosureActivationState,
+    ClosureStatus,
+    LEGACY_COMPATIBILITY_FAMILIES,
+    LEGACY_COMPATIBILITY_FAMILY_INDEX,
+    LEGACY_RUNTIME_CONTEXT_AUTHORITATIVE_KEYS,
+    LegacyCompatibilityProfile,
+    PersistenceDurabilityState,
+    family_activation_state,
+    resolve_legacy_compatibility_profile,
+)
 from ..contracts import (
     ExecutionResult,
     ExecutionStatus,
@@ -50,7 +61,8 @@ from ..hooks import (
     STABLE_PUBLIC_PHASE_CONTRACTS,
 )
 from ..invocation_catalog import SkillInvocationProvider
-from ..jobs import DefaultJobService, InMemoryJobStore, JobScopeFilter, job_record_to_payload
+from ..jobs import DefaultJobService, FileJobStore, InMemoryJobStore, JobScopeFilter, job_record_to_payload
+from ..memory.providers import FileMemoryProvider
 from ..package_profiles import FIRST_PARTY_PACKAGE_SPECS, distribution_spec
 from ..runtime_package_catalog import (
     official_runtime_distribution_catalog,
@@ -97,9 +109,11 @@ from ..registries import (
     ToolRegistry,
 )
 from ..runtime_services import DefaultTranscriptService, NoopCompactionService, NoopMemoryService, RuntimeServices
+from ..stores_file import FileChildRunStore
 from ..task_discipline import TaskDisciplineSidecar
 from ..task_lists import (
     DefaultTaskListService,
+    FileTaskListStore,
     InMemoryTaskListStore,
     TaskDisciplinePolicy,
     TaskListError,
@@ -108,6 +122,7 @@ from ..task_lists import (
     task_list_snapshot_to_dict,
 )
 from ..session_runtime import (
+    FileTranscriptStore,
     InMemoryTranscriptStore,
     InboundEvent,
     InboundEventType,
@@ -116,6 +131,7 @@ from ..session_runtime import (
 )
 from ..skill_runtime import SkillExecutionResult, SkillExecutor
 from ..tasking import TaskManager
+from ..team_control_plane import FileBackedTeamStore, InMemoryTeamStore
 from ..tool_runtime import ToolContext
 from ..turn_engine.composer import ContextAssembler
 from ..turn_engine.engine import TurnEngine, TurnStreamEvent, TurnStreamEventType
@@ -325,6 +341,7 @@ class RuntimeAssembly:
             "first_party_package_catalog",
             "official_package_catalog_provenance",
             "resolved_active_package_graph_provenance",
+            "closure_report",
             "protocol_only_conformance",
             "package_resolution",
             "package_manifests",
@@ -334,6 +351,24 @@ class RuntimeAssembly:
             key: deepcopy(self.metadata.get(key))
             for key in keys
         }
+
+    def query_closure_report(self) -> dict[str, Any]:
+        return deepcopy(self.metadata.get("closure_report", {}))
+
+    def query_compatibility_retirement(self) -> dict[str, Any]:
+        report = self.query_closure_report()
+        value = report.get("compatibility_retirement")
+        return deepcopy(value) if isinstance(value, Mapping) else {}
+
+    def query_persistence_profile(self) -> dict[str, Any]:
+        report = self.query_closure_report()
+        value = report.get("persistence_profile")
+        return deepcopy(value) if isinstance(value, Mapping) else {}
+
+    def query_isolation_readiness(self) -> dict[str, Any]:
+        report = self.query_closure_report()
+        value = report.get("isolation_readiness")
+        return deepcopy(value) if isinstance(value, Mapping) else {}
 
     @property
     def task_manager(self) -> TaskManager:
@@ -1444,6 +1479,10 @@ def _coerce_definition_source(value: Any) -> DefinitionSource:
         return DefinitionSource.PROJECT
 
 
+def _legacy_compatibility_profile(config: RuntimeConfig) -> LegacyCompatibilityProfile:
+    return resolve_legacy_compatibility_profile(config.legacy_compatibility)
+
+
 def build_runtime_kernel(config: RuntimeConfig) -> RuntimeKernel:
     resolved_distribution = config.resolved_distribution()
     selected_packages = config.selected_first_party_packages()
@@ -1487,8 +1526,11 @@ def build_runtime_kernel(config: RuntimeConfig) -> RuntimeKernel:
         config,
         package_service_contributions=package_service_contributions,
     )
+    legacy_profile = _legacy_compatibility_profile(config)
     tool_registry = ToolRegistry()
-    agent_registry = AgentRegistry()
+    agent_registry = AgentRegistry(
+        allow_legacy_agent_hooks=legacy_profile.is_enabled("agent_owned_hooks")
+    )
     skill_registry = SkillRegistry()
     invocation_registry = InvocationRegistry()
     skill_view_resolver = _SessionSkillViewResolver(
@@ -1587,6 +1629,7 @@ def _assemble_runtime_stack(kernel: RuntimeKernel) -> RuntimeAssembly:
     transcript_store = services.transcript_store
     kernel.transcript_store = transcript_store
     task_manager = services.tasks.manager
+    store_bindings = _store_binding_values(kernel.package_service_contributions)
     turn_engine = TurnEngine(
         model_client=kernel.model_client or _UnconfiguredModelClient(),
         tool_registry=kernel.tool_registry,
@@ -1604,7 +1647,7 @@ def _assemble_runtime_stack(kernel: RuntimeKernel) -> RuntimeAssembly:
         tool_registry=kernel.tool_registry,
         skill_registry=kernel.skill_registry,
         runtime_services=services,
-        run_store=kernel.config.child_run_store,
+        run_store=kernel.config.child_run_store or store_bindings.get("child_run_store"),
         model_providers=kernel.config.model_providers,
         model_routes=kernel.config.model_routes,
         default_model_route=kernel.config.default_model_route,
@@ -1673,6 +1716,7 @@ def _assemble_runtime_stack(kernel: RuntimeKernel) -> RuntimeAssembly:
             "resolved_active_package_graph_provenance": dict(
                 services.metadata.get("resolved_active_package_graph_provenance", {})
             ),
+            "closure_report": dict(services.metadata.get("closure_report", {})),
             "package_registration": dict(services.metadata.get("package_registration", {})),
             "package_resolution": dict(services.metadata.get("package_resolution", {})),
             "package_manifests": dict(services.metadata.get("package_manifests", {})),
@@ -1759,6 +1803,7 @@ def _build_runtime_services(kernel: RuntimeKernel) -> RuntimeServices:
         slot: binding.owner.package_name
         for slot, binding in _store_binding_entries(kernel.package_service_contributions).items()
     }
+    metadata["legacy_compatibility"] = _legacy_compatibility_profile(kernel.config).to_metadata()
     metadata["compatibility_surfaces"] = {
         **core_protocol_compatibility_surfaces(),
         "runtime_context": "compatibility-only",
@@ -2542,6 +2587,333 @@ def _package_service_protocol_metadata(services: RuntimeServices) -> dict[str, A
     return metadata
 
 
+def _legacy_profile_from_runtime_metadata(metadata: Mapping[str, Any]) -> LegacyCompatibilityProfile:
+    raw = metadata.get("legacy_compatibility")
+    if not isinstance(raw, Mapping):
+        return LegacyCompatibilityProfile()
+    enabled = tuple(
+        sorted(
+            str(item)
+            for item in raw.get("enabled_families", ())
+            if str(item) in LEGACY_COMPATIBILITY_FAMILY_INDEX
+        )
+    )
+    unknown = tuple(sorted(str(item) for item in raw.get("unknown_families", ()) if str(item).strip()))
+    return LegacyCompatibilityProfile(
+        enabled_families=enabled,
+        preset=str(raw.get("preset") or "none"),
+        unknown_families=unknown,
+        raw=(
+            dict(raw.get("raw"))
+            if isinstance(raw.get("raw"), Mapping)
+            else {str(key): value for key, value in raw.items()}
+        ),
+    )
+
+
+def _compatibility_retirement_surface_entries(
+    family: str,
+    *,
+    compatibility_boundaries: Mapping[str, Any],
+    package_service_protocols: Mapping[str, Any],
+    context_contributors: Mapping[str, Any],
+    compatibility_surfaces: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    if family == "task_manager":
+        boundary = compatibility_boundaries.get("TaskManager")
+        entries = boundary.get("materialization_adapters", ()) if isinstance(boundary, Mapping) else ()
+        return [
+            {
+                "surface": str(entry.get("surface") or ""),
+                "kind": str(entry.get("kind") or "compatibility-surface"),
+                "status": str(compatibility_surfaces.get(entry.get("surface")) or "compatibility-only"),
+            }
+            for entry in entries
+            if isinstance(entry, Mapping) and entry.get("surface")
+        ]
+    if family == "runtime_context_authority":
+        boundary = compatibility_boundaries.get("runtime_context")
+        entries = boundary.get("entry_points", ()) if isinstance(boundary, Mapping) else ()
+        return [
+            {
+                "surface": str(entry.get("surface") or ""),
+                "kind": str(entry.get("kind") or "compatibility-surface"),
+                "status": str(compatibility_surfaces.get("runtime_context") or "compatibility-only"),
+            }
+            for entry in entries
+            if isinstance(entry, Mapping) and entry.get("surface")
+        ]
+    if family == "context_contributor_adapters":
+        surfaces = (
+            context_contributors.get("compatibility_surfaces", {})
+            if isinstance(context_contributors, Mapping)
+            else {}
+        )
+        if not isinstance(surfaces, Mapping):
+            surfaces = {}
+        return [
+            {
+                "surface": str(surface),
+                "kind": "compatibility-context-contributor",
+                "status": str(status or "compatibility-only"),
+            }
+            for surface, status in surfaces.items()
+        ]
+    if family in {"memory_projection", "compaction_projection", "isolation_projection"}:
+        protocol_key = family.partition("_")[0]
+        protocol = package_service_protocols.get(protocol_key)
+        retained = protocol.get("retained_surfaces", ()) if isinstance(protocol, Mapping) else ()
+        return [
+            {
+                "surface": str(entry.get("surface") or ""),
+                "kind": "compatibility-projection",
+                "status": str(entry.get("status") or "compatibility-only"),
+            }
+            for entry in retained
+            if isinstance(entry, Mapping) and entry.get("surface")
+        ]
+    if family == "teammates_projection":
+        return [
+            {
+                "surface": surface,
+                "kind": "compatibility-projection",
+                "status": str(compatibility_surfaces.get(surface) or "compatibility-only"),
+            }
+            for surface in ("RuntimeServices.teammates", "RuntimeAssembly.teammates")
+        ]
+    if family == "agent_owned_hooks":
+        return [
+            {
+                "surface": "AgentDefinition.hooks",
+                "kind": "legacy-authoring-surface",
+                "status": "rejected-by-default",
+            }
+        ]
+    return []
+
+
+def _compatibility_retirement_metadata(services: RuntimeServices) -> dict[str, Any]:
+    profile = _legacy_profile_from_runtime_metadata(services.metadata)
+    compatibility_boundaries = services.metadata.get("compatibility_boundaries", {})
+    if not isinstance(compatibility_boundaries, Mapping):
+        compatibility_boundaries = {}
+    package_service_protocols = services.metadata.get("package_service_protocols", {})
+    if not isinstance(package_service_protocols, Mapping):
+        package_service_protocols = {}
+    context_contributors = services.metadata.get("context_contributors", {})
+    if not isinstance(context_contributors, Mapping):
+        context_contributors = {}
+    compatibility_surfaces = services.metadata.get("compatibility_surfaces", {})
+    if not isinstance(compatibility_surfaces, Mapping):
+        compatibility_surfaces = {}
+
+    families: list[dict[str, Any]] = []
+    active_families: list[str] = []
+    for definition in LEGACY_COMPATIBILITY_FAMILIES:
+        activation = family_activation_state(definition.family, profile)
+        if activation is ClosureActivationState.LEGACY_MODE_ENABLED:
+            active_families.append(definition.family)
+        surfaces = _compatibility_retirement_surface_entries(
+            definition.family,
+            compatibility_boundaries=compatibility_boundaries,
+            package_service_protocols=package_service_protocols,
+            context_contributors=context_contributors,
+            compatibility_surfaces=compatibility_surfaces,
+        )
+        families.append(
+            {
+                **definition.to_metadata(),
+                "activation": activation.value,
+                "legacy_mode_enabled": profile.is_enabled(definition.family),
+                "surfaces": surfaces,
+            }
+        )
+    return {
+        "schema_version": "1.0",
+        "documented_families": [definition.family for definition in LEGACY_COMPATIBILITY_FAMILIES],
+        "inventory_complete": len(families) == len(LEGACY_COMPATIBILITY_FAMILIES),
+        "legacy_profile": profile.to_metadata(),
+        "active_families": active_families,
+        "families": families,
+        "supported_hook_migration_paths": {
+            "skill_and_invocation_definition_hooks": "normalized into HookRegistrationRequest before activation",
+            "agent_owned_hooks": "rejected by default unless the agent_owned_hooks legacy family is enabled",
+        },
+    }
+
+
+def _durability_entry(
+    state: PersistenceDurabilityState,
+    *,
+    component: Any = None,
+    available: bool = True,
+) -> dict[str, Any]:
+    return {
+        "durability": state.value,
+        "available": bool(available),
+        "provider": (type(component).__name__ if component is not None else None),
+    }
+
+
+def _classify_durability(
+    component: Any,
+    *,
+    durable_types: tuple[type[Any], ...],
+    non_durable_types: tuple[type[Any], ...],
+    available: bool = True,
+) -> dict[str, Any]:
+    if component is None:
+        return _durability_entry(
+            PersistenceDurabilityState.NON_DURABLE,
+            component=None,
+            available=available,
+        )
+    if isinstance(component, durable_types):
+        return _durability_entry(PersistenceDurabilityState.DURABLE, component=component, available=available)
+    if isinstance(component, non_durable_types):
+        return _durability_entry(
+            PersistenceDurabilityState.NON_DURABLE,
+            component=component,
+            available=available,
+        )
+    return _durability_entry(PersistenceDurabilityState.HOST_PROVIDED, component=component, available=available)
+
+
+def _memory_durability_entry(memory_service: Any) -> dict[str, Any]:
+    if memory_service is None or isinstance(memory_service, NoopMemoryService):
+        return _durability_entry(PersistenceDurabilityState.NON_DURABLE, available=False)
+    provider = getattr(getattr(memory_service, "manager", None), "provider", None)
+    if isinstance(provider, FileMemoryProvider):
+        return _durability_entry(PersistenceDurabilityState.DURABLE, component=provider)
+    if provider is None:
+        return _durability_entry(PersistenceDurabilityState.HOST_PROVIDED, component=memory_service)
+    return _durability_entry(PersistenceDurabilityState.HOST_PROVIDED, component=provider)
+
+
+def _persistence_profile_metadata(
+    services: RuntimeServices,
+    *,
+    runtime: RuntimeAssembly | None = None,
+) -> dict[str, Any]:
+    distribution = str(services.metadata.get("distribution") or "")
+    profile_kind = "production_oriented" if distribution == "runtime-full" else "lightweight"
+    team_control_plane = services.resolve_team_control_plane()
+    team_store = getattr(team_control_plane, "store", None) if team_control_plane is not None else None
+    run_store = getattr(getattr(runtime, "agent_runtime", None), "run_store", None)
+    transcript_store = getattr(getattr(services, "transcript", None), "store", None)
+    surfaces = {
+        "transcript": _classify_durability(
+            transcript_store,
+            durable_types=(FileTranscriptStore,),
+            non_durable_types=(InMemoryTranscriptStore,),
+        ),
+        "child_runs": _classify_durability(
+            run_store,
+            durable_types=(FileChildRunStore,),
+            non_durable_types=(InMemoryChildRunStore,),
+        ),
+        "jobs": _classify_durability(
+            services.job_service.store,
+            durable_types=(FileJobStore,),
+            non_durable_types=(InMemoryJobStore,),
+        ),
+        "task_lists": _classify_durability(
+            services.task_list_service.store,
+            durable_types=(FileTaskListStore,),
+            non_durable_types=(InMemoryTaskListStore,),
+        ),
+        "team_state": _classify_durability(
+            team_store,
+            durable_types=(FileBackedTeamStore,),
+            non_durable_types=(InMemoryTeamStore,),
+            available=team_control_plane is not None,
+        ),
+        "memory": _memory_durability_entry(services.resolve_memory_service()),
+    }
+    findings: list[str] = []
+    if distribution == "runtime-full":
+        if surfaces["transcript"]["durability"] != PersistenceDurabilityState.DURABLE.value:
+            findings.append("runtime-full requires a durable transcript store")
+        if surfaces["child_runs"]["durability"] != PersistenceDurabilityState.DURABLE.value:
+            findings.append("runtime-full requires a durable child-run store")
+    return {
+        "schema_version": "1.0",
+        "profile_name": distribution or "custom",
+        "profile_kind": profile_kind,
+        "status": "pass" if not findings else "fail",
+        "surfaces": surfaces,
+        "findings": findings,
+    }
+
+
+def _isolation_readiness_metadata(services: RuntimeServices) -> dict[str, Any]:
+    isolation_service = services.resolve_isolation_service()
+    raw_modes = (
+        isolation_service.describe_modes()
+        if isolation_service is not None and hasattr(isolation_service, "describe_modes")
+        else {
+            IsolationMode.NONE.value: {"status": "ready"},
+            IsolationMode.WORKTREE.value: {"status": "unknown"},
+            IsolationMode.REMOTE.value: {"status": "unknown"},
+        }
+    )
+    modes = {
+        mode.value: (
+            dict(raw_modes.get(mode.value, {}))
+            if isinstance(raw_modes.get(mode.value), Mapping)
+            else {"status": "unknown", "effective_mode": mode.value}
+        )
+        for mode in IsolationMode
+    }
+    worktree_status = str(modes[IsolationMode.WORKTREE.value].get("status") or "unknown")
+    remote_status = str(modes[IsolationMode.REMOTE.value].get("status") or "unknown")
+    findings: list[str] = []
+    if worktree_status not in {"ready", "not_available"}:
+        findings.append("worktree isolation must publish a real local lease or an honest unavailable state")
+    if remote_status not in {"ready", "adapter_provided", "not_configured", "not_available"}:
+        findings.append("remote isolation must use adapter-backed readiness or an honest unavailable state")
+    return {
+        "schema_version": "1.0",
+        "status": "pass" if not findings else "fail",
+        "modes": modes,
+        "findings": findings,
+    }
+
+
+def _closure_report_metadata(
+    services: RuntimeServices,
+    *,
+    runtime: RuntimeAssembly | None = None,
+) -> dict[str, Any]:
+    compatibility_retirement = _compatibility_retirement_metadata(services)
+    persistence_profile = _persistence_profile_metadata(services, runtime=runtime)
+    isolation_readiness = _isolation_readiness_metadata(services)
+    blocking_reasons: list[str] = []
+    if compatibility_retirement.get("active_families"):
+        blocking_reasons.extend(
+            f"legacy compatibility enabled: {family}"
+            for family in compatibility_retirement["active_families"]
+        )
+    if persistence_profile.get("status") != "pass":
+        blocking_reasons.extend(str(item) for item in persistence_profile.get("findings", ()))
+    if isolation_readiness.get("status") != "pass":
+        blocking_reasons.extend(str(item) for item in isolation_readiness.get("findings", ()))
+    status = ClosureStatus.GREEN if not blocking_reasons else ClosureStatus.RED
+    return {
+        "schema_version": "1.0",
+        "published_metadata_paths": [
+            "runtime.services.metadata['closure_report']",
+            "runtime.metadata['closure_report']",
+        ],
+        "status": status.value,
+        "closure_green": status is ClosureStatus.GREEN,
+        "blocking_reasons": blocking_reasons,
+        "compatibility_retirement": compatibility_retirement,
+        "persistence_profile": persistence_profile,
+        "isolation_readiness": isolation_readiness,
+    }
+
+
 def _team_protocol_only_findings(
     *,
     distribution: str,
@@ -2799,6 +3171,9 @@ _PROTOCOL_ONLY_REQUIRED_GATE_FAMILIES = (
     "team-bridge",
     "provider-provenance",
     "kernel-assembly",
+    "compatibility-retirement",
+    "persistence-profile",
+    "isolation-readiness",
 )
 _PROTOCOL_ONLY_GATE_GREEN_CRITERIA = {
     "required_distributions": [
@@ -2974,6 +3349,18 @@ def _protocol_only_rule_sources() -> dict[str, dict[str, Any]]:
                 "runtime.services.metadata['official_package_catalog_provenance'] / "
                 "runtime.services.metadata['resolved_active_package_graph_provenance']"
             ),
+        },
+        "compatibility_retirement_state": {
+            "family": "compatibility-retirement",
+            "source_path": "runtime.services.metadata['closure_report']['compatibility_retirement']",
+        },
+        "persistence_profile_state": {
+            "family": "persistence-profile",
+            "source_path": "runtime.services.metadata['closure_report']['persistence_profile']",
+        },
+        "isolation_readiness_state": {
+            "family": "isolation-readiness",
+            "source_path": "runtime.services.metadata['closure_report']['isolation_readiness']",
         },
     }
 
@@ -3205,6 +3592,7 @@ def _protocol_only_conformance_metadata(
     distribution: str,
     compatibility_boundaries: Mapping[str, Any],
     package_service_protocols: Mapping[str, Any],
+    closure_report: Mapping[str, Any],
     invocation_provider_registrations: Sequence[Mapping[str, Any]] = (),
     team_protocol_only: Mapping[str, Any] | None = None,
     official_package_catalog_provenance: Mapping[str, Any] | None = None,
@@ -3217,6 +3605,17 @@ def _protocol_only_conformance_metadata(
     selected_packages = resolved_active_package_graph_provenance.get("selected_first_party_packages", ())
     if not isinstance(selected_packages, Sequence) or isinstance(selected_packages, (str, bytes)):
         selected_packages = ()
+    if not isinstance(closure_report, Mapping):
+        closure_report = {}
+    compatibility_retirement = closure_report.get("compatibility_retirement", {})
+    if not isinstance(compatibility_retirement, Mapping):
+        compatibility_retirement = {}
+    persistence_profile = closure_report.get("persistence_profile", {})
+    if not isinstance(persistence_profile, Mapping):
+        persistence_profile = {}
+    isolation_readiness = closure_report.get("isolation_readiness", {})
+    if not isinstance(isolation_readiness, Mapping):
+        isolation_readiness = {}
     runtime_context = compatibility_boundaries.get("runtime_context")
     task_manager = compatibility_boundaries.get("TaskManager")
     runtime_context_entries = (
@@ -3334,6 +3733,47 @@ def _protocol_only_conformance_metadata(
                 resolved_active_package_graph_provenance or {}
             ),
         ),
+        {
+            "rule_id": "compatibility_retirement_state",
+            "family": "compatibility-retirement",
+            "status": (
+                "pass"
+                if compatibility_retirement.get("inventory_complete") is True
+                and not compatibility_retirement.get("active_families")
+                else "fail"
+            ),
+            "distribution": distribution,
+            "canonical_path": "runtime.metadata['closure_report']['compatibility_retirement']",
+            "evidence": [
+                str(item.get("family") or "")
+                for item in compatibility_retirement.get("families", ())
+                if isinstance(item, Mapping)
+            ],
+        },
+        {
+            "rule_id": "persistence_profile_state",
+            "family": "persistence-profile",
+            "status": "pass" if persistence_profile.get("status") == "pass" else "fail",
+            "distribution": distribution,
+            "canonical_path": "runtime.metadata['closure_report']['persistence_profile']",
+            "evidence": [
+                f"{name}:{entry.get('durability')}"
+                for name, entry in persistence_profile.get("surfaces", {}).items()
+                if isinstance(entry, Mapping)
+            ],
+        },
+        {
+            "rule_id": "isolation_readiness_state",
+            "family": "isolation-readiness",
+            "status": "pass" if isolation_readiness.get("status") == "pass" else "fail",
+            "distribution": distribution,
+            "canonical_path": "runtime.metadata['closure_report']['isolation_readiness']",
+            "evidence": [
+                f"{name}:{entry.get('status')}"
+                for name, entry in isolation_readiness.get("modes", {}).items()
+                if isinstance(entry, Mapping)
+            ],
+        },
     ]
     kernel = getattr(runtime, "kernel", None) if runtime is not None else None
     case_results = ()
@@ -3400,10 +3840,18 @@ def _sync_compatibility_boundary_metadata(
         package_lookup=package_lookup,
     )
     services.metadata["compatibility_boundaries"] = compatibility_boundaries
+    services.metadata["closure_report"] = _closure_report_metadata(
+        services,
+        runtime=runtime,
+    )
+    closure_report = services.metadata.get("closure_report")
+    if not isinstance(closure_report, Mapping):
+        closure_report = {}
     services.metadata["protocol_only_conformance"] = _protocol_only_conformance_metadata(
         distribution=str(services.metadata.get("distribution") or ""),
         compatibility_boundaries=compatibility_boundaries,
         package_service_protocols=package_service_protocols,
+        closure_report=closure_report,
         invocation_provider_registrations=(
             services.metadata.get("invocation_provider_registrations", ())
             if isinstance(services.metadata.get("invocation_provider_registrations"), Sequence)

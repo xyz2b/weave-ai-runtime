@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from ..agent_execution import ChildRunStore
 from ..jobs import FileJobStore
 from ..session_runtime import FileTranscriptStore
 from ..task_lists import FileTaskListStore
@@ -11,11 +12,13 @@ from ..team_control_plane import FileBackedTeamStore
 from ..team_message_bus import FileBackedTeamMessageBus
 from ..team_workflows import FileBackedTeamWorkflowStore
 from ..teammate_orchestration import FileBackedTeammateMailbox
+from .child_runs import FileChildRunStore
 
 
 @dataclass(frozen=True, slots=True)
 class RuntimeFileStoreBundle:
     transcript_store: FileTranscriptStore
+    child_run_store: ChildRunStore
     job_store: FileJobStore
     task_list_store: FileTaskListStore
     team_store: FileBackedTeamStore
@@ -65,6 +68,7 @@ def assemble_file_store_bundle(
     )
     return RuntimeFileStoreBundle(
         transcript_store=FileTranscriptStore(runtime_root / "transcripts"),
+        child_run_store=FileChildRunStore(runtime_root / "child_runs"),
         job_store=FileJobStore(runtime_root / "jobs"),
         task_list_store=FileTaskListStore(runtime_root / "task_lists"),
         team_store=team_bundle.team_store,

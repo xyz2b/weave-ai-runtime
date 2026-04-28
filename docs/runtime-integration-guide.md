@@ -1212,13 +1212,25 @@ leader 接收 teammate collaboration message 时，默认策略是：
 
 ### 9.3 不要假设 transcript 和 child runs 默认持久化
 
-当前默认 durable 的重点是 memory。  
-默认不一定 durable 的包括：
+当前应该先按 **persistence profile** 来判断，而不是按“我猜默认实现是什么”来判断：
 
-- transcript
-- child run history
+- `runtime-core`
+  - transcript: `non_durable`
+  - child runs: `non_durable`
+- `runtime-default`
+  - transcript: `non_durable`
+  - child runs: `non_durable`
+- `runtime-full`
+  - transcript: `durable`
+  - child runs: `durable`
 
-如果你的产品需要强持久化，要显式接 transcript store / child run store。
+最稳妥的做法是直接看：
+
+- `runtime.query_persistence_profile()`
+- `runtime.services.metadata["closure_report"]["persistence_profile"]`
+
+如果你的产品需要比当前 distribution 更强或不同的持久化 contract，再显式接自己的
+`TranscriptStore` / `ChildRunStore` / 相关 store。
 
 ### 9.4 不要继续把共享 `runtime_context` 当 authoritative state
 
@@ -1230,6 +1242,36 @@ leader 接收 teammate collaboration message 时，默认策略是：
 `runtime_context` 当前更多是 compat bridge，而不是建议新增依赖的正式扩展面。
 如果必须兼容 legacy caller 或 sidecar，也应把它当作单向 bridge 或只读 snapshot，而不是新的 authoritative private state carrier。
 从边界收敛角度看，`runtime_context` 和 `TaskManager` 也都属于 owner-layer leak 的 compat 面：新的 package-owned integration 不应再把 authoritative coordination 或 private state 写回这两条路径。
+
+现在默认 runtime 还会进一步帮你守住这条边界：
+
+- 新的 authoritative legacy `runtime_context` write 默认会被阻断并产出结构化 diagnostic
+- 只有显式 legacy compatibility mode 才会重新容忍这类写法
+
+如果你需要确认当前 assembly 是否仍在容忍这些 compat seam，直接看：
+
+- `runtime.query_compatibility_retirement()`
+- `runtime.query_closure_report()`
+
+### 9.5 先看 `closure_report`，再决定是否继续依赖 compat surface
+
+当你准备继续依赖某个旧 surface 时，先确认它到底是：
+
+- stable public surface
+- compatibility-only surface
+- legacy-mode-only surface
+- 已经被 retirement inventory 标成 migration target 的 surface
+
+最直接的检查入口是：
+
+- `runtime.query_closure_report()`
+- `runtime.query_compatibility_retirement()`
+- `runtime.query_persistence_profile()`
+- `runtime.query_isolation_readiness()`
+
+如果 embedder 需要一次性拿完整聚合视图，可以直接读：
+
+- `RuntimeAssembly.query_assembly_view()`
 
 ## 10. 一张接入路线图
 

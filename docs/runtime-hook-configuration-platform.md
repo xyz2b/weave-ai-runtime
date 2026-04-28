@@ -244,7 +244,9 @@ hooks:
 - 想让宿主统一注入策略，用 `host API`。
 - 想在一次会话里动态开关能力，用 `session API`。
 - 想只影响当前 turn，优先用 `turn API`。
-- 不要把 hook 写在 agent frontmatter 里当成普通 v1 能力面；agent-owned hooks 现在只按 compatibility-only 处理，并会在装配时给出 warning。
+- skill / invocation definition hooks 仍然是支持中的 migration path；runtime 会先把旧定义归一化成 canonical `HookRegistrationRequest` 再激活。
+- 不要把 hook 写在 agent frontmatter 里当成普通 v1 能力面；agent-owned hooks 默认会被拒绝，只有显式 legacy mode 才会重新容忍。
+- 如果要审计当前 assembly 是否仍启用了这条 legacy path，可直接看 `closure_report.compatibility_retirement`。
 
 ### 1.7 Hook 注册后如何观察和诊断
 

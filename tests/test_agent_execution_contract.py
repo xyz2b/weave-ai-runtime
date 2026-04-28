@@ -12,6 +12,7 @@ from runtime.context_window import ModelContextWindowProfile, RouteContextWindow
 from runtime.contracts import MessageRole, RuntimeMessage
 from runtime.definitions import (
     AgentDefinition,
+    IsolationMode,
     PermissionBehavior,
     PermissionDecision,
     ToolDefinition,
@@ -735,6 +736,75 @@ def test_background_failure_marks_task_failed_and_emits_failure_notification(tmp
     assert record.status == AgentRunStatus.FAILED
     assert record.terminal_metadata["error"] == "isolation prepare failed"
     assert runtime.notifications[-1].text == "Background agent 'verification' failed: isolation prepare failed"
+
+
+def test_remote_isolation_without_backend_fails_before_model_execution(tmp_path: Path) -> None:
+    async def scenario():
+        model_client = FakeModelClient(
+            [
+                [
+                    ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-remote-missing"}),
+                    ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "should not run"}),
+                    ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+                ]
+            ]
+        )
+        agent_registry = AgentRegistry()
+        agent_registry.register(
+            AgentDefinition(
+                name="verification",
+                description="verify",
+                prompt="verify",
+                isolation=IsolationMode.REMOTE,
+            )
+        )
+        services = RuntimeServices()
+        runtime = AgentRuntime(
+            turn_engine=TurnEngine(
+                model_client=model_client,
+                tool_registry=ToolRegistry(),
+                agent_registry=agent_registry,
+                skill_registry=SkillRegistry(),
+                task_manager=TaskManager(),
+                runtime_services=services,
+            ),
+            agent_registry=agent_registry,
+            tool_registry=ToolRegistry(),
+            skill_registry=SkillRegistry(),
+            task_manager=TaskManager(),
+            runtime_services=services,
+        )
+        error = None
+        try:
+            await runtime.invoke(
+                AgentInvocation(
+                    agent_name="verification",
+                    prompt="remote run",
+                    session_id="session-remote-missing",
+                    cwd=tmp_path,
+                )
+            )
+        except RuntimeError as exc:
+            error = str(exc)
+        records = await runtime.run_store.list_by_session("session-remote-missing")
+        return model_client, error, records
+
+    model_client, error, records = asyncio.run(scenario())
+
+    assert error == "remote isolation is not configured"
+    assert model_client.requests == []
+    assert len(records) == 1
+    assert records[0].terminal_metadata["isolation"] == {
+        "code": "not_configured",
+        "mode": "remote",
+        "details": {
+            "contract": "remote",
+            "requested_mode": "remote",
+            "effective_mode": "remote",
+            "cwd": str(tmp_path),
+            "adapter": "RemoteIsolationAdapter",
+        },
+    }
 
 
 def test_background_max_turns_marks_task_stopped(tmp_path: Path) -> None:

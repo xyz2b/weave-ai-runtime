@@ -375,6 +375,7 @@ You validate changes, run checks, and summarize regressions.
 - 可以在定义里保留这些字段以便未来演进
 - 但当前不要把它们作为关键行为前提
 - 尤其不要假设 file-based agent 的 `hooks` 会像 skill hooks 一样自动注册执行
+- 当前默认装配会拒绝 agent-owned hooks；只有显式 legacy compatibility mode 才会继续容忍
 
 当前 Runtime 里真正会自动注册并执行的 definition-level hooks，主要还是 skill hooks。
 

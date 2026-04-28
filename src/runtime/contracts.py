@@ -268,7 +268,13 @@ class SkillRequestOverrideState:
         }
 
 
-_PRIVATE_CONTEXT_DIAGNOSTIC_KEYS = frozenset({"memory_retrieval", "memory_diagnostics"})
+_PRIVATE_CONTEXT_DIAGNOSTIC_KEYS = frozenset(
+    {
+        "memory_retrieval",
+        "memory_diagnostics",
+        "legacy_runtime_context_write_blocked",
+    }
+)
 
 
 def prompt_context_from_legacy_runtime_context(

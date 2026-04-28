@@ -530,6 +530,25 @@ class RuntimeServices:
     def resolve_team_workflows(self) -> Any:
         return self.resolve_capability(RuntimeCapabilityKey.TEAM_WORKFLOWS.value)
 
+    def query_closure_report(self) -> dict[str, Any]:
+        report = self.metadata.get("closure_report")
+        return dict(report) if isinstance(report, Mapping) else {}
+
+    def query_compatibility_retirement(self) -> dict[str, Any]:
+        report = self.query_closure_report()
+        value = report.get("compatibility_retirement")
+        return dict(value) if isinstance(value, Mapping) else {}
+
+    def query_persistence_profile(self) -> dict[str, Any]:
+        report = self.query_closure_report()
+        value = report.get("persistence_profile")
+        return dict(value) if isinstance(value, Mapping) else {}
+
+    def query_isolation_readiness(self) -> dict[str, Any]:
+        report = self.query_closure_report()
+        value = report.get("isolation_readiness")
+        return dict(value) if isinstance(value, Mapping) else {}
+
     def register_lifecycle_participant(self, participant: PackageLifecycleParticipant) -> None:
         self.lifecycle_registry.register(participant)
 
@@ -952,6 +971,7 @@ class RuntimeServices:
             return
         for key in (
             "core_protocol_catalog",
+            "closure_report",
             "context_contributors",
             "compatibility_surfaces",
             "compatibility_boundaries",

@@ -63,6 +63,7 @@ from runtime.runtime_package_protocols import (
 )
 from runtime.runtime_services import RuntimeServices
 from runtime.session_runtime import FileTranscriptStore
+from runtime.stores_file import FileChildRunStore
 from runtime.task_lists import FileTaskListStore
 from runtime.turn_engine import ModelStreamEvent, ModelStreamEventType
 
@@ -1214,6 +1215,28 @@ def test_runtime_publishes_compatibility_whitelists_and_protocol_only_findings(t
     ]
     assert compatibility_boundaries["TaskManager"]["unclassified_surfaces"] == []
 
+    closure_report = runtime.services.metadata["closure_report"]
+    assert runtime.metadata["closure_report"] == closure_report
+    assert closure_report["status"] == "closure-green"
+    retirement = closure_report["compatibility_retirement"]
+    assert retirement["inventory_complete"] is True
+    assert retirement["active_families"] == []
+    assert {
+        entry["family"] for entry in retirement["families"]
+    } == {
+        "task_manager",
+        "runtime_context_authority",
+        "context_contributor_adapters",
+        "memory_projection",
+        "compaction_projection",
+        "isolation_projection",
+        "teammates_projection",
+        "agent_owned_hooks",
+    }
+    assert closure_report["persistence_profile"]["profile_name"] == RuntimeDistribution.DEFAULT.value
+    assert closure_report["persistence_profile"]["surfaces"]["transcript"]["durability"] == "non_durable"
+    assert closure_report["isolation_readiness"]["modes"]["worktree"]["status"] == "not_available"
+
     conformance = runtime.services.metadata["protocol_only_conformance"]
     assert runtime.metadata["protocol_only_conformance"] == conformance
     assert conformance["schema_version"] == "1.0"
@@ -1315,6 +1338,9 @@ def test_runtime_publishes_compatibility_whitelists_and_protocol_only_findings(t
             "runtime.team",
         ],
     }
+    assert findings["compatibility_retirement_state"]["status"] == "pass"
+    assert findings["persistence_profile_state"]["status"] == "pass"
+    assert findings["isolation_readiness_state"]["status"] == "pass"
 
 
 def test_runtime_publishes_official_catalog_and_resolved_graph_provenance(tmp_path: Path) -> None:
@@ -1360,6 +1386,7 @@ def test_runtime_publishes_official_catalog_and_resolved_graph_provenance(tmp_pa
     assembly_view = runtime.query_assembly_view()
     assert assembly_view["official_package_catalog_provenance"] == catalog_provenance
     assert assembly_view["resolved_active_package_graph_provenance"] == resolved_graph_provenance
+    assert assembly_view["closure_report"] == runtime.metadata["closure_report"]
     assert assembly_view["protocol_only_conformance"] == runtime.metadata["protocol_only_conformance"]
 
 
@@ -1435,6 +1462,9 @@ def test_protocol_only_conformance_publishes_kernel_assembly_sources_and_gate(
         "team-bridge",
         "provider-provenance",
         "kernel-assembly",
+        "compatibility-retirement",
+        "persistence-profile",
+        "isolation-readiness",
     ]
     assert gate["green_criteria"] == {
         "required_distributions": [
@@ -1449,48 +1479,24 @@ def test_protocol_only_conformance_publishes_kernel_assembly_sources_and_gate(
             "explicit-package-disabled",
         ],
     }
-    assert gate["current_assembly"] == {
-        "distribution": RuntimeDistribution.DEFAULT.value,
-        "selected_packages": [
-            "runtime-core",
-            "runtime-memory",
-            "runtime-team",
-        ],
+    assert gate["current_assembly"]["distribution"] == RuntimeDistribution.DEFAULT.value
+    assert gate["current_assembly"]["selected_packages"] == [
+        "runtime-core",
+        "runtime-memory",
+        "runtime-team",
+    ]
+    assert gate["current_assembly"]["status"] == "pass"
+    assert gate["current_assembly"]["family_status"]["compatibility-retirement"] == {
         "status": "pass",
-        "family_status": {
-            "privileged-service-slot": {
-                "status": "pass",
-                "rule_ids": [
-                    "memory_service_slot_authority",
-                    "compaction_service_slot_authority",
-                    "isolation_service_slot_authority",
-                ],
-            },
-            "context-authority": {
-                "status": "pass",
-                "rule_ids": ["runtime_context_authority"],
-            },
-            "task-authority": {
-                "status": "pass",
-                "rule_ids": ["task_manager_authority"],
-            },
-            "team-bridge": {
-                "status": "pass",
-                "rule_ids": [
-                    "team_runtime_projection_authority",
-                    "team_workflow_wrapper_authority",
-                    "team_host_event_bridge_authority",
-                ],
-            },
-            "provider-provenance": {
-                "status": "pass",
-                "rule_ids": ["invocation_provider_provenance"],
-            },
-            "kernel-assembly": {
-                "status": "pass",
-                "rule_ids": ["official_package_catalog_authority"],
-            },
-        },
+        "rule_ids": ["compatibility_retirement_state"],
+    }
+    assert gate["current_assembly"]["family_status"]["persistence-profile"] == {
+        "status": "pass",
+        "rule_ids": ["persistence_profile_state"],
+    }
+    assert gate["current_assembly"]["family_status"]["isolation-readiness"] == {
+        "status": "pass",
+        "rule_ids": ["isolation_readiness_state"],
     }
     assert gate["matrix_cases"] == [
         {
@@ -1731,6 +1737,7 @@ def test_protocol_only_conformance_fails_without_published_service_family_metada
         distribution=RuntimeDistribution.DEFAULT.value,
         compatibility_boundaries={},
         package_service_protocols={},
+        closure_report={},
     )
 
     findings = {
@@ -1804,6 +1811,15 @@ def test_protocol_only_conformance_fails_without_published_service_family_metada
         "replacement_path": "RuntimePackageManifest.assembly_entrypoint",
         "evidence": [],
     }
+    assert next(
+        entry for entry in conformance["findings"] if entry["rule_id"] == "compatibility_retirement_state"
+    )["status"] == "fail"
+    assert next(
+        entry for entry in conformance["findings"] if entry["rule_id"] == "persistence_profile_state"
+    )["status"] == "fail"
+    assert next(
+        entry for entry in conformance["findings"] if entry["rule_id"] == "isolation_readiness_state"
+    )["status"] == "fail"
     assert conformance["gate"]["scope"] == "current-assembly"
     assert conformance["gate"]["status"] == "fail"
     assert conformance["gate"]["required_families"] == [
@@ -1813,6 +1829,9 @@ def test_protocol_only_conformance_fails_without_published_service_family_metada
         "team-bridge",
         "provider-provenance",
         "kernel-assembly",
+        "compatibility-retirement",
+        "persistence-profile",
+        "isolation-readiness",
     ]
 
 
@@ -1835,6 +1854,7 @@ def test_protocol_only_gate_fails_when_task_manager_surfaces_escape_authority(tm
         distribution=RuntimeDistribution.DEFAULT.value,
         compatibility_boundaries=compatibility_boundaries,
         package_service_protocols=runtime.services.metadata["package_service_protocols"],
+        closure_report=runtime.services.metadata["closure_report"],
         invocation_provider_registrations=runtime.services.metadata["invocation_provider_registrations"],
         team_protocol_only=runtime.services.metadata["migration"]["team_protocol_only"],
         official_package_catalog_provenance=runtime.services.metadata[
@@ -1970,6 +1990,7 @@ def test_team_bridge_findings_fail_when_live_runtime_state_is_missing() -> None:
             distribution=RuntimeDistribution.DEFAULT.value,
             compatibility_boundaries={},
             package_service_protocols={},
+            closure_report={},
             team_protocol_only=runtime_kernel_module._team_protocol_only_migration_metadata(
                 selected_packages=("runtime-core", "runtime-memory", "runtime-team"),
             ),
@@ -2437,10 +2458,12 @@ def test_manifest_backed_openai_and_store_bindings_preserve_full_distribution_de
     assert "openai-prod" in runtime.kernel.config.model_providers
     assert "openai_default" in runtime.kernel.config.model_routes
     assert isinstance(runtime.services.transcript_store, FileTranscriptStore)
+    assert isinstance(runtime.agent_runtime.run_store, FileChildRunStore)
     assert isinstance(runtime.services.job_service.store, FileJobStore)
     assert isinstance(runtime.services.task_list_service.store, FileTaskListStore)
     assert runtime.services.metadata["package_store_bindings"] == {
         "transcript_store": "runtime-stores-file",
+        "child_run_store": "runtime-stores-file",
         "job_store": "runtime-stores-file",
         "task_list_store": "runtime-stores-file",
         "team_store": "runtime-stores-file",

@@ -598,7 +598,9 @@ sidecar 接入时必须遵守：
 
 - `runtime_context` 只应被当作 bridge 或只读 snapshot
 - 不要再通过共享 `runtime_context` mutation 写入 authoritative private state
+- 这类 authoritative write 现在默认会被 runtime 阻断；只有显式 legacy mode 才会继续容忍
 - 如果需要审计剩余 compat seam，直接看 `runtime.services.metadata["compatibility_boundaries"]`
+- 如果需要看 closure / retirement / persistence / isolation 的总状态，直接看 `runtime.services.metadata["closure_report"]`
 - 如果需要聚合 gate 结果，直接看 `runtime.services.metadata["protocol_only_conformance"]`
 - 如果 embedder 需要拿同一份汇总视图，直接调用 `RuntimeAssembly.query_assembly_view()`
 

@@ -157,7 +157,9 @@ Tool '<name>' has no execution handler
 
 补充约束：
 
-- agent frontmatter 里的 `hooks` 不属于普通 v1 扩展面；当前 runtime 会把它们视为 compatibility-only，并在装配时发出 warning。
+- agent frontmatter 里的 `hooks` 不属于普通 v1 扩展面；默认装配现在会直接拒绝这类 agent-owned hook authoring。
+- 如果确实要继续兼容，必须显式开启 legacy compatibility family `agent_owned_hooks`。
+- 正常推荐的 hook authoring surface 仍然是 skill hooks、runtime/session/turn hook API，以及 host/runtime config 注册面。
 
 ### 2.4 Package 不是目录标签，而是协议接入点
 
@@ -674,6 +676,11 @@ runtime 会按固定顺序注册 provider：
 1. 只想本地跑，用默认内存版即可。
 2. 想会话可恢复、可审计、可持久化，给 `RuntimeConfig.transcript_store` 注入自己的实现。
 
+如果你想先判断当前 distribution 默认 durable 到什么程度，不要靠猜，直接看：
+
+- `runtime.query_persistence_profile()`
+- `runtime.services.metadata["closure_report"]["persistence_profile"]`
+
 ### 4.2 ChildRunStore：子 agent / child run 持久化
 
 `ChildRunStore` 用于记录：
@@ -683,12 +690,17 @@ runtime 会按固定顺序注册 provider：
 - 状态
 - 终态 metadata
 
-默认实现是内存版。
+默认实现取决于 distribution：
+
+- `runtime-core` / `runtime-default`：默认是内存版
+- `runtime-full`：默认绑定 first-party durable file-backed child-run store
 
 用户视角怎么扩：
 
 1. 不关心 child run durable history 时，可以不管。
 2. 想保留 background/fork run 历史时，实现自己的 `ChildRunStore`。
+
+和 transcript 一样，想确认当前 assembly 默认 contract 时，优先看 `persistence_profile`，不要只看某个类名。
 
 要注意：`ChildRunStore` 解决的是 durable history，不是 wake-up policy。
 waiting parent session 被 terminal child run 唤醒，是 runtime continuation bridge 的职责；typed `CHILD_RUN` event 仍然是观测真相。
@@ -1161,6 +1173,9 @@ runtime.services.memory = LongTermMemoryService(
 
 我想持久化 child runs
   -> ChildRunStore
+
+我想检查当前 runtime 还剩哪些 legacy / durability / isolation gap
+  -> `runtime.query_closure_report()` / `runtime.query_persistence_profile()` / `runtime.query_isolation_readiness()`
 
 我想替换记忆后端
   -> MemoryProvider + LongTermMemoryService

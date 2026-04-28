@@ -911,70 +911,106 @@ workflow 协议层现在也已经从 transport 层显式拆开：
 - runtime-owned team control plane + message bus + teammate shell
 - manifest-backed package assembly + protocol-only conformance gate
 
-也就是说，**主骨架其实已经完成**。现在还没法把整个目标图宣布为“彻底完成”，不是因为 kernel / session / turn spine 还没立住，而是因为还差最后一层 **closure / hardening**。
+也就是说，**主骨架其实已经完成**。在 `complete-runtime-microkernel-closure-and-hardening`
+落地之前，还不能把整个目标图宣布为“彻底完成”，不是因为 kernel / session / turn spine 还没立住，而是因为还差最后一层 **closure / hardening**。
 
-### 14.1 为什么做了两轮、十来个 change 还没算真正收尾
+### 14.1 为什么之前只能说“主骨架完成”，还不能说“terminal closure 已完成”
 
-当前剩余问题已经不再是“大方向没实现”，而是 3 类收尾问题还没有一次性做完：
+之前卡住的已经不是主骨架，而是最后一层收尾 contract 还没被单独发布和 gate：
 
-1. **compatibility retirement 还没终局化**
-   - `TaskManager` 仍保留为 compatibility facade
-   - shared `runtime_context` 仍保留 legacy bridge 语义
-   - `RuntimeServices.memory`、`RuntimeServices.compaction`、`RuntimeServices.isolation`、`RuntimeServices.teammates` 仍然存在 compatibility projection
-   - 少量 team / agent-owned hook legacy authoring surface 仍然是“可用但不应再扩”的状态
-   - 这意味着主路径虽然已经 protocol-only，但默认公开面还没有完全从 legacy surface 退干净
+1. **compatibility retirement 还没显式化**
+   - `TaskManager`、shared `runtime_context`、`RuntimeServices.memory` / `compaction` / `isolation` / `teammates`
+     这些兼容面虽然已经不是 canonical path，但还缺一份 runtime-owned inventory 去说明：
+     - 哪些 surface 只是 compatibility-only
+     - 哪些只能在 legacy mode 下继续容忍
+     - 每个 surface 的 canonical replacement 是什么
 
-2. **mechanism package 的实现深度还没补齐**
-   - `WORKTREE` 和 `REMOTE` isolation 目前仍偏 stub
-   - 也就是说，runtime 已经有 isolation control plane contract，但 first-party mechanism package 还没有把这两类 mode 做成 production-grade semantics
-   - 这是目前最明显的“架构对了、实现还不够硬”的残留点
+2. **isolation contract 还没 hardened**
+   - `worktree` 之前还只是 stub 语义
+   - `remote` 之前还会走“看起来准备成功、其实没有 backend”的假成功路径
 
-3. **persistence profile / recovery story 还没产品化收口**
-   - transcript 和 child runs 默认不一定 durable
-   - memory 已经有较强的 durable story，但 child-run history 还没有同等级的 first-party bundled durable path
-   - distribution 之间确实已经有差异化装配，但“哪种 runtime shape 默认 durable 到什么程度”还没有被单独提升成清晰的 runtime product contract
+3. **persistence contract 还没产品化**
+   - distribution 之间确实早就有差异，但 transcript / child-run durability 还没有被提升成显式 runtime product contract
+   - embedder 能手工接 durable store，不等于 runtime 已经明确说明“当前 assembly 默认 durable 到什么程度”
 
-还有一类问题需要单独说明：
-
-- **provider / package ecosystem 仍有刻意保留的非目标项**
-  - provider route contract 已完整，但具体 provider 仍依赖外部注入
-  - package install / publish、remote discovery、Python environment package management 仍然不在这条收尾线里
-  - 这些点会影响“平台生态是否完整”，但**不是**当前 target graph 成立与否的最后 blocker
-
-所以，前面十来个 change 没有白做；它们已经把“包通过协议接入微内核”这件事的主结构搭起来了。真正还差的是：
-
-- 把 legacy 残留变成明确 retirement policy，而不是继续长期悬着
-- 把 stub mechanism 补成 honest / hardened implementation
-- 把 durability 从“可以手工接”升级成“有清晰 first-party profile”
-
-### 14.2 边界收敛 gate
-
-当前仍保留少量 compat bridge，但收敛原则已经稳定：
-
-- 新代码优先写 `PromptContextEnvelope` / `RuntimePrivateContext`
-- 共享 `runtime_context` 只应作为 legacy 输入桥接或只读 compat snapshot
-- 任何新增 shared `runtime_context` authoritative write 都应视为 rollout blocker
-- `TaskManager` 和共享 `runtime_context` 都应被视为 owner-layer boundary leak 的 compat path，而不只是普通旧 API
-- protocol-only gate 为绿，并不自动等于 rollout terminal complete；如果 compatibility projection、stub isolation、durability profile 还没收口，仍只能算“结构完成、收尾未完”
-
-### 14.3 当前 active change 的收尾范围
-
-当前 active change `complete-runtime-microkernel-closure-and-hardening` 专门负责把上面剩余的 3 类问题一次性收口：
-
-- compatibility retirement
-  - 把 legacy surface inventory、legacy mode、migration target 和 closure status 单独发布出来
-- persistence profiles
-  - 把 transcript / child-run durability 提升成显式 runtime contract，而不是隐含默认值
-- isolation hardening
-  - 把 `worktree` 做成真实 local lease，把 `remote` 从假成功 stub 改成 adapter-backed 或 structured not-available
-- closure metadata + conformance
-  - 把“当前 runtime 还剩多少 legacy、durability 到什么程度、isolation 是否 hardened”变成可查询、可测试、可 gate 的输出
-
-这个 change 完成之前，更准确的判断应该是：
+所以之前更准确的状态一直是：
 
 - **目标图主干：已实现**
 - **协议接入面：已实现**
-- **terminal closure / hardening：进行中**
+- **terminal closure / hardening：未闭合**
+
+### 14.2 `complete-runtime-microkernel-closure-and-hardening` 最终补上的是什么
+
+这次 change 把最后那层“结构已对，但 contract 还没封口”的问题一次性补齐了：
+
+1. **closure report 变成独立 contract**
+   - `runtime.services.metadata["closure_report"]`
+   - `runtime.metadata["closure_report"]`
+   - `RuntimeAssembly.query_closure_report()`
+   - `RuntimeAssembly.query_compatibility_retirement()`
+   - `RuntimeAssembly.query_persistence_profile()`
+   - `RuntimeAssembly.query_isolation_readiness()`
+
+2. **compatibility retirement 变成显式 inventory**
+   - 每个 family 都会发布 summary、migration target、activation state 和 surface inventory
+   - `TaskManager` 继续保留为 compatibility facade，但不再是 runtime-owned primary path
+   - shared `runtime_context` 继续保留为 bridge / compat snapshot，但默认不再允许 runtime-owned authoritative write
+   - agent-owned legacy hooks 默认拒绝；只有显式 legacy mode 才会重新容忍
+
+3. **persistence profile 变成显式 product contract**
+   - `runtime-core` / `runtime-default` 会明确发布 lightweight profile
+   - `runtime-full` 会明确发布 production-oriented profile
+   - transcript、child runs、jobs、task lists、team state、memory 都会单独给出 `durable` / `non_durable` / `host_provided`
+     这类可查询状态
+   - `runtime-full` 默认绑定 first-party durable transcript + child-run store
+
+4. **isolation control plane 变成 honest semantics**
+   - `worktree` 现在会准备真实的本地 lease 目录，并发布 cleanup owner / lifecycle metadata
+   - `remote` 不再假成功；没有 backend 时会给出 `not_configured` / `not_available` 一类结构化失败
+   - 如果 embedder 注入 remote adapter，lease metadata 会发布 adapter identity 和 effective remote semantics
+
+5. **closure gate 不再只靠口头约定**
+   - protocol-only conformance 现在额外覆盖：
+     - `compatibility-retirement`
+     - `persistence-profile`
+     - `isolation-readiness`
+   - `closure-green` 的含义也终于固定下来：没有 active legacy family、当前 persistence profile 满足声明 contract、并且 stable isolation mode 不再靠 stub 假装成功
+
+### 14.3 现在怎样判断“terminal closure 已完成”
+
+当前更准确的判断已经变成：
+
+- **目标图主干：已实现**
+- **协议接入面：已实现**
+- **terminal closure / hardening：已完成**
+
+判断方式也不再靠人工口径，而是直接看 runtime 输出：
+
+- `runtime.query_closure_report()["status"]`
+- `runtime.query_compatibility_retirement()`
+- `runtime.query_persistence_profile()`
+- `runtime.query_isolation_readiness()`
+- `runtime.metadata["protocol_only_conformance"]`
+
+这意味着“微内核 rollout 在结构上完成”与“closure 真的收口”终于被分成了两层：
+
+- `core_protocol_catalog` / package metadata 负责 stable protocol truth
+- `closure_report` + conformance gate 负责 closure / hardening truth
+
+### 14.4 最终剩余 gap list（仍是平台项，但不再是这条 closure 线的 blocker）
+
+当前仍然刻意保留的非目标项包括：
+
+- provider route contract 已完成，但具体 provider credential / provider backend 仍依赖外部注入
+- remote discovery、package install / publish、Python environment package management 仍然不在这条 closure 线里
+- first-party 默认只把 `remote` isolation 做成 honest control-plane contract；是否真正可用，继续由 host / adapter 注入决定
+
+也就是说，**closure 已完成** 不等于 **整个平台生态已经无剩余工作**。
+它的意思是：
+
+- runtime-owned microkernel graph 已经闭合
+- retained compat seam 已经被 inventory、legacy mode 和 migration target 明确约束
+- isolation / persistence / conformance 已经从“实现细节”升级成可查询、可测试、可 gate 的 contract
 
 ## 15. 历史演化主线
 

@@ -191,6 +191,7 @@ class StableCoreProtocolCatalog:
             "resolved_active_package_graph_provenance": (
                 "source of truth for the resolved active package graph and its provenance"
             ),
+            "closure_report": "source of truth for closure, compatibility retirement, persistence, and isolation readiness",
             "compatibility_surfaces": "source of truth for compatibility-only runtime helpers",
             "compatibility_boundaries": "source of truth for the finite compatibility-only runtime_context and TaskManager whitelist",
             "compatibility_projections": "legacy projections that still delegate to canonical runtime capabilities",

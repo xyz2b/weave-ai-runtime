@@ -30,7 +30,7 @@ from .execution_policy import (
 )
 from .hooks import SubagentStopPayload
 from .hosts.base import CallbackHostAdapter, NullHostAdapter
-from .isolation import IsolationLease, serialize_isolation_lease
+from .isolation import IsolationLease, IsolationPreparationError, serialize_isolation_lease
 from .permissions import PermissionContext, PermissionRequest, PermissionTarget
 from .registries import AgentRegistry, SkillRegistry, ToolRegistry
 from .runtime_kernel.config import (
@@ -266,12 +266,15 @@ class AgentExecutionService:
             )
             return result
         except Exception as exc:
+            terminal_metadata = {"error": str(exc)}
+            if isinstance(exc, IsolationPreparationError):
+                terminal_metadata["isolation"] = exc.to_metadata()
             failed_record = self._build_run_record(
                 execution_spec,
                 agent_name=agent.name,
                 status=AgentRunStatus.FAILED,
                 request_metadata=request_metadata,
-                terminal_metadata={"error": str(exc)},
+                terminal_metadata=terminal_metadata,
             )
             await self._run_store.upsert(failed_record)
             await self._turn_engine.emit_child_run(failed_record)
@@ -634,6 +637,9 @@ class AgentExecutionService:
 def _supports_permission_requests(host: Any) -> bool:
     if isinstance(host, CallbackHostAdapter):
         return host.permission_handler is not None
+    delegate = getattr(host, "_delegate", None)
+    if delegate is not None and delegate is not host:
+        return _supports_permission_requests(delegate)
     if type(host) is NullHostAdapter:
         return False
     return True

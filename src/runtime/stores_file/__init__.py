@@ -1,3 +1,4 @@
+from .child_runs import FileChildRunStore
 from .package import (
     RuntimeFileStoreBundle,
     TeamFileStoreBundle,
@@ -6,6 +7,7 @@ from .package import (
 )
 
 __all__ = [
+    "FileChildRunStore",
     "RuntimeFileStoreBundle",
     "TeamFileStoreBundle",
     "assemble_file_store_bundle",
