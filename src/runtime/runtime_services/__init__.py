@@ -38,10 +38,13 @@ from ..tasking import TaskManager
 from ..task_lists import DefaultTaskListService
 
 
-_COMPATIBILITY_CAPABILITY_PROJECTIONS = {
+_SERVICE_FAMILY_CAPABILITY_PROJECTIONS = {
     "memory": RuntimeCapabilityKey.MEMORY_SERVICE.value,
     "compaction": RuntimeCapabilityKey.COMPACTION_MANAGER.value,
     "isolation": RuntimeCapabilityKey.ISOLATION_MANAGER.value,
+}
+
+_COMPATIBILITY_CAPABILITY_PROJECTIONS = {
     "teammates": RuntimeCapabilityKey.TEAMMATES.value,
     "team_control_plane": RuntimeCapabilityKey.TEAM_CONTROL_PLANE.value,
     "team_message_bus": RuntimeCapabilityKey.TEAM_MESSAGE_BUS.value,
@@ -298,14 +301,33 @@ class RuntimeServices:
     runtime_lifecycle_exception: BaseException | None = None
     runtime_lifecycle_task: asyncio.Task[tuple[dict[str, Any], ...]] | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    _runtime_metadata_mirror: dict[str, Any] | None = field(default=None, init=False, repr=False)
+    _compatibility_projection_ready: bool = field(default=False, init=False, repr=False)
 
     def __getattribute__(self, name: str) -> Any:
+        capability_key = _SERVICE_FAMILY_CAPABILITY_PROJECTIONS.get(name)
+        if capability_key is not None:
+            return object.__getattribute__(self, "resolve_capability")(capability_key)
         capability_key = _COMPATIBILITY_CAPABILITY_PROJECTIONS.get(name)
         if capability_key is not None:
             # Retained team_* projections stay delegated to the capability registry.
             fallback = object.__getattribute__(self, name)
             return object.__getattribute__(self, "resolve_capability")(capability_key, fallback)
         return object.__getattribute__(self, name)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        object.__setattr__(self, name, value)
+        capability_key = _SERVICE_FAMILY_CAPABILITY_PROJECTIONS.get(name)
+        if capability_key is None:
+            return
+        try:
+            ready = object.__getattribute__(self, "_compatibility_projection_ready")
+        except AttributeError:
+            return
+        if not ready:
+            return
+        self._bind_compatibility_projection(name, capability_key, value)
+        self._refresh_published_protocol_metadata()
 
     def __post_init__(self) -> None:
         manager = self.tasks.manager
@@ -316,7 +338,10 @@ class RuntimeServices:
         if self.jobs is None:  # pragma: no cover - defensive boundary
             self.jobs = DefaultJobService()
         self._bind_job_runtime(self.jobs)
+        self._seed_service_family_capabilities()
+        self._compatibility_projection_ready = True
         self._sync_context_contributor_metadata()
+        self._refresh_published_protocol_metadata()
 
     def bind_job_service(self, job_service: DefaultJobService) -> None:
         previous_kernel = self.jobs.kernel if self.jobs is not None else None
@@ -460,7 +485,9 @@ class RuntimeServices:
             )
 
     def bind_capability(self, binding: CapabilityBinding, *, override: bool = True) -> CapabilityBinding | None:
-        return self.capability_registry.bind(binding, override=override)
+        previous = self.capability_registry.bind(binding, override=override)
+        self._refresh_published_protocol_metadata()
+        return previous
 
     def register_context_contributor(
         self,
@@ -502,19 +529,13 @@ class RuntimeServices:
         return self.resolve_capability(RuntimeCapabilityKey.TEAMMATES.value)
 
     def resolve_memory_service(self) -> Any:
-        return self._resolve_compatibility_projection("memory", RuntimeCapabilityKey.MEMORY_SERVICE.value)
+        return self.resolve_capability(RuntimeCapabilityKey.MEMORY_SERVICE.value)
 
     def resolve_compaction_service(self) -> Any:
-        return self._resolve_compatibility_projection(
-            "compaction",
-            RuntimeCapabilityKey.COMPACTION_MANAGER.value,
-        )
+        return self.resolve_capability(RuntimeCapabilityKey.COMPACTION_MANAGER.value)
 
     def resolve_isolation_service(self) -> Any:
-        return self._resolve_compatibility_projection(
-            "isolation",
-            RuntimeCapabilityKey.ISOLATION_MANAGER.value,
-        )
+        return self.resolve_capability(RuntimeCapabilityKey.ISOLATION_MANAGER.value)
 
     def resolve_team_control_plane(self) -> Any:
         return self.resolve_capability(RuntimeCapabilityKey.TEAM_CONTROL_PLANE.value)
@@ -789,6 +810,7 @@ class RuntimeServices:
                 },
             },
         }
+        self._sync_metadata_mirror()
 
     def _legacy_context_contributor_bindings(self) -> tuple[ContextContributorBinding, ...]:
         bindings: list[ContextContributorBinding] = []
@@ -884,13 +906,70 @@ class RuntimeServices:
             metadata={"compatibility_surface": surface},
         )
 
-    def _resolve_compatibility_projection(
+    def attach_metadata_mirror(self, metadata: dict[str, Any]) -> None:
+        self._runtime_metadata_mirror = metadata
+        self._sync_metadata_mirror()
+
+    def _seed_service_family_capabilities(self) -> None:
+        for field_name, capability_key in _SERVICE_FAMILY_CAPABILITY_PROJECTIONS.items():
+            if self.capability_registry.binding(capability_key) is not None:
+                continue
+            value = object.__getattribute__(self, field_name)
+            self._bind_compatibility_projection(field_name, capability_key, value)
+
+    def _bind_compatibility_projection(
         self,
         field_name: str,
         capability_key: str,
-    ) -> Any:
-        fallback = object.__getattribute__(self, field_name)
-        return self.resolve_capability(capability_key, fallback)
+        value: Any,
+    ) -> None:
+        self.capability_registry.bind(
+            CapabilityBinding(
+                key=capability_key,
+                value=value,
+                owner=self._compatibility_projection_owner(field_name),
+                metadata={
+                    "compatibility_surface": f"RuntimeServices.{field_name}",
+                    "compatibility_only": True,
+                },
+            ),
+            override=True,
+        )
+
+    def _compatibility_projection_owner(self, field_name: str) -> PackageOwnership:
+        return PackageOwnership(
+            package_name="runtime-core",
+            package_role="compatibility",
+            surface="compatibility_projection",
+            metadata={"compatibility_surface": f"RuntimeServices.{field_name}"},
+        )
+
+    def _refresh_published_protocol_metadata(self) -> None:
+        from ..runtime_kernel.kernel import (
+            _project_capability_compatibility_surfaces,
+            _sync_compatibility_boundary_metadata,
+            _sync_package_service_protocol_metadata,
+        )
+
+        _project_capability_compatibility_surfaces(self)
+        _sync_package_service_protocol_metadata(self)
+        _sync_compatibility_boundary_metadata(self)
+        self._sync_metadata_mirror()
+
+    def _sync_metadata_mirror(self) -> None:
+        mirror = self._runtime_metadata_mirror
+        if mirror is None:
+            return
+        for key in (
+            "core_protocol_catalog",
+            "context_contributors",
+            "compatibility_surfaces",
+            "compatibility_boundaries",
+            "compatibility_projections",
+            "package_service_protocols",
+            "protocol_only_conformance",
+        ):
+            mirror[key] = dict(self.metadata.get(key, {}))
 
     def _serialize_package_owner(self, owner: PackageOwnership) -> dict[str, Any]:
         return {

@@ -5,7 +5,7 @@ import inspect
 import json
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
-from typing import Any, Mapping, Protocol, Sequence
+from typing import Any, Callable, Mapping, Protocol, Sequence
 from uuid import uuid4
 
 from ..compaction import (
@@ -500,8 +500,14 @@ class RecoveryPolicy(Protocol):
 
 
 class MaterialCompactionPass:
-    def __init__(self, compaction_service: Any) -> None:
+    def __init__(
+        self,
+        compaction_service: Any = None,
+        *,
+        resolve_compaction_service: Callable[[], Any] | None = None,
+    ) -> None:
         self._compaction_service = compaction_service
+        self._resolve_compaction_service = resolve_compaction_service
 
     async def apply(
         self,
@@ -515,8 +521,13 @@ class MaterialCompactionPass:
         private_context: RuntimePrivateContext,
         runtime_context: Mapping[str, Any] | None = None,
     ) -> CompactionResult:
+        compaction_service = (
+            self._resolve_compaction_service()
+            if self._resolve_compaction_service is not None
+            else self._compaction_service
+        )
         return await maybe_await(
-            self._compaction_service.prepare_turn(
+            compaction_service.prepare_turn(
                 session_id=session_id,
                 turn_id=turn_id,
                 agent=agent,
@@ -533,15 +544,20 @@ class DefaultContextControlPlane:
     def __init__(
         self,
         *,
-        compaction_service: Any,
+        compaction_service: Any = None,
+        resolve_compaction_service: Callable[[], Any] | None = None,
         default_config: ContextControlPlaneConfig | Mapping[str, Any] | None = None,
     ) -> None:
         self._compaction_service = compaction_service
+        self._resolve_compaction_service = resolve_compaction_service
         if isinstance(default_config, ContextControlPlaneConfig):
             self._default_config = default_config
         else:
             self._default_config = ContextControlPlaneConfig.from_mapping(default_config)
-        self._material_compaction_pass = MaterialCompactionPass(compaction_service)
+        self._material_compaction_pass = MaterialCompactionPass(
+            compaction_service,
+            resolve_compaction_service=resolve_compaction_service,
+        )
 
     async def prepare(
         self,

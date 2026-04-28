@@ -1291,6 +1291,48 @@ def test_runtime_publishes_privileged_service_protocol_metadata_and_findings(tmp
     }
 
 
+def test_protocol_only_conformance_fails_without_published_service_family_metadata() -> None:
+    conformance = runtime_kernel_module._protocol_only_conformance_metadata(
+        distribution=RuntimeDistribution.DEFAULT.value,
+        compatibility_boundaries={},
+        package_service_protocols={},
+    )
+
+    findings = {
+        entry["rule_id"]: entry
+        for entry in conformance["findings"]
+        if entry["family"] == "privileged-service-slot"
+    }
+
+    assert findings["memory_service_slot_authority"] == {
+        "rule_id": "memory_service_slot_authority",
+        "family": "privileged-service-slot",
+        "status": "fail",
+        "distribution": RuntimeDistribution.DEFAULT.value,
+        "canonical_path": "",
+        "compat_surface": "RuntimeServices.memory",
+        "evidence": [],
+    }
+    assert findings["compaction_service_slot_authority"] == {
+        "rule_id": "compaction_service_slot_authority",
+        "family": "privileged-service-slot",
+        "status": "fail",
+        "distribution": RuntimeDistribution.DEFAULT.value,
+        "canonical_path": "",
+        "compat_surface": "RuntimeServices.compaction",
+        "evidence": [],
+    }
+    assert findings["isolation_service_slot_authority"] == {
+        "rule_id": "isolation_service_slot_authority",
+        "family": "privileged-service-slot",
+        "status": "fail",
+        "distribution": RuntimeDistribution.DEFAULT.value,
+        "canonical_path": "",
+        "compat_surface": "RuntimeServices.isolation",
+        "evidence": [],
+    }
+
+
 def test_protocol_only_conformance_flags_unclassified_runtime_context_surfaces(
     tmp_path: Path,
 ) -> None:
@@ -1426,7 +1468,9 @@ def test_runtime_team_compatibility_projections_delegate_to_canonical_capabiliti
     assert runtime.team_workflows is canonical_workflows
 
 
-def test_privileged_service_compatibility_projections_delegate_to_canonical_capabilities(tmp_path: Path) -> None:
+def test_privileged_service_compatibility_slot_writes_rebind_canonical_capabilities(
+    tmp_path: Path,
+) -> None:
     runtime = assemble_runtime(
         RuntimeConfig(
             working_directory=tmp_path,
@@ -1434,19 +1478,79 @@ def test_privileged_service_compatibility_projections_delegate_to_canonical_capa
         )
     )
 
-    canonical_memory = runtime.services.require_capability(RuntimeCapabilityKey.MEMORY_SERVICE.value)
-    canonical_compaction = runtime.services.require_capability(RuntimeCapabilityKey.COMPACTION_MANAGER.value)
-    canonical_isolation = runtime.services.require_capability(RuntimeCapabilityKey.ISOLATION_MANAGER.value)
-    runtime.services.memory = object()
-    runtime.services.compaction = object()
-    runtime.services.isolation = object()
+    replacement_memory = object()
+    replacement_compaction = object()
+    replacement_isolation = object()
+    runtime.services.memory = replacement_memory
+    runtime.services.compaction = replacement_compaction
+    runtime.services.isolation = replacement_isolation
 
-    assert object.__getattribute__(runtime.services, "memory") is not canonical_memory
-    assert object.__getattribute__(runtime.services, "compaction") is not canonical_compaction
-    assert object.__getattribute__(runtime.services, "isolation") is not canonical_isolation
-    assert runtime.services.memory is canonical_memory
-    assert runtime.services.compaction is canonical_compaction
-    assert runtime.services.isolation is canonical_isolation
+    assert runtime.services.memory is replacement_memory
+    assert runtime.services.compaction is replacement_compaction
+    assert runtime.services.isolation is replacement_isolation
+    assert runtime.services.require_capability(RuntimeCapabilityKey.MEMORY_SERVICE.value) is replacement_memory
+    assert runtime.services.require_capability(RuntimeCapabilityKey.COMPACTION_MANAGER.value) is replacement_compaction
+    assert runtime.services.require_capability(RuntimeCapabilityKey.ISOLATION_MANAGER.value) is replacement_isolation
+    assert runtime.services.metadata["package_service_protocols"]["memory"]["owner"] == {
+        "package_name": "runtime-core",
+        "package_role": "compatibility",
+        "surface": "compatibility_projection",
+        "metadata": {"compatibility_surface": "RuntimeServices.memory"},
+    }
+    assert runtime.services.metadata["package_service_protocols"]["compaction"]["owner"] == {
+        "package_name": "runtime-core",
+        "package_role": "compatibility",
+        "surface": "compatibility_projection",
+        "metadata": {"compatibility_surface": "RuntimeServices.compaction"},
+    }
+    assert runtime.services.metadata["package_service_protocols"]["isolation"]["owner"] == {
+        "package_name": "runtime-core",
+        "package_role": "compatibility",
+        "surface": "compatibility_projection",
+        "metadata": {"compatibility_surface": "RuntimeServices.isolation"},
+    }
+    assert runtime.metadata["package_service_protocols"] == runtime.services.metadata["package_service_protocols"]
+    assert runtime.metadata["protocol_only_conformance"] == runtime.services.metadata["protocol_only_conformance"]
+
+
+def test_late_memory_capability_rebind_refreshes_published_protocol_metadata(tmp_path: Path) -> None:
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            distribution=RuntimeDistribution.FULL,
+        )
+    )
+
+    replacement = object()
+    runtime.services.bind_capability(
+        CapabilityBinding(
+            key=RuntimeCapabilityKey.MEMORY_SERVICE.value,
+            value=replacement,
+            owner=PackageOwnership(
+                package_name="runtime-memory-override",
+                package_role="capability",
+                surface="capability",
+            ),
+        )
+    )
+
+    assert runtime.services.memory is replacement
+    assert runtime.services.metadata["package_service_protocols"]["memory"]["owner"] == {
+        "package_name": "runtime-memory-override",
+        "package_role": "capability",
+        "surface": "capability",
+        "metadata": {},
+    }
+    findings = {
+        entry["rule_id"]: entry
+        for entry in runtime.services.metadata["protocol_only_conformance"]["findings"]
+    }
+    assert findings["memory_service_slot_authority"]["status"] == "pass"
+    assert findings["memory_service_slot_authority"]["canonical_path"] == (
+        RuntimeCapabilityKey.MEMORY_SERVICE.value
+    )
+    assert runtime.metadata["package_service_protocols"] == runtime.services.metadata["package_service_protocols"]
+    assert runtime.metadata["protocol_only_conformance"] == runtime.services.metadata["protocol_only_conformance"]
 
 
 def test_runtime_workflow_helpers_prefer_canonical_lookup_over_compatibility_slots(tmp_path: Path) -> None:

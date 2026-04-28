@@ -802,7 +802,7 @@ class TurnEngine:
         self._active_abort_signal: ModelAbortSignal | None = None
         self._child_run_events: dict[tuple[str, str], list[AgentRunRecord]] = {}
         self._context_control_plane = context_control_plane or DefaultContextControlPlane(
-            compaction_service=self._resolve_compaction_service(),
+            resolve_compaction_service=self._resolve_compaction_service,
             default_config=self._runtime_services.metadata.get("context_control"),
         )
         self._recovery_policy = recovery_policy or DefaultRecoveryPolicy()

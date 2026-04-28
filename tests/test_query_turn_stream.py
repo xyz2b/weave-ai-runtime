@@ -5,9 +5,11 @@ from runtime.contracts import MessageRole, PromptContextEnvelope, RuntimePrivate
 from runtime.definitions import AgentDefinition, ToolDefinition, ToolTraits
 from runtime.registries import ToolRegistry
 from runtime.runtime_package_protocols import (
+    CapabilityBinding,
     ContextContributorBinding,
     ContextContributorStage,
     PackageOwnership,
+    RuntimeCapabilityKey,
 )
 from runtime.runtime_services import RuntimeServices, SidecarContributionResult
 from runtime.turn_engine import (
@@ -505,6 +507,76 @@ def test_turn_engine_uses_canonical_memory_and_compaction_resolvers() -> None:
     assert request.turn_context.memory_fragments == ("Memory via resolver",)
     assert request.turn_context.prompt_context.memory_fragments == ("Memory via resolver",)
     assert compaction_service.calls == [()]
+
+
+def test_turn_engine_context_control_plane_observes_late_compaction_rebind() -> None:
+    class InitialCompactionService:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        async def prepare_turn(self, **kwargs):
+            _ = kwargs
+            self.calls.append("initial")
+            policy = CompactionPolicy(enabled=False)
+            return CompactionResult(
+                messages=(),
+                policy=policy,
+                pressure=evaluate_context_pressure((), policy),
+            )
+
+    class ReplacementCompactionService:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        async def prepare_turn(self, **kwargs):
+            _ = kwargs
+            self.calls.append("replacement")
+            policy = CompactionPolicy(enabled=False)
+            return CompactionResult(
+                messages=(),
+                policy=policy,
+                pressure=evaluate_context_pressure((), policy),
+            )
+
+    initial = InitialCompactionService()
+    replacement = ReplacementCompactionService()
+    services = RuntimeServices(
+        compaction=initial,
+        context_assembler=ContextAssembler(),
+    )
+    engine = TurnEngine(
+        model_client=BatchedModelClient([]),
+        tool_registry=ToolRegistry(),
+        runtime_services=services,
+    )
+    services.bind_capability(
+        CapabilityBinding(
+            key=RuntimeCapabilityKey.COMPACTION_MANAGER.value,
+            value=replacement,
+            owner=PackageOwnership(
+                package_name="runtime-compaction-override",
+                package_role="capability",
+                surface="capability",
+            ),
+        )
+    )
+
+    asyncio.run(
+        engine._context_control_plane.prepare(
+            session_id="session",
+            turn_id="turn",
+            attempt_index=0,
+            agent=AgentDefinition(name="main-router", description="router", prompt="Answer"),
+            cwd=".",
+            messages=(),
+            prompt_context=PromptContextEnvelope(),
+            private_context=RuntimePrivateContext(),
+            runtime_context={},
+        )
+    )
+
+    assert initial.calls == []
+    assert replacement.calls == ["replacement"]
 
 
 def test_sidecar_private_updates_cannot_reintroduce_prompt_updates() -> None:

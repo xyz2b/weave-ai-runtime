@@ -1669,6 +1669,7 @@ def _assemble_runtime_stack(kernel: RuntimeKernel) -> RuntimeAssembly:
             "protocol_only_conformance": dict(services.metadata.get("protocol_only_conformance", {})),
         },
     )
+    services.attach_metadata_mirror(runtime.metadata)
     _register_job_executors(
         kernel=kernel,
         services=services,
@@ -2530,7 +2531,9 @@ def _protocol_only_conformance_metadata(
             if isinstance(projection, Mapping) and projection.get("surface")
             else str(spec["projection_surface"])
         )
-        canonical_path = str(protocol_metadata.get("canonical_key") or spec["capability_key"])
+        canonical_path = str(protocol_metadata.get("canonical_key") or "")
+        owner = protocol_metadata.get("owner")
+        owner_available = isinstance(owner, Mapping) and bool(owner.get("package_name"))
         evidence = [
             str(surface.get("surface"))
             for surface in retained_surfaces
@@ -2540,7 +2543,11 @@ def _protocol_only_conformance_metadata(
             {
                 "rule_id": f"{family}_service_slot_authority",
                 "family": "privileged-service-slot",
-                "status": "pass" if canonical_path else "fail",
+                "status": (
+                    "pass"
+                    if canonical_path == str(spec["capability_key"]) and owner_available
+                    else "fail"
+                ),
                 "distribution": distribution,
                 "canonical_path": canonical_path,
                 "compat_surface": compat_surface,
@@ -2604,6 +2611,16 @@ def _project_capability_compatibility_surfaces(services: RuntimeServices) -> Non
     message_bus = services.resolve_capability(RuntimeCapabilityKey.TEAM_MESSAGE_BUS.value)
     workflows = services.resolve_capability(RuntimeCapabilityKey.TEAM_WORKFLOWS.value)
     projections = services.metadata.setdefault("compatibility_projections", {})
+    for projection_name in (
+        "memory",
+        "compaction",
+        "isolation",
+        "teammates",
+        "team_control_plane",
+        "team_message_bus",
+        "team_workflows",
+    ):
+        projections.pop(projection_name, None)
     if memory is not None:
         projections["memory"] = RuntimeCapabilityKey.MEMORY_SERVICE.value
     if compaction is not None:
