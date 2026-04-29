@@ -143,8 +143,33 @@ TOOL_DEFINITION = ToolDefinition(name="hello", description="Say hello", execute=
     diagnostics = {diag.location: diag for diag in report.diagnostics}
     assert diagnostics[str(legacy_yaml)].details["rejection_reason"] == "legacy_file_backed_tool_format"
     assert diagnostics[str(legacy_json)].details["rejection_reason"] == "legacy_file_backed_tool_format"
+    assert str(tools_dir) in diagnostics[str(legacy_yaml)].details["migration_target"]
     assert ".py module" in diagnostics[str(legacy_yaml)].details["migration_target"]
     assert "no longer supported" in diagnostics[str(legacy_json)].message
+
+
+def test_definition_discovery_uses_configured_tools_dir_in_migration_diagnostics(tmp_path: Path) -> None:
+    tools_dir = tmp_path / "custom-tools"
+    tools_dir.mkdir(parents=True)
+    legacy_yaml = tools_dir / "grep.yaml"
+    legacy_yaml.write_text(
+        """
+name: grep
+description: Search text
+""".strip(),
+        encoding="utf-8",
+    )
+
+    report = DefinitionDiscovery(
+        (DefinitionSourcePaths(DefinitionSource.USER, tmp_path, tools_subdir="custom-tools"),)
+    ).discover()
+
+    assert report.tools == ()
+    assert len(report.diagnostics) == 1
+    diagnostic = report.diagnostics[0]
+    assert diagnostic.details["rejection_reason"] == "legacy_file_backed_tool_format"
+    assert str(tools_dir) in diagnostic.details["migration_target"]
+    assert ".weavert/tools/" not in diagnostic.details["migration_target"]
 
 
 def test_definition_discovery_rejects_mapping_style_python_exports(tmp_path: Path) -> None:
@@ -170,6 +195,80 @@ TOOL_DEFINITION = {
     assert diagnostic.details["rejection_reason"] == "mapping_style_python_export"
     assert diagnostic.details["exported_type"] == "dict"
     assert "concrete ToolDefinition" in diagnostic.message
+
+
+def test_definition_discovery_rejects_python_tools_without_supported_exports(tmp_path: Path) -> None:
+    tools_dir = tmp_path / "tools"
+    tools_dir.mkdir(parents=True)
+    missing_exports = tools_dir / "missing_exports.py"
+    missing_exports.write_text(
+        """
+# module intentionally exports nothing
+""".strip(),
+        encoding="utf-8",
+    )
+
+    report = DefinitionDiscovery((DefinitionSourcePaths(DefinitionSource.USER, tmp_path),)).discover()
+
+    assert report.tools == ()
+    assert len(report.diagnostics) == 1
+    diagnostic = report.diagnostics[0]
+    assert diagnostic.location == str(missing_exports)
+    assert diagnostic.code == "definition_validation_error"
+    assert diagnostic.details["rejection_reason"] == "missing_python_tool_export"
+    assert str(tools_dir) in diagnostic.details["migration_target"]
+    assert "must export TOOL_DEFINITION" in diagnostic.message
+
+
+def test_definition_discovery_rejects_non_callable_build_tool_definition_exports(tmp_path: Path) -> None:
+    tools_dir = tmp_path / "tools"
+    tools_dir.mkdir(parents=True)
+    invalid_builder = tools_dir / "invalid_builder.py"
+    invalid_builder.write_text(
+        """
+build_tool_definition = 123
+""".strip(),
+        encoding="utf-8",
+    )
+
+    report = DefinitionDiscovery((DefinitionSourcePaths(DefinitionSource.USER, tmp_path),)).discover()
+
+    assert report.tools == ()
+    assert len(report.diagnostics) == 1
+    diagnostic = report.diagnostics[0]
+    assert diagnostic.location == str(invalid_builder)
+    assert diagnostic.code == "definition_validation_error"
+    assert diagnostic.details["rejection_reason"] == "invalid_python_tool_export"
+    assert diagnostic.details["exported_type"] == "int"
+    assert diagnostic.details["export_name"] == "build_tool_definition"
+    assert str(tools_dir) in diagnostic.details["migration_target"]
+    assert "callable returning a ToolDefinition" in diagnostic.message
+
+
+def test_definition_discovery_rejects_failing_build_tool_definition_exports(tmp_path: Path) -> None:
+    tools_dir = tmp_path / "tools"
+    tools_dir.mkdir(parents=True)
+    failing_builder = tools_dir / "failing_builder.py"
+    failing_builder.write_text(
+        """
+def build_tool_definition():
+    raise RuntimeError("boom")
+""".strip(),
+        encoding="utf-8",
+    )
+
+    report = DefinitionDiscovery((DefinitionSourcePaths(DefinitionSource.USER, tmp_path),)).discover()
+
+    assert report.tools == ()
+    assert len(report.diagnostics) == 1
+    diagnostic = report.diagnostics[0]
+    assert diagnostic.location == str(failing_builder)
+    assert diagnostic.code == "definition_validation_error"
+    assert diagnostic.details["rejection_reason"] == "invalid_python_tool_export"
+    assert diagnostic.details["exported_type"] == "build_tool_definition"
+    assert diagnostic.details["export_error"] == "boom"
+    assert str(tools_dir) in diagnostic.details["migration_target"]
+    assert "build_tool_definition() failed" in diagnostic.message
 
 
 def test_definition_discovery_rejects_file_backed_tools_without_execute(tmp_path: Path) -> None:
