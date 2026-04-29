@@ -6,7 +6,7 @@
 - [x] 1.4 Keep `SessionController` responsible for session command flow and transcript persistence while removing reliance on implicit turn-only metadata where explicit turn outcomes are available
 - [x] 1.5 Ensure aggregate helpers such as `run_turn()` and session-level non-streaming entrypoints are derived from the same async-generator main-loop contract
 - [x] 1.6 Split attempt outcome from turn terminal, reserving host-facing `TERMINAL` for turn-final completion only and moving provider-attempt completion to a non-terminal surface
-- [x] 1.7 Update [engine.py](/Users/xyzjiao/AIProject/AIRUNTIME/src/runtime/turn_engine/engine.py) so `TERMINAL` is turn-final only, `tool_use` no longer uses final terminal semantics, and every exit path emits one explicit final terminal
+- [x] 1.7 Update [engine.py](../../../../src/runtime/turn_engine/engine.py) so `TERMINAL` is turn-final only, `tool_use` no longer uses final terminal semantics, and every exit path emits one explicit final terminal
 - [x] 1.8 Define and emit an explicit `ATTEMPT_FINISHED` payload with required fields for iteration, request id, attempt stop reason, usage, error, abort reason, and tool-call production
 
 ## 2. Sidecar Preparation
@@ -24,7 +24,7 @@
 - [x] 3.5 Define explicit turn terminal reasons and map them deterministically onto `SessionStatus` values such as `READY`, `WAITING`, `INTERRUPTED`, and `FAILED`
 - [x] 3.6 Ensure every turn exits with exactly one explicit `TurnTerminalReason`, including `max_turns`, `error`, `interrupted`, and `blocked`
 - [x] 3.7 Remove bool-based status classification so `SessionController` and child-run projection use terminal reason and terminal metadata instead of `completed`
-- [x] 3.8 Update [agent_execution_service.py](/Users/xyzjiao/AIProject/AIRUNTIME/src/runtime/agent_execution_service.py#L202) so child-run status projection is driven by explicit turn terminal reason rather than `turn_result.completed`
+- [x] 3.8 Update [agent_execution_service.py](../../../../src/runtime/agent_execution_service.py#L202) so child-run status projection is driven by explicit turn terminal reason rather than `turn_result.completed`
 - [x] 3.9 Enforce terminal precedence so failure-class outcomes (`model_error`, `aborted_*`, `prompt_too_long`, `image_error`) cannot be rewritten into blocking or waiting-class terminals by stop hooks
 - [x] 3.10 Define `TurnResult` so `attempts[]` remain attempt-scoped, `stop_reason` is turn-final only, and `completed` is derived only from the final terminal reason
 

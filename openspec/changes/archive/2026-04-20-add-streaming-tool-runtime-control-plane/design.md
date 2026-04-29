@@ -805,8 +805,8 @@ Alternatives considered:
 
 上面的对象和事件模型如果没有落到具体模块 ownership，上线时很容易重新退化成两个坏结果：
 
-- 把 `ResolvedToolCall`、lane、replay、permission 收敛逻辑继续塞进 [tool_runtime.py](/Users/xyzjiao/AIProject/AIRUNTIME/src/runtime/tool_runtime.py)
-- 或者把 stream observation、orchestration、host event emission 全挤进 [turn_engine/engine.py](/Users/xyzjiao/AIProject/AIRUNTIME/src/runtime/turn_engine/engine.py)
+- 把 `ResolvedToolCall`、lane、replay、permission 收敛逻辑继续塞进 [tool_runtime.py](../../../../src/runtime/tool_runtime.py)
+- 或者把 stream observation、orchestration、host event emission 全挤进 [turn_engine/engine.py](../../../../src/runtime/turn_engine/engine.py)
 
 更稳妥的做法是沿着当前代码库已有边界增量拆分，而不是一次性重写目录结构。建议的 ownership 如下：
 

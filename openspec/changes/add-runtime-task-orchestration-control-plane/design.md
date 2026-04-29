@@ -2,7 +2,7 @@
 
 The runtime already has a persistent task-list control plane and a separate runtime-owned background job registry, but orchestration semantics still stop at storage and prompt discipline. `blocks` / `blocked_by` are primarily persisted fields, `task_list` returns raw snapshots without readiness derivation, and claim-like behavior is not exposed as a dedicated blocker-aware contract. At the same time, child agent execution already emits typed `CHILD_RUN` events and structured `AgentRunRecord` objects, but those terminal child-run outcomes do not reliably re-enter the parent session as continuation-driving inputs.
 
-This change assumes the task-list persistence split introduced by [add-runtime-task-list-control-plane/proposal.md](/Users/xyzjiao/AIProject/AIRUNTIME/openspec/changes/add-runtime-task-list-control-plane/proposal.md) is already landed as the baseline contract. It is a refinement of that control plane, not an alternative design.
+This change assumes the task-list persistence split introduced by [add-runtime-task-list-control-plane/proposal.md](../add-runtime-task-list-control-plane/proposal.md) is already landed as the baseline contract. It is a refinement of that control plane, not an alternative design.
 
 That leaves four practical gaps:
 
