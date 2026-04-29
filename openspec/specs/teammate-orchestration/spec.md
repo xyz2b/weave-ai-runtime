@@ -99,3 +99,73 @@ runtime SHALL derive host-visible task, progress, and notification surfaces from
 - **THEN** runtime SHALL emit notifications derived from the teammate lifecycle transition
 - **AND** SHALL keep notification state consistent with the teammate's recorded lifecycle and current run status
 
+### Requirement: Teammate orchestration remains an official first-party runtime capability
+The supported first-party `runtime-default` and `runtime-full` distributions SHALL include the first-party team and teammate orchestration capability package, and SHALL keep that capability official even when its implementation is packaged outside `runtime-core`.
+
+#### Scenario: `runtime-default` boots with team capability
+- **WHEN** `runtime-default` is assembled
+- **THEN** the runtime SHALL register the first-party team control and teammate orchestration capability without requiring the embedder to discover a separate third-party package
+- **AND** SHALL preserve the same runtime-owned contracts for team lifecycle, message routing, and teammate execution reuse
+
+#### Scenario: `runtime-core` remains bootable without the team package
+- **WHEN** an embedder assembles `runtime-core` without the official first-party team package
+- **THEN** the runtime SHALL still boot under the core runtime contract
+- **AND** SHALL treat the absence of the team package as an explicit capability-selection choice rather than as a kernel bootstrap error
+
+### Requirement: Team capability packages integrate through explicit runtime contracts
+The runtime SHALL integrate first-party team control, teammate orchestration, and related built-ins through explicit runtime service and assembly contracts rather than through private kernel-only package assumptions.
+
+#### Scenario: first-party team package is installed
+- **WHEN** the official team capability package is present during runtime assembly
+- **THEN** the runtime SHALL attach team control planes, message buses, teammate orchestration services, and related built-ins through explicit assembly wiring
+- **AND** SHALL preserve host-facing, execution-facing, and observability-facing contracts regardless of package layout
+
+#### Scenario: teammate execution continues to reuse shared execution contracts
+- **WHEN** the first-party team package is installed from outside the `runtime-core` package boundary
+- **THEN** teammate execution SHALL still reuse the shared execution core, permission bridge, and lifecycle projection contracts already defined by the runtime
+- **AND** SHALL NOT introduce a second kernel-private execution engine just because the package boundary changed
+
+### Requirement: Teammate permission waits SHALL be gated by correlated team control workflows
+The runtime SHALL convert teammate-originated privileged steps into correlated permission workflows, SHALL keep the teammate in `waiting_permission`, and SHALL postpone any host permission request until an authorized workflow responder approves continuation.
+
+#### Scenario: leader rejects a permission workflow
+- **WHEN** a leader resolves a pending teammate permission workflow with `reject`
+- **THEN** the runtime SHALL resume the waiting teammate with a denied permission outcome
+- **AND** SHALL NOT call the host permission bridge for that privileged step
+
+#### Scenario: leader approval gates later host permission resolution
+- **WHEN** a leader resolves a pending teammate permission workflow with `approve`
+- **THEN** the runtime SHALL continue to any required host-mediated permission request only after that workflow decision has been recorded
+- **AND** SHALL preserve the same workflow correlation through the final permission outcome delivered back to the teammate
+
+### Requirement: Teammate stop operations SHALL use graceful shutdown workflows
+The runtime SHALL implement teammate removal, explicit stop, and team deletion through correlated shutdown workflows. A targeted teammate SHALL enter `stopping`, SHALL stop claiming new work, and SHALL only reach `stopped` after graceful completion or timeout-driven forced cleanup.
+
+#### Scenario: idle teammate stops without immediate teardown
+- **WHEN** the runtime requests shutdown for a teammate that is currently idle
+- **THEN** it SHALL mark that teammate `stopping`, acknowledge the shutdown workflow through the correlated workflow state, and complete cleanup without accepting new work in between
+- **AND** SHALL persist the teammate's final `stopped` lifecycle state before runtime-owned member cleanup finishes
+
+#### Scenario: team deletion waits for shutdown workflow completion
+- **WHEN** a leader deletes a team that still has active teammate members
+- **THEN** the runtime SHALL issue shutdown workflows to those teammates and wait for workflow completion or timeout according to the shutdown policy
+- **AND** SHALL NOT immediately cancel the runners and delete teammate state before the shutdown workflows reach terminal outcomes
+
+#### Scenario: shutdown timeout triggers forced cleanup
+- **WHEN** a teammate remains in a non-terminal shutdown state past the shutdown workflow deadline
+- **THEN** the runtime SHALL record the timeout or forced-close workflow outcome
+- **AND** SHALL perform forced teammate cleanup only after that timeout policy has triggered
+
+### Requirement: Teammate execution projections SHALL integrate with the shared job control plane
+runtime SHALL project active teammate executions into the shared job control plane while preserving teammate identity, mailbox state, and permission-wait linkage as higher-level orchestration state.
+
+#### Scenario: teammate claims a mailbox work item
+- **WHEN** a teammate transitions from idle to active by claiming a mailbox work item that results in execution
+- **THEN** runtime SHALL create or update a shared job record representing that active execution projection
+- **AND** SHALL keep teammate identity and mailbox claim state authoritative outside the generic job record
+
+#### Scenario: teammate lifecycle updates an active execution projection
+- **WHEN** a teammate execution enters running, waiting-permission, completed, failed, or stopped outcomes
+- **THEN** runtime SHALL update the corresponding shared job record to reflect the execution-facing lifecycle state
+- **AND** SHALL continue to derive teammate notifications, mailbox recovery, and teammate identity from teammate-owned orchestration state rather than from job identity alone
+

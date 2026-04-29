@@ -77,3 +77,67 @@ The runtime SHALL allow long-lived sessions to submit multiple prompts within an
 - **WHEN** the active host scope is no longer needed after one or more sessions complete
 - **THEN** host shutdown SHALL occur only through the explicit host-lifecycle owner rather than as a side effect of normal session completion
 
+### Requirement: Package lifecycle participants SHALL preserve core lifecycle ownership
+The runtime SHALL allow package-contributed lifecycle participants to run during runtime start, runtime recovery, session open, and session close without transferring host-, session-, or turn-scope ownership away from the core lifecycle managers.
+
+#### Scenario: Session-close participant runs without owning session close
+- **WHEN** an official package contributes session-close behavior through a lifecycle participant
+- **THEN** the runtime SHALL invoke that participant within the runtime-owned session-close phase
+- **AND** the `SessionController` SHALL remain the owner of session-close ordering, cleanup, and terminal state transitions
+
+#### Scenario: Runtime-recovery participant runs without owning runtime startup
+- **WHEN** an official package contributes runtime-recovery behavior through a lifecycle participant
+- **THEN** the runtime SHALL invoke that participant within runtime-owned startup or recovery sequencing
+- **AND** the bound host runtime, kernel assembly, and turn stack ownership model SHALL remain unchanged
+
+### Requirement: Package lifecycle participants SHALL run in owner-defined deterministic order
+The runtime SHALL invoke package-contributed lifecycle participants in a deterministic order defined by the runtime-owned lifecycle manager for the active phase.
+
+#### Scenario: Multiple participants attach to the same lifecycle phase
+- **WHEN** more than one official package contributes participants for the same runtime-owned lifecycle phase
+- **THEN** the runtime SHALL invoke those participants in one deterministic owner-defined order
+- **AND** that ordering SHALL remain under the control of the runtime-owned lifecycle manager rather than individual packages
+
+### Requirement: Participant failure SHALL NOT bypass remaining owner-managed lifecycle work
+The runtime SHALL treat package lifecycle participant failure as a lifecycle-phase failure signal or diagnostic without skipping the remaining owner-managed cleanup or sequencing obligations for that phase.
+
+#### Scenario: Session-close participant fails during cleanup
+- **WHEN** a package lifecycle participant fails during a runtime-owned session-close phase
+- **THEN** the runtime SHALL continue the remaining owner-managed session-close sequencing on a best-effort basis
+- **AND** it SHALL surface the participant failure through diagnostics, terminal metadata, or equivalent structured runtime reporting
+
+#### Scenario: Runtime-recovery participant fails during startup recovery
+- **WHEN** a package lifecycle participant fails during runtime-owned startup or recovery sequencing
+- **THEN** the runtime SHALL report that participant failure through the runtime-owned recovery path
+- **AND** it SHALL preserve runtime-owned control of the remaining startup or recovery sequencing outcome
+
+### Requirement: Package-owned session-open replay SHALL attach through lifecycle participants without transferring session ownership
+The runtime SHALL require package-owned session-open replay behavior to attach through runtime-owned lifecycle participants while preserving `SessionController` as the owner of session start, resume, ordering, and state transitions.
+
+#### Scenario: package participates in session-open replay
+- **WHEN** an official package needs to replay pending package-owned session input or state during session start or resume
+- **THEN** it SHALL attach that replay through a `SESSION_OPEN` lifecycle participant or equivalent runtime-owned lifecycle seam
+- **AND** the `SessionController` SHALL remain the owner of session-open semantics rather than delegating that ownership to the package
+
+#### Scenario: session-open participant fails during replay
+- **WHEN** a package-owned `SESSION_OPEN` participant fails while replaying package-owned session state
+- **THEN** the runtime SHALL surface that failure through the runtime-owned lifecycle outcome path
+- **AND** it SHALL preserve the existing host-scope and session-scope ownership semantics while reporting that failure
+
+### Requirement: Session-open participants SHALL respect controller-owned start and resume ordering
+The runtime SHALL preserve `SessionController` ownership of session-open ordering even when packages participate in `SESSION_OPEN`.
+
+#### Scenario: package participates during session start or resume
+- **WHEN** a session starts or resumes and package-owned replay is needed
+- **THEN** the `SessionController` SHALL restore session-owned transcript and resumable private state before dispatching `SESSION_OPEN`
+- **AND** package participants MAY replay or enqueue package-owned pending state only inside that bounded lifecycle phase
+- **AND** the `SessionController` SHALL remain responsible for the final ready transition and any controller-owned waiting-session drain or replay follow-up
+
+### Requirement: Team replay and recovery SHALL remain lifecycle-participant-owned during bridge removal
+The runtime SHALL keep team recovery and session-open replay behavior attached through lifecycle participants while removing package-specific team bridges from runtime-owned owner-layer APIs.
+
+#### Scenario: session resumes with pending team state
+- **WHEN** a session resumes with package-owned team replay or recovery work pending
+- **THEN** the runtime SHALL execute that work through the published lifecycle-participant phases
+- **AND** SHALL NOT reintroduce a controller-owned or kernel-owned team replay special case during bridge removal
+

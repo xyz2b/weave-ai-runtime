@@ -4,29 +4,32 @@
 TBD - created by archiving change python-agent-runtime-foundation. Update Purpose after archive.
 ## Requirements
 ### Requirement: 参考实现兼容的 runtime hook phases
-runtime SHALL 支持与参考实现兼容的 runtime hook phase 名称与契约，并 SHALL 把对外 hook 生命周期分层为 `kernel public`、`control-plane public` 与 `internal-only` 三类稳定性层级。public hook phases SHALL 同时覆盖 reference-compatible session、prompt、tool、stop、elicitation、compact、notification 与 subagent lifecycle events，以及 framework-oriented 的 context assembly、model request / response handling 和 recovery decision phases。
+runtime SHALL 支持一个缩减后的稳定 public hook phase catalog，作为 ordinary framework extension 的 v1 兼容面；其余 hookable lifecycle points SHALL 被视为 advanced 或 internal，而不是默认 public contract。稳定 public phase catalog SHALL 包括 `SessionStart`、`SessionEnd`、`PreToolUse`、`PostToolUse`、`PostToolUseFailure`、`PreModelRequest`、`PostModelResponse`、`Stop`、`Notification`、`Elicitation` 与 `ElicitationResult`。
 
-#### Scenario: 在参考实现兼容 phase 中执行 hook
-- **WHEN** 某个 hook 被注册到 `SessionStart`、`UserPromptSubmit`、`PreToolUse`、`PostToolUse`、`Stop`、`SubagentStop` 或 `SessionEnd` 等参考实现兼容事件上
-- **THEN** runtime SHALL 在对应 runtime phase 中，按照该事件定义的 hook payload contract 调用该 hook
+#### Scenario: 在稳定 public phase 中执行 hook
+- **WHEN** 某个 hook 被注册到稳定 public phase catalog 中的某个 phase
+- **THEN** runtime SHALL 按该 phase 已发布的 public payload contract 调用该 hook
+- **AND** SHALL 将这些 phase 视为 ordinary v1 hook surface 的权威集合
 
-#### Scenario: 在 framework-oriented public phase 中执行 hook
-- **WHEN** 某个 hook 被注册到 `PreContextAssemble`、`PostContextAssemble`、`PreModelRequest`、`PostModelResponse` 或 `RecoveryDecision` 等 public control-plane event 上
-- **THEN** runtime SHALL 在对应 main-loop boundary 触发该 phase，并 SHALL 为该 phase 提供稳定的 payload contract 与 stability tier
+#### Scenario: 高级或内部 phase 不会被默认提升为普通扩展面
+- **WHEN** runtime 仍然支持额外 lifecycle points，例如 `UserPromptSubmit`、`SubagentStop`、`PreCompact`、`PostCompact`、`PreContextAssemble`、`PostContextAssemble` 或 `RecoveryDecision`
+- **THEN** runtime SHALL 将它们分类为 advanced 或 internal-only，除非未来的 contract revision 明确提升这些 phase
+- **AND** SHALL NOT 将这些 phase 作为 ordinary embedders 的 primary public hook surface 进行推广
 
-#### Scenario: 首批 public phase catalog 是权威契约
-- **WHEN** 某个接入方依赖当前 runtime 版本的公开 hook 生命周期
-- **THEN** runtime SHALL 将 `SessionStart`、`UserPromptSubmit`、`PreToolUse`、`PostToolUse`、`PostToolUseFailure`、`Stop`、`SubagentStop`、`SessionEnd`、`Notification`、`Elicitation`、`ElicitationResult`、`PreCompact` 与 `PostCompact` 视为首批 `kernel public` phase
-- **AND** runtime SHALL 将 `PreContextAssemble`、`PostContextAssemble`、`PreModelRequest`、`PostModelResponse` 与 `RecoveryDecision` 视为首批 `control-plane public` phase
+#### Scenario: 未列入稳定 catalog 的 phase 不属于普通 v1 promise
+- **WHEN** 某个接入方依赖未列入稳定 public catalog 的某个 phase
+- **THEN** runtime SHALL 将该依赖视为超出 ordinary v1 hook compatibility promise
+- **AND** MAY 对该 phase 施加额外 gate、package boundary 或更快的演化节奏
 
-#### Scenario: Internal-only phase 不会被误认为 public contract
-- **WHEN** runtime 内部引入仅用于实现的临时 phase
-- **THEN** runtime SHALL 将该 phase 标记为 `internal-only`，并 SHALL NOT 要求外部 authoring surface 或 integration contract 依赖它
+#### Scenario: advanced phase catalog is published separately from the stable set
+- **WHEN** an embedder inspects the runtime's public hook-phase contract
+- **THEN** the runtime SHALL publish the advanced phase catalog separately from the stable public phase catalog
+- **AND** SHALL classify `UserPromptSubmit`、`SubagentStop`、`PreCompact`、`PostCompact`、`PreContextAssemble`、`PostContextAssemble` 与 `RecoveryDecision` as advanced rather than stable ordinary-v1 phases
 
-#### Scenario: Unlisted phase 默认为 internal-only
-- **WHEN** 某个 hookable runtime phase 没有被列入当前版本的 public phase catalog
-- **THEN** runtime SHALL 将该 phase 视为 `internal-only`
-- **AND** runtime SHALL NOT 要求外部 authoring surface、host integration contract 或 compatibility promise 依赖它
+#### Scenario: unlisted phases remain internal-only
+- **WHEN** a hookable lifecycle point is neither in the stable public phase catalog nor in the published advanced phase catalog
+- **THEN** the runtime SHALL treat that lifecycle point as internal-only
+- **AND** SHALL NOT require embedders to depend on it as part of the public hook contract
 
 ### Requirement: hooks 可以影响 runtime flow
 runtime SHALL 允许 hooks 在对应 phase 允许的前提下追加 context、更新 tool input、阻止 continuation、发出通知或提供 elicitation results。

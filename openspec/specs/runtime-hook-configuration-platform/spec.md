@@ -4,17 +4,22 @@
 TBD - created by archiving change add-runtime-hook-configuration-platform. Update Purpose after archive.
 ## Requirements
 ### Requirement: Public authoring surfaces normalize into a canonical registration schema
-The runtime SHALL define a canonical public registration schema for hook authoring and SHALL normalize runtime configuration documents, definition-owned hook declarations, host APIs, session APIs, and turn APIs into that schema before phase-contract validation and activation.
+The runtime SHALL define a canonical public registration schema for hook authoring and SHALL normalize runtime configuration documents, supported definition-owned hook declarations, host APIs, session APIs, and turn APIs into that schema before phase-contract validation and activation.
 
-#### Scenario: Legacy phase-keyed definition hooks are up-converted before activation
-- **WHEN** a skill, agent, or invocation definition uses a legacy phase-keyed `hooks` mapping such as `hooks.PreToolUse.matcher/effect`
+#### Scenario: legacy skill or invocation definition hooks are up-converted before activation
+- **WHEN** a skill or invocation definition uses a legacy phase-keyed `hooks` mapping such as `hooks.PreToolUse.matcher/effect`
 - **THEN** the runtime SHALL normalize that declaration into the canonical registration schema before validating phase eligibility, effect-field eligibility, scope, and ownership
 
-#### Scenario: Runtime config and turn API preserve the same normalized fields
+#### Scenario: legacy agent-owned hooks require explicit legacy enablement
+- **WHEN** an agent definition uses a legacy phase-keyed `hooks` mapping without explicit legacy compatibility enablement
+- **THEN** the runtime SHALL reject or deactivate that declaration instead of treating it as an ordinary public v1 authoring surface
+- **AND** the runtime SHALL surface the canonical migration targets through diagnostics or equivalent metadata
+
+#### Scenario: runtime config and turn API preserve the same normalized fields
 - **WHEN** a runtime configuration document and a turn-scoped programmatic registration both target the same public phase
 - **THEN** the runtime SHALL preserve the same normalized fields for phase, matcher, scope, owner attribution, handler manifest, and declared effect contract even if their authoring envelopes differ
 
-#### Scenario: Declarative callback hooks use binding identifiers rather than serialized code
+#### Scenario: declarative callback hooks use binding identifiers rather than serialized code
 - **WHEN** a declarative authoring surface such as runtime config or frontmatter targets a `callback` hook handler
 - **THEN** that surface SHALL reference a stable host-provided callback binding identifier rather than embedding executable code or raw callable state in the document
 
@@ -64,34 +69,55 @@ The runtime SHALL model public registration handles with stable lifecycle states
 - **THEN** the runtime SHALL apply the published template-release behavior for future materializations and any existing active descendants instead of leaving that behavior implementation-defined
 
 ### Requirement: Hook platform accepts registrations from multiple authoring surfaces
-The runtime SHALL provide a hook configuration platform that can register hooks from runtime configuration, host integrations, definition-owned declarations, and session-scoped programmatic APIs, and SHALL normalize those registrations into a common ownership-aware runtime registration model.
+The runtime SHALL guarantee a stable public hook registration contract for runtime configuration, host-bound integrations, skill-owned declarations, and session-facing registration APIs. The runtime SHALL publish those stable public registration surfaces separately from advanced surfaces. Turn-scoped programmatic APIs MAY remain available as advanced surfaces, and agent definition-owned hook declarations SHALL NOT be treated as portable ordinary-v1 public configuration.
 
-#### Scenario: Runtime and definition hooks coexist
-- **WHEN** a host runtime registers a `PreModelRequest` hook for a session and a skill invocation registers a `PreToolUse` hook for that same session
-- **THEN** the runtime SHALL preserve both registrations with distinct source and owner metadata instead of flattening them into one anonymous handler set
+#### Scenario: runtime and skill hooks coexist under the stable public contract
+- **WHEN** a runtime-level hook registration and a skill-owned hook registration target the same session
+- **THEN** the runtime SHALL preserve both registrations under the same public ownership-aware registration model
+- **AND** SHALL treat both authoring surfaces as part of the stable public hook contract
 
-#### Scenario: Session API adds a temporary hook
-- **WHEN** a caller programmatically registers a turn-scoped hook during an active session
-- **THEN** the runtime SHALL activate that hook only for the targeted scope and SHALL release it automatically when that scope ends
+#### Scenario: session API adds a temporary stable hook
+- **WHEN** a caller programmatically registers a session-scoped public hook through the session-facing API
+- **THEN** the runtime SHALL activate that hook through the same stable registration model used by runtime config and host registrations
+- **AND** SHALL return the same stable registration-handle semantics
 
-#### Scenario: Runtime and host templates materialize into session-owned activations
-- **WHEN** a runtime-level or host-level hook declaration is intended to apply to matching sessions
-- **THEN** the runtime SHALL materialize a derived session-owned active registration for each matching session rather than treating the hook bus itself as a global mutable registration store
+#### Scenario: host-bound registrations remain part of the stable surface
+- **WHEN** a host binds a hook registration through the published host integration surface
+- **THEN** the runtime SHALL treat that registration as part of the stable public hook registration contract
+- **AND** SHALL normalize its lifecycle ownership and effect handling through the same public model used by runtime config and skill-owned registrations
+
+#### Scenario: turn-scoped programmatic APIs remain advanced
+- **WHEN** a runtime specialist uses a turn-scoped programmatic hook registration API during execution
+- **THEN** the runtime MAY expose that API as an advanced surface without promoting it to the ordinary-v1 public registration contract
+- **AND** SHALL keep embedders conformant without requiring them to depend on that API for portable hook integration
+
+#### Scenario: agent definition hooks are not an ordinary-v1 portability promise
+- **WHEN** an agent definition declares hooks in frontmatter or equivalent definition-owned metadata
+- **THEN** the runtime SHALL NOT require embedders to depend on that declaration form as a portable ordinary-v1 hook registration surface
+- **AND** MAY treat that form as compatibility-only, advanced, or implementation-defined until a future contract revision promotes it explicitly
 
 ### Requirement: Handler manifests declare invocation and normalization behavior
-The runtime SHALL model each public hook handler kind through a typed handler manifest that declares how the handler is invoked, what timeout and failure semantics apply, what trust/policy class it requires, and how its output is normalized into the common hook effect contract.
+The runtime SHALL publish `callback` as the only required stable public v1 hook handler kind. External handler kinds such as `http`, `command`, `agent`, and `prompt` MAY exist as advanced or package-specific extensions, but the runtime SHALL remain conformant without treating them as part of the ordinary-v1 public promise.
 
-#### Scenario: HTTP manifest declares transport boundary and response contract
-- **WHEN** a caller configures an `http` hook handler through a public authoring surface
-- **THEN** the handler manifest SHALL declare the endpoint target, timeout behavior, and hook-result normalization contract required for that handler to participate in public hook execution
+#### Scenario: callback hook remains the guaranteed public handler kind
+- **WHEN** a framework integrator registers an in-process `callback` hook on a stable public phase
+- **THEN** the runtime SHALL invoke that callback with the phase-appropriate typed payload
+- **AND** SHALL normalize the result through the common public hook effect contract
 
-#### Scenario: Command manifest declares local execution boundary
-- **WHEN** a caller configures a `command` hook handler through a public authoring surface
-- **THEN** the handler manifest SHALL declare the command invocation boundary, timeout behavior, and normalization contract instead of relying on ad hoc transport-specific fields at the registration site
+#### Scenario: stable handler catalog is published separately from advanced kinds
+- **WHEN** an embedder inspects the hook handler contract for an ordinary-v1 integration
+- **THEN** the runtime SHALL publish `callback` as the only required stable public handler kind
+- **AND** SHALL classify `http`, `command`, `agent`, and `prompt` as advanced or package-specific rather than ordinary-v1 portability requirements
 
-#### Scenario: Imperative callback registration is normalized into the same manifest model
-- **WHEN** a host, session, or turn API registers an in-process callback directly
-- **THEN** the runtime SHALL normalize that callback into the same handler-manifest model used by declarative surfaces before dispatch and diagnostics attribution
+#### Scenario: runtime remains conformant without external handler support
+- **WHEN** a runtime build or supported distribution chooses not to expose `http`, `command`, `agent`, or `prompt` hook handlers as ordinary public surfaces
+- **THEN** that runtime SHALL still conform to the public hook configuration platform contract
+- **AND** SHALL continue to provide the stable callback-first hook authoring path
+
+#### Scenario: external handlers remain policy-gated when present
+- **WHEN** a runtime distribution does expose `http`, `command`, `agent`, or `prompt` hook handlers
+- **THEN** the runtime SHALL gate those handlers through explicit policy or package-level enablement
+- **AND** SHALL NOT require ordinary hook consumers to depend on them for portable integration behavior
 
 ### Requirement: Hook handler kinds are typed and policy-aware
 The runtime SHALL expose a typed hook handler model that supports at least `callback`, `http`, `command`, `agent`, and `prompt` handlers, and SHALL define for each handler kind its payload contract, timeout semantics, failure behavior, and policy/trust requirements before that handler kind can be used as a public authoring surface.

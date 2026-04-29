@@ -55,3 +55,12 @@ The runtime SHALL preserve resume-safe semantics when compaction modifies sessio
 #### Scenario: Transcript rewrite without compaction effect does not stamp compaction metadata
 - **WHEN** the runtime rewrites transcript state without a recorded compaction effect
 - **THEN** it SHALL NOT update session metadata such as `last_compaction_at` as though a material compaction had occurred
+
+### Requirement: Compaction manager SHALL attach to owner layers through a canonical package-service protocol binding
+The runtime SHALL attach the unified compaction manager to owner-layer and execution-layer runtime paths through the canonical compaction service-family protocol binding rather than through `RuntimeServices.compaction` as a privileged source-of-truth slot.
+
+#### Scenario: turn preparation invokes compaction
+- **WHEN** the runtime prepares a turn and needs compaction behavior
+- **THEN** the runtime SHALL resolve that behavior through the canonical compaction service-family protocol binding
+- **AND** SHALL treat any retained `RuntimeServices.compaction` field as a compatibility projection rather than the normative binding surface
+
