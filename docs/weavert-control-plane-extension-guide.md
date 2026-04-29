@@ -19,6 +19,9 @@
 
 - “我的业务逻辑怎么接进 Runtime 的执行流程里”
 
+如果你想先跑一个最小控制面例子，先看 `demos/README.md`。  
+其中的 `session.register_hook(...)` demo 和 general package demo 分别对应 session Hook API 与 `PackageContribution.context_contributors` 这两条稳定入口；本文继续负责解释 ownership、阶段语义和长期 contract。
+
 ## 1. 先区分两类“hook”
 
 当前 Runtime 里最容易混淆的是下面两类接口：

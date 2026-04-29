@@ -8,6 +8,9 @@
 2. 每个扩展点从用户视角应该怎么扩。
 3. 哪些字段虽然会被解析，但当前不应该当作稳定扩展面依赖。
 
+如果你想先跑一遍再回来读 contract，先看 `demos/README.md`。  
+那里把 file-backed `tool` / `agent` / `skill`、`session.register_hook(...)`、provider-only package 和 general `RuntimePackageManifest` demo 放在同一个可运行入口里；本文继续保留为稳定字段、边界和推荐路径的说明文档。
+
 结论先说：
 
 - 普通用户最应该使用的扩展点是 `tool`、`agent`、`skill`。

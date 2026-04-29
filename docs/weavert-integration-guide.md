@@ -25,6 +25,9 @@ Runtime 核心流转本身由框架收口，用户通常不应该改 `TurnEngine
 
 本文基于截至 `2026-04-27` 的仓库实现、`openspec/changes/archive/` 的演化轨迹，以及 `docs/current-system-architecture.md`、`docs/weavert-control-plane-extension-guide.md`、`docs/layered-memory-weavert-v2.md` 和对应 OpenSpec 规格中已经收敛的契约整理。
 
+如果你想先看 repo-root 可运行的最小接入面，先从 `demos/README.md` 开始。  
+demo suite 负责展示端到端工作流；本文继续保留为装配语义、接入边界和运行时流转的规范说明。
+
 ## 1. 先用一句话理解这套系统
 
 这套系统不是一个“预置 prompt 的 Agent 应用”，而是一块可装配的 AI Runtime 主板。
