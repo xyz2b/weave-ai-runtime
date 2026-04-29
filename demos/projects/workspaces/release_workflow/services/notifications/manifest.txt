@@ -1,0 +1,3 @@
+service: notifications
+changed: true
+owner: messaging

@@ -86,6 +86,17 @@ DEMO_CASES = (
             "status: ok",
         ),
     ),
+    (
+        "demos.projects.release_workflow_demo",
+        (
+            "demo: release workflow",
+            "workspace: release-fixture",
+            "freeze status: active",
+            "release summary: release-fixture is ready",
+            "release verdict: approve",
+            "status: ok",
+        ),
+    ),
 )
 
 

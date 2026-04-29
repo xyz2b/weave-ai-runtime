@@ -2,7 +2,7 @@
 
 Run every command from the repository root. The demo modules bootstrap `src/` automatically, so they do not require an editable install.
 
-The shared offline model helper lives in [`demos/_shared/scripted_model.py`](./_shared/scripted_model.py). The agent and skill demos use it so they run without external model credentials.
+The shared offline model helper lives in [`demos/_shared/scripted_model.py`](./_shared/scripted_model.py). The agent, skill, and project demos use it so they run without external model credentials.
 
 These demos intentionally stay on stable public extension surfaces:
 
@@ -31,5 +31,16 @@ Run the seam-basics demos first if you want the minimum runnable extension surfa
 | Inline skill hooks | skill frontmatter `hooks` + `context: inline` | `python3 -B -m demos.skills.inline_skill_hook_demo` | Prints `first turn result: rewritten` and `second turn result: original`, so you can see the hook travel with the skill and then release. |
 | Runtime config hook | `RuntimeConfig(hooks=...)` | `python3 -B -m demos.hooks.runtime_config_hook_demo` | Prints `hook source: runtime_config` plus matching results in two sessions, showing the hook is attached by default instead of registered per session. |
 | Package activation | `RuntimeConfig.extra_package_manifests` vs `RuntimeConfig.requested_packages` | `python3 -B -m demos.packages.package_activation_demo` | Prints an admitted-but-inactive package with no visible invocations, then the same package activated with `package-release-check` visible. |
+
+After you understand the individual seams, run the project demo to see the same surfaces composed into one realistic release workflow.
+
+## Project demos
+
+These demos combine multiple stable extension seams into a single project-shaped workflow.
+Run them after the seam-basics and semantic demos if you want to see how the pieces behave when they are composed into a small realistic system.
+
+| Demo | What it simulates | Extension seams | Run command | Expected output |
+| --- | --- | --- | --- | --- |
+| Release workflow | A release-readiness review for a small project workspace | file-backed `tool` + file-backed `agent` + file-backed `skill` + package-contributed context/capability | `python3 -B -m demos.projects.release_workflow_demo` | Prints the discovered workspace facts, the active release-freeze context, a child-generated release summary, and a final release verdict. |
 
 If you want an automated check that these commands still work, run `pytest tests/test_runtime_extension_demos.py`.

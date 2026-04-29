@@ -1,0 +1,5 @@
+workspace: release-fixture
+release_id: 2026.05
+services:
+  - payments
+  - notifications
