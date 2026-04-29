@@ -98,6 +98,35 @@ def test_tool_runtime_validation_permission_and_mapping(tmp_path: Path) -> None:
     assert "required field missing" in results[2].error
 
 
+def test_programmatic_tool_without_execute_keeps_runtime_missing_handler_guard(tmp_path: Path) -> None:
+    registry = ToolRegistry()
+    registry.register(
+        ToolDefinition(
+            name="metadata-only",
+            description="Programmatic tool without execute",
+        )
+    )
+
+    scheduler = ToolScheduler(registry)
+    context = ToolContext(
+        session_id="s-missing-execute",
+        turn_id="t-missing-execute",
+        agent_name="main-router",
+        cwd=tmp_path,
+        tool_registry=registry,
+    )
+
+    result = asyncio.run(
+        scheduler.run(
+            [ToolCall(call_id="1", tool_name="metadata-only", tool_input={})],
+            context,
+        )
+    )[0]
+
+    assert result.status == ToolCallStatus.ERROR
+    assert result.error == "Tool 'metadata-only' has no execution handler"
+
+
 def test_tool_pool_resolution_and_scheduler_partitioning(tmp_path: Path) -> None:
     log: list[tuple[str, str, float]] = []
 

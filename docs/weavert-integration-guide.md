@@ -336,11 +336,12 @@ team-specific breaking replacement matrix 则发布在：
 
 发现规则非常直接：
 
-- `tools/*.{json,yaml,yml,py}`
+- `tools/*.py`
 - `agents/*.md`
 - `skills/**/SKILL.md`
 
 可以把这层理解为“能力投放口”，而不是“修改内核代码”。
+如果 `.weavert/tools/` 里仍然保留 legacy `json/yaml` tool file，runtime 会拒绝加载它们并给出迁移 diagnostic。
 
 ## 3. 不同接入方，应该从哪里接
 
@@ -460,7 +461,7 @@ your-project/
 └── .weavert/
     ├── tools/
     │   ├── hello.py
-    │   └── grep.yaml
+    │   └── repo_scan.py
     ├── agents/
     │   └── reviewer.md
     ├── skills/
@@ -479,7 +480,7 @@ your-project/
 一个最小的 project-level tool / agent / skill 例子可以概括成：
 
 ```text
-tools/hello.py        -> 导出 TOOL_DEFINITION / TOOL / build_tool_definition()
+tools/hello.py        -> 导出 TOOL_DEFINITION / TOOL / build_tool_definition()，并返回带 execute 的 ToolDefinition
 agents/reviewer.md    -> frontmatter + prompt body
 skills/review/SKILL.md -> frontmatter + content
 ```

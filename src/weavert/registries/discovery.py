@@ -1,12 +1,10 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 import importlib.util
-import json
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
-
-import yaml
 
 from .._frontmatter import (
     coerce_bool,
@@ -18,7 +16,6 @@ from .._frontmatter import (
 from ..definitions import (
     AgentDefinition,
     DefinitionOrigin,
-    InterruptBehavior,
     IsolationMode,
     MemoryScope,
     PermissionMode,
@@ -26,7 +23,6 @@ from ..definitions import (
     SkillExecutionContext,
     SkillShell,
     ToolDefinition,
-    ToolTraits,
 )
 from ..diagnostics import Diagnostic, DiagnosticSeverity
 from ..errors import DefinitionLoadError, DefinitionValidationError
@@ -42,6 +38,12 @@ class DiscoveryReport:
 
 
 class DefinitionDiscovery:
+    _LEGACY_TOOL_FILE_SUFFIXES = frozenset({".json", ".yaml", ".yml"})
+    _FILE_BACKED_TOOL_MIGRATION_TARGET = (
+        "Replace this file with a .py module under .weavert/tools/ that exports "
+        "TOOL_DEFINITION, TOOL, or build_tool_definition() returning a ToolDefinition with execute."
+    )
+
     def __init__(self, sources: tuple[DefinitionSourcePaths, ...]) -> None:
         self._sources = tuple(source for source in sources if source.enabled)
 
@@ -76,9 +78,15 @@ class DefinitionDiscovery:
         tools: list[ToolDefinition] = []
         diagnostics: list[Diagnostic] = []
         for path in sorted(source.tools_dir.glob("*")):
-            if path.suffix.lower() not in {".json", ".yaml", ".yml", ".py"}:
+            if not path.is_file():
                 continue
             origin = DefinitionOrigin(source.source, path=path, root=source.root)
+            suffix = path.suffix.lower()
+            if suffix in self._LEGACY_TOOL_FILE_SUFFIXES:
+                diagnostics.append(self._unsupported_legacy_tool_diagnostic(origin))
+                continue
+            if suffix != ".py":
+                continue
             try:
                 tools.append(self._load_tool_definition(path, origin))
             except Exception as exc:  # pragma: no cover - defensive boundary
@@ -114,16 +122,9 @@ class DefinitionDiscovery:
         return skills, diagnostics
 
     def _load_tool_definition(self, path: Path, origin: DefinitionOrigin) -> ToolDefinition:
-        suffix = path.suffix.lower()
-        if suffix == ".json":
-            payload = json.loads(path.read_text(encoding="utf-8"))
-            return self._tool_from_mapping(payload, origin)
-        if suffix in {".yaml", ".yml"}:
-            payload = yaml.safe_load(path.read_text(encoding="utf-8"))
-            return self._tool_from_mapping(payload, origin)
-        if suffix == ".py":
-            return self._tool_from_python(path, origin)
-        raise DefinitionLoadError(f"Unsupported tool definition format: {path.suffix}", path=str(path))
+        if path.suffix.lower() != ".py":
+            raise DefinitionLoadError(f"Unsupported tool definition format: {path.suffix}", path=str(path))
+        return self._tool_from_python(path, origin)
 
     def _tool_from_python(self, path: Path, origin: DefinitionOrigin) -> ToolDefinition:
         module_name = f"_runtime_tool_{abs(hash(path.resolve()))}"
@@ -144,55 +145,41 @@ class DefinitionDiscovery:
                 "or build_tool_definition()",
                 path=str(path),
             )
-        if isinstance(exported, ToolDefinition):
-            return replace(exported, origin=origin)
-        if isinstance(exported, dict):
-            return self._tool_from_mapping(exported, origin)
-        raise DefinitionValidationError(
-            "Unsupported Python tool definition payload",
-            path=str(path),
-            exported_type=type(exported).__name__,
-        )
-
-    def _tool_from_mapping(self, payload: Any, origin: DefinitionOrigin) -> ToolDefinition:
-        if not isinstance(payload, dict):
-            raise DefinitionValidationError("Tool definition must be an object", path=str(origin.path))
-        name = str(payload.get("name") or "").strip()
-        description = str(payload.get("description") or "").strip()
-        if not name or not description:
+        if isinstance(exported, Mapping):
             raise DefinitionValidationError(
-                "Tool definitions require non-empty name and description",
-                path=str(origin.path),
+                "Python file-backed tools must export a concrete ToolDefinition; mapping-style payloads are not supported.",
+                path=str(path),
+                rejection_reason="mapping_style_python_export",
+                exported_type=type(exported).__name__,
+                migration_target=self._FILE_BACKED_TOOL_MIGRATION_TARGET,
             )
-        traits_data = payload.get("traits")
-        traits_mapping = traits_data if isinstance(traits_data, dict) else {}
-        read_only = bool(traits_mapping.get("readOnly", payload.get("readOnly", False)))
-        concurrency_safe = bool(
-            traits_mapping.get("concurrencySafe", payload.get("concurrencySafe", False))
-        )
-        destructive = bool(traits_mapping.get("destructive", payload.get("destructive", False)))
-        interrupt_behavior = str(
-            traits_mapping.get(
-                "interruptBehavior",
-                payload.get("interruptBehavior", "block"),
+        if not isinstance(exported, ToolDefinition):
+            raise DefinitionValidationError(
+                "Python tool definition module must resolve to a ToolDefinition instance.",
+                path=str(path),
+                rejection_reason="invalid_python_tool_export",
+                exported_type=type(exported).__name__,
+                migration_target=self._FILE_BACKED_TOOL_MIGRATION_TARGET,
             )
+        definition = replace(exported, origin=origin)
+        if definition.execute is None:
+            raise DefinitionValidationError(
+                "Python file-backed tools must provide execute in their ToolDefinition.",
+                path=str(path),
+                rejection_reason="missing_execute",
+                tool_name=definition.name,
+                migration_target=self._FILE_BACKED_TOOL_MIGRATION_TARGET,
+            )
+        return definition
+
+    def _unsupported_legacy_tool_diagnostic(self, origin: DefinitionOrigin) -> Diagnostic:
+        failure = DefinitionValidationError(
+            "Legacy .json/.yaml/.yml file-backed tools are no longer supported; migrate this tool to a Python module.",
+            path=str(origin.path),
+            rejection_reason="legacy_file_backed_tool_format",
+            migration_target=self._FILE_BACKED_TOOL_MIGRATION_TARGET,
         )
-        return ToolDefinition(
-            name=name,
-            description=description,
-            aliases=coerce_string_list(payload.get("aliases")),
-            search_hint=payload.get("searchHint"),
-            input_schema=coerce_mapping(payload.get("inputSchema"), field_name="inputSchema"),
-            output_schema=coerce_mapping(payload.get("outputSchema"), field_name="outputSchema"),
-            traits=ToolTraits(
-                read_only=read_only,
-                concurrency_safe=concurrency_safe,
-                destructive=destructive,
-                interrupt_behavior=InterruptBehavior(interrupt_behavior),
-            ),
-            metadata={"raw": payload},
-            origin=origin,
-        )
+        return self._diagnostic_from_exception(failure, "tool", origin)
 
     def _load_agent_definition(self, path: Path, origin: DefinitionOrigin) -> AgentDefinition:
         frontmatter, body = parse_frontmatter_document(path.read_text(encoding="utf-8"))

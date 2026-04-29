@@ -43,7 +43,7 @@ your-project/
 └── .weavert/
     ├── tools/
     │   ├── my_tool.py
-    │   └── my_tool.yaml
+    │   └── repo_scan.py
     ├── agents/
     │   └── reviewer.md
     └── skills/
@@ -54,7 +54,7 @@ your-project/
 发现规则：
 
 - tool
-  - `tools/*.{json,yaml,yml,py}`
+  - `tools/*.py`
 - agent
   - `agents/*.md`
 - skill
@@ -93,17 +93,15 @@ bundled > user > project
 
 ### 4.1 当前最重要的一条
 
-对“可执行的自定义工具”来说，当前主路径应当使用 Python tool module。  
-虽然 `json/yaml` 也能被发现为 `ToolDefinition`，但如果 definition 没有 `execute` handler，Runtime 执行时会返回：
-
-```text
-Tool '<name>' has no execution handler
-```
+对“可执行的自定义工具”来说，当前唯一受支持的 file-backed authoring path 是 Python tool module。
+`.weavert/tools/` 下的 `.json` / `.yaml` / `.yml` 文件现在会在 discovery 阶段被拒绝，并给出迁移 diagnostic。
+Python module 也必须通过 `TOOL_DEFINITION`、`TOOL` 或 `build_tool_definition()` 解析成 concrete `ToolDefinition`，且该 definition 必须提供 `execute`。
 
 所以：
 
-- `py` 适合可执行用户工具
-- `json/yaml` 更适合静态描述、占位定义、或未来外部执行器接入的 metadata carrier
+- file-backed tool 只写 `.py`
+- 不要导出 `dict` / mapping-style payload
+- 不要省略 `execute`
 
 ### 4.2 Python Tool 的最小写法
 
@@ -112,6 +110,8 @@ Python tool module 需要导出以下三种形式之一：
 - `TOOL_DEFINITION`
 - `TOOL`
 - `build_tool_definition()`
+
+无论使用哪种入口，最终都必须解析成 concrete `ToolDefinition`。
 
 最小例子：
 
@@ -260,15 +260,18 @@ async def execute(tool_input, context):
 - 用户工具不要假设自己能直接拿到内部上下文
 - 只有 Runtime 自己装配的 bundled/internal 工具才应依赖 privileged path
 
-### 4.7 YAML / JSON Tool 的建议边界
+### 4.7 旧 file-backed Tool 的迁移边界
 
-如果你写的是 `yaml/json` tool definition，当前建议只把它当作：
+以下写法现在都会在 discovery 阶段被拒绝：
 
-- 静态能力描述
-- schema 描述
-- catalog 暴露元数据
+- `.weavert/tools/*.json`
+- `.weavert/tools/*.yaml`
+- `.weavert/tools/*.yml`
+- 导出 `dict` / mapping-style payload 的 Python tool module
+- 缺少 `execute` 的 file-backed `ToolDefinition`
 
-不要把它当成“已经具备执行逻辑的用户工具”。
+如果你正在迁移旧工程，直接把它们改成 `.py` module，并导出带 `execute` 的 concrete `ToolDefinition`。  
+更完整的迁移示例见 `docs/weavert-migration-notes.md`。
 
 ## 5. Agent 规范
 

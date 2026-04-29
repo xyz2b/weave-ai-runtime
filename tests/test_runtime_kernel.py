@@ -32,6 +32,7 @@ from weavert.definitions import (
     DefinitionOrigin,
     DefinitionSource,
     IsolationMode,
+    ToolDefinition,
 )
 from weavert.hosts.base import NullHostAdapter
 from weavert.jobs import FileJobStore, InMemoryJobStore
@@ -156,6 +157,105 @@ project skill body
     assert kernel.skill_registry.get("project-skill") is not None
     assert kernel.skill_registry.get("debug") is None
     assert any(diag.code == "definition_skipped" for diag in kernel.diagnostics)
+
+
+def test_runtime_rejects_invalid_file_backed_tools_before_registry_and_model_tool_pool(
+    tmp_path: Path,
+) -> None:
+    runtime_root = tmp_path / ".weavert"
+    tools_dir = runtime_root / "tools"
+    tools_dir.mkdir(parents=True)
+
+    (tools_dir / "legacy.yaml").write_text(
+        """
+name: legacy-tool
+description: Legacy yaml tool
+""".strip(),
+        encoding="utf-8",
+    )
+    (tools_dir / "mapping.py").write_text(
+        """
+TOOL_DEFINITION = {
+    "name": "mapping-tool",
+    "description": "Legacy mapping export",
+}
+""".strip(),
+        encoding="utf-8",
+    )
+    (tools_dir / "missing_execute.py").write_text(
+        """
+from weavert.definitions import ToolDefinition
+
+TOOL_DEFINITION = ToolDefinition(
+    name="missing-execute",
+    description="Missing execute handler",
+)
+""".strip(),
+        encoding="utf-8",
+    )
+    (tools_dir / "hello.py").write_text(
+        """
+from weavert.definitions import ToolDefinition
+
+def execute(tool_input, context):
+    return {"tool": "hello"}
+
+TOOL_DEFINITION = ToolDefinition(name="hello", description="Say hello", execute=execute)
+""".strip(),
+        encoding="utf-8",
+    )
+
+    model_client = FakeModelClient(
+        [
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-file-backed"}),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "done"}),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+            ]
+        ]
+    )
+
+    def programmatic_execute(tool_input, _context):
+        return {"tool": tool_input.get("tool", "programmatic")}
+
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            model_client=model_client,
+            discovery_sources=(DefinitionSourcePaths(DefinitionSource.PROJECT, runtime_root),),
+            builtins=BuiltinPackConfig(
+                tools_enabled=False,
+                agents_enabled=False,
+                skills_enabled=False,
+                extra_agents=[AgentDefinition(name="main-router", description="router", prompt="route")],
+                extra_tools=[
+                    ToolDefinition(
+                        name="programmatic",
+                        description="Programmatic tool",
+                        execute=programmatic_execute,
+                    )
+                ],
+            ),
+        )
+    )
+
+    asyncio.run(runtime.run_prompt("Inspect available tools", session_id="session-file-backed"))
+
+    assert runtime.kernel.tool_registry.get("hello") is not None
+    assert runtime.kernel.tool_registry.get("programmatic") is not None
+    assert runtime.kernel.tool_registry.get("legacy-tool") is None
+    assert runtime.kernel.tool_registry.get("mapping-tool") is None
+    assert runtime.kernel.tool_registry.get("missing-execute") is None
+    assert set(model_client.requests[0].turn_context.available_tools) == {"hello", "programmatic"}
+
+    diagnostics = {
+        diag.location: diag
+        for diag in runtime.kernel.diagnostics
+        if diag.definition_type == "tool" and diag.location is not None
+    }
+    assert diagnostics[str(tools_dir / "legacy.yaml")].details["rejection_reason"] == "legacy_file_backed_tool_format"
+    assert diagnostics[str(tools_dir / "mapping.py")].details["rejection_reason"] == "mapping_style_python_export"
+    assert diagnostics[str(tools_dir / "missing_execute.py")].details["rejection_reason"] == "missing_execute"
 
 
 def test_distribution_profiles_publish_expected_builtin_ownership(tmp_path: Path) -> None:

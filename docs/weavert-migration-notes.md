@@ -68,6 +68,122 @@
 - 需要只读分析 helper 时，继续把 `plan` 当作 `weavert-devtools` built-in 看待
 - 需要 shared plan workflow 时，优先使用 `weavert-planning` 提供的 `planner` / `coordinator` / `worker`，再按需要做 agent replacement 或 project override
 
+## 2.6 File-Backed Tool Contract Tightening
+
+`.weavert/tools/` 的 file-backed tool authoring contract 现在是一个直接生效的 breaking change：
+
+- 只接受 `*.py` module
+- legacy `.json` / `.yaml` / `.yml` tool file 会在 discovery 阶段被拒绝
+- Python module 只能通过 `TOOL_DEFINITION`、`TOOL` 或 `build_tool_definition()` 暴露 tool
+- 上述入口最终必须解析成 concrete `ToolDefinition`
+- file-backed `ToolDefinition` 必须提供 `execute`
+- 导出 `dict` / mapping-style payload 的 Python module 会在 discovery 阶段被拒绝
+
+迁移时应把注意力放在两个旧模式：
+
+1. `legacy yaml/json tool -> Python ToolDefinition module`
+2. `mapping-style Python export -> concrete ToolDefinition export`
+
+### 示例一：legacy YAML/JSON tool -> Python ToolDefinition module
+
+迁移前：
+
+```yaml
+# .weavert/tools/grep.yaml
+name: grep
+description: Search text
+inputSchema:
+  type: object
+  properties:
+    pattern:
+      type: string
+```
+
+迁移后：
+
+```python
+# .weavert/tools/grep.py
+from weavert.definitions import ToolDefinition, ToolTraits
+
+
+async def execute(tool_input, context):
+    pattern = tool_input["pattern"]
+    return {
+        "pattern": pattern,
+        "cwd": str(context.cwd),
+    }
+
+
+TOOL_DEFINITION = ToolDefinition(
+    name="grep",
+    description="Search text",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "pattern": {"type": "string"},
+        },
+        "required": ["pattern"],
+        "additionalProperties": False,
+    },
+    traits=ToolTraits(read_only=True, concurrency_safe=True),
+    execute=execute,
+)
+```
+
+### 示例二：mapping-style Python export -> concrete ToolDefinition export
+
+迁移前：
+
+```python
+# .weavert/tools/check_file.py
+TOOL_DEFINITION = {
+    "name": "check_file",
+    "description": "Check whether a file exists",
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "file_name": {"type": "string"},
+        },
+    },
+}
+```
+
+迁移后：
+
+```python
+from weavert.definitions import ToolDefinition, ToolTraits
+
+
+async def execute(tool_input, context):
+    path = context.cwd / tool_input["file_name"]
+    return {
+        "file_name": tool_input["file_name"],
+        "exists": path.exists(),
+    }
+
+
+TOOL = ToolDefinition(
+    name="check_file",
+    description="Check whether a file exists",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "file_name": {"type": "string"},
+        },
+        "required": ["file_name"],
+        "additionalProperties": False,
+    },
+    traits=ToolTraits(read_only=True, concurrency_safe=True),
+    execute=execute,
+)
+```
+
+如果你在迁移过程中看到 discovery diagnostic，至少要核对三件事：
+
+- diagnostic 指向的文件路径
+- 拒绝原因是 legacy file format、mapping export，还是缺少 `execute`
+- 目标形态是否已经改成 `.py` module + concrete `ToolDefinition` + `execute`
+
 ## 3. Hook Surface Tightening
 
 稳定 public hook phase 现在只保留 ordinary-v1 范围：
