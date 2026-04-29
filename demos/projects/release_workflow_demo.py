@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from demos._shared.common import (
     AllowAllPermissionService,
     demo_workspace,
@@ -22,8 +24,18 @@ from weavert.runtime_package_protocols import (
 )
 
 FIXTURE_ROOT = demo_workspace("projects", "workspaces", "release_workflow")
-HOOK_FRAGMENT = "package context: release-freeze is active"
+HOOK_FRAGMENT = "package context: release-freeze is active and not blocking"
 PACKAGE_NAME = "weavert-release-workflow-demo"
+EXPECTED_READINESS = {
+    "workspace": "release-fixture",
+    "release_id": "2026.05",
+    "changed_services": ["payments", "notifications"],
+    "qa_status": "passed",
+    "critical_findings": 0,
+    "has_changelog": True,
+    "release_blockers": [],
+}
+EXPECTED_RELEASE_SUMMARY = "release-fixture is ready"
 
 
 class ReleaseFreezeContributor:
@@ -64,6 +76,38 @@ def _release_package_manifest() -> RuntimePackageManifest:
     )
 
 
+def _message_payloads(request) -> list[dict[str, object]]:
+    payloads: list[dict[str, object]] = []
+    for message in request.messages:
+        if not message.text:
+            continue
+        try:
+            payload = json.loads(message.text)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict):
+            payloads.append(payload)
+    return payloads
+
+
+def _require_readiness_payload(request) -> dict[str, object]:
+    for payload in _message_payloads(request):
+        if payload.get("workspace") == EXPECTED_READINESS["workspace"]:
+            assert payload == EXPECTED_READINESS
+            return payload
+    raise AssertionError("Expected the release-readiness tool payload before continuing the workflow")
+
+
+def _require_skill_result_payload(request) -> dict[str, object]:
+    for payload in _message_payloads(request):
+        if payload.get("skill") == "release-summary":
+            assert payload["mode"] == "fork"
+            assert payload["agent_result"]["agent"] == "skill-writer"
+            assert payload["agent_result"]["summary"] == EXPECTED_RELEASE_SUMMARY
+            return payload
+    raise AssertionError("Expected the release-summary skill result before rendering a verdict")
+
+
 def _collect_batch(request):
     assert request.agent is not None
     assert request.agent.name == "release-reviewer"
@@ -82,6 +126,7 @@ def _skill_batch(request):
     assert request.agent is not None
     assert request.agent.name == "release-reviewer"
     assert HOOK_FRAGMENT in request.turn_context.hook_context
+    _require_readiness_payload(request)
     return tool_call_batch(
         request_id="req-release-workflow-2",
         tool_name="skill",
@@ -94,9 +139,10 @@ def _skill_writer_batch(request):
     assert request.agent is not None
     assert request.agent.name == "skill-writer"
     assert any("release-fixture" in message.text for message in request.messages)
+    assert HOOK_FRAGMENT in request.turn_context.hook_context
     return text_batch(
         request_id="req-release-workflow-3",
-        text="release-fixture is ready",
+        text=EXPECTED_RELEASE_SUMMARY,
     )
 
 
@@ -104,6 +150,8 @@ def _verdict_batch(request):
     assert request.agent is not None
     assert request.agent.name == "release-reviewer"
     assert HOOK_FRAGMENT in request.turn_context.hook_context
+    _require_readiness_payload(request)
+    _require_skill_result_payload(request)
     return text_batch(
         request_id="req-release-workflow-4",
         text="release verdict: approve",
@@ -156,20 +204,12 @@ def main() -> None:
         freeze_capability = runtime.services.require_capability("demo.release.freeze")
         release_summary = summary_result["agent_result"]["summary"]
 
-        assert readiness == {
-            "workspace": "release-fixture",
-            "release_id": "2026.05",
-            "changed_services": ["payments", "notifications"],
-            "qa_status": "passed",
-            "critical_findings": 0,
-            "has_changelog": True,
-            "release_blockers": [],
-        }
+        assert readiness == EXPECTED_READINESS
         assert freeze_capability == {"active": True, "blocking": False, "owner": PACKAGE_NAME}
         assert summary_result["skill"] == "release-summary"
         assert summary_result["mode"] == "fork"
         assert summary_result["agent_result"]["agent"] == "skill-writer"
-        assert release_summary == "release-fixture is ready"
+        assert release_summary == EXPECTED_RELEASE_SUMMARY
         assert messages[-1].text == "release verdict: approve"
         assert [request.agent.name for request in client.requests if request.agent is not None] == [
             "release-reviewer",

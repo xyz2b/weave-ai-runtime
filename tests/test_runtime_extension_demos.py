@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
+README = ROOT / "demos" / "README.md"
 PYTHON = sys.executable
 
 DEMO_CASES = (
@@ -91,6 +92,8 @@ DEMO_CASES = (
         (
             "demo: release workflow",
             "workspace: release-fixture",
+            "changed services: payments, notifications",
+            "qa status: passed",
             "freeze status: active",
             "release summary: release-fixture is ready",
             "release verdict: approve",
@@ -118,3 +121,13 @@ def test_runtime_extension_demo_runs_from_repo_root(
 
     for line in expected_lines:
         assert line in completed.stdout
+
+
+def test_runtime_extension_readme_lists_project_demo_layer() -> None:
+    readme = README.read_text(encoding="utf-8")
+
+    assert "## Seam basics" in readme
+    assert "## Semantic demos" in readme
+    assert "## Project demos" in readme
+    assert "multiple stable extension seams into a single project-shaped workflow" in readme
+    assert "python3 -B -m demos.projects.release_workflow_demo" in readme
