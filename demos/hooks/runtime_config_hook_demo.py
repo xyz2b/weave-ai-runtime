@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from demos._shared.common import (
     AllowAllPermissionService,
+    close_session_and_wait_for_background_memory,
     extract_tool_result,
     run_async,
     run_session_prompt,
@@ -31,9 +32,12 @@ def _echo_tool() -> ToolDefinition:
     )
 
 
-async def _close_sessions(*sessions) -> None:
+async def _close_sessions(memory_service, *sessions) -> None:
     for session in sessions:
-        await session.close()
+        await close_session_and_wait_for_background_memory(
+            session,
+            memory_service=memory_service,
+        )
 
 
 def main() -> None:
@@ -141,7 +145,7 @@ def main() -> None:
             print(f"session two result: {session_two_result['echo']}")
             print("status: ok")
         finally:
-            run_async(_close_sessions(session_one, session_two))
+            run_async(_close_sessions(runtime.services.memory, session_one, session_two))
 
 
 if __name__ == "__main__":

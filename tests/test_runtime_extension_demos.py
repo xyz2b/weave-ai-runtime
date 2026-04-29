@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-PYTHON3 = shutil.which("python3")
+PYTHON = sys.executable
 
 DEMO_CASES = (
     (
@@ -94,11 +94,11 @@ def test_runtime_extension_demo_runs_from_repo_root(
     module_name: str,
     expected_lines: tuple[str, ...],
 ) -> None:
-    if PYTHON3 is None:
-        pytest.skip("python3 is required to run the demo modules")
+    if not PYTHON:
+        pytest.skip("a Python interpreter is required to run the demo modules")
 
     completed = subprocess.run(
-        [PYTHON3, "-B", "-m", module_name],
+        [PYTHON, "-B", "-m", module_name],
         cwd=ROOT,
         check=True,
         capture_output=True,

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from demos._shared.common import (
     AllowAllPermissionService,
+    close_session_and_wait_for_background_memory,
     extract_tool_result,
     print_json,
     run_async,
@@ -107,7 +108,12 @@ def main() -> None:
             print_json("tool result", tool_result)
             print("status: ok")
         finally:
-            run_async(session.close())
+            run_async(
+                close_session_and_wait_for_background_memory(
+                    session,
+                    memory_service=runtime.services.memory,
+                )
+            )
 
 
 if __name__ == "__main__":
