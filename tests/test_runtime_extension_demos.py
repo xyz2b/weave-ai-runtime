@@ -35,6 +35,15 @@ DEMO_CASES = (
         ),
     ),
     (
+        "demos.skills.inline_skill_hook_demo",
+        (
+            "demo: inline skill hooks",
+            "first turn result: rewritten",
+            "second turn result: original",
+            "status: ok",
+        ),
+    ),
+    (
         "demos.hooks.session_register_hook_demo",
         (
             "demo: session.register_hook",
@@ -43,10 +52,29 @@ DEMO_CASES = (
         ),
     ),
     (
+        "demos.hooks.runtime_config_hook_demo",
+        (
+            "demo: RuntimeConfig(hooks=...)",
+            "hook source: runtime_config",
+            "session one result: runtime-default",
+            "session two result: runtime-default",
+            "status: ok",
+        ),
+    ),
+    (
         "demos.packages.provider_only_package_demo",
         (
             "demo: provider-only package",
             "visible invocations: package-release-check",
+            "status: ok",
+        ),
+    ),
+    (
+        "demos.packages.package_activation_demo",
+        (
+            "demo: package activation",
+            "inactive visible invocations: none",
+            "active visible invocations: package-release-check",
             "status: ok",
         ),
     ),
