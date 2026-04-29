@@ -341,7 +341,7 @@ team-specific breaking replacement matrix 则发布在：
 - `skills/**/SKILL.md`
 
 可以把这层理解为“能力投放口”，而不是“修改内核代码”。
-如果 `.weavert/tools/` 里仍然保留 legacy `json/yaml` tool file，runtime 会拒绝加载它们并给出迁移 diagnostic。
+如果 `.weavert/tools/` 里仍然保留 legacy `json/yaml` tool file，runtime 会直接拒绝加载它们。
 
 ## 3. 不同接入方，应该从哪里接
 

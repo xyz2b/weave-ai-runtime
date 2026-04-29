@@ -104,7 +104,7 @@ Check the diff carefully.
     assert any(diag.code == "definition_validation_error" for diag in report.diagnostics)
 
 
-def test_definition_discovery_rejects_legacy_file_backed_tools_with_migration_diagnostics(
+def test_definition_discovery_rejects_legacy_file_backed_tools(
     tmp_path: Path,
 ) -> None:
     tools_dir = tmp_path / "tools"
@@ -143,12 +143,11 @@ TOOL_DEFINITION = ToolDefinition(name="hello", description="Say hello", execute=
     diagnostics = {diag.location: diag for diag in report.diagnostics}
     assert diagnostics[str(legacy_yaml)].details["rejection_reason"] == "legacy_file_backed_tool_format"
     assert diagnostics[str(legacy_json)].details["rejection_reason"] == "legacy_file_backed_tool_format"
-    assert str(tools_dir) in diagnostics[str(legacy_yaml)].details["migration_target"]
-    assert ".py module" in diagnostics[str(legacy_yaml)].details["migration_target"]
-    assert "no longer supported" in diagnostics[str(legacy_json)].message
+    assert "migration_target" not in diagnostics[str(legacy_yaml)].details
+    assert "Only Python tool modules are supported" in diagnostics[str(legacy_json)].message
 
 
-def test_definition_discovery_uses_configured_tools_dir_in_migration_diagnostics(tmp_path: Path) -> None:
+def test_definition_discovery_rejects_legacy_tools_in_custom_tools_dir(tmp_path: Path) -> None:
     tools_dir = tmp_path / "custom-tools"
     tools_dir.mkdir(parents=True)
     legacy_yaml = tools_dir / "grep.yaml"
@@ -168,8 +167,8 @@ description: Search text
     assert len(report.diagnostics) == 1
     diagnostic = report.diagnostics[0]
     assert diagnostic.details["rejection_reason"] == "legacy_file_backed_tool_format"
-    assert str(tools_dir) in diagnostic.details["migration_target"]
-    assert ".weavert/tools/" not in diagnostic.details["migration_target"]
+    assert diagnostic.location == str(legacy_yaml)
+    assert "migration_target" not in diagnostic.details
 
 
 def test_definition_discovery_rejects_mapping_style_python_exports(tmp_path: Path) -> None:
@@ -194,6 +193,7 @@ TOOL_DEFINITION = {
     assert diagnostic.location == str(mapping_tool)
     assert diagnostic.details["rejection_reason"] == "mapping_style_python_export"
     assert diagnostic.details["exported_type"] == "dict"
+    assert "migration_target" not in diagnostic.details
     assert "concrete ToolDefinition" in diagnostic.message
 
 
@@ -216,7 +216,7 @@ def test_definition_discovery_rejects_python_tools_without_supported_exports(tmp
     assert diagnostic.location == str(missing_exports)
     assert diagnostic.code == "definition_validation_error"
     assert diagnostic.details["rejection_reason"] == "missing_python_tool_export"
-    assert str(tools_dir) in diagnostic.details["migration_target"]
+    assert "migration_target" not in diagnostic.details
     assert "must export TOOL_DEFINITION" in diagnostic.message
 
 
@@ -241,7 +241,7 @@ build_tool_definition = 123
     assert diagnostic.details["rejection_reason"] == "invalid_python_tool_export"
     assert diagnostic.details["exported_type"] == "int"
     assert diagnostic.details["export_name"] == "build_tool_definition"
-    assert str(tools_dir) in diagnostic.details["migration_target"]
+    assert "migration_target" not in diagnostic.details
     assert "callable returning a ToolDefinition" in diagnostic.message
 
 
@@ -267,7 +267,7 @@ def build_tool_definition():
     assert diagnostic.details["rejection_reason"] == "invalid_python_tool_export"
     assert diagnostic.details["exported_type"] == "build_tool_definition"
     assert diagnostic.details["export_error"] == "boom"
-    assert str(tools_dir) in diagnostic.details["migration_target"]
+    assert "migration_target" not in diagnostic.details
     assert "build_tool_definition() failed" in diagnostic.message
 
 

@@ -104,7 +104,7 @@ runtime 会自动接入：
 - 触发内部服务
 
 当前真正可执行的自定义工具，必须使用 Python module。
-`.weavert/tools/` 下的 `json/yaml` file-backed tool 已经不再受支持，discovery 会直接拒绝并产出迁移 diagnostic。
+`.weavert/tools/` 下的 `json/yaml` file-backed tool 已经不再受支持，discovery 会直接拒绝。
 Python module 也必须导出 concrete `ToolDefinition`，而不是 `dict` / mapping-style payload，并且必须提供 `execute`。
 
 用户视角怎么扩：
@@ -121,8 +121,6 @@ Python module 也必须导出 concrete `ToolDefinition`，而不是 `dict` / map
    - `check_permissions`
    - `traits`
    - `semantics`
-
-如果你之前写过 YAML/JSON tool file，或 Python module 里直接导出了 `dict`，请按 `docs/weavert-migration-notes.md` 里的示例迁移成 concrete `ToolDefinition` module。
 
 ### 2.3 Agent：角色化 prompt + 执行策略
 

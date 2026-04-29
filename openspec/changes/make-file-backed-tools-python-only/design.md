@@ -2,7 +2,7 @@
 
 The runtime currently advertises a broader file-backed tool authoring surface than it can reliably execute. `DefinitionDiscovery` scans `.weavert/tools/` for `.json`, `.yaml`, `.yml`, and `.py` files, but only Python modules can realistically supply executable behavior. The mapping loader used for JSON/YAML payloads and Python `dict` exports constructs `ToolDefinition` objects from schema-style fields only, so these definitions can be discovered successfully and still fail later at tool execution time with a missing-handler error.
 
-This change is cross-cutting because it affects discovery, validation timing, diagnostics, tests, documentation, and migration guidance. It does not change built-in tool registration or programmatic `ToolDefinition` injection, but it does intentionally tighten the file-backed authoring contract exposed to users.
+This change is cross-cutting because it affects discovery, validation timing, diagnostics, tests, and documentation. It does not change built-in tool registration or programmatic `ToolDefinition` injection, but it does intentionally tighten the file-backed authoring contract exposed to users.
 
 ## Goals / Non-Goals
 
@@ -10,7 +10,6 @@ This change is cross-cutting because it affects discovery, validation timing, di
 - Make `.weavert/tools/` authoring truthful by supporting only the executable path the runtime can honor.
 - Move invalid file-backed tool failures from runtime execution time to discovery time with explicit diagnostics.
 - Keep the object-level `ToolDefinition` model intact for built-ins and programmatic registration while narrowing only the filesystem authoring surface.
-- Provide a clear migration path for users with legacy `.json` / `.yaml` / `.yml` tool files or Python modules that export mappings instead of executable definitions.
 
 **Non-Goals:**
 - Changing built-in tool registration, package-contributed tools, or any non-file-backed tool registration path.
@@ -56,29 +55,29 @@ Alternatives considered:
 - Preserve the current runtime-only guard. Rejected because it delays failure and makes broken tools appear successfully installed.
 - Auto-wrap missing handlers with a stub error executor. Rejected because it still advertises unusable tools in the capability graph.
 
-### 4. Legacy file-backed formats receive explicit migration diagnostics
+### 4. Legacy file-backed formats receive direct rejection diagnostics
 
-When unsupported legacy tool files are present, discovery will emit migration-oriented diagnostics that point at the file and explain the Python-only contract. Similar diagnostics will be emitted for invalid Python exports and missing `execute`. At minimum, these diagnostics should identify the file path, the rejection reason, and the expected migration target.
+When unsupported legacy tool files are present, discovery will emit direct rejection diagnostics that point at the file and explain the Python-only contract. Similar diagnostics will be emitted for invalid Python exports and missing `execute`. At minimum, these diagnostics should identify the file path and the rejection reason.
 
 Rationale:
-- The change is intentionally breaking, so users need direct local feedback instead of only doc-based guidance.
+- The change is intentionally breaking, so users need direct local feedback instead of silent failure.
 - Diagnostics preserve debuggability without preserving the misleading authoring path itself.
 
 Alternatives considered:
-- Emit no diagnostic and rely entirely on documentation. Rejected because the failure would look like silent disappearance.
+- Emit no diagnostic and rely entirely on silent skipping. Rejected because the failure would look like silent disappearance.
 - Add a temporary compatibility flag. Rejected because it prolongs the dual-surface ambiguity that this change is trying to eliminate.
 
 ## Risks / Trade-offs
 
-- [Breaking existing workspaces with YAML/JSON tools] -> Emit explicit discovery diagnostics, add migration notes, and update all examples to the Python-only path.
+- [Breaking existing workspaces with YAML/JSON tools] -> Emit explicit rejection diagnostics and update all examples to the Python-only path.
 - [Breaking Python modules that export mappings] -> Reject them with targeted validation errors and document the requirement to export a concrete `ToolDefinition`.
 - [Over-tightening beyond file-backed tools] -> Keep the runtime no-handler guard and preserve programmatic/built-in `ToolDefinition` registration paths unchanged.
 - [Confusion about whether tool metadata-only use cases are still supported] -> State clearly that metadata-only filesystem tools are no longer a supported authoring surface; such use cases must move to programmatic registration or a future dedicated extension mechanism.
 
 ## Migration Plan
 
-1. Update authoring, integration, and migration docs so the canonical path is unambiguously `.weavert/tools/*.py`.
-2. Change discovery to scan for Python modules as supported tools and emit diagnostics for legacy file extensions that remain in `.weavert/tools/`.
+1. Update authoring and integration docs so the canonical path is unambiguously `.weavert/tools/*.py`.
+2. Change discovery to scan for Python modules as supported tools and emit rejection diagnostics for legacy file extensions that remain in `.weavert/tools/`.
 3. Tighten Python export validation so file-backed tools must resolve to `ToolDefinition` and must include `execute`.
 4. Update discovery tests to treat YAML/JSON files and mapping-style Python exports as rejection cases instead of successful discovery cases.
 5. Keep the runtime missing-handler guard as a defensive fallback for non-file-backed definitions.

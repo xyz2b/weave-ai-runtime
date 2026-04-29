@@ -11,7 +11,7 @@ runtime SHALL 支持保持参考实现兼容字段与语义的 executable `ToolD
 #### Scenario: 拒绝 legacy JSON/YAML file-backed tool
 - **WHEN** `.weavert/tools/` 下存在 `.json`、`.yaml` 或 `.yml` tool file
 - **THEN** runtime SHALL NOT 将该文件注册为可用 tool
-- **AND** SHALL 产出明确说明 Python-only file-backed tool contract 的 discovery diagnostic
+- **AND** SHALL 产出明确说明仅支持 Python file-backed tool 的 discovery diagnostic
 
 #### Scenario: 拒绝 mapping-style Python tool export
 - **WHEN** `.weavert/tools/` 下的 Python tool module 导出 mapping-style payload 而不是 concrete `ToolDefinition`

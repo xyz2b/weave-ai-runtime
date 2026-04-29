@@ -123,7 +123,6 @@ class DefinitionDiscovery:
         return self._tool_from_python(path, origin)
 
     def _tool_from_python(self, path: Path, origin: DefinitionOrigin) -> ToolDefinition:
-        migration_target = self._file_backed_tool_migration_target(origin)
         module_name = f"_runtime_tool_{abs(hash(path.resolve()))}"
         spec = importlib.util.spec_from_file_location(module_name, path)
         if spec is None or spec.loader is None:
@@ -143,7 +142,6 @@ class DefinitionDiscovery:
                     rejection_reason="invalid_python_tool_export",
                     exported_type=type(builder).__name__,
                     export_name="build_tool_definition",
-                    migration_target=migration_target,
                 )
             try:
                 exported = builder()
@@ -154,14 +152,12 @@ class DefinitionDiscovery:
                     rejection_reason="invalid_python_tool_export",
                     exported_type="build_tool_definition",
                     export_error=str(exc),
-                    migration_target=migration_target,
                 ) from exc
         if exported is None:
             raise DefinitionValidationError(
                 "Python file-backed tools must export TOOL_DEFINITION, TOOL, or build_tool_definition() returning a ToolDefinition with execute.",
                 path=str(path),
                 rejection_reason="missing_python_tool_export",
-                migration_target=migration_target,
             )
         if isinstance(exported, Mapping):
             raise DefinitionValidationError(
@@ -169,7 +165,6 @@ class DefinitionDiscovery:
                 path=str(path),
                 rejection_reason="mapping_style_python_export",
                 exported_type=type(exported).__name__,
-                migration_target=migration_target,
             )
         if not isinstance(exported, ToolDefinition):
             raise DefinitionValidationError(
@@ -177,7 +172,6 @@ class DefinitionDiscovery:
                 path=str(path),
                 rejection_reason="invalid_python_tool_export",
                 exported_type=type(exported).__name__,
-                migration_target=migration_target,
             )
         definition = replace(exported, origin=origin)
         if definition.execute is None:
@@ -186,28 +180,16 @@ class DefinitionDiscovery:
                 path=str(path),
                 rejection_reason="missing_execute",
                 tool_name=definition.name,
-                migration_target=migration_target,
             )
         return definition
 
     def _unsupported_legacy_tool_diagnostic(self, origin: DefinitionOrigin) -> Diagnostic:
         failure = DefinitionValidationError(
-            "Legacy .json/.yaml/.yml file-backed tools are no longer supported; migrate this tool to a Python module.",
+            "Only Python tool modules are supported under .weavert/tools/.",
             path=str(origin.path),
             rejection_reason="legacy_file_backed_tool_format",
-            migration_target=self._file_backed_tool_migration_target(origin),
         )
         return self._diagnostic_from_exception(failure, "tool", origin)
-
-    @staticmethod
-    def _file_backed_tool_migration_target(origin: DefinitionOrigin) -> str:
-        tools_dir = ".weavert/tools/"
-        if origin.path is not None:
-            tools_dir = str(origin.path.parent)
-        return (
-            f"Replace this file with a .py module under {tools_dir} that exports "
-            "TOOL_DEFINITION, TOOL, or build_tool_definition() returning a ToolDefinition with execute."
-        )
 
     def _load_agent_definition(self, path: Path, origin: DefinitionOrigin) -> AgentDefinition:
         frontmatter, body = parse_frontmatter_document(path.read_text(encoding="utf-8"))

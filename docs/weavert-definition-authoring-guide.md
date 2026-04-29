@@ -94,7 +94,7 @@ bundled > user > project
 ### 4.1 当前最重要的一条
 
 对“可执行的自定义工具”来说，当前唯一受支持的 file-backed authoring path 是 Python tool module。
-`.weavert/tools/` 下的 `.json` / `.yaml` / `.yml` 文件现在会在 discovery 阶段被拒绝，并给出迁移 diagnostic。
+`.weavert/tools/` 下的 `.json` / `.yaml` / `.yml` 文件现在会在 discovery 阶段被拒绝。
 Python module 也必须通过 `TOOL_DEFINITION`、`TOOL` 或 `build_tool_definition()` 解析成 concrete `ToolDefinition`，且该 definition 必须提供 `execute`。
 
 所以：
@@ -260,7 +260,7 @@ async def execute(tool_input, context):
 - 用户工具不要假设自己能直接拿到内部上下文
 - 只有 Runtime 自己装配的 bundled/internal 工具才应依赖 privileged path
 
-### 4.7 旧 file-backed Tool 的迁移边界
+### 4.7 不再受支持的 file-backed Tool 写法
 
 以下写法现在都会在 discovery 阶段被拒绝：
 
@@ -269,9 +269,6 @@ async def execute(tool_input, context):
 - `.weavert/tools/*.yml`
 - 导出 `dict` / mapping-style payload 的 Python tool module
 - 缺少 `execute` 的 file-backed `ToolDefinition`
-
-如果你正在迁移旧工程，直接把它们改成 `.py` module，并导出带 `execute` 的 concrete `ToolDefinition`。  
-更完整的迁移示例见 `docs/weavert-migration-notes.md`。
 
 ## 5. Agent 规范
 
