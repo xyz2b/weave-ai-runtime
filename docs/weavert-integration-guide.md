@@ -23,7 +23,7 @@ Runtime 核心流转本身由框架收口，用户通常不应该改 `TurnEngine
   - package-contributed context contributors
   - tool capability refresh
 
-本文基于截至 `2026-04-27` 的仓库实现、`openspec/changes/archive/` 的演化轨迹，以及 `docs/current-system-architecture.md`、`docs/runtime-control-plane-extension-guide.md`、`docs/layered-memory-runtime-v2.md` 和对应 OpenSpec 规格中已经收敛的契约整理。
+本文基于截至 `2026-04-27` 的仓库实现、`openspec/changes/archive/` 的演化轨迹，以及 `docs/current-system-architecture.md`、`docs/weavert-control-plane-extension-guide.md`、`docs/layered-memory-weavert-v2.md` 和对应 OpenSpec 规格中已经收敛的契约整理。
 
 ## 1. 先用一句话理解这套系统
 
@@ -117,7 +117,7 @@ Runtime 核心流转本身由框架收口，用户通常不应该改 `TurnEngine
   - 在 `weavert-default` 上叠加 devtools、workflow、planning、provider、adapter、mechanism 包
   - `weavert-planning` 已经作为独立 profile / workflow 包落地，并默认包含在 `weavert-full` 中
 
-如果你是从旧默认 built-ins 或旧 hook 面迁移过来，建议同时阅读 `docs/runtime-migration-notes.md`。  
+如果你是从旧默认 built-ins 或旧 hook 面迁移过来，建议同时阅读 `docs/weavert-migration-notes.md`。  
 特别是 `read`、`glob`、`grep`、`edit`、`write`、`bash`、`web_fetch`、`web_search`、`explore`、`plan`、`verification` 现在都属于 `weavert-devtools`，默认只在 `weavert-full` 中自动启用。
 
 这里有一个容易混淆但必须先分清的边界：
@@ -1316,11 +1316,11 @@ leader 接收 teammate collaboration message 时，默认策略是：
 
 ## 12. 相关文档
 
-- `docs/runtime-definition-authoring-guide.md`
+- `docs/weavert-definition-authoring-guide.md`
   - 讲用户如何新增 `tool` / `agent` / `skill`
-- `docs/runtime-control-plane-extension-guide.md`
+- `docs/weavert-control-plane-extension-guide.md`
   - 讲 host、permission、elicitation、hook、sidecar 等控制面接入
 - `docs/current-system-architecture.md`
   - 讲“系统是什么”
-- `docs/layered-memory-runtime-v2.md`
+- `docs/layered-memory-weavert-v2.md`
   - 讲 memory v2 的分层模型和配置面

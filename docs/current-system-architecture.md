@@ -194,7 +194,7 @@ helper 语义也已经固定：
   - 继续提供完整 first-party built-in 体验
   - `weavert-planning` 已经进入分发组合；它仍停留在 profile / workflow 层，而不是把 `task_*` / `job_*` primitive 从 `weavert-core` 搬出去
 
-迁移旧默认 built-ins、hook 面和 first-party 包布局时，建议配合阅读 `docs/runtime-migration-notes.md`，并优先观察：
+迁移旧默认 built-ins、hook 面和 first-party 包布局时，建议配合阅读 `docs/weavert-migration-notes.md`，并优先观察：
 
 - `weavert.kernel.diagnostics`
 - `weavert.services.metadata["migration"]`
@@ -1036,8 +1036,8 @@ workflow 协议层现在也已经从 transport 层显式拆开：
 本文基于以下材料整理：
 
 - `src/weavert/` 当前实现
-- `docs/runtime-control-plane-extension-guide.md`
-- `docs/layered-memory-runtime-v2.md`
+- `docs/weavert-control-plane-extension-guide.md`
+- `docs/layered-memory-weavert-v2.md`
 - `openspec/specs/` 中关于 ingress、prompt/private boundary、lifecycle ownership、memory 的规格
 - `openspec/changes/archive/` 中的 proposal/design/spec 轨迹
 

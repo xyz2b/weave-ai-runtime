@@ -12,7 +12,7 @@
 
 如果说：
 
-- `docs/runtime-definition-authoring-guide.md`
+- `docs/weavert-definition-authoring-guide.md`
   - 解决的是“能力怎么接进去”
 
 那么本文解决的是：
@@ -729,9 +729,9 @@ definition-level 可复用流程：
 
 ## 12. 相关文档
 
-- `docs/runtime-integration-guide.md`
+- `docs/weavert-integration-guide.md`
   - 总接入视角
-- `docs/runtime-definition-authoring-guide.md`
+- `docs/weavert-definition-authoring-guide.md`
   - tool / agent / skill authoring 规范
 - `docs/current-system-architecture.md`
   - prompt/private carrier、ingress、lifecycle ownership 的系统总览

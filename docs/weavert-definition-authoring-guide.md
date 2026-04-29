@@ -9,7 +9,7 @@
 - 哪些字段当前会真正生效
 - 哪些字段只是已解析或预留，不应当作稳定依赖
 
-如果把 `docs/runtime-integration-guide.md` 看作“Runtime 怎么接进来”，那本文就是“能力怎么接进去”。
+如果把 `docs/weavert-integration-guide.md` 看作“Runtime 怎么接进来”，那本文就是“能力怎么接进去”。
 
 ## 1. 先说结论
 
@@ -580,9 +580,9 @@ printf 'hello'
 
 ## 9. 相关文档
 
-- `docs/runtime-integration-guide.md`
+- `docs/weavert-integration-guide.md`
   - 讲 Runtime 怎么接进系统
-- `docs/runtime-control-plane-extension-guide.md`
+- `docs/weavert-control-plane-extension-guide.md`
   - 讲 host、hook bus、permission、elicitation、sidecar 等流程接入点
 - `docs/current-system-architecture.md`
   - 讲系统骨架和分层

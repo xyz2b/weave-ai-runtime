@@ -1194,8 +1194,8 @@ weavert.services.memory = LongTermMemoryService(
 
 ## 9. 相关文档
 
-- `docs/runtime-integration-guide.md`
-- `docs/runtime-definition-authoring-guide.md`
-- `docs/runtime-control-plane-extension-guide.md`
-- `docs/runtime-hook-configuration-platform.md`
+- `docs/weavert-integration-guide.md`
+- `docs/weavert-definition-authoring-guide.md`
+- `docs/weavert-control-plane-extension-guide.md`
+- `docs/weavert-hook-configuration-platform.md`
 - `docs/current-system-architecture.md`
