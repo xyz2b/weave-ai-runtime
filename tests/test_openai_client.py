@@ -682,6 +682,80 @@ def test_stream_maps_text_and_function_call_events(monkeypatch) -> None:
     assert events[-1].terminal.metadata["provider_response_id"] == "resp_stream"
 
 
+def test_stream_preserves_single_tool_use_when_completed_output_is_empty(monkeypatch) -> None:
+    def fake_post_json_stream(_url: str, _payload: dict[str, object], *, api_key: str):
+        assert api_key == "test-key"
+        return iter(
+            [
+                {"type": "response.created", "response": {"id": "resp_stream_empty_completed"}},
+                {
+                    "type": "response.output_item.added",
+                    "output_index": 0,
+                    "item": {
+                        "type": "function_call",
+                        "id": "fc_empty_completed",
+                        "call_id": "call_empty_completed",
+                        "name": "lookup",
+                        "arguments": "",
+                    },
+                },
+                {
+                    "type": "response.function_call_arguments.done",
+                    "item_id": "fc_empty_completed",
+                    "output_index": 0,
+                    "arguments": '{"path":"README.md"}',
+                },
+                {
+                    "type": "response.completed",
+                    "response": {
+                        "id": "resp_stream_empty_completed",
+                        "status": "completed",
+                        "output": [],
+                        "usage": {"input_tokens": 8, "output_tokens": 2},
+                    },
+                },
+            ]
+        )
+
+    request = _make_request(
+        messages=(
+            RuntimeMessage(
+                message_id="user-1",
+                role=MessageRole.USER,
+                content=(TextBlock(text="Find the readme."),),
+            ),
+        )
+    )
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr("weavert.openai_client._post_json_stream", fake_post_json_stream)
+
+    async def collect_events():
+        return [event async for event in BundledOpenAIModelClient().stream(request)]
+
+    events = asyncio.run(collect_events())
+
+    assert [event.event_type.value for event in events] == [
+        "message_start",
+        "content_block_start",
+        "content_block_delta",
+        "content_block_stop",
+        "message_stop",
+    ]
+    finalized_delta = next(
+        event
+        for event in events
+        if event.event_type.value == "content_block_delta" and "input" in event.payload
+    )
+    assert finalized_delta.payload["input"] == {"path": "README.md"}
+    assert events[-1].terminal is not None
+    assert events[-1].terminal.stop_reason == "tool_use"
+    assert (
+        events[-1].terminal.metadata["stream_completed_output_fallback"]
+        == "finalized_stream_tool_blocks"
+    )
+
+
 def test_stream_restores_nested_and_array_tool_fields(monkeypatch) -> None:
     tool = _nested_roundtrip_tool()
     provider_arguments = json.dumps(
@@ -910,6 +984,71 @@ def test_stream_completed_only_restores_builtin_optional_devtool_fields(monkeypa
     assert events[-1].terminal.stop_reason == "tool_use"
 
 
+def test_stream_ignores_empty_output_fallback_when_completed_output_has_items(monkeypatch) -> None:
+    def fake_post_json_stream(_url: str, _payload: dict[str, object], *, api_key: str):
+        assert api_key == "test-key"
+        return iter(
+            [
+                {"type": "response.created", "response": {"id": "resp_populated_completed"}},
+                {
+                    "type": "response.output_item.added",
+                    "output_index": 0,
+                    "item": {
+                        "type": "function_call",
+                        "id": "fc_populated_completed",
+                        "call_id": "call_populated_completed",
+                        "name": "lookup",
+                        "arguments": "",
+                    },
+                },
+                {
+                    "type": "response.function_call_arguments.done",
+                    "item_id": "fc_populated_completed",
+                    "output_index": 0,
+                    "arguments": '{"path":"README.md"}',
+                },
+                {
+                    "type": "response.completed",
+                    "response": {
+                        "id": "resp_populated_completed",
+                        "status": "completed",
+                        "output": [
+                            {
+                                "type": "function_call",
+                                "call_id": "call_populated_completed",
+                                "name": "lookup",
+                                "arguments": '{"path":"README.md"}',
+                            }
+                        ],
+                        "usage": {"input_tokens": 8, "output_tokens": 2},
+                    },
+                },
+            ]
+        )
+
+    request = _make_request(
+        messages=(
+            RuntimeMessage(
+                message_id="user-1",
+                role=MessageRole.USER,
+                content=(TextBlock(text="Find the readme."),),
+            ),
+        )
+    )
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr("weavert.openai_client._post_json_stream", fake_post_json_stream)
+
+    async def collect_events():
+        return [event async for event in BundledOpenAIModelClient().stream(request)]
+
+    events = asyncio.run(collect_events())
+
+    assert events[-1].terminal is not None
+    assert events[-1].terminal.stop_reason == "tool_use"
+    assert "stream_completed_output_fallback" not in events[-1].terminal.metadata
+
+
 def test_runtime_default_openai_route_preserves_ordered_multi_tool_continuations(
     monkeypatch,
     tmp_path: Path,
@@ -1063,6 +1202,249 @@ def test_runtime_default_openai_route_preserves_ordered_multi_tool_continuations
         ("function_call", "call_fast_lookup"),
         ("function_call_output", "call_slow_lookup"),
         ("function_call_output", "call_fast_lookup"),
+    ]
+
+
+def test_runtime_default_openai_route_replays_single_tool_when_completed_output_is_empty(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    captured_payloads: list[dict[str, object]] = []
+    scripted_batches = [
+        [
+            {"type": "response.created", "response": {"id": "resp-empty-single-1"}},
+            {
+                "type": "response.output_item.added",
+                "output_index": 0,
+                "item": {
+                    "type": "function_call",
+                    "id": "fc_empty_single",
+                    "call_id": "call_empty_single",
+                    "name": "lookup",
+                    "arguments": "",
+                },
+            },
+            {
+                "type": "response.function_call_arguments.done",
+                "item_id": "fc_empty_single",
+                "output_index": 0,
+                "arguments": '{"path":"README.md"}',
+            },
+            {
+                "type": "response.completed",
+                "response": {
+                    "id": "resp-empty-single-1",
+                    "status": "completed",
+                    "output": [],
+                    "usage": {"input_tokens": 10, "output_tokens": 2},
+                },
+            },
+        ],
+        [
+            {"type": "response.created", "response": {"id": "resp-empty-single-2"}},
+            {
+                "type": "response.completed",
+                "response": {
+                    "id": "resp-empty-single-2",
+                    "status": "completed",
+                    "output": [
+                        {
+                            "type": "message",
+                            "role": "assistant",
+                            "content": [
+                                {"type": "output_text", "text": "Recovered from empty completed output"}
+                            ],
+                        }
+                    ],
+                    "usage": {"input_tokens": 6, "output_tokens": 4},
+                },
+            },
+        ],
+    ]
+
+    def fake_post_json_stream(_url: str, payload: dict[str, object], *, api_key: str):
+        assert api_key == "test-key"
+        captured_payloads.append(payload)
+        return iter(scripted_batches.pop(0))
+
+    tool = ToolDefinition(
+        name="lookup",
+        description="Lookup a file.",
+        input_schema={
+            "type": "object",
+            "properties": {"path": {"type": "string"}},
+            "required": ["path"],
+            "additionalProperties": False,
+        },
+        traits=ToolTraits(read_only=True, concurrency_safe=True),
+        execute=lambda tool_input, _context: {"path": tool_input["path"], "content": "hello"},
+    )
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr("weavert.openai_client._post_json_stream", fake_post_json_stream)
+
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            builtins=BuiltinPackConfig(extra_tools=[tool]),
+        )
+    )
+    produced = asyncio.run(
+        runtime.run_prompt("Read the readme", session_id="openai-tool-empty-completed-single")
+    )
+
+    assert produced[-1].text == "Recovered from empty completed output"
+    continuation_items = [
+        (item.get("type"), item.get("call_id"))
+        for item in captured_payloads[1]["input"]
+        if item.get("call_id") == "call_empty_single"
+    ]
+    assert continuation_items == [
+        ("function_call", "call_empty_single"),
+        ("function_call_output", "call_empty_single"),
+    ]
+
+
+def test_runtime_default_openai_route_replays_multi_tool_when_completed_output_is_empty(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    captured_payloads: list[dict[str, object]] = []
+    scripted_batches = [
+        [
+            {"type": "response.created", "response": {"id": "resp-empty-multi-1"}},
+            {
+                "type": "response.output_item.added",
+                "output_index": 0,
+                "item": {
+                    "type": "function_call",
+                    "id": "fc_empty_slow_lookup",
+                    "call_id": "call_empty_slow_lookup",
+                    "name": "slow_lookup",
+                    "arguments": "",
+                },
+            },
+            {
+                "type": "response.function_call_arguments.done",
+                "item_id": "fc_empty_slow_lookup",
+                "output_index": 0,
+                "arguments": '{"path":"README.md"}',
+            },
+            {
+                "type": "response.output_item.added",
+                "output_index": 1,
+                "item": {
+                    "type": "function_call",
+                    "id": "fc_empty_fast_lookup",
+                    "call_id": "call_empty_fast_lookup",
+                    "name": "fast_lookup",
+                    "arguments": "",
+                },
+            },
+            {
+                "type": "response.function_call_arguments.done",
+                "item_id": "fc_empty_fast_lookup",
+                "output_index": 1,
+                "arguments": '{"path":"CONTRIBUTING.md"}',
+            },
+            {
+                "type": "response.completed",
+                "response": {
+                    "id": "resp-empty-multi-1",
+                    "status": "completed",
+                    "output": [],
+                    "usage": {"input_tokens": 18, "output_tokens": 4},
+                },
+            },
+        ],
+        [
+            {"type": "response.created", "response": {"id": "resp-empty-multi-2"}},
+            {
+                "type": "response.output_text.delta",
+                "delta": "Tools kept their order",
+            },
+            {
+                "type": "response.completed",
+                "response": {
+                    "id": "resp-empty-multi-2",
+                    "status": "completed",
+                    "output": [
+                        {
+                            "type": "message",
+                            "role": "assistant",
+                            "content": [
+                                {"type": "output_text", "text": "Tools kept their order"}
+                            ],
+                        }
+                    ],
+                    "usage": {"input_tokens": 8, "output_tokens": 4},
+                },
+            },
+        ],
+    ]
+
+    def fake_post_json_stream(_url: str, payload: dict[str, object], *, api_key: str):
+        assert api_key == "test-key"
+        captured_payloads.append(payload)
+        return iter(scripted_batches.pop(0))
+
+    async def slow_lookup(tool_input, _context):
+        await asyncio.sleep(0.02)
+        return {"path": tool_input["path"], "content": "slow hello"}
+
+    async def fast_lookup(tool_input, _context):
+        await asyncio.sleep(0)
+        return {"path": tool_input["path"], "content": "fast hello"}
+
+    slow_tool = ToolDefinition(
+        name="slow_lookup",
+        description="Lookup a file slowly.",
+        input_schema={
+            "type": "object",
+            "properties": {"path": {"type": "string"}},
+            "required": ["path"],
+            "additionalProperties": False,
+        },
+        traits=ToolTraits(read_only=True, concurrency_safe=True),
+        execute=slow_lookup,
+    )
+    fast_tool = ToolDefinition(
+        name="fast_lookup",
+        description="Lookup a file quickly.",
+        input_schema={
+            "type": "object",
+            "properties": {"path": {"type": "string"}},
+            "required": ["path"],
+            "additionalProperties": False,
+        },
+        traits=ToolTraits(read_only=True, concurrency_safe=True),
+        execute=fast_lookup,
+    )
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr("weavert.openai_client._post_json_stream", fake_post_json_stream)
+
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            builtins=BuiltinPackConfig(extra_tools=[slow_tool, fast_tool]),
+        )
+    )
+    produced = asyncio.run(
+        runtime.run_prompt("Read the readme", session_id="openai-tool-empty-completed-multi")
+    )
+
+    assert produced[-1].text == "Tools kept their order"
+    continuation_items = [
+        (item.get("type"), item.get("call_id"))
+        for item in captured_payloads[1]["input"]
+        if item.get("call_id") in {"call_empty_slow_lookup", "call_empty_fast_lookup"}
+    ]
+    assert continuation_items == [
+        ("function_call", "call_empty_slow_lookup"),
+        ("function_call", "call_empty_fast_lookup"),
+        ("function_call_output", "call_empty_slow_lookup"),
+        ("function_call_output", "call_empty_fast_lookup"),
     ]
 
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Iterable, Iterator, Mapping
 from urllib import error as urllib_error
 from urllib import request as urllib_request
@@ -1157,6 +1157,11 @@ async def _map_responses_stream_payload(
             response_payload,
             tool_specs_by_name=state.tool_specs_by_name,
         )
+        parsed = _reconcile_completed_stream_payload(
+            response_payload,
+            parsed=parsed,
+            state=state,
+        )
         state.request_id = parsed.request_id or state.request_id
         if not state.started:
             state.started = True
@@ -1553,6 +1558,33 @@ async def _emit_completed_stream_block_fallbacks(
                     "tool_use_id": block.tool_use_id,
                 },
             )
+
+
+def _reconcile_completed_stream_payload(
+    response_payload: Mapping[str, Any],
+    *,
+    parsed: _ParsedResponsesPayload,
+    state: _ResponsesStreamState,
+) -> _ParsedResponsesPayload:
+    if parsed.stop_reason != "end_turn":
+        return parsed
+    output_items = response_payload.get("output")
+    if not isinstance(output_items, list) or output_items:
+        return parsed
+
+    finalized_stream_blocks = tuple(state.emitted_blocks)
+    if not any(isinstance(block, ToolUseBlock) for block in finalized_stream_blocks):
+        return parsed
+
+    metadata = dict(parsed.terminal.metadata)
+    metadata["stream_completed_output_fallback"] = "finalized_stream_tool_blocks"
+    return _ParsedResponsesPayload(
+        blocks=finalized_stream_blocks,
+        stop_reason="tool_use",
+        usage=dict(parsed.usage),
+        request_id=parsed.request_id,
+        terminal=replace(parsed.terminal, stop_reason="tool_use", metadata=metadata),
+    )
 
 
 def _responses_url(base_url: str) -> str:

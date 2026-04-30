@@ -123,6 +123,12 @@ demo suite 负责展示端到端工作流；本文继续保留为装配语义、
 如果你是从旧默认 built-ins 或旧 hook 面迁移过来，建议同时阅读 `docs/weavert-migration-notes.md`。  
 特别是 `read`、`glob`、`grep`、`edit`、`write`、`bash`、`web_fetch`、`web_search`、`explore`、`plan`、`verification` 现在都属于 `weavert-devtools`，默认只在 `weavert-full` 中自动启用。
 
+如果你的集成会直接使用 bundled `openai_default` route，还需要知道一个较新的兼容性细节：
+
+- 当某些 OpenAI-compatible gateway 在 streaming 过程中已经正确 finalize 出 tool calls，但最终 `response.completed.output` 却返回空数组时，bundled adapter 会在 adapter 边界内做一次窄范围修正
+- 修正结果只会把该次 streaming turn 的 terminal stop reason 保持为 `tool_use`，并继续复用已经观测到的 streamed `ToolUseBlock`
+- healthy OpenAI Responses payload、buffered completion 和 runtime 自己的 canonical transcript/tool contract 都不会因为这个 fallback 改变
+
 这里有一个容易混淆但必须先分清的边界：
 
 - `plan`

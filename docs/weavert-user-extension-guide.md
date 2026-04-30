@@ -130,6 +130,8 @@ Python module 也必须导出 concrete `ToolDefinition`，而不是 `dict` / map
 - `input_schema` 最好写成显式 object schema
 - optional field 可以继续不写进 `required`；adapter 会在导出时改成 strict-compatible 的 nullable required field
 - schema-valued `additionalProperties` 当前不被 bundled OpenAI adapter 接受，调用时会返回 `tool_schema_error`
+- 如果 provider/gateway 的 streaming `response.completed.output` 偶发返回空数组，但前面已经 finalize 出了 tool call，bundled adapter 会在 transport 层内部回退到已观测的 streamed `ToolUseBlock`
+- 这个 fallback 不会改变你作为 tool author 看到的 runtime-canonical `ToolUseBlock` / `ToolResultBlock` contract；你不需要为它声明额外 schema、flag 或分支逻辑
 
 ### 2.3 Agent：角色化 prompt + 执行策略
 

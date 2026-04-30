@@ -73,6 +73,9 @@ Responses function tools 使用 strict schema；因此 bundled adapter 会对 ru
 - final usage / request id / stop reason -> runtime terminal metadata
 - provider-side error details -> runtime `ERROR` event metadata
 - function call 最终输入会在 done/completed-only 两条路径上走同一套 round-trip restoration，因此 buffered 与 streaming 会收到相同的 canonical tool input
+- 如果 streaming 已经 finalize 出一个或多个 `ToolUseBlock`，但随后的 `response.completed.output` 却是空数组，adapter 会仅在这个矛盾场景下回退到已观测到的 finalized tool blocks，并把 terminal stop reason 校正为 `tool_use`
+- 这个 empty-completed-output fallback 只作用于 streaming `response.completed` 的兼容性修正；buffered completion、`response.incomplete` 和正常带有 output items 的 completed payload 仍保持现有解析路径不变
+- fallback 触发时，terminal metadata 可能额外带上 adapter-local 诊断标记 `stream_completed_output_fallback=finalized_stream_tool_blocks`，方便后续排查网关兼容性问题
 
 默认 bundled route 会显式开启 provider-side parallel tool calls，但这个开关来自 route policy，而不是 adapter 内部常量。
 如果某个自定义 OpenAI route 没有提供 `provider_request_policy.parallel_tool_calls`，adapter 会保守回落到 `parallel_tool_calls=false`。
