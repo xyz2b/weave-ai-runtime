@@ -563,6 +563,8 @@ builtins
   - `ask_user`
   - `sleep`
 
+其中 `glob` 在命中过大结果集时会自动截断返回内容，并附带 `total_matches`、`returned_matches`、`truncated` 元数据，避免把整仓路径列表原样推回后续模型续跑。
+
 对大多数接入方来说，这意味着：
 
 - 你可以先不投任何自定义 definitions，直接拿到一个可用 Runtime

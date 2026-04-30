@@ -1032,7 +1032,14 @@ async def _map_responses_stream_payload(
                 },
             )
             return
-        pending.last_emitted_input = parsed_input
+        tool_spec = state.tool_specs_by_name.get(pending.tool_name)
+        restored_input = _restore_tool_input_payload(
+            parsed_input,
+            tool_name=pending.tool_name,
+            call_id=pending.call_id,
+            restoration_plan=tool_spec.restoration_plan if tool_spec is not None else _RoundTripRestorationPlan(),
+        )
+        pending.last_emitted_input = restored_input
         yield ModelStreamEvent(
             event_type=ModelStreamEventType.CONTENT_BLOCK_DELTA,
             block_id=pending.call_id,
@@ -1041,7 +1048,7 @@ async def _map_responses_stream_payload(
                 "block_type": "tool_use",
                 "tool_use_id": pending.call_id,
                 "name": pending.tool_name,
-                "input": parsed_input,
+                "input": restored_input,
                 "argument_delta": _string_value(payload.get("delta")) or "",
             },
         )

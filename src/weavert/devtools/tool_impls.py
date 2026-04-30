@@ -4,11 +4,14 @@ import asyncio
 import re
 import urllib.parse
 import urllib.request
+from pathlib import Path
 from typing import Any
 
 from ..builtins.tool_impls import _normalize_optional_string, _path_allowed, _resolve_path
 from ..definitions import SkillShell, ValidationOutcome
 from ..tool_runtime import ToolContext
+
+_GLOB_TOOL_MAX_MATCHES = 128
 
 
 async def read_file_tool(tool_input: dict[str, Any], context: ToolContext) -> dict[str, Any]:
@@ -29,12 +32,32 @@ async def read_file_tool(tool_input: dict[str, Any], context: ToolContext) -> di
 async def glob_tool(tool_input: dict[str, Any], context: ToolContext) -> dict[str, Any]:
     root = _resolve_path(context.cwd, tool_input.get("root", "."), context=context)
     pattern = tool_input["pattern"]
-    matches = sorted(
-        str(path)
-        for path in root.glob(pattern)
-        if _path_allowed(path.resolve(), context)
-    )
-    return {"root": str(root), "pattern": pattern, "matches": matches}
+    matched_paths = []
+    for path in root.glob(pattern):
+        resolved = path.resolve()
+        if _path_allowed(resolved, context):
+            matched_paths.append(path)
+    matched_paths.sort(key=str)
+    if len(matched_paths) > _GLOB_TOOL_MAX_MATCHES:
+        sampled_paths = sorted(
+            matched_paths,
+            key=lambda path: _glob_sample_sort_key(path, root=root),
+        )[:_GLOB_TOOL_MAX_MATCHES]
+    else:
+        sampled_paths = matched_paths
+    return {
+        "root": str(root),
+        "pattern": pattern,
+        "matches": [str(path) for path in sampled_paths],
+        "total_matches": len(matched_paths),
+        "returned_matches": len(sampled_paths),
+        "truncated": len(sampled_paths) < len(matched_paths),
+    }
+
+
+def _glob_sample_sort_key(path: Path, *, root: Path) -> tuple[int, str]:
+    relative = path.relative_to(root)
+    return (len(relative.parts), relative.as_posix())
 
 
 async def grep_tool(tool_input: dict[str, Any], context: ToolContext) -> dict[str, Any]:

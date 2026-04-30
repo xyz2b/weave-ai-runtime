@@ -1309,3 +1309,53 @@ def test_interrupt_aborts_model_stream_and_discards_partial_output() -> None:
     assert result.tool_calls == []
     assert result.stop_reason == "interrupted"
     assert result.abort_reason == "user_cancel"
+
+
+def test_run_turn_uses_eight_iteration_fallback_when_agent_max_turns_unspecified() -> None:
+    tool_registry = ToolRegistry()
+    tool_registry.register(
+        ToolDefinition(
+            name="noop",
+            description="noop",
+            input_schema={"type": "object", "properties": {}, "additionalProperties": False},
+            traits=ToolTraits(read_only=True, concurrency_safe=True),
+            execute=lambda _tool_input, _: {"ok": True},
+        )
+    )
+    model_client = BatchedModelClient(
+        [
+            [
+                ModelStreamEvent(
+                    ModelStreamEventType.MESSAGE_START,
+                    {"request_id": f"req-{index}"},
+                ),
+                ModelStreamEvent(
+                    ModelStreamEventType.TOOL_CALL,
+                    {"tool_name": "noop", "tool_input": {}, "call_id": f"call-{index}"},
+                ),
+                ModelStreamEvent(
+                    ModelStreamEventType.MESSAGE_STOP,
+                    {"stop_reason": "tool_use"},
+                ),
+            ]
+            for index in range(1, 9)
+        ]
+    )
+    engine = TurnEngine(model_client=model_client, tool_registry=tool_registry)
+    agent = AgentDefinition(name="main-router", description="router", prompt="Answer")
+
+    result = asyncio.run(
+        engine.run_turn(
+            session_id="session",
+            turn_id="turn",
+            agent=agent,
+            cwd=".",
+            messages=[],
+            base_system_prompt="System",
+        )
+    )
+
+    assert result.completed is False
+    assert result.stop_reason == "max_turns"
+    assert len(result.attempts) == 8
+    assert len(model_client.requests) == 8

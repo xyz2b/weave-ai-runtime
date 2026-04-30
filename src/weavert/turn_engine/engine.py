@@ -1164,7 +1164,7 @@ class TurnEngine:
         model_client_override: ModelClient | None = None,
         session_scope: SessionScope | None = None,
     ) -> AsyncIterator[TurnStreamEvent]:
-        max_iterations = agent.max_turns or 4
+        max_iterations = agent.max_turns or 8
         state = TurnLoopState(working_messages=tuple(messages))
         # Raw runtime_context is a compatibility input only; authoritative writes stay on the
         # structured prompt/private carriers for the rest of the primary path.

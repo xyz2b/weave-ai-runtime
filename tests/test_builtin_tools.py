@@ -1,5 +1,8 @@
 import asyncio
+import os
 from pathlib import Path
+
+import pytest
 
 from weavert.builtins import load_builtin_pack
 from weavert.definitions import (
@@ -8,6 +11,7 @@ from weavert.definitions import (
     PermissionDecision,
     SkillDefinition,
 )
+from weavert.devtools.tool_impls import _GLOB_TOOL_MAX_MATCHES
 from weavert.registries import AgentRegistry, SkillRegistry, ToolRegistry
 from weavert.runtime_services import RuntimeServices
 from weavert.tasking import TaskManager, TaskStatus
@@ -104,7 +108,50 @@ def test_builtin_file_tools(tmp_path: Path) -> None:
     assert all(result.status == ToolCallStatus.SUCCESS for result in results)
     assert results[1].output["content"] == "beta"
     assert results[3].output["matches"] == [str((tmp_path / "notes.txt").resolve())]
+    assert results[3].output["total_matches"] == 1
+    assert results[3].output["returned_matches"] == 1
+    assert results[3].output["truncated"] is False
     assert results[4].output["matches"][0]["line"] == "delta"
+
+
+def test_builtin_glob_tool_truncates_large_match_sets(tmp_path: Path) -> None:
+    _, scheduler, context = _build_runtime(tmp_path)
+    for index in range(_GLOB_TOOL_MAX_MATCHES + 5):
+        (tmp_path / f"file-{index:03}.txt").write_text("payload", encoding="utf-8")
+
+    result = asyncio.run(
+        scheduler.run([ToolCall("1", "glob", {"pattern": "**/*"})], context)
+    )[0]
+
+    assert result.status == ToolCallStatus.SUCCESS
+    assert result.output["truncated"] is True
+    assert result.output["total_matches"] == _GLOB_TOOL_MAX_MATCHES + 5
+    assert result.output["returned_matches"] == _GLOB_TOOL_MAX_MATCHES
+    assert len(result.output["matches"]) == _GLOB_TOOL_MAX_MATCHES
+    assert str((tmp_path / "file-000.txt").resolve()) in result.output["matches"]
+    assert str((tmp_path / f"file-{_GLOB_TOOL_MAX_MATCHES + 4:03}.txt").resolve()) not in result.output["matches"]
+
+
+def test_builtin_glob_tool_keeps_workspace_symlink_paths(tmp_path: Path, tmp_path_factory) -> None:
+    if not hasattr(os, "symlink"):
+        pytest.skip("symlinks are unavailable on this platform")
+
+    _, scheduler, context = _build_runtime(tmp_path)
+    external_root = tmp_path_factory.mktemp("glob-symlink-target")
+    (external_root / "external.txt").write_text("payload", encoding="utf-8")
+    symlink_path = tmp_path / "external-link.txt"
+    try:
+        symlink_path.symlink_to(external_root / "external.txt")
+    except OSError as exc:
+        pytest.skip(f"symlink creation unavailable: {exc}")
+
+    result = asyncio.run(
+        scheduler.run([ToolCall("1", "glob", {"pattern": "**/*"})], context)
+    )[0]
+
+    assert result.status == ToolCallStatus.SUCCESS
+    assert str(symlink_path.resolve()) not in result.output["matches"]
+    assert str(symlink_path) in result.output["matches"]
 
 
 def test_builtin_external_orchestration_and_task_tools(tmp_path: Path, monkeypatch) -> None:

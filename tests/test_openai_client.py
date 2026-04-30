@@ -15,6 +15,7 @@ from weavert.contracts import (
 )
 from weavert.definitions import ToolDefinition, ToolTraits
 from weavert.devtools.builtins import devtools_builtin_tools
+from weavert.devtools.tool_impls import _GLOB_TOOL_MAX_MATCHES
 from weavert.openai_client import (
     BundledOpenAIModelClient,
     OPENAI_ROUTE_NAME,
@@ -947,6 +948,89 @@ def test_runtime_default_openai_route_executes_tool_continuations(monkeypatch, t
     assert any(item.get("type") == "function_call_output" and item.get("call_id") == "call_lookup" for item in continuation_items)
 
 
+def test_runtime_default_openai_route_restores_builtin_optional_devtool_fields_during_stream_deltas(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    scripted_batches = [
+        [
+            {"type": "response.created", "response": {"id": "resp-bash-1"}},
+            {
+                "type": "response.output_item.added",
+                "output_index": 0,
+                "item": {
+                    "type": "function_call",
+                    "id": "fc_bash",
+                    "call_id": "call_bash",
+                    "name": "bash",
+                    "arguments": "",
+                },
+            },
+            {
+                "type": "response.function_call_arguments.delta",
+                "item_id": "fc_bash",
+                "output_index": 0,
+                "delta": '{"command":"printf hi","cwd":null,"shell":null,"timeout_ms":null}',
+            },
+            {
+                "type": "response.function_call_arguments.done",
+                "item_id": "fc_bash",
+                "output_index": 0,
+                "arguments": '{"command":"printf hi","cwd":null,"shell":null,"timeout_ms":null}',
+            },
+            {
+                "type": "response.completed",
+                "response": {
+                    "id": "resp-bash-1",
+                    "status": "completed",
+                    "output": [
+                        {
+                            "type": "function_call",
+                            "call_id": "call_bash",
+                            "name": "bash",
+                            "arguments": '{"command":"printf hi","cwd":null,"shell":null,"timeout_ms":null}',
+                        }
+                    ],
+                    "usage": {"input_tokens": 8, "output_tokens": 3},
+                },
+            },
+        ],
+        [
+            {"type": "response.created", "response": {"id": "resp-bash-2"}},
+            {"type": "response.output_text.delta", "delta": "hi"},
+            {
+                "type": "response.completed",
+                "response": {
+                    "id": "resp-bash-2",
+                    "status": "completed",
+                    "output": [
+                        {
+                            "type": "message",
+                            "role": "assistant",
+                            "content": [{"type": "output_text", "text": "hi"}],
+                        }
+                    ],
+                    "usage": {"input_tokens": 5, "output_tokens": 1},
+                },
+            },
+        ],
+    ]
+
+    def fake_post_json_stream(_url: str, _payload: dict[str, object], *, api_key: str):
+        assert api_key == "test-key"
+        return iter(scripted_batches.pop(0))
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr("weavert.openai_client._post_json_stream", fake_post_json_stream)
+
+    runtime = assemble_runtime(RuntimeConfig(working_directory=tmp_path))
+    produced = asyncio.run(
+        runtime.run_prompt("Run the builtin bash tool.", session_id="openai-bash-stream-delta")
+    )
+
+    assert produced[-1].text == "hi"
+
+
 def test_runtime_default_openai_route_handles_completed_only_stream_blocks(monkeypatch, tmp_path: Path) -> None:
     scripted_batches = [
         [
@@ -1019,3 +1103,78 @@ def test_runtime_default_openai_route_handles_completed_only_stream_blocks(monke
     produced = asyncio.run(runtime.run_prompt("Read the readme", session_id="openai-tool-completed-only"))
 
     assert produced[-1].text == "Recovered from completed-only stream"
+
+
+def test_runtime_default_openai_route_bounds_large_builtin_glob_results(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    captured_payloads: list[dict[str, object]] = []
+    scripted_batches = [
+        [
+            {"type": "response.created", "response": {"id": "resp-glob-large-1"}},
+            {
+                "type": "response.completed",
+                "response": {
+                    "id": "resp-glob-large-1",
+                    "status": "completed",
+                    "output": [
+                        {
+                            "type": "function_call",
+                            "call_id": "call_glob",
+                            "name": "glob",
+                            "arguments": '{"pattern":"**/*"}',
+                        }
+                    ],
+                    "usage": {"input_tokens": 10, "output_tokens": 2},
+                },
+            },
+        ],
+        [
+            {"type": "response.created", "response": {"id": "resp-glob-large-2"}},
+            {
+                "type": "response.completed",
+                "response": {
+                    "id": "resp-glob-large-2",
+                    "status": "completed",
+                    "output": [
+                        {
+                            "type": "message",
+                            "role": "assistant",
+                            "content": [{"type": "output_text", "text": "Repository summary"}],
+                        }
+                    ],
+                    "usage": {"input_tokens": 6, "output_tokens": 3},
+                },
+            },
+        ],
+    ]
+
+    def fake_post_json_stream(_url: str, payload: dict[str, object], *, api_key: str):
+        assert api_key == "test-key"
+        captured_payloads.append(payload)
+        return iter(scripted_batches.pop(0))
+
+    for index in range(_GLOB_TOOL_MAX_MATCHES + 7):
+        (tmp_path / f"file-{index:03}.txt").write_text("payload", encoding="utf-8")
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr("weavert.openai_client._post_json_stream", fake_post_json_stream)
+
+    runtime = assemble_runtime(RuntimeConfig(working_directory=tmp_path))
+    produced = asyncio.run(
+        runtime.run_prompt("Summarize this repository and use tools when needed.", session_id="openai-glob-large")
+    )
+
+    assert produced[-1].text == "Repository summary"
+    continuation_items = captured_payloads[1]["input"]
+    tool_result_item = next(
+        item
+        for item in continuation_items
+        if item.get("type") == "function_call_output" and item.get("call_id") == "call_glob"
+    )
+    tool_result_output = json.loads(tool_result_item["output"])
+    assert tool_result_output["truncated"] is True
+    assert tool_result_output["total_matches"] > _GLOB_TOOL_MAX_MATCHES
+    assert tool_result_output["returned_matches"] == _GLOB_TOOL_MAX_MATCHES
+    assert len(tool_result_output["matches"]) == _GLOB_TOOL_MAX_MATCHES
