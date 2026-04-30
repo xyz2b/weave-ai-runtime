@@ -220,8 +220,8 @@ input_schema={
 - `read_only=True, concurrency_safe=True`
   - runtime 可以更积极地把它放进本地并发批次
 - 写工具或有副作用的工具
-  - 即使 provider 支持 parallel tool calls，bundled `openai_default` 仍默认关闭 provider-side parallelism
-  - 这样 shared coding workflow 的 continuation 顺序更稳定
+  - bundled `openai_default` 现在会通过 route-level `provider_request_policy.parallel_tool_calls=true` 允许 provider-side parallel planning
+  - shared coding workflow 的 continuation 顺序仍由 runtime 本地 replay 保持稳定；如果想更保守，可以在自定义 route 里显式关闭
 
 更细的 bundled adapter 规则见 `docs/weavert-openai-responses-adapter.md`。
 

@@ -357,7 +357,7 @@ def bundled_openai_route_binding() -> ModelRouteBinding:
         metadata={
             "bundled": True,
             "default_model_env": "OPENAI_MODEL",
-            "parallel_tool_calls": False,
+            "provider_request_policy": {"parallel_tool_calls": True},
             "transport": "responses_api",
         },
         capabilities=bundled_openai_capabilities(),
@@ -391,10 +391,21 @@ def _build_responses_request(
     if request.tools:
         tool_specs = tuple(_tool_definition_to_function_tool(tool) for tool in request.tools)
         payload["tools"] = [spec.function_tool for spec in tool_specs]
-        payload["parallel_tool_calls"] = False
+        payload["parallel_tool_calls"] = _provider_parallel_tool_calls_enabled(request.metadata)
         tool_specs_by_name = {spec.name: spec for spec in tool_specs}
     return payload, tool_specs_by_name
 
+
+def _provider_parallel_tool_calls_enabled(metadata: Mapping[str, Any] | None) -> bool:
+    if not isinstance(metadata, Mapping):
+        return False
+    raw_policy = metadata.get("provider_request_policy")
+    if not isinstance(raw_policy, Mapping):
+        return False
+    value = raw_policy.get("parallel_tool_calls")
+    if isinstance(value, bool):
+        return value
+    return False
 
 
 def _serialize_request_input(messages: Iterable[RuntimeMessage]) -> list[dict[str, Any]]:

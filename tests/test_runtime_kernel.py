@@ -1411,6 +1411,62 @@ def test_runtime_root_session_resolves_default_model_route_and_context_window(tm
     assert request.context_window.policy_tag == "route-a-policy"
     assert request.metadata["context_window_policy_tag"] == "route-a-policy"
     assert request.metadata["resolved_model_route"] == "route-a"
+    assert "provider_request_policy" not in request.metadata
+
+
+def test_runtime_projects_route_provider_request_policy_into_request_metadata(tmp_path: Path) -> None:
+    model_client = FakeModelClient(
+        [
+            [
+                ModelStreamEvent(
+                    ModelStreamEventType.MESSAGE_START,
+                    {"request_id": "req-route-policy"},
+                ),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "policy reply"}),
+                ModelStreamEvent(
+                    ModelStreamEventType.MESSAGE_STOP,
+                    {"stop_reason": "end_turn"},
+                ),
+            ]
+        ]
+    )
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            model_providers={
+                "provider-a": ModelProviderBinding(
+                    client=model_client,
+                    provider_name="provider-a",
+                    capabilities=NormalizedModelCapabilities(),
+                )
+            },
+            model_routes={
+                "route-a": ModelRouteBinding(
+                    provider_binding="provider-a",
+                    provider_name="provider-a",
+                    default_model="model-a",
+                    metadata={
+                        "provider_request_policy": {
+                            "parallel_tool_calls": True,
+                            "response_mode": "conservative",
+                        }
+                    },
+                )
+            },
+            default_model_route="route-a",
+        )
+    )
+
+    produced = asyncio.run(runtime.run_prompt("Hello route policy", session_id="session-route-policy"))
+
+    assert produced[-1].text == "policy reply"
+    assert len(model_client.requests) == 1
+    request = model_client.requests[0]
+    assert request.resolved_model_route == "route-a"
+    assert request.metadata["provider_request_policy"] == {
+        "parallel_tool_calls": True,
+        "response_mode": "conservative",
+    }
 
 
 def test_runtime_run_prompt_closes_helper_owned_session(tmp_path: Path) -> None:

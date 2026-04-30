@@ -36,7 +36,12 @@ def _turn_context() -> TurnContext:
     )
 
 
-def _make_request(*, messages: tuple[RuntimeMessage, ...], tools: tuple[ToolDefinition, ...] = ()) -> ModelRequest:
+def _make_request(
+    *,
+    messages: tuple[RuntimeMessage, ...],
+    tools: tuple[ToolDefinition, ...] = (),
+    metadata: dict[str, object] | None = None,
+) -> ModelRequest:
     return ModelRequest(
         system_prompt="System prompt",
         turn_context=_turn_context(),
@@ -44,6 +49,7 @@ def _make_request(*, messages: tuple[RuntimeMessage, ...], tools: tuple[ToolDefi
         tools=tools,
         model="gpt-test",
         max_output_tokens=256,
+        metadata={} if metadata is None else dict(metadata),
     )
 
 
@@ -150,8 +156,10 @@ def test_complete_serializes_responses_payload_with_tools_and_tool_results(monke
             ),
         ),
         tools=(tool,),
+        metadata={"provider_request_policy": {"parallel_tool_calls": True}},
     )
 
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     monkeypatch.setattr("weavert.openai_client._post_json", fake_post_json)
 
@@ -165,7 +173,7 @@ def test_complete_serializes_responses_payload_with_tools_and_tool_results(monke
     assert payload["model"] == "gpt-test"
     assert payload["instructions"] == "System prompt"
     assert payload["max_output_tokens"] == 256
-    assert payload["parallel_tool_calls"] is False
+    assert payload["parallel_tool_calls"] is True
     assert payload["input"] == [
         {
             "type": "message",
@@ -209,6 +217,58 @@ def test_complete_serializes_responses_payload_with_tools_and_tool_results(monke
         }
     ]
 
+
+def test_complete_serializes_responses_payload_without_route_policy_falls_back_to_disabled_parallel_tool_calls(
+    monkeypatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_post_json(_url: str, payload: dict[str, object], *, api_key: str) -> dict[str, object]:
+        captured["payload"] = payload
+        assert api_key == "test-key"
+        return {
+            "id": "resp_complete_fallback",
+            "status": "completed",
+            "output": [
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "done"}],
+                }
+            ],
+            "usage": {"input_tokens": 5, "output_tokens": 2},
+        }
+
+    tool = ToolDefinition(
+        name="lookup",
+        description="Lookup a file.",
+        input_schema={
+            "type": "object",
+            "properties": {"path": {"type": "string"}},
+            "required": ["path"],
+            "additionalProperties": False,
+        },
+    )
+    request = _make_request(
+        messages=(
+            RuntimeMessage(
+                message_id="user-1",
+                role=MessageRole.USER,
+                content=(TextBlock(text="Find README.md"),),
+            ),
+        ),
+        tools=(tool,),
+    )
+
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr("weavert.openai_client._post_json", fake_post_json)
+
+    response = asyncio.run(BundledOpenAIModelClient().complete(request))
+
+    assert response.message.text == "done"
+    payload = captured["payload"]
+    assert payload["parallel_tool_calls"] is False
 
 
 def test_complete_parses_function_calls_into_runtime_blocks(monkeypatch) -> None:
@@ -850,7 +910,10 @@ def test_stream_completed_only_restores_builtin_optional_devtool_fields(monkeypa
     assert events[-1].terminal.stop_reason == "tool_use"
 
 
-def test_runtime_default_openai_route_executes_tool_continuations(monkeypatch, tmp_path: Path) -> None:
+def test_runtime_default_openai_route_preserves_ordered_multi_tool_continuations(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
     captured_payloads: list[dict[str, object]] = []
     scripted_batches = [
         [
@@ -860,17 +923,34 @@ def test_runtime_default_openai_route_executes_tool_continuations(monkeypatch, t
                 "output_index": 0,
                 "item": {
                     "type": "function_call",
-                    "id": "fc_lookup",
-                    "call_id": "call_lookup",
-                    "name": "lookup",
+                    "id": "fc_slow_lookup",
+                    "call_id": "call_slow_lookup",
+                    "name": "slow_lookup",
                     "arguments": "",
                 },
             },
             {
                 "type": "response.function_call_arguments.done",
-                "item_id": "fc_lookup",
+                "item_id": "fc_slow_lookup",
                 "output_index": 0,
                 "arguments": '{"path":"README.md"}',
+            },
+            {
+                "type": "response.output_item.added",
+                "output_index": 1,
+                "item": {
+                    "type": "function_call",
+                    "id": "fc_fast_lookup",
+                    "call_id": "call_fast_lookup",
+                    "name": "fast_lookup",
+                    "arguments": "",
+                },
+            },
+            {
+                "type": "response.function_call_arguments.done",
+                "item_id": "fc_fast_lookup",
+                "output_index": 1,
+                "arguments": '{"path":"CONTRIBUTING.md"}',
             },
             {
                 "type": "response.completed",
@@ -880,18 +960,24 @@ def test_runtime_default_openai_route_executes_tool_continuations(monkeypatch, t
                     "output": [
                         {
                             "type": "function_call",
-                            "call_id": "call_lookup",
-                            "name": "lookup",
+                            "call_id": "call_slow_lookup",
+                            "name": "slow_lookup",
                             "arguments": '{"path":"README.md"}',
-                        }
+                        },
+                        {
+                            "type": "function_call",
+                            "call_id": "call_fast_lookup",
+                            "name": "fast_lookup",
+                            "arguments": '{"path":"CONTRIBUTING.md"}',
+                        },
                     ],
-                    "usage": {"input_tokens": 12, "output_tokens": 4},
+                    "usage": {"input_tokens": 18, "output_tokens": 6},
                 },
             },
         ],
         [
             {"type": "response.created", "response": {"id": "resp-2"}},
-            {"type": "response.output_text.delta", "delta": "Tool said hello"},
+            {"type": "response.output_text.delta", "delta": "Tools said hello"},
             {
                 "type": "response.completed",
                 "response": {
@@ -901,10 +987,10 @@ def test_runtime_default_openai_route_executes_tool_continuations(monkeypatch, t
                         {
                             "type": "message",
                             "role": "assistant",
-                            "content": [{"type": "output_text", "text": "Tool said hello"}],
+                            "content": [{"type": "output_text", "text": "Tools said hello"}],
                         }
                     ],
-                    "usage": {"input_tokens": 6, "output_tokens": 3},
+                    "usage": {"input_tokens": 10, "output_tokens": 4},
                 },
             },
         ],
@@ -915,9 +1001,17 @@ def test_runtime_default_openai_route_executes_tool_continuations(monkeypatch, t
         captured_payloads.append(payload)
         return iter(scripted_batches.pop(0))
 
-    tool = ToolDefinition(
-        name="lookup",
-        description="Lookup a file.",
+    async def slow_lookup(tool_input, _context):
+        await asyncio.sleep(0.02)
+        return {"path": tool_input["path"], "content": "slow hello"}
+
+    async def fast_lookup(tool_input, _context):
+        await asyncio.sleep(0)
+        return {"path": tool_input["path"], "content": "fast hello"}
+
+    slow_tool = ToolDefinition(
+        name="slow_lookup",
+        description="Lookup a file slowly.",
         input_schema={
             "type": "object",
             "properties": {"path": {"type": "string"}},
@@ -925,7 +1019,19 @@ def test_runtime_default_openai_route_executes_tool_continuations(monkeypatch, t
             "additionalProperties": False,
         },
         traits=ToolTraits(read_only=True, concurrency_safe=True),
-        execute=lambda tool_input, _context: {"path": tool_input["path"], "content": "hello"},
+        execute=slow_lookup,
+    )
+    fast_tool = ToolDefinition(
+        name="fast_lookup",
+        description="Lookup a file quickly.",
+        input_schema={
+            "type": "object",
+            "properties": {"path": {"type": "string"}},
+            "required": ["path"],
+            "additionalProperties": False,
+        },
+        traits=ToolTraits(read_only=True, concurrency_safe=True),
+        execute=fast_lookup,
     )
 
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
@@ -934,18 +1040,30 @@ def test_runtime_default_openai_route_executes_tool_continuations(monkeypatch, t
     runtime = assemble_runtime(
         RuntimeConfig(
             working_directory=tmp_path,
-            builtins=BuiltinPackConfig(extra_tools=[tool]),
+            builtins=BuiltinPackConfig(extra_tools=[slow_tool, fast_tool]),
         )
     )
     produced = asyncio.run(runtime.run_prompt("Read the readme", session_id="openai-tool"))
 
     assert runtime.kernel.config.default_model_route == OPENAI_ROUTE_NAME
-    assert produced[-1].text == "Tool said hello"
-    assert captured_payloads[0]["parallel_tool_calls"] is False
-    assert any(tool["name"] == "lookup" for tool in captured_payloads[0]["tools"])
-    continuation_items = captured_payloads[1]["input"]
-    assert any(item.get("type") == "function_call" and item.get("call_id") == "call_lookup" for item in continuation_items)
-    assert any(item.get("type") == "function_call_output" and item.get("call_id") == "call_lookup" for item in continuation_items)
+    route_metadata = runtime.kernel.config.model_routes[OPENAI_ROUTE_NAME].metadata
+    assert route_metadata["provider_request_policy"] == {"parallel_tool_calls": True}
+    assert "parallel_tool_calls" not in route_metadata
+    assert produced[-1].text == "Tools said hello"
+    assert captured_payloads[0]["parallel_tool_calls"] is True
+    tool_names = {tool["name"] for tool in captured_payloads[0]["tools"]}
+    assert {"slow_lookup", "fast_lookup"}.issubset(tool_names)
+    continuation_items = [
+        (item.get("type"), item.get("call_id"))
+        for item in captured_payloads[1]["input"]
+        if item.get("call_id") in {"call_slow_lookup", "call_fast_lookup"}
+    ]
+    assert continuation_items == [
+        ("function_call", "call_slow_lookup"),
+        ("function_call", "call_fast_lookup"),
+        ("function_call_output", "call_slow_lookup"),
+        ("function_call_output", "call_fast_lookup"),
+    ]
 
 
 def test_runtime_default_openai_route_restores_builtin_optional_devtool_fields_during_stream_deltas(

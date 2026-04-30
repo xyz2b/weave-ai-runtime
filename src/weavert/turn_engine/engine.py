@@ -845,7 +845,7 @@ class TurnEngine:
         )
         if binding is None:
             return None, {}
-        return binding, {
+        route_runtime_updates: dict[str, object] = {
             "resolved_model_route": resolved_route_name,
             "provider_name": binding.provider_name,
             "resolved_capabilities": _serialize_model_capabilities(binding.capabilities),
@@ -858,6 +858,10 @@ class TurnEngine:
             ),
             "route_default_model": binding.default_model,
         }
+        provider_request_policy = _route_provider_request_policy(binding.metadata)
+        if provider_request_policy is not None:
+            route_runtime_updates["provider_request_policy"] = provider_request_policy
+        return binding, route_runtime_updates
 
     def _apply_route_runtime_metadata(
         self,
@@ -3319,6 +3323,15 @@ def _mapping_value(value: object) -> dict[str, Any]:
     if not isinstance(value, dict):
         return {}
     return {str(key): inner for key, inner in value.items()}
+
+
+def _route_provider_request_policy(metadata: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(metadata, Mapping):
+        return None
+    raw_policy = metadata.get("provider_request_policy")
+    if not isinstance(raw_policy, Mapping):
+        return None
+    return {str(key): value for key, value in raw_policy.items()}
 
 
 def _string_value(value: object) -> str | None:

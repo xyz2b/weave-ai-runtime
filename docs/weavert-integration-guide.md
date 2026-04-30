@@ -1036,7 +1036,8 @@ config.default_model_route = "research"
 - transport 走 OpenAI Responses API
 - runtime tool 会导出成 strict function tools
 - runtime 本地 tool result 会回放成 `function_call_output`
-- route 默认关闭 provider-side parallel tool calls，以保留 deterministic local continuation
+- bundled `openai_default` 默认通过 route-level `provider_request_policy.parallel_tool_calls=true` 开启 provider-side parallel tool calls
+- 如果自定义 OpenAI route 没有提供这条 policy，adapter 会保守回落到 `parallel_tool_calls=false`，而 deterministic local continuation 仍由 runtime 自己维护
 - provider response id 只作为 observability metadata 记录，不是 runtime correctness 的 authority
 
 如果宿主没有提供 `OPENAI_API_KEY`，内置 route 不会从 discovery 里消失，但首次调用会返回结构化的配置/凭证错误。

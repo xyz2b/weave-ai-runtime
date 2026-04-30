@@ -27,7 +27,7 @@
 - runtime transcript 映射到 Responses `input` items
 - assistant 历史 tool call 映射到 `function_call`
 - runtime 本地 tool result 映射到 `function_call_output`
-- route 默认设置 `parallel_tool_calls=false`
+- bundled `openai_default` 会通过 route-level `provider_request_policy.parallel_tool_calls=true` 驱动 Responses `parallel_tool_calls`
 
 这意味着 `openai_default` 可以直接参与 runtime 的 shared tool loop，而不是只返回一段文本。
 
@@ -74,9 +74,9 @@ Responses function tools 使用 strict schema；因此 bundled adapter 会对 ru
 - provider-side error details -> runtime `ERROR` event metadata
 - function call 最终输入会在 done/completed-only 两条路径上走同一套 round-trip restoration，因此 buffered 与 streaming 会收到相同的 canonical tool input
 
-默认 route 还会保守地关闭 provider-side parallel tool calls。
-原因不是 runtime 不支持并发，而是 coding workflow 更看重 deterministic ordered continuation。
-真正的并发仍主要由 runtime 自己根据 `ToolTraits(read_only=True, concurrency_safe=True)` 决定。
+默认 bundled route 会显式开启 provider-side parallel tool calls，但这个开关来自 route policy，而不是 adapter 内部常量。
+如果某个自定义 OpenAI route 没有提供 `provider_request_policy.parallel_tool_calls`，adapter 会保守回落到 `parallel_tool_calls=false`。
+真正的本地并发和 ordered continuation 仍主要由 runtime 自己根据 `ToolTraits(read_only=True, concurrency_safe=True)` 决定。
 
 ## 6. Structured failure modes
 

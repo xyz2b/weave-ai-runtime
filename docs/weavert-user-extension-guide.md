@@ -621,7 +621,8 @@ receipt = context.refresh_capabilities.request("tool_pool", "reason")
 - 默认 route 仍然是 `openai_default`
 - transport 现在走 Responses API
 - runtime 会把 tool export 成 strict function tools，并把 tool result 回放成 `function_call_output`
-- route 默认关闭 provider-side parallel tool calls；真正的并发更多取决于 runtime 对 `ToolTraits(read_only=True, concurrency_safe=True)` 的判断
+- bundled `openai_default` 默认通过 route-level `provider_request_policy.parallel_tool_calls=true` 开启 provider-side parallel tool calls；如果自定义 route 缺少这条 policy，adapter 会保守回落到 `false`
+- 真正的本地并发更多取决于 runtime 对 `ToolTraits(read_only=True, concurrency_safe=True)` 的判断
 
 如果你是在用户侧 author tool，又希望它能稳定跑在默认 live OpenAI route 上，最好同时看 `docs/weavert-definition-authoring-guide.md` 和 `docs/weavert-openai-responses-adapter.md`。
 
