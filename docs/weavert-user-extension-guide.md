@@ -125,6 +125,12 @@ Python module 也必须导出 concrete `ToolDefinition`，而不是 `dict` / map
    - `traits`
    - `semantics`
 
+如果你会用默认 bundled OpenAI route（`openai_default`）跑 live tool calling，再额外记住三条：
+
+- `input_schema` 最好写成显式 object schema
+- optional field 可以继续不写进 `required`；adapter 会在导出时改成 strict-compatible 的 nullable required field
+- schema-valued `additionalProperties` 当前不被 bundled OpenAI adapter 接受，调用时会返回 `tool_schema_error`
+
 ### 2.3 Agent：角色化 prompt + 执行策略
 
 `Agent` 不是一个“可执行函数”，而是一个角色定义。
@@ -609,6 +615,15 @@ receipt = context.refresh_capabilities.request("tool_pool", "reason")
 1. 单模型接入时，给一个 `model_client` 就够。
 2. 多模型接入时，用命名 provider + route。
 3. agent 只声明 `modelRoute`，具体 provider 和模型由 runtime route 解析。
+
+当前官方 bundled OpenAI path 还有一条实用语义：
+
+- 默认 route 仍然是 `openai_default`
+- transport 现在走 Responses API
+- runtime 会把 tool export 成 strict function tools，并把 tool result 回放成 `function_call_output`
+- route 默认关闭 provider-side parallel tool calls；真正的并发更多取决于 runtime 对 `ToolTraits(read_only=True, concurrency_safe=True)` 的判断
+
+如果你是在用户侧 author tool，又希望它能稳定跑在默认 live OpenAI route 上，最好同时看 `docs/weavert-definition-authoring-guide.md` 和 `docs/weavert-openai-responses-adapter.md`。
 
 ### 3.8 InvocationProvider：额外能力源
 

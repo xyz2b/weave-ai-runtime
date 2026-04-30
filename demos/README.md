@@ -4,6 +4,11 @@ Run every command from the repository root. The demo modules bootstrap `src/` au
 
 The shared offline model helper lives in [`demos/_shared/scripted_model.py`](./_shared/scripted_model.py). The agent, skill, and project demos use it so they run without external model credentials.
 
+There are two distinct demo tracks in this repository:
+
+- the offline seam demos in this README, which use the scripted helper and never hit a live provider
+- the bundled live OpenAI path, which uses the runtime default `openai_default` route backed by Responses API
+
 These demos intentionally stay on stable public extension surfaces:
 
 - definition-level hook authoring uses skill frontmatter `hooks`
@@ -12,6 +17,49 @@ These demos intentionally stay on stable public extension surfaces:
 - compatibility-only hook surfaces are intentionally left out of this learning path
 
 Run the seam-basics demos first if you want the minimum runnable extension surfaces. Then run the semantic demos to learn how skill hooks are authored, how default hook registration differs from session-local registration, and how package admission differs from activation.
+
+## Offline demos vs live OpenAI path
+
+Everything in the tables below is intentionally offline and deterministic.
+If you only want to learn extension seams, stay on this path and do not export any provider credentials.
+
+If you want to exercise the bundled live coding path instead, set:
+
+- `OPENAI_API_KEY` (required)
+- `OPENAI_BASE_URL` (optional)
+- `OPENAI_MODEL` (optional, defaults to `gpt-4.1-mini`)
+
+Minimal live check from the repo root:
+
+```bash
+export OPENAI_API_KEY=your-key
+export OPENAI_MODEL=gpt-4.1-mini
+python3 - <<'PY'
+import asyncio
+from pathlib import Path
+
+from weavert.runtime_kernel import RuntimeConfig, assemble_runtime
+
+runtime = assemble_runtime(RuntimeConfig(working_directory=Path.cwd()))
+messages = asyncio.run(runtime.run_prompt(\"Summarize this repository and use tools when needed.\"))
+print(messages[-1].text)
+PY
+```
+
+Expected live behavior:
+
+- the default route is still `openai_default`
+- requests go through the bundled Responses adapter
+- runtime tools are exported as strict function tools
+- local tool results are replayed as `function_call_output`
+- provider-side parallel tool calls are disabled by default so coding turns stay ordered
+
+Basic troubleshooting:
+
+- missing `OPENAI_API_KEY` -> first invocation returns a structured `auth_error`
+- tool schema uses dynamic `additionalProperties` -> invocation returns `tool_schema_error`
+- need a proxy or gateway -> set `OPENAI_BASE_URL`
+- want a different bundled default model -> set `OPENAI_MODEL`
 
 ## Seam basics
 

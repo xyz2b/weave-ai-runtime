@@ -1023,13 +1023,23 @@ config.default_model_route = "research"
 - route 只做 narrowing / override / fallback policy
 - runtime 在已知 context window 时做 proactive compaction，在未知 context window 时退化到 reactive-only
 
-另外，Runtime 现在随附一个可发现但可覆盖的 bundled OpenAI baseline：
+另外，Runtime 现在随附一个可发现但可覆盖的 bundled OpenAI live adapter：
 
 - provider binding: `openai-prod`
 - named route: `openai_default`
 - host override env: `OPENAI_API_KEY`、`OPENAI_BASE_URL`、`OPENAI_MODEL`
 
+当前默认行为：
+
+- transport 走 OpenAI Responses API
+- runtime tool 会导出成 strict function tools
+- runtime 本地 tool result 会回放成 `function_call_output`
+- route 默认关闭 provider-side parallel tool calls，以保留 deterministic local continuation
+- provider response id 只作为 observability metadata 记录，不是 runtime correctness 的 authority
+
 如果宿主没有提供 `OPENAI_API_KEY`，内置 route 不会从 discovery 里消失，但首次调用会返回结构化的配置/凭证错误。
+
+更细的 adapter 语义、schema 约束和 streaming 映射见 `docs/weavert-openai-responses-adapter.md`。
 
 ### 8.2 Memory Policy
 

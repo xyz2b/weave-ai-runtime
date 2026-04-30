@@ -285,7 +285,9 @@ helper 语义也已经固定：
 - `weavert-team`
   - built-ins、control-plane objects、workflow host facet、runtime recovery participant 通过 contribution 暴露
 - `weavert-openai`
-  - bundled provider / route baseline 通过 contribution 装配
+  - 默认 bundled live OpenAI adapter 通过 contribution 装配
+  - 当前 transport 是 Responses API，默认 route 仍然是 `openai_default`
+  - 可以直接参与 shared tool-using query stack，而不再只是 text-only baseline
 - `weavert-stores-file`
   - transcript / job / task-list / team 相关 store binding 通过 contribution 装配
 - `weavert-compaction`、`weavert-isolation`、`weavert-hosts-reference`

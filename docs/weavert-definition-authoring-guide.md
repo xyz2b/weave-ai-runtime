@@ -179,6 +179,48 @@ TOOL_DEFINITION = ToolDefinition(
 - 只读查询型工具：`read_only=True, concurrency_safe=True`
 - 文件写入或有副作用的工具：保持默认或显式声明非只读
 
+### 4.3.1 默认 OpenAI route 下的 tool schema authoring 建议
+
+当前 bundled `openai_default` route 会把 `input_schema` 导出成 Responses strict function tools。
+这不会改变 runtime 自己的 `ToolDefinition` contract，但会影响“什么 schema 最适合默认 live route”。
+
+建议按下面的口径写：
+
+- top-level `input_schema` 明确写成 `type: object`
+- object field 尽量全部显式声明，不要依赖动态 key map
+- optional field 允许保留“不在 `required` 里”的写法；adapter 会把它归一化成 `required + nullable`
+- `additionalProperties: false` 是最稳妥的默认值
+- 如果必须表达数组，给 `items` 写完整 schema
+
+当前 bundled OpenAI adapter 不支持 schema-valued `additionalProperties`。
+如果你写的是：
+
+```python
+input_schema={
+    "type": "object",
+    "properties": {
+        "labels": {
+            "type": "object",
+            "additionalProperties": {"type": "string"},
+        }
+    },
+    "required": ["labels"],
+    "additionalProperties": False,
+}
+```
+
+那么 `openai_default` 会在调用前返回 `tool_schema_error`，而不是把这个动态 map 静默降级。
+
+另外，tool trait 也会影响 live route 的实际执行体验：
+
+- `read_only=True, concurrency_safe=True`
+  - runtime 可以更积极地把它放进本地并发批次
+- 写工具或有副作用的工具
+  - 即使 provider 支持 parallel tool calls，bundled `openai_default` 仍默认关闭 provider-side parallelism
+  - 这样 shared coding workflow 的 continuation 顺序更稳定
+
+更细的 bundled adapter 规则见 `docs/weavert-openai-responses-adapter.md`。
+
 ### 4.4 自定义用户 Tool 默认跑在 public execution path
 
 当前非 bundled 用户工具默认不会拿到完整内部 `ToolContext`，而会跑在被收窄过的 public execution context 上。

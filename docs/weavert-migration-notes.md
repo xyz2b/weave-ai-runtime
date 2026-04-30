@@ -114,9 +114,15 @@
 - `remember` -> `weavert-memory`
 - `team_create` / `team_spawn` / `team_send` / `team_respond` / `team_delete` -> `weavert-team`
 - `verify` / `debug` / `stuck` / `batch` / `simplify` -> `weavert-builtin-workflows`
-- bundled OpenAI baseline -> `weavert-openai`
+- bundled default OpenAI live adapter -> `weavert-openai`
 - reference host implementations -> `weavert-hosts-reference`
 - file-backed transcript / job / task-list / team / workflow / mailbox stores -> `weavert-stores-file`
+
+这里尤其要注意一条语义变化：
+
+- `openai_default` 仍然是默认 route 名称
+- 但它现在已经是 tool-capable Responses adapter，而不是旧的最小 baseline
+- migration 时不要再假设 bundled OpenAI path 只能做 text bootstrap
 
 关于 planning 这一块，当前 package ownership 已经显式落地：
 

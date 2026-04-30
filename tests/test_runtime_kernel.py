@@ -1632,19 +1632,41 @@ def test_runtime_bundled_openai_route_honors_openai_model_override(
 ) -> None:
     captured: dict[str, object] = {}
 
-    def fake_post_json(url: str, payload: dict[str, object], *, api_key: str) -> dict[str, object]:
+    def fake_post_json_stream(url: str, payload: dict[str, object], *, api_key: str):
         captured["url"] = url
         captured["payload"] = dict(payload)
         captured["api_key"] = api_key
-        return {
-            "id": "req-openai-env",
-            "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
-            "usage": {},
-        }
+        return iter(
+            [
+                {
+                    "type": "response.created",
+                    "response": {"id": "req-openai-env"},
+                },
+                {
+                    "type": "response.output_text.delta",
+                    "delta": "ok",
+                },
+                {
+                    "type": "response.completed",
+                    "response": {
+                        "id": "req-openai-env",
+                        "status": "completed",
+                        "output": [
+                            {
+                                "type": "message",
+                                "role": "assistant",
+                                "content": [{"type": "output_text", "text": "ok"}],
+                            }
+                        ],
+                        "usage": {},
+                    },
+                },
+            ]
+        )
 
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     monkeypatch.setenv("OPENAI_MODEL", "gpt-env-override")
-    monkeypatch.setattr("weavert.openai_client._post_json", fake_post_json)
+    monkeypatch.setattr("weavert.openai_client._post_json_stream", fake_post_json_stream)
 
     runtime = assemble_runtime(RuntimeConfig(working_directory=tmp_path))
     produced = asyncio.run(runtime.run_prompt("Hello runtime", session_id="openai-env"))
