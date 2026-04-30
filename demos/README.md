@@ -52,7 +52,16 @@ Expected live behavior:
 - requests go through the bundled Responses adapter
 - runtime tools are exported as strict function tools
 - local tool results are replayed as `function_call_output`
-- provider-side parallel tool calls are disabled by default so coding turns stay ordered
+- bundled `openai_default` requests provider-side `parallel_tool_calls=true`
+- runtime still owns ordered local continuation and can reconcile empty streaming `response.completed.output` payloads from imperfect gateways
+
+If you want a slightly stronger live smoke than the inline snippet above, run:
+
+```bash
+python3 scripts/openai_responses_live_smoke.py
+```
+
+That script verifies the default full toolset path, checks for multi-tool turns, and reports whether the streaming empty-completed-output fallback had to fire for the current gateway.
 
 Basic troubleshooting:
 

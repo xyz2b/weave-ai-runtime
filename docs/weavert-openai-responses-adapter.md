@@ -114,3 +114,26 @@ Responses function tools 使用 strict schema；因此 bundled adapter 会对 ru
 5. 是否把 provider response id 误当成 runtime state authority
 
 如果这些条件都满足，`openai_default` 就应当能作为默认 bundled live adapter 直接参与完整 query stack。
+
+## 8. Live smoke script
+
+仓库现在还附带了一个真实 Responses live smoke：
+
+```bash
+python3 scripts/openai_responses_live_smoke.py
+```
+
+它会直接用默认完整工具集跑一次：
+
+- prompt: `Summarize this repository and use tools when needed.`
+- route: `openai_default`
+- transport: bundled Responses streaming path
+
+脚本输出会重点检查这些信号：
+
+- 请求是否真的带了 `parallel_tool_calls=true`
+- 模型是否在单轮里产出了多个 sibling `tool_use`
+- runtime 是否把这些 tool call 继续承接成后续 `function_call_output` continuation
+- 如果某个网关仍然返回空的 `response.completed.output`，adapter-local fallback 是否命中
+
+如果脚本返回 `ok: true`，通常就说明默认 bundled live OpenAI path 在当前环境里是通的；如果失败，输出里的 `checks`、`attempts` 和 `requests` 字段会帮助定位是凭证、网关兼容性还是 runtime continuation 问题。
