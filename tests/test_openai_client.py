@@ -1,17 +1,25 @@
 import asyncio
 from pathlib import Path
 
+from weavert.builtins.tools import builtin_tools
 from weavert.contracts import (
     MessageRole,
+    RedactedThinkingBlock,
     RuntimeMessage,
     TextBlock,
+    ThinkingBlock,
     ToolResultBlock,
     ToolUseBlock,
     TurnContext,
 )
 from weavert.definitions import ToolDefinition, ToolTraits
-from weavert.openai_client import BundledOpenAIModelClient, OPENAI_ROUTE_NAME
+from weavert.openai_client import (
+    BundledOpenAIModelClient,
+    OPENAI_ROUTE_NAME,
+    _tool_definition_to_function_tool,
+)
 from weavert.runtime_kernel import BuiltinPackConfig, RuntimeConfig, assemble_runtime
+from weavert.team.builtins import team_builtin_tools
 from weavert.turn_engine import ModelRequest
 
 
@@ -208,13 +216,61 @@ def test_complete_parses_function_calls_into_runtime_blocks(monkeypatch) -> None
 
 
 
-def test_complete_surfaces_tool_schema_errors_before_network(monkeypatch) -> None:
-    def should_not_run(*_args, **_kwargs):  # pragma: no cover - defensive guard
-        raise AssertionError("network should not run")
+def test_complete_omits_hidden_thinking_from_request_payload(monkeypatch) -> None:
+    captured: dict[str, object] = {}
 
-    bad_tool = ToolDefinition(
+    def fake_post_json(_url: str, payload: dict[str, object], *, api_key: str) -> dict[str, object]:
+        assert api_key == "test-key"
+        captured["payload"] = payload
+        return {
+            "id": "resp_no_thinking",
+            "status": "completed",
+            "output": [
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "ok"}],
+                }
+            ],
+            "usage": {"input_tokens": 4, "output_tokens": 1},
+        }
+
+    request = _make_request(
+        messages=(
+            RuntimeMessage(
+                message_id="assistant-1",
+                role=MessageRole.ASSISTANT,
+                content=(
+                    TextBlock(text="Visible text."),
+                    ThinkingBlock(thinking="hidden reasoning"),
+                    RedactedThinkingBlock(data="sealed"),
+                ),
+            ),
+        )
+    )
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr("weavert.openai_client._post_json", fake_post_json)
+
+    response = asyncio.run(BundledOpenAIModelClient().complete(request))
+
+    assert response.message.text == "ok"
+    assert captured["payload"]["input"] == [
+        {
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "output_text", "text": "Visible text."}],
+            "status": "completed",
+        }
+    ]
+
+
+def test_complete_maps_open_object_arguments_through_json_string_surrogates(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    surrogate_tool = ToolDefinition(
         name="dynamic_map",
-        description="Uses unsupported dynamic keys.",
+        description="Uses dynamic keys.",
         input_schema={
             "type": "object",
             "properties": {
@@ -235,18 +291,58 @@ def test_complete_surfaces_tool_schema_errors_before_network(monkeypatch) -> Non
                 content=(TextBlock(text="Label this."),),
             ),
         ),
-        tools=(bad_tool,),
+        tools=(surrogate_tool,),
     )
 
+    def fake_post_json(_url: str, payload: dict[str, object], *, api_key: str) -> dict[str, object]:
+        captured["payload"] = payload
+        captured["api_key"] = api_key
+        return {
+            "id": "resp_dynamic_map",
+            "status": "completed",
+            "output": [
+                {
+                    "type": "function_call",
+                    "call_id": "call_dynamic_map",
+                    "name": "dynamic_map",
+                    "arguments": '{"labels":"{\\"priority\\":\\"high\\"}"}',
+                }
+            ],
+            "usage": {"input_tokens": 4, "output_tokens": 2},
+        }
+
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
-    monkeypatch.setattr("weavert.openai_client._post_json", should_not_run)
+    monkeypatch.setattr("weavert.openai_client._post_json", fake_post_json)
 
     response = asyncio.run(BundledOpenAIModelClient().complete(request))
 
-    assert response.terminal is not None
-    assert response.terminal.metadata["failure_class"] == "tool_schema_error"
-    assert response.terminal.metadata["tool_name"] == "dynamic_map"
-    assert "additionalProperties" in response.terminal.metadata["error"]
+    assert captured["api_key"] == "test-key"
+    assert captured["payload"]["tools"][0]["parameters"]["properties"]["labels"] == {
+        "type": "string",
+        "description": "Pass a JSON object encoded as a string.",
+    }
+    assert response.stop_reason == "tool_use"
+    assert response.message.content == (
+        ToolUseBlock(
+            tool_use_id="call_dynamic_map",
+            name="dynamic_map",
+            input={"labels": {"priority": "high"}},
+        ),
+    )
+
+
+def test_bundled_tools_export_open_object_fields_as_json_string_surrogates() -> None:
+    task_create = next(tool for tool in builtin_tools() if tool.name == "task_create")
+    task_update = next(tool for tool in builtin_tools() if tool.name == "task_update")
+    team_respond = next(tool for tool in team_builtin_tools() if tool.name == "team_respond")
+
+    task_create_schema = _tool_definition_to_function_tool(task_create).function_tool["parameters"]
+    task_update_schema = _tool_definition_to_function_tool(task_update).function_tool["parameters"]
+    team_respond_schema = _tool_definition_to_function_tool(team_respond).function_tool["parameters"]
+
+    assert task_create_schema["properties"]["metadata"]["type"] == ["string", "null"]
+    assert task_update_schema["properties"]["metadata"]["type"] == ["string", "null"]
+    assert team_respond_schema["properties"]["payload"]["type"] == ["string", "null"]
 
 
 
@@ -348,6 +444,66 @@ def test_stream_maps_text_and_function_call_events(monkeypatch) -> None:
     assert events[-1].terminal.metadata["provider_response_id"] == "resp_stream"
 
 
+def test_stream_replays_completed_only_blocks_when_no_prior_deltas(monkeypatch) -> None:
+    def fake_post_json_stream(_url: str, _payload: dict[str, object], *, api_key: str):
+        assert api_key == "test-key"
+        return iter(
+            [
+                {"type": "response.created", "response": {"id": "resp_completed_only"}},
+                {
+                    "type": "response.completed",
+                    "response": {
+                        "id": "resp_completed_only",
+                        "status": "completed",
+                        "output": [
+                            {
+                                "type": "message",
+                                "role": "assistant",
+                                "content": [{"type": "output_text", "text": "Need fallback"}],
+                            },
+                            {
+                                "type": "function_call",
+                                "call_id": "call_fallback",
+                                "name": "lookup",
+                                "arguments": '{"path":"README.md"}',
+                            },
+                        ],
+                        "usage": {"input_tokens": 5, "output_tokens": 4},
+                    },
+                },
+            ]
+        )
+
+    request = _make_request(
+        messages=(
+            RuntimeMessage(
+                message_id="user-1",
+                role=MessageRole.USER,
+                content=(TextBlock(text="Fallback please."),),
+            ),
+        )
+    )
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr("weavert.openai_client._post_json_stream", fake_post_json_stream)
+
+    async def collect_events():
+        return [event async for event in BundledOpenAIModelClient().stream(request)]
+
+    events = asyncio.run(collect_events())
+
+    assert [event.event_type.value for event in events] == [
+        "message_start",
+        "content_delta",
+        "content_block_start",
+        "content_block_delta",
+        "content_block_stop",
+        "message_stop",
+    ]
+    assert events[1].payload["text"] == "Need fallback"
+    assert events[-1].terminal is not None
+    assert events[-1].terminal.stop_reason == "tool_use"
+
 
 def test_runtime_default_openai_route_executes_tool_continuations(monkeypatch, tmp_path: Path) -> None:
     captured_payloads: list[dict[str, object]] = []
@@ -445,3 +601,77 @@ def test_runtime_default_openai_route_executes_tool_continuations(monkeypatch, t
     continuation_items = captured_payloads[1]["input"]
     assert any(item.get("type") == "function_call" and item.get("call_id") == "call_lookup" for item in continuation_items)
     assert any(item.get("type") == "function_call_output" and item.get("call_id") == "call_lookup" for item in continuation_items)
+
+
+def test_runtime_default_openai_route_handles_completed_only_stream_blocks(monkeypatch, tmp_path: Path) -> None:
+    scripted_batches = [
+        [
+            {"type": "response.created", "response": {"id": "resp-completed-tool"}},
+            {
+                "type": "response.completed",
+                "response": {
+                    "id": "resp-completed-tool",
+                    "status": "completed",
+                    "output": [
+                        {
+                            "type": "function_call",
+                            "call_id": "call_lookup",
+                            "name": "lookup",
+                            "arguments": '{"path":"README.md"}',
+                        }
+                    ],
+                    "usage": {"input_tokens": 10, "output_tokens": 2},
+                },
+            },
+        ],
+        [
+            {"type": "response.created", "response": {"id": "resp-completed-text"}},
+            {
+                "type": "response.completed",
+                "response": {
+                    "id": "resp-completed-text",
+                    "status": "completed",
+                    "output": [
+                        {
+                            "type": "message",
+                            "role": "assistant",
+                            "content": [
+                                {"type": "output_text", "text": "Recovered from completed-only stream"}
+                            ],
+                        }
+                    ],
+                    "usage": {"input_tokens": 6, "output_tokens": 5},
+                },
+            },
+        ],
+    ]
+
+    def fake_post_json_stream(_url: str, _payload: dict[str, object], *, api_key: str):
+        assert api_key == "test-key"
+        return iter(scripted_batches.pop(0))
+
+    tool = ToolDefinition(
+        name="lookup",
+        description="Lookup a file.",
+        input_schema={
+            "type": "object",
+            "properties": {"path": {"type": "string"}},
+            "required": ["path"],
+            "additionalProperties": False,
+        },
+        traits=ToolTraits(read_only=True, concurrency_safe=True),
+        execute=lambda tool_input, _context: {"path": tool_input["path"], "content": "hello"},
+    )
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr("weavert.openai_client._post_json_stream", fake_post_json_stream)
+
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            builtins=BuiltinPackConfig(extra_tools=[tool]),
+        )
+    )
+    produced = asyncio.run(runtime.run_prompt("Read the readme", session_id="openai-tool-completed-only"))
+
+    assert produced[-1].text == "Recovered from completed-only stream"

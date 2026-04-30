@@ -19,10 +19,8 @@ from .context_window import (
 from .contracts import (
     ContentBlock,
     MessageRole,
-    RedactedThinkingBlock,
     RuntimeMessage,
     TextBlock,
-    ThinkingBlock,
     ToolResultBlock,
     ToolUseBlock,
 )
@@ -80,11 +78,27 @@ class _ParsedResponsesPayload:
     terminal: ModelTerminalMetadata
 
 
+@dataclass(frozen=True, slots=True)
+class _NormalizedToolSchema:
+    schema: dict[str, Any]
+    surrogate_json_object_paths: tuple[tuple[str, ...], ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class _ResponsesFunctionToolSpec:
+    name: str
+    function_tool: dict[str, Any]
+    surrogate_json_object_paths: tuple[tuple[str, ...], ...] = ()
+
+
 @dataclass(slots=True)
 class _ResponsesStreamState:
     started: bool = False
     request_id: str | None = None
     tool_calls: dict[str, _PendingFunctionCall] = field(default_factory=dict)
+    tool_specs_by_name: dict[str, _ResponsesFunctionToolSpec] = field(default_factory=dict)
+    emitted_blocks: list[ContentBlock] = field(default_factory=list)
+    pending_text: str = ""
 
 
 def bundled_openai_recovery_hints() -> MinimalRecoveryClassificationHints:
@@ -195,7 +209,7 @@ class BundledOpenAIModelClient:
 
         model_name = request.model or os.environ.get(self.model_env, "").strip() or DEFAULT_OPENAI_MODEL
         try:
-            payload = _build_responses_request_payload(request, model_name=model_name)
+            payload, tool_specs_by_name = _build_responses_request(request, model_name=model_name)
         except OpenAIAdapterError as exc:
             return _adapter_error_response(exc)
 
@@ -217,7 +231,7 @@ class BundledOpenAIModelClient:
             )
 
         try:
-            parsed = _parse_responses_payload(response_payload)
+            parsed = _parse_responses_payload(response_payload, tool_specs_by_name=tool_specs_by_name)
         except OpenAIAdapterError as exc:
             return _adapter_error_response(exc)
         return ModelResponse(
@@ -241,7 +255,7 @@ class BundledOpenAIModelClient:
 
         model_name = request.model or os.environ.get(self.model_env, "").strip() or DEFAULT_OPENAI_MODEL
         try:
-            payload = _build_responses_request_payload(request, model_name=model_name)
+            payload, tool_specs_by_name = _build_responses_request(request, model_name=model_name)
         except OpenAIAdapterError as exc:
             yield _error_stream_event(_adapter_error_response(exc).terminal)
             return
@@ -253,7 +267,7 @@ class BundledOpenAIModelClient:
             stream_payload,
             api_key=api_key,
         )
-        state = _ResponsesStreamState()
+        state = _ResponsesStreamState(tool_specs_by_name=tool_specs_by_name)
         try:
             while True:
                 event_payload = await asyncio.to_thread(_next_stream_payload, iterator)
@@ -337,6 +351,15 @@ def _build_responses_request_payload(
     *,
     model_name: str,
 ) -> dict[str, Any]:
+    payload, _ = _build_responses_request(request, model_name=model_name)
+    return payload
+
+
+def _build_responses_request(
+    request: ModelRequest,
+    *,
+    model_name: str,
+) -> tuple[dict[str, Any], dict[str, _ResponsesFunctionToolSpec]]:
     payload: dict[str, Any] = {
         "model": model_name,
         "input": _serialize_request_input(request.messages),
@@ -345,10 +368,13 @@ def _build_responses_request_payload(
         payload["instructions"] = request.system_prompt
     if request.max_output_tokens is not None:
         payload["max_output_tokens"] = request.max_output_tokens
+    tool_specs_by_name: dict[str, _ResponsesFunctionToolSpec] = {}
     if request.tools:
-        payload["tools"] = [_tool_definition_to_function_tool(tool) for tool in request.tools]
+        tool_specs = tuple(_tool_definition_to_function_tool(tool) for tool in request.tools)
+        payload["tools"] = [spec.function_tool for spec in tool_specs]
         payload["parallel_tool_calls"] = False
-    return payload
+        tool_specs_by_name = {spec.name: spec for spec in tool_specs}
+    return payload, tool_specs_by_name
 
 
 
@@ -409,10 +435,6 @@ def _serialize_request_input(messages: Iterable[RuntimeMessage]) -> list[dict[st
 def _content_block_text(block: ContentBlock) -> str | None:
     if isinstance(block, TextBlock):
         return block.text
-    if isinstance(block, ThinkingBlock):
-        return block.thinking
-    if isinstance(block, RedactedThinkingBlock):
-        return block.data or ""
     return None
 
 
@@ -426,20 +448,24 @@ def _responses_role_for_message(role: MessageRole) -> str:
 
 
 
-def _tool_definition_to_function_tool(tool: ToolDefinition) -> dict[str, Any]:
-    schema = _normalize_tool_schema(tool)
+def _tool_definition_to_function_tool(tool: ToolDefinition) -> _ResponsesFunctionToolSpec:
+    normalized = _normalize_tool_schema(tool)
     function_tool = {
         "type": "function",
         "name": tool.name,
         "description": tool.description,
-        "parameters": schema,
+        "parameters": normalized.schema,
         "strict": True,
     }
-    return function_tool
+    return _ResponsesFunctionToolSpec(
+        name=tool.name,
+        function_tool=function_tool,
+        surrogate_json_object_paths=normalized.surrogate_json_object_paths,
+    )
 
 
 
-def _normalize_tool_schema(tool: ToolDefinition) -> dict[str, Any]:
+def _normalize_tool_schema(tool: ToolDefinition) -> _NormalizedToolSchema:
     schema = tool.input_schema
     if not isinstance(schema, Mapping) or not schema:
         raise OpenAIAdapterError(
@@ -451,8 +477,18 @@ def _normalize_tool_schema(tool: ToolDefinition) -> dict[str, Any]:
                 "schema_path": "$.input_schema",
             },
         )
-    normalized = _normalize_schema_node(schema, path="$.input_schema", required=True, tool_name=tool.name)
-    normalized_types = _coerce_schema_types(normalized.get("type"), path="$.input_schema", tool_name=tool.name)
+    normalized = _normalize_schema_node(
+        schema,
+        path="$.input_schema",
+        required=True,
+        tool_name=tool.name,
+        logical_path=(),
+    )
+    normalized_types = _coerce_schema_types(
+        normalized.schema.get("type"),
+        path="$.input_schema",
+        tool_name=tool.name,
+    )
     if "object" not in normalized_types:
         raise OpenAIAdapterError(
             f"Tool '{tool.name}' input_schema must resolve to an object for Responses function tools.",
@@ -473,7 +509,8 @@ def _normalize_schema_node(
     path: str,
     required: bool,
     tool_name: str,
-) -> dict[str, Any]:
+    logical_path: tuple[str, ...],
+) -> _NormalizedToolSchema:
     if not isinstance(schema, Mapping):
         raise OpenAIAdapterError(
             f"Tool '{tool_name}' schema at {path} must be an object.",
@@ -519,21 +556,43 @@ def _normalize_schema_node(
                     "schema_path": f"{path}.properties",
                 },
             )
+        additional_properties = schema.get("additionalProperties")
+        if not properties and additional_properties is not False:
+            if not logical_path:
+                raise OpenAIAdapterError(
+                    (
+                        f"Tool '{tool_name}' schema at {path} must declare explicit object properties "
+                        "or set additionalProperties to false for the bundled OpenAI route."
+                    ),
+                    failure_class="tool_schema_error",
+                    metadata={
+                        "provider_name": OPENAI_PROVIDER_NAME,
+                        "tool_name": tool_name,
+                        "schema_path": path,
+                    },
+                )
+            return _NormalizedToolSchema(
+                schema=_open_object_surrogate_schema(schema, required=required),
+                surrogate_json_object_paths=(logical_path,),
+            )
         declared_required = {
             str(name)
             for name in tuple(schema.get("required") or ())
             if isinstance(name, str) and name
         }
         normalized_properties: dict[str, Any] = {}
+        surrogate_paths: list[tuple[str, ...]] = []
         for property_name, property_schema in properties.items():
             name = str(property_name)
-            normalized_properties[name] = _normalize_schema_node(
+            normalized_property = _normalize_schema_node(
                 property_schema,
                 path=f"{path}.properties.{name}",
                 required=name in declared_required,
                 tool_name=tool_name,
+                logical_path=logical_path + (name,),
             )
-        additional_properties = schema.get("additionalProperties", False)
+            normalized_properties[name] = normalized_property.schema
+            surrogate_paths.extend(normalized_property.surrogate_json_object_paths)
         if isinstance(additional_properties, Mapping):
             raise OpenAIAdapterError(
                 (
@@ -551,7 +610,10 @@ def _normalize_schema_node(
         normalized["properties"] = normalized_properties
         normalized["required"] = list(normalized_properties)
         normalized["additionalProperties"] = False
-        return normalized
+        return _NormalizedToolSchema(
+            schema=normalized,
+            surrogate_json_object_paths=tuple(surrogate_paths),
+        )
 
     if "array" in types:
         items = schema.get("items")
@@ -565,17 +627,22 @@ def _normalize_schema_node(
                     "schema_path": f"{path}.items",
                 },
             )
-        normalized["type"] = _apply_optional_nullable(types, required=required)
-        normalized["items"] = _normalize_schema_node(
+        normalized_items = _normalize_schema_node(
             items,
             path=f"{path}.items",
             required=True,
             tool_name=tool_name,
+            logical_path=logical_path,
         )
-        return normalized
+        normalized["type"] = _apply_optional_nullable(types, required=required)
+        normalized["items"] = normalized_items.schema
+        return _NormalizedToolSchema(
+            schema=normalized,
+            surrogate_json_object_paths=normalized_items.surrogate_json_object_paths,
+        )
 
     normalized["type"] = _apply_optional_nullable(types, required=required)
-    return normalized
+    return _NormalizedToolSchema(schema=normalized)
 
 
 
@@ -636,7 +703,11 @@ def _serialize_tool_result_output(block: ToolResultBlock) -> str:
 
 
 
-def _parse_responses_payload(payload: Mapping[str, Any]) -> _ParsedResponsesPayload:
+def _parse_responses_payload(
+    payload: Mapping[str, Any],
+    *,
+    tool_specs_by_name: Mapping[str, _ResponsesFunctionToolSpec] | None = None,
+) -> _ParsedResponsesPayload:
     if not isinstance(payload, Mapping):
         raise OpenAIAdapterError(
             "OpenAI Responses payload must be a JSON object.",
@@ -663,7 +734,13 @@ def _parse_responses_payload(payload: Mapping[str, Any]) -> _ParsedResponsesPayl
             blocks.extend(_content_blocks_from_response_message(item))
             continue
         if item_type == "function_call":
-            blocks.append(_tool_use_block_from_response_item(item, index=index))
+            blocks.append(
+                _tool_use_block_from_response_item(
+                    item,
+                    index=index,
+                    tool_specs_by_name=tool_specs_by_name,
+                )
+            )
             has_tool_calls = True
             continue
 
@@ -717,7 +794,12 @@ def _content_blocks_from_response_message(item: Mapping[str, Any]) -> list[Conte
 
 
 
-def _tool_use_block_from_response_item(item: Mapping[str, Any], *, index: int) -> ToolUseBlock:
+def _tool_use_block_from_response_item(
+    item: Mapping[str, Any],
+    *,
+    index: int,
+    tool_specs_by_name: Mapping[str, _ResponsesFunctionToolSpec] | None = None,
+) -> ToolUseBlock:
     call_id = _string_value(item.get("call_id")) or _string_value(item.get("id")) or f"call-{index}"
     tool_name = _string_value(item.get("name"))
     if tool_name is None:
@@ -729,16 +811,35 @@ def _tool_use_block_from_response_item(item: Mapping[str, Any], *, index: int) -
                 "provider_call_id": call_id,
             },
         )
-    tool_input = _parse_function_call_arguments(item.get("arguments"), call_id=call_id, tool_name=tool_name)
+    tool_spec = tool_specs_by_name.get(tool_name) if tool_specs_by_name is not None else None
+    tool_input = _parse_function_call_arguments(
+        item.get("arguments"),
+        call_id=call_id,
+        tool_name=tool_name,
+        surrogate_json_object_paths=(
+            tool_spec.surrogate_json_object_paths if tool_spec is not None else ()
+        ),
+    )
     return ToolUseBlock(tool_use_id=call_id, name=tool_name, input=tool_input)
 
 
 
-def _parse_function_call_arguments(raw_arguments: object, *, call_id: str, tool_name: str) -> dict[str, Any]:
+def _parse_function_call_arguments(
+    raw_arguments: object,
+    *,
+    call_id: str,
+    tool_name: str,
+    surrogate_json_object_paths: tuple[tuple[str, ...], ...] = (),
+) -> dict[str, Any]:
     if raw_arguments in (None, ""):
         return {}
     if isinstance(raw_arguments, Mapping):
-        return {str(key): value for key, value in raw_arguments.items()}
+        return _decode_surrogate_json_object_fields(
+            {str(key): value for key, value in raw_arguments.items()},
+            tool_name=tool_name,
+            call_id=call_id,
+            surrogate_json_object_paths=surrogate_json_object_paths,
+        )
     if not isinstance(raw_arguments, str):
         raise OpenAIAdapterError(
             f"OpenAI function call '{tool_name}' returned non-string arguments.",
@@ -773,7 +874,12 @@ def _parse_function_call_arguments(raw_arguments: object, *, call_id: str, tool_
                 "raw_arguments": raw_arguments,
             },
         )
-    return {str(key): value for key, value in parsed.items()}
+    return _decode_surrogate_json_object_fields(
+        {str(key): value for key, value in parsed.items()},
+        tool_name=tool_name,
+        call_id=call_id,
+        surrogate_json_object_paths=surrogate_json_object_paths,
+    )
 
 
 
@@ -855,6 +961,7 @@ async def _map_responses_stream_payload(
             )
         delta = _string_value(payload.get("delta")) or ""
         if delta:
+            state.pending_text += delta
             yield ModelStreamEvent(
                 event_type=ModelStreamEventType.CONTENT_DELTA,
                 payload={"text": delta},
@@ -866,6 +973,7 @@ async def _map_responses_stream_payload(
         item_type = _string_value(item.get("type")) or ""
         if item_type != "function_call":
             return
+        _finalize_stream_text_block(state)
         if not state.started:
             state.started = True
             yield ModelStreamEvent(
@@ -927,10 +1035,14 @@ async def _map_responses_stream_payload(
         if pending is None or pending.closed:
             return
         pending.arguments_json = _string_value(payload.get("arguments")) or pending.arguments_json
+        tool_spec = state.tool_specs_by_name.get(pending.tool_name)
         final_input = _parse_function_call_arguments(
             pending.arguments_json,
             call_id=pending.call_id,
             tool_name=pending.tool_name,
+            surrogate_json_object_paths=(
+                tool_spec.surrogate_json_object_paths if tool_spec is not None else ()
+            ),
         )
         pending.last_emitted_input = final_input
         yield ModelStreamEvent(
@@ -953,6 +1065,9 @@ async def _map_responses_stream_payload(
                 "tool_use_id": pending.call_id,
             },
         )
+        state.emitted_blocks.append(
+            ToolUseBlock(tool_use_id=pending.call_id, name=pending.tool_name, input=dict(final_input))
+        )
         pending.closed = True
         return
 
@@ -969,10 +1084,14 @@ async def _map_responses_stream_payload(
             return
         if not pending.arguments_json:
             pending.arguments_json = _string_value(item.get("arguments")) or ""
+        tool_spec = state.tool_specs_by_name.get(pending.tool_name)
         final_input = _parse_function_call_arguments(
             pending.arguments_json,
             call_id=pending.call_id,
             tool_name=pending.tool_name,
+            surrogate_json_object_paths=(
+                tool_spec.surrogate_json_object_paths if tool_spec is not None else ()
+            ),
         )
         if pending.last_emitted_input != final_input:
             yield ModelStreamEvent(
@@ -986,6 +1105,9 @@ async def _map_responses_stream_payload(
                     "input": final_input,
                 },
             )
+        state.emitted_blocks.append(
+            ToolUseBlock(tool_use_id=pending.call_id, name=pending.tool_name, input=dict(final_input))
+        )
         yield ModelStreamEvent(
             event_type=ModelStreamEventType.CONTENT_BLOCK_STOP,
             block_id=pending.call_id,
@@ -1000,7 +1122,10 @@ async def _map_responses_stream_payload(
 
     if event_type == "response.completed":
         response_payload = _mapping_value(payload.get("response"))
-        parsed = _parse_responses_payload(response_payload)
+        parsed = _parse_responses_payload(
+            response_payload,
+            tool_specs_by_name=state.tool_specs_by_name,
+        )
         state.request_id = parsed.request_id or state.request_id
         if not state.started:
             state.started = True
@@ -1009,6 +1134,8 @@ async def _map_responses_stream_payload(
                 payload={"request_id": state.request_id} if state.request_id is not None else {},
                 terminal=ModelTerminalMetadata(request_id=state.request_id),
             )
+        async for fallback_event in _emit_completed_stream_block_fallbacks(state, parsed.blocks):
+            yield fallback_event
         yield ModelStreamEvent(
             event_type=ModelStreamEventType.MESSAGE_STOP,
             payload={
@@ -1023,7 +1150,10 @@ async def _map_responses_stream_payload(
 
     if event_type == "response.incomplete":
         response_payload = _mapping_value(payload.get("response"))
-        parsed = _parse_responses_payload(response_payload)
+        parsed = _parse_responses_payload(
+            response_payload,
+            tool_specs_by_name=state.tool_specs_by_name,
+        )
         state.request_id = parsed.request_id or state.request_id
         if not state.started:
             state.started = True
@@ -1032,6 +1162,8 @@ async def _map_responses_stream_payload(
                 payload={"request_id": state.request_id} if state.request_id is not None else {},
                 terminal=ModelTerminalMetadata(request_id=state.request_id),
             )
+        async for fallback_event in _emit_completed_stream_block_fallbacks(state, parsed.blocks):
+            yield fallback_event
         yield ModelStreamEvent(
             event_type=ModelStreamEventType.MESSAGE_STOP,
             payload={
@@ -1161,6 +1293,193 @@ def _try_parse_partial_arguments(raw_arguments: str) -> dict[str, Any] | None:
         return None
     return {str(key): value for key, value in parsed.items()}
 
+
+
+def _open_object_surrogate_schema(schema: Mapping[str, Any], *, required: bool) -> dict[str, Any]:
+    surrogate = {
+        str(key): value
+        for key, value in schema.items()
+        if key not in {"$schema", "definitions", "$defs", "properties", "required", "additionalProperties"}
+    }
+    surrogate["type"] = _apply_optional_nullable(["string"], required=required)
+    existing_description = _string_value(schema.get("description")) or ""
+    guidance = "Pass a JSON object encoded as a string."
+    surrogate["description"] = guidance if not existing_description else f"{existing_description} {guidance}"
+    return surrogate
+
+
+def _decode_surrogate_json_object_fields(
+    payload: dict[str, Any],
+    *,
+    tool_name: str,
+    call_id: str,
+    surrogate_json_object_paths: tuple[tuple[str, ...], ...],
+) -> dict[str, Any]:
+    decoded = dict(payload)
+    for path in surrogate_json_object_paths:
+        decoded = _decode_surrogate_json_object_path(
+            decoded,
+            path=path,
+            tool_name=tool_name,
+            call_id=call_id,
+        )
+    return decoded
+
+
+def _decode_surrogate_json_object_path(
+    payload: dict[str, Any],
+    *,
+    path: tuple[str, ...],
+    tool_name: str,
+    call_id: str,
+) -> dict[str, Any]:
+    if not path:
+        return payload
+    head, *tail = path
+    if head not in payload:
+        return payload
+    value = payload[head]
+    decoded = dict(payload)
+    if tail:
+        if value is None:
+            return decoded
+        if not isinstance(value, Mapping):
+            raise OpenAIAdapterError(
+                (
+                    f"OpenAI function call '{tool_name}' returned a non-object value at "
+                    f"'{'.'.join(path[:-1])}' while decoding JSON object fields."
+                ),
+                failure_class="tool_schema_error",
+                metadata={
+                    "provider_name": OPENAI_PROVIDER_NAME,
+                    "provider_call_id": call_id,
+                    "tool_name": tool_name,
+                    "schema_path": ".".join(path),
+                },
+            )
+        decoded[head] = _decode_surrogate_json_object_path(
+            {str(key): inner for key, inner in value.items()},
+            path=tuple(tail),
+            tool_name=tool_name,
+            call_id=call_id,
+        )
+        return decoded
+    if value is None:
+        return decoded
+    if isinstance(value, Mapping):
+        decoded[head] = {str(key): inner for key, inner in value.items()}
+        return decoded
+    if not isinstance(value, str):
+        raise OpenAIAdapterError(
+            f"OpenAI function call '{tool_name}' returned a non-string JSON-object surrogate for '{head}'.",
+            failure_class="tool_schema_error",
+            metadata={
+                "provider_name": OPENAI_PROVIDER_NAME,
+                "provider_call_id": call_id,
+                "tool_name": tool_name,
+                "schema_path": ".".join(path),
+                "raw_value": value,
+            },
+        )
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise OpenAIAdapterError(
+            f"OpenAI function call '{tool_name}' returned invalid JSON for '{head}': {exc.msg}.",
+            failure_class="tool_schema_error",
+            metadata={
+                "provider_name": OPENAI_PROVIDER_NAME,
+                "provider_call_id": call_id,
+                "tool_name": tool_name,
+                "schema_path": ".".join(path),
+                "raw_value": value,
+            },
+        ) from exc
+    if not isinstance(parsed, Mapping):
+        raise OpenAIAdapterError(
+            f"OpenAI function call '{tool_name}' returned a non-object JSON payload for '{head}'.",
+            failure_class="tool_schema_error",
+            metadata={
+                "provider_name": OPENAI_PROVIDER_NAME,
+                "provider_call_id": call_id,
+                "tool_name": tool_name,
+                "schema_path": ".".join(path),
+                "raw_value": value,
+            },
+        )
+    decoded[head] = {str(key): inner for key, inner in parsed.items()}
+    return decoded
+
+
+def _finalize_stream_text_block(state: _ResponsesStreamState) -> None:
+    if not state.pending_text:
+        return
+    state.emitted_blocks.append(TextBlock(text=state.pending_text))
+    state.pending_text = ""
+
+
+def _observed_stream_blocks(state: _ResponsesStreamState) -> tuple[ContentBlock, ...]:
+    if not state.pending_text:
+        return tuple(state.emitted_blocks)
+    return tuple(state.emitted_blocks) + (TextBlock(text=state.pending_text),)
+
+
+def _missing_stream_blocks(
+    state: _ResponsesStreamState,
+    final_blocks: tuple[ContentBlock, ...],
+) -> tuple[ContentBlock, ...]:
+    observed = _observed_stream_blocks(state)
+    if len(observed) > len(final_blocks):
+        return ()
+    for observed_block, final_block in zip(observed, final_blocks):
+        if observed_block != final_block:
+            return ()
+    return final_blocks[len(observed) :]
+
+
+async def _emit_completed_stream_block_fallbacks(
+    state: _ResponsesStreamState,
+    final_blocks: tuple[ContentBlock, ...],
+):
+    for block in _missing_stream_blocks(state, final_blocks):
+        if isinstance(block, TextBlock) and block.text:
+            yield ModelStreamEvent(
+                event_type=ModelStreamEventType.CONTENT_DELTA,
+                payload={"text": block.text},
+            )
+            continue
+        if isinstance(block, ToolUseBlock):
+            yield ModelStreamEvent(
+                event_type=ModelStreamEventType.CONTENT_BLOCK_START,
+                block_id=block.tool_use_id,
+                block_type="tool_use",
+                payload={
+                    "block_type": "tool_use",
+                    "tool_use_id": block.tool_use_id,
+                    "name": block.name,
+                    "input": {},
+                },
+            )
+            yield ModelStreamEvent(
+                event_type=ModelStreamEventType.CONTENT_BLOCK_DELTA,
+                block_id=block.tool_use_id,
+                block_type="tool_use",
+                payload={
+                    "block_type": "tool_use",
+                    "tool_use_id": block.tool_use_id,
+                    "name": block.name,
+                    "input": dict(block.input),
+                },
+            )
+            yield ModelStreamEvent(
+                event_type=ModelStreamEventType.CONTENT_BLOCK_STOP,
+                block_id=block.tool_use_id,
+                block_type="tool_use",
+                payload={
+                    "block_type": "tool_use",
+                    "tool_use_id": block.tool_use_id,
+                },
+            )
 
 
 def _responses_url(base_url: str) -> str:
