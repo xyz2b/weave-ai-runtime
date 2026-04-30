@@ -883,7 +883,12 @@ class TurnEngine:
             runtime_metadata=runtime_metadata,
         )
         if not route_runtime_updates:
-            return private_context, effective_private_context, runtime_metadata, resolved_route_binding
+            return (
+                private_context,
+                effective_private_context,
+                _strip_route_reserved_request_metadata(runtime_metadata),
+                resolved_route_binding,
+            )
         requested_model_route = (
             effective_private_context.requested_model_route
             or _string_value(runtime_metadata.get("requested_model_route"))
@@ -911,6 +916,7 @@ class TurnEngine:
             private_context=effective_private_context,
             prompt_context=prompt_context,
         )
+        merged_runtime_metadata = _strip_route_reserved_request_metadata(merged_runtime_metadata)
         merged_runtime_metadata.update(route_runtime_updates)
         return (
             private_context,
@@ -3332,6 +3338,12 @@ def _route_provider_request_policy(metadata: Mapping[str, Any] | None) -> dict[s
     if not isinstance(raw_policy, Mapping):
         return None
     return {str(key): value for key, value in raw_policy.items()}
+
+
+def _strip_route_reserved_request_metadata(metadata: Mapping[str, Any]) -> dict[str, Any]:
+    stripped = dict(metadata)
+    stripped.pop("provider_request_policy", None)
+    return stripped
 
 
 def _string_value(value: object) -> str | None:

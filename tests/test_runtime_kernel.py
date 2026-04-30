@@ -1469,6 +1469,60 @@ def test_runtime_projects_route_provider_request_policy_into_request_metadata(tm
     }
 
 
+def test_runtime_ignores_user_supplied_provider_request_policy_without_route_metadata(
+    tmp_path: Path,
+) -> None:
+    model_client = FakeModelClient(
+        [
+            [
+                ModelStreamEvent(
+                    ModelStreamEventType.MESSAGE_START,
+                    {"request_id": "req-route-policy-fallback"},
+                ),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "fallback reply"}),
+                ModelStreamEvent(
+                    ModelStreamEventType.MESSAGE_STOP,
+                    {"stop_reason": "end_turn"},
+                ),
+            ]
+        ]
+    )
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            model_providers={
+                "provider-a": ModelProviderBinding(
+                    client=model_client,
+                    provider_name="provider-a",
+                    capabilities=NormalizedModelCapabilities(),
+                )
+            },
+            model_routes={
+                "route-a": ModelRouteBinding(
+                    provider_binding="provider-a",
+                    provider_name="provider-a",
+                    default_model="model-a",
+                )
+            },
+            default_model_route="route-a",
+        )
+    )
+
+    produced = asyncio.run(
+        runtime.run_prompt(
+            "Hello route policy fallback",
+            session_id="session-route-policy-fallback",
+            metadata={"provider_request_policy": {"parallel_tool_calls": True}},
+        )
+    )
+
+    assert produced[-1].text == "fallback reply"
+    assert len(model_client.requests) == 1
+    request = model_client.requests[0]
+    assert request.resolved_model_route == "route-a"
+    assert "provider_request_policy" not in request.metadata
+
+
 def test_runtime_run_prompt_closes_helper_owned_session(tmp_path: Path) -> None:
     model_client = FakeModelClient(
         [
