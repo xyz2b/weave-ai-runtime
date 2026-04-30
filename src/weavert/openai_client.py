@@ -42,6 +42,9 @@ OPENAI_PROVIDER_NAME = "openai-prod"
 OPENAI_ROUTE_NAME = "openai_default"
 
 _STREAM_SENTINEL = object()
+_RESTORE_OMITTED_FIELD = object()
+
+_RoundTripPathSegment = str | int
 
 
 class OpenAIAdapterError(ValueError):
@@ -79,16 +82,32 @@ class _ParsedResponsesPayload:
 
 
 @dataclass(frozen=True, slots=True)
+class _RoundTripRestorationPlan:
+    restore_null_to_omission: bool = False
+    decode_json_object_surrogate: bool = False
+    properties: dict[str, _RoundTripRestorationPlan] = field(default_factory=dict)
+    array_item_plan: _RoundTripRestorationPlan | None = None
+
+
+def _empty_round_trip_restoration_plan() -> _RoundTripRestorationPlan:
+    return _RoundTripRestorationPlan()
+
+
+@dataclass(frozen=True, slots=True)
 class _NormalizedToolSchema:
     schema: dict[str, Any]
-    surrogate_json_object_paths: tuple[tuple[str, ...], ...] = ()
+    restoration_plan: _RoundTripRestorationPlan = field(
+        default_factory=_empty_round_trip_restoration_plan
+    )
 
 
 @dataclass(frozen=True, slots=True)
 class _ResponsesFunctionToolSpec:
     name: str
     function_tool: dict[str, Any]
-    surrogate_json_object_paths: tuple[tuple[str, ...], ...] = ()
+    restoration_plan: _RoundTripRestorationPlan = field(
+        default_factory=_empty_round_trip_restoration_plan
+    )
 
 
 @dataclass(slots=True)
@@ -460,7 +479,7 @@ def _tool_definition_to_function_tool(tool: ToolDefinition) -> _ResponsesFunctio
     return _ResponsesFunctionToolSpec(
         name=tool.name,
         function_tool=function_tool,
-        surrogate_json_object_paths=normalized.surrogate_json_object_paths,
+        restoration_plan=normalized.restoration_plan,
     )
 
 
@@ -482,7 +501,6 @@ def _normalize_tool_schema(tool: ToolDefinition) -> _NormalizedToolSchema:
         path="$.input_schema",
         required=True,
         tool_name=tool.name,
-        logical_path=(),
     )
     normalized_types = _coerce_schema_types(
         normalized.schema.get("type"),
@@ -509,7 +527,6 @@ def _normalize_schema_node(
     path: str,
     required: bool,
     tool_name: str,
-    logical_path: tuple[str, ...],
 ) -> _NormalizedToolSchema:
     if not isinstance(schema, Mapping):
         raise OpenAIAdapterError(
@@ -545,6 +562,7 @@ def _normalize_schema_node(
             )
 
     if "object" in types:
+        restore_null_to_omission = not required and "null" not in types
         properties = schema.get("properties") or {}
         if not isinstance(properties, Mapping):
             raise OpenAIAdapterError(
@@ -558,22 +576,12 @@ def _normalize_schema_node(
             )
         additional_properties = schema.get("additionalProperties")
         if not properties and additional_properties is not False:
-            if not logical_path:
-                raise OpenAIAdapterError(
-                    (
-                        f"Tool '{tool_name}' schema at {path} must declare explicit object properties "
-                        "or set additionalProperties to false for the bundled OpenAI route."
-                    ),
-                    failure_class="tool_schema_error",
-                    metadata={
-                        "provider_name": OPENAI_PROVIDER_NAME,
-                        "tool_name": tool_name,
-                        "schema_path": path,
-                    },
-                )
             return _NormalizedToolSchema(
                 schema=_open_object_surrogate_schema(schema, required=required),
-                surrogate_json_object_paths=(logical_path,),
+                restoration_plan=_RoundTripRestorationPlan(
+                    restore_null_to_omission=restore_null_to_omission,
+                    decode_json_object_surrogate=True,
+                ),
             )
         declared_required = {
             str(name)
@@ -581,7 +589,7 @@ def _normalize_schema_node(
             if isinstance(name, str) and name
         }
         normalized_properties: dict[str, Any] = {}
-        surrogate_paths: list[tuple[str, ...]] = []
+        restoration_properties: dict[str, _RoundTripRestorationPlan] = {}
         for property_name, property_schema in properties.items():
             name = str(property_name)
             normalized_property = _normalize_schema_node(
@@ -589,10 +597,9 @@ def _normalize_schema_node(
                 path=f"{path}.properties.{name}",
                 required=name in declared_required,
                 tool_name=tool_name,
-                logical_path=logical_path + (name,),
             )
             normalized_properties[name] = normalized_property.schema
-            surrogate_paths.extend(normalized_property.surrogate_json_object_paths)
+            restoration_properties[name] = normalized_property.restoration_plan
         if isinstance(additional_properties, Mapping):
             raise OpenAIAdapterError(
                 (
@@ -612,10 +619,14 @@ def _normalize_schema_node(
         normalized["additionalProperties"] = False
         return _NormalizedToolSchema(
             schema=normalized,
-            surrogate_json_object_paths=tuple(surrogate_paths),
+            restoration_plan=_RoundTripRestorationPlan(
+                restore_null_to_omission=restore_null_to_omission,
+                properties=restoration_properties,
+            ),
         )
 
     if "array" in types:
+        restore_null_to_omission = not required and "null" not in types
         items = schema.get("items")
         if not isinstance(items, Mapping):
             raise OpenAIAdapterError(
@@ -632,17 +643,24 @@ def _normalize_schema_node(
             path=f"{path}.items",
             required=True,
             tool_name=tool_name,
-            logical_path=logical_path,
         )
         normalized["type"] = _apply_optional_nullable(types, required=required)
         normalized["items"] = normalized_items.schema
         return _NormalizedToolSchema(
             schema=normalized,
-            surrogate_json_object_paths=normalized_items.surrogate_json_object_paths,
+            restoration_plan=_RoundTripRestorationPlan(
+                restore_null_to_omission=restore_null_to_omission,
+                array_item_plan=normalized_items.restoration_plan,
+            ),
         )
 
     normalized["type"] = _apply_optional_nullable(types, required=required)
-    return _NormalizedToolSchema(schema=normalized)
+    return _NormalizedToolSchema(
+        schema=normalized,
+        restoration_plan=_RoundTripRestorationPlan(
+            restore_null_to_omission=not required and "null" not in types
+        ),
+    )
 
 
 
@@ -816,9 +834,7 @@ def _tool_use_block_from_response_item(
         item.get("arguments"),
         call_id=call_id,
         tool_name=tool_name,
-        surrogate_json_object_paths=(
-            tool_spec.surrogate_json_object_paths if tool_spec is not None else ()
-        ),
+        restoration_plan=tool_spec.restoration_plan if tool_spec is not None else None,
     )
     return ToolUseBlock(tool_use_id=call_id, name=tool_name, input=tool_input)
 
@@ -829,16 +845,17 @@ def _parse_function_call_arguments(
     *,
     call_id: str,
     tool_name: str,
-    surrogate_json_object_paths: tuple[tuple[str, ...], ...] = (),
+    restoration_plan: _RoundTripRestorationPlan | None = None,
 ) -> dict[str, Any]:
+    plan = restoration_plan or _RoundTripRestorationPlan()
     if raw_arguments in (None, ""):
         return {}
     if isinstance(raw_arguments, Mapping):
-        return _decode_surrogate_json_object_fields(
+        return _restore_tool_input_payload(
             {str(key): value for key, value in raw_arguments.items()},
             tool_name=tool_name,
             call_id=call_id,
-            surrogate_json_object_paths=surrogate_json_object_paths,
+            restoration_plan=plan,
         )
     if not isinstance(raw_arguments, str):
         raise OpenAIAdapterError(
@@ -874,11 +891,11 @@ def _parse_function_call_arguments(
                 "raw_arguments": raw_arguments,
             },
         )
-    return _decode_surrogate_json_object_fields(
+    return _restore_tool_input_payload(
         {str(key): value for key, value in parsed.items()},
         tool_name=tool_name,
         call_id=call_id,
-        surrogate_json_object_paths=surrogate_json_object_paths,
+        restoration_plan=plan,
     )
 
 
@@ -1040,9 +1057,7 @@ async def _map_responses_stream_payload(
             pending.arguments_json,
             call_id=pending.call_id,
             tool_name=pending.tool_name,
-            surrogate_json_object_paths=(
-                tool_spec.surrogate_json_object_paths if tool_spec is not None else ()
-            ),
+            restoration_plan=tool_spec.restoration_plan if tool_spec is not None else None,
         )
         pending.last_emitted_input = final_input
         yield ModelStreamEvent(
@@ -1089,9 +1104,7 @@ async def _map_responses_stream_payload(
             pending.arguments_json,
             call_id=pending.call_id,
             tool_name=pending.tool_name,
-            surrogate_json_object_paths=(
-                tool_spec.surrogate_json_object_paths if tool_spec is not None else ()
-            ),
+            restoration_plan=tool_spec.restoration_plan if tool_spec is not None else None,
         )
         if pending.last_emitted_input != final_input:
             yield ModelStreamEvent(
@@ -1308,76 +1321,101 @@ def _open_object_surrogate_schema(schema: Mapping[str, Any], *, required: bool) 
     return surrogate
 
 
-def _decode_surrogate_json_object_fields(
+def _restore_tool_input_payload(
     payload: dict[str, Any],
     *,
     tool_name: str,
     call_id: str,
-    surrogate_json_object_paths: tuple[tuple[str, ...], ...],
+    restoration_plan: _RoundTripRestorationPlan,
 ) -> dict[str, Any]:
-    decoded = dict(payload)
-    for path in surrogate_json_object_paths:
-        decoded = _decode_surrogate_json_object_path(
-            decoded,
+    restored = _restore_round_trip_value(
+        payload,
+        restoration_plan=restoration_plan,
+        path=(),
+        tool_name=tool_name,
+        call_id=call_id,
+    )
+    if restored is _RESTORE_OMITTED_FIELD or not isinstance(restored, Mapping):
+        return {}
+    return {str(key): value for key, value in restored.items()}
+
+
+def _restore_round_trip_value(
+    value: Any,
+    *,
+    restoration_plan: _RoundTripRestorationPlan,
+    path: tuple[_RoundTripPathSegment, ...],
+    tool_name: str,
+    call_id: str,
+) -> Any:
+    if value is None and restoration_plan.restore_null_to_omission:
+        return _RESTORE_OMITTED_FIELD
+    if restoration_plan.decode_json_object_surrogate:
+        value = _decode_json_object_surrogate_value(
+            value,
             path=path,
             tool_name=tool_name,
             call_id=call_id,
         )
-    return decoded
+    if isinstance(value, Mapping):
+        restored = {str(key): inner for key, inner in value.items()}
+        for key, child_plan in restoration_plan.properties.items():
+            if key not in restored:
+                continue
+            restored_value = _restore_round_trip_value(
+                restored[key],
+                restoration_plan=child_plan,
+                path=path + (key,),
+                tool_name=tool_name,
+                call_id=call_id,
+            )
+            if restored_value is _RESTORE_OMITTED_FIELD:
+                restored.pop(key, None)
+                continue
+            restored[key] = restored_value
+        return restored
+    if isinstance(value, list) and restoration_plan.array_item_plan is not None:
+        restored_items: list[Any] = []
+        for index, item in enumerate(value):
+            restored_item = _restore_round_trip_value(
+                item,
+                restoration_plan=restoration_plan.array_item_plan,
+                path=path + (index,),
+                tool_name=tool_name,
+                call_id=call_id,
+            )
+            if restored_item is _RESTORE_OMITTED_FIELD:
+                restored_items.append(None)
+                continue
+            restored_items.append(restored_item)
+        return restored_items
+    return value
 
 
-def _decode_surrogate_json_object_path(
-    payload: dict[str, Any],
+def _decode_json_object_surrogate_value(
+    value: Any,
     *,
-    path: tuple[str, ...],
+    path: tuple[_RoundTripPathSegment, ...],
     tool_name: str,
     call_id: str,
-) -> dict[str, Any]:
-    if not path:
-        return payload
-    head, *tail = path
-    if head not in payload:
-        return payload
-    value = payload[head]
-    decoded = dict(payload)
-    if tail:
-        if value is None:
-            return decoded
-        if not isinstance(value, Mapping):
-            raise OpenAIAdapterError(
-                (
-                    f"OpenAI function call '{tool_name}' returned a non-object value at "
-                    f"'{'.'.join(path[:-1])}' while decoding JSON object fields."
-                ),
-                failure_class="tool_schema_error",
-                metadata={
-                    "provider_name": OPENAI_PROVIDER_NAME,
-                    "provider_call_id": call_id,
-                    "tool_name": tool_name,
-                    "schema_path": ".".join(path),
-                },
-            )
-        decoded[head] = _decode_surrogate_json_object_path(
-            {str(key): inner for key, inner in value.items()},
-            path=tuple(tail),
-            tool_name=tool_name,
-            call_id=call_id,
-        )
-        return decoded
+) -> dict[str, Any] | None:
     if value is None:
-        return decoded
+        return None
     if isinstance(value, Mapping):
-        decoded[head] = {str(key): inner for key, inner in value.items()}
-        return decoded
+        return {str(key): inner for key, inner in value.items()}
+    formatted_path = _format_round_trip_path(path)
     if not isinstance(value, str):
         raise OpenAIAdapterError(
-            f"OpenAI function call '{tool_name}' returned a non-string JSON-object surrogate for '{head}'.",
+            (
+                f"OpenAI function call '{tool_name}' returned a non-string JSON-object surrogate "
+                f"for '{formatted_path}'."
+            ),
             failure_class="tool_schema_error",
             metadata={
                 "provider_name": OPENAI_PROVIDER_NAME,
                 "provider_call_id": call_id,
                 "tool_name": tool_name,
-                "schema_path": ".".join(path),
+                "schema_path": formatted_path,
                 "raw_value": value,
             },
         )
@@ -1385,30 +1423,47 @@ def _decode_surrogate_json_object_path(
         parsed = json.loads(value)
     except json.JSONDecodeError as exc:
         raise OpenAIAdapterError(
-            f"OpenAI function call '{tool_name}' returned invalid JSON for '{head}': {exc.msg}.",
+            f"OpenAI function call '{tool_name}' returned invalid JSON for '{formatted_path}': {exc.msg}.",
             failure_class="tool_schema_error",
             metadata={
                 "provider_name": OPENAI_PROVIDER_NAME,
                 "provider_call_id": call_id,
                 "tool_name": tool_name,
-                "schema_path": ".".join(path),
+                "schema_path": formatted_path,
                 "raw_value": value,
             },
         ) from exc
     if not isinstance(parsed, Mapping):
         raise OpenAIAdapterError(
-            f"OpenAI function call '{tool_name}' returned a non-object JSON payload for '{head}'.",
+            (
+                f"OpenAI function call '{tool_name}' returned a non-object JSON payload "
+                f"for '{formatted_path}'."
+            ),
             failure_class="tool_schema_error",
             metadata={
                 "provider_name": OPENAI_PROVIDER_NAME,
                 "provider_call_id": call_id,
                 "tool_name": tool_name,
-                "schema_path": ".".join(path),
+                "schema_path": formatted_path,
                 "raw_value": value,
             },
         )
-    decoded[head] = {str(key): inner for key, inner in parsed.items()}
-    return decoded
+    return {str(key): inner for key, inner in parsed.items()}
+
+
+def _format_round_trip_path(path: tuple[_RoundTripPathSegment, ...]) -> str:
+    if not path:
+        return "$"
+    formatted = ""
+    for segment in path:
+        if isinstance(segment, int):
+            formatted = f"{formatted}[{segment}]"
+            continue
+        if not formatted:
+            formatted = segment
+            continue
+        formatted = f"{formatted}.{segment}"
+    return formatted
 
 
 def _finalize_stream_text_block(state: _ResponsesStreamState) -> None:

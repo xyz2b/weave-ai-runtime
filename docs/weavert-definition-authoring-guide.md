@@ -189,8 +189,12 @@ TOOL_DEFINITION = ToolDefinition(
 - top-level `input_schema` 明确写成 `type: object`
 - object field 尽量全部显式声明，不要依赖动态 key map
 - optional field 允许保留“不在 `required` 里”的写法；adapter 会把它归一化成 `required + nullable`
+  - 这是 provider-facing transport shape；provider 回传 `null` 时，bundled adapter 会在 shared tool validation / execution 前恢复成 runtime 的“字段省略”语义
 - `additionalProperties: false` 是最稳妥的默认值
 - 如果必须表达数组，给 `items` 写完整 schema
+  - array item 内的 optional field 和 open object field 也会走同样的 strict export / round-trip restoration
+
+这意味着自定义 tool 仍然应该把原始 `input_schema` 当作 runtime canonical contract 来写，而不是把 OpenAI transport 细节直接写进 schema。
 
 当前 bundled OpenAI adapter 不支持 schema-valued `additionalProperties`。
 如果你写的是：

@@ -1,4 +1,5 @@
 import asyncio
+import json
 from pathlib import Path
 
 from weavert.builtins.tools import builtin_tools
@@ -13,6 +14,7 @@ from weavert.contracts import (
     TurnContext,
 )
 from weavert.definitions import ToolDefinition, ToolTraits
+from weavert.devtools.builtins import devtools_builtin_tools
 from weavert.openai_client import (
     BundledOpenAIModelClient,
     OPENAI_ROUTE_NAME,
@@ -41,6 +43,49 @@ def _make_request(*, messages: tuple[RuntimeMessage, ...], tools: tuple[ToolDefi
         tools=tools,
         model="gpt-test",
         max_output_tokens=256,
+    )
+
+
+def _nested_roundtrip_tool() -> ToolDefinition:
+    return ToolDefinition(
+        name="sync_jobs",
+        description="Sync nested job state.",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "config": {
+                    "type": "object",
+                    "properties": {
+                        "mode": {"type": "string"},
+                        "note": {"type": "string"},
+                        "metadata": {
+                            "type": "object",
+                            "additionalProperties": True,
+                        },
+                    },
+                    "required": ["mode"],
+                    "additionalProperties": False,
+                },
+                "jobs": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string"},
+                            "cwd": {"type": "string"},
+                            "env": {
+                                "type": "object",
+                                "additionalProperties": True,
+                            },
+                        },
+                        "required": ["name"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            "required": ["config", "jobs"],
+            "additionalProperties": False,
+        },
     )
 
 
@@ -213,6 +258,138 @@ def test_complete_parses_function_calls_into_runtime_blocks(monkeypatch) -> None
     assert response.terminal is not None
     assert response.terminal.metadata["provider_response_id"] == "resp_tool_use"
     assert response.terminal.metadata["response_status"] == "completed"
+
+
+def test_complete_restores_optional_builtin_devtool_fields(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+    glob_tool = next(tool for tool in devtools_builtin_tools() if tool.name == "glob")
+
+    def fake_post_json(_url: str, payload: dict[str, object], *, api_key: str) -> dict[str, object]:
+        assert api_key == "test-key"
+        captured["payload"] = payload
+        return {
+            "id": "resp_glob",
+            "status": "completed",
+            "output": [
+                {
+                    "type": "function_call",
+                    "call_id": "call_glob",
+                    "name": "glob",
+                    "arguments": '{"pattern":"*.md","root":null}',
+                }
+            ],
+            "usage": {"input_tokens": 6, "output_tokens": 2},
+        }
+
+    request = _make_request(
+        messages=(
+            RuntimeMessage(
+                message_id="user-1",
+                role=MessageRole.USER,
+                content=(TextBlock(text="Find markdown files."),),
+            ),
+        ),
+        tools=(glob_tool,),
+    )
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr("weavert.openai_client._post_json", fake_post_json)
+
+    response = asyncio.run(BundledOpenAIModelClient().complete(request))
+
+    exported = captured["payload"]["tools"][0]["parameters"]
+    assert exported["properties"]["root"]["type"] == ["string", "null"]
+    assert "root" in exported["required"]
+    assert response.message.content[0] == ToolUseBlock(
+        tool_use_id="call_glob",
+        name="glob",
+        input={"pattern": "*.md"},
+    )
+
+
+def test_complete_restores_nested_and_array_tool_fields(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+    tool = _nested_roundtrip_tool()
+    provider_arguments = {
+        "config": {
+            "mode": "safe",
+            "note": None,
+            "metadata": json.dumps({"owner": "ops"}),
+        },
+        "jobs": [
+            {
+                "name": "first",
+                "cwd": None,
+                "env": json.dumps({"region": "us"}),
+            },
+            {
+                "name": "second",
+                "cwd": "/tmp/work",
+                "env": None,
+            },
+        ],
+    }
+
+    def fake_post_json(_url: str, payload: dict[str, object], *, api_key: str) -> dict[str, object]:
+        assert api_key == "test-key"
+        captured["payload"] = payload
+        return {
+            "id": "resp_nested",
+            "status": "completed",
+            "output": [
+                {
+                    "type": "function_call",
+                    "call_id": "call_nested",
+                    "name": "sync_jobs",
+                    "arguments": json.dumps(provider_arguments),
+                }
+            ],
+            "usage": {"input_tokens": 9, "output_tokens": 4},
+        }
+
+    request = _make_request(
+        messages=(
+            RuntimeMessage(
+                message_id="user-1",
+                role=MessageRole.USER,
+                content=(TextBlock(text="Sync the job state."),),
+            ),
+        ),
+        tools=(tool,),
+    )
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr("weavert.openai_client._post_json", fake_post_json)
+
+    response = asyncio.run(BundledOpenAIModelClient().complete(request))
+
+    exported = captured["payload"]["tools"][0]["parameters"]
+    config_schema = exported["properties"]["config"]
+    jobs_item_schema = exported["properties"]["jobs"]["items"]
+    assert config_schema["properties"]["note"]["type"] == ["string", "null"]
+    assert config_schema["properties"]["metadata"]["type"] == ["string", "null"]
+    assert jobs_item_schema["properties"]["cwd"]["type"] == ["string", "null"]
+    assert jobs_item_schema["properties"]["env"]["type"] == ["string", "null"]
+    assert response.message.content[0] == ToolUseBlock(
+        tool_use_id="call_nested",
+        name="sync_jobs",
+        input={
+            "config": {
+                "mode": "safe",
+                "metadata": {"owner": "ops"},
+            },
+            "jobs": [
+                {
+                    "name": "first",
+                    "env": {"region": "us"},
+                },
+                {
+                    "name": "second",
+                    "cwd": "/tmp/work",
+                },
+            ],
+        },
+    )
 
 
 
@@ -444,6 +621,115 @@ def test_stream_maps_text_and_function_call_events(monkeypatch) -> None:
     assert events[-1].terminal.metadata["provider_response_id"] == "resp_stream"
 
 
+def test_stream_restores_nested_and_array_tool_fields(monkeypatch) -> None:
+    tool = _nested_roundtrip_tool()
+    provider_arguments = json.dumps(
+        {
+            "config": {
+                "mode": "safe",
+                "note": None,
+                "metadata": json.dumps({"owner": "ops"}),
+            },
+            "jobs": [
+                {
+                    "name": "first",
+                    "cwd": None,
+                    "env": json.dumps({"region": "us"}),
+                },
+                {
+                    "name": "second",
+                    "cwd": "/tmp/work",
+                    "env": None,
+                },
+            ],
+        }
+    )
+
+    def fake_post_json_stream(_url: str, _payload: dict[str, object], *, api_key: str):
+        assert api_key == "test-key"
+        return iter(
+            [
+                {"type": "response.created", "response": {"id": "resp_nested_stream"}},
+                {
+                    "type": "response.output_item.added",
+                    "output_index": 0,
+                    "item": {
+                        "type": "function_call",
+                        "id": "fc_nested",
+                        "call_id": "call_nested",
+                        "name": "sync_jobs",
+                        "arguments": "",
+                    },
+                },
+                {
+                    "type": "response.function_call_arguments.done",
+                    "item_id": "fc_nested",
+                    "output_index": 0,
+                    "arguments": provider_arguments,
+                },
+                {
+                    "type": "response.completed",
+                    "response": {
+                        "id": "resp_nested_stream",
+                        "status": "completed",
+                        "output": [
+                            {
+                                "type": "function_call",
+                                "call_id": "call_nested",
+                                "name": "sync_jobs",
+                                "arguments": provider_arguments,
+                            }
+                        ],
+                        "usage": {"input_tokens": 7, "output_tokens": 3},
+                    },
+                },
+            ]
+        )
+
+    request = _make_request(
+        messages=(
+            RuntimeMessage(
+                message_id="user-1",
+                role=MessageRole.USER,
+                content=(TextBlock(text="Stream the nested tool call."),),
+            ),
+        ),
+        tools=(tool,),
+    )
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr("weavert.openai_client._post_json_stream", fake_post_json_stream)
+
+    async def collect_events():
+        return [event async for event in BundledOpenAIModelClient().stream(request)]
+
+    events = asyncio.run(collect_events())
+
+    finalized_delta = next(
+        event
+        for event in events
+        if event.event_type.value == "content_block_delta" and "input" in event.payload
+    )
+    assert finalized_delta.payload["input"] == {
+        "config": {
+            "mode": "safe",
+            "metadata": {"owner": "ops"},
+        },
+        "jobs": [
+            {
+                "name": "first",
+                "env": {"region": "us"},
+            },
+            {
+                "name": "second",
+                "cwd": "/tmp/work",
+            },
+        ],
+    }
+    assert events[-1].terminal is not None
+    assert events[-1].terminal.stop_reason == "tool_use"
+
+
 def test_stream_replays_completed_only_blocks_when_no_prior_deltas(monkeypatch) -> None:
     def fake_post_json_stream(_url: str, _payload: dict[str, object], *, api_key: str):
         assert api_key == "test-key"
@@ -501,6 +787,64 @@ def test_stream_replays_completed_only_blocks_when_no_prior_deltas(monkeypatch) 
         "message_stop",
     ]
     assert events[1].payload["text"] == "Need fallback"
+    assert events[-1].terminal is not None
+    assert events[-1].terminal.stop_reason == "tool_use"
+
+
+def test_stream_completed_only_restores_builtin_optional_devtool_fields(monkeypatch) -> None:
+    bash_tool = next(tool for tool in devtools_builtin_tools() if tool.name == "bash")
+
+    def fake_post_json_stream(_url: str, _payload: dict[str, object], *, api_key: str):
+        assert api_key == "test-key"
+        return iter(
+            [
+                {"type": "response.created", "response": {"id": "resp_bash_fallback"}},
+                {
+                    "type": "response.completed",
+                    "response": {
+                        "id": "resp_bash_fallback",
+                        "status": "completed",
+                        "output": [
+                            {
+                                "type": "function_call",
+                                "call_id": "call_bash",
+                                "name": "bash",
+                                "arguments": (
+                                    '{"command":"printf hi","cwd":null,"shell":null,"timeout_ms":null}'
+                                ),
+                            }
+                        ],
+                        "usage": {"input_tokens": 5, "output_tokens": 3},
+                    },
+                },
+            ]
+        )
+
+    request = _make_request(
+        messages=(
+            RuntimeMessage(
+                message_id="user-1",
+                role=MessageRole.USER,
+                content=(TextBlock(text="Replay the builtin bash call."),),
+            ),
+        ),
+        tools=(bash_tool,),
+    )
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr("weavert.openai_client._post_json_stream", fake_post_json_stream)
+
+    async def collect_events():
+        return [event async for event in BundledOpenAIModelClient().stream(request)]
+
+    events = asyncio.run(collect_events())
+
+    finalized_delta = next(
+        event
+        for event in events
+        if event.event_type.value == "content_block_delta" and "input" in event.payload
+    )
+    assert finalized_delta.payload["input"] == {"command": "printf hi"}
     assert events[-1].terminal is not None
     assert events[-1].terminal.stop_reason == "tool_use"
 

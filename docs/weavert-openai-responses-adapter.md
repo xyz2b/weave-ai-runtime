@@ -53,10 +53,14 @@ Responses function tools 使用 strict schema；因此 bundled adapter 会对 ru
 - optional field 会被改写成“required + nullable”
   - 例如原来未列入 `required` 的 `note: {"type": "string"}`
   - 导出后会变成 `required` 中包含 `note`，并把类型改成 `{"type": ["string", "null"]}`
+- 这个 strict shape 只属于 provider transport；provider 如果回传 `null`，adapter 会在进入 runtime tool loop 前把它恢复成“字段省略”
+- open object field 会被导出成 JSON-string surrogate；provider 回传后 adapter 会在进入 runtime 校验和执行前解码回 object
 - array item schema 也会递归做同样的 strict normalization
+  - 同样的 round-trip restoration 也会覆盖嵌套 object field 和 array item 里的 object field
 - schema-valued `additionalProperties` 当前不支持；adapter 会在调用前返回 `tool_schema_error`
 
 如果你想让 tool 在默认 OpenAI route 上稳定工作，最好优先写显式字段、显式数组 item schema，而不是依赖动态 key map。
+换句话说，Responses strict function schema 是 transport shape，不是 runtime canonical tool-input contract。
 
 ## 5. Streaming behavior
 
@@ -68,6 +72,7 @@ Responses function tools 使用 strict schema；因此 bundled adapter 会对 ru
 - function call start/delta/stop -> runtime `CONTENT_BLOCK_START` / `CONTENT_BLOCK_DELTA` / `CONTENT_BLOCK_STOP`
 - final usage / request id / stop reason -> runtime terminal metadata
 - provider-side error details -> runtime `ERROR` event metadata
+- function call 最终输入会在 done/completed-only 两条路径上走同一套 round-trip restoration，因此 buffered 与 streaming 会收到相同的 canonical tool input
 
 默认 route 还会保守地关闭 provider-side parallel tool calls。
 原因不是 runtime 不支持并发，而是 coding workflow 更看重 deterministic ordered continuation。
