@@ -10,6 +10,7 @@ import pytest
 from demos._shared.common import extract_tool_result
 from demos._shared.scripted_model import ScriptedModelClient, text_batch, tool_call_batch
 from demos.apps.code_assistant.app import (
+    _print_task_list,
     assemble_demo_runtime,
     default_layout,
     inspect_demo,
@@ -445,8 +446,35 @@ def test_shell_inspect_tasks_and_jobs_are_host_owned(tmp_path: Path) -> None:
     assert report.local_commands == ("inspect", "tasks", "jobs", "exit")
     assert len(idle_client.requests) == 0
     assert any("code assistant inspect" in line for line in output_lines)
-    assert any("task list:" in line for line in output_lines)
+    assert f"task list: session:{report.session_id}" in output_lines
     assert any("jobs: 0" in line for line in output_lines)
+
+
+def test_print_task_list_prefers_list_id_and_falls_back_to_task_list_id() -> None:
+    output_lines: list[str] = []
+
+    _print_task_list(
+        task_list={
+            "list_id": "session:preferred",
+            "task_list_id": "session:legacy",
+            "tasks": [],
+        },
+        output_writer=output_lines.append,
+    )
+    _print_task_list(
+        task_list={
+            "task_list_id": "session:fallback",
+            "tasks": [],
+        },
+        output_writer=output_lines.append,
+    )
+
+    assert output_lines == [
+        "task list: session:preferred",
+        "no shared tasks yet",
+        "task list: session:fallback",
+        "no shared tasks yet",
+    ]
 
 
 def test_replacement_bash_returns_structured_results_and_background_jobs(tmp_path: Path) -> None:

@@ -623,7 +623,8 @@ def _print_inspect_report(
 
 def _print_task_list(*, task_list: dict[str, Any], output_writer) -> None:
     tasks = task_list.get("tasks", [])
-    output_writer(f"task list: {task_list.get('task_list_id', '<unknown>')}")
+    task_list_id = task_list.get("list_id") or task_list.get("task_list_id") or "<unknown>"
+    output_writer(f"task list: {task_list_id}")
     if not isinstance(tasks, list) or not tasks:
         output_writer("no shared tasks yet")
         return
