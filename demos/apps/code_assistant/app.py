@@ -9,7 +9,8 @@ from uuid import uuid4
 
 from demos._shared.bootstrap import PROJECT_ROOT
 
-from weavert.contracts import MessageRole, RuntimeMessage
+from weavert.child_result_projection import project_child_run_record
+from weavert.contracts import MessageRole, RuntimeMessage, ToolResultBlock
 from weavert.definitions import DefinitionSource
 from weavert.runtime_kernel import DefinitionSourcePaths, RuntimeConfig, RuntimeDistribution, assemble_runtime
 from weavert.session_runtime import InboundEvent, InboundEventType
@@ -65,6 +66,7 @@ class RunReport:
     notification_texts: tuple[str, ...]
     terminal_stop_reason: str | None
     terminal_metadata: dict[str, Any]
+    workflow_gaps: tuple[str, ...]
     ok: bool
     error_message: str | None = None
 
@@ -80,6 +82,7 @@ class InspectReport:
     persistence_profile: dict[str, Any]
     transcript_sessions: tuple[dict[str, Any], ...]
     child_run_sessions: tuple[dict[str, Any], ...]
+    child_run_records: tuple[dict[str, Any], ...]
     task_lists: tuple[dict[str, Any], ...]
     memory_root: Path | None
     memory_documents: int
@@ -134,6 +137,7 @@ async def run_demo(
     prompt: str = DEFAULT_PROMPT,
     session_id: str | None = None,
     auto_approve: bool = False,
+    validate_workflow: bool = True,
     layout: CodeAssistantLayout | None = None,
     model_client: Any = None,
     input_reader=input,
@@ -184,6 +188,15 @@ async def run_demo(
     child_run_index_path = workspace_root / ".weavert" / "child_runs" / "sessions" / f"{resolved_session_id}.json"
     final_text = _last_assistant_text(final_messages)
     error_message = _terminal_error_message(terminal_metadata)
+    workflow_gaps: tuple[str, ...] = ()
+    if error_message is None and validate_workflow:
+        workflow_gaps = _workflow_validation_gaps(
+            messages=final_messages,
+            approvals=host.approvals,
+            child_runs=host.child_run_events,
+            task_list=task_list,
+            final_text=final_text,
+        )
     return RunReport(
         session_id=resolved_session_id,
         workspace_root=workspace_root,
@@ -203,8 +216,9 @@ async def run_demo(
         notification_texts=tuple(message.text for message in host.notifications if message.text),
         terminal_stop_reason=terminal_stop_reason,
         terminal_metadata=terminal_metadata,
-        ok=error_message is None,
-        error_message=error_message,
+        workflow_gaps=workflow_gaps,
+        ok=error_message is None and not workflow_gaps,
+        error_message=error_message or _workflow_error_message(workflow_gaps),
     )
 
 
@@ -222,6 +236,7 @@ def inspect_demo(*, layout: CodeAssistantLayout | None = None) -> InspectReport:
             persistence_profile={},
             transcript_sessions=(),
             child_run_sessions=(),
+            child_run_records=(),
             task_lists=(),
             memory_root=None,
             memory_documents=0,
@@ -230,7 +245,8 @@ def inspect_demo(*, layout: CodeAssistantLayout | None = None) -> InspectReport:
     runtime = assemble_demo_runtime(layout=resolved_layout)
     agent = runtime.kernel.agent_registry.get("code-assistant")
     transcript_sessions = _transcript_sessions(workspace_root)
-    child_run_sessions = asyncio.run(_child_run_sessions(runtime=runtime, session_ids=_session_ids(workspace_root)))
+    child_run_records = asyncio.run(_child_run_records(runtime=runtime, session_ids=_session_ids(workspace_root)))
+    child_run_sessions = _summarize_child_run_sessions(child_run_records)
     task_lists = asyncio.run(runtime.list_task_lists())
     memory_root = None
     memory_documents = 0
@@ -255,6 +271,7 @@ def inspect_demo(*, layout: CodeAssistantLayout | None = None) -> InspectReport:
         persistence_profile=runtime.query_persistence_profile(),
         transcript_sessions=tuple(transcript_sessions),
         child_run_sessions=tuple(child_run_sessions),
+        child_run_records=tuple(child_run_records),
         task_lists=tuple(task_lists),
         memory_root=memory_root,
         memory_documents=memory_documents,
@@ -292,21 +309,38 @@ async def _wait_for_background_memory(*, runtime, session) -> None:
         await memory_service.wait_for_background_consolidation(normalized)
 
 
-async def _child_run_sessions(*, runtime, session_ids: tuple[str, ...]) -> tuple[dict[str, Any], ...]:
-    summaries: list[dict[str, Any]] = []
+async def _child_run_records(*, runtime, session_ids: tuple[str, ...]) -> tuple[dict[str, Any], ...]:
+    projected: list[dict[str, Any]] = []
     for session_id in session_ids:
         records = await runtime.agent_runtime.run_store.list_by_session(session_id)
         if not records:
             continue
-        summaries.append(
+        for record in records:
+            projection = project_child_run_record(record)
+            projection["session_id"] = session_id
+            projected.append(projection)
+    return tuple(projected)
+
+
+def _summarize_child_run_sessions(child_run_records: tuple[dict[str, Any], ...]) -> tuple[dict[str, Any], ...]:
+    grouped: dict[str, dict[str, Any]] = {}
+    for record in child_run_records:
+        session_id = str(record.get("session_id") or "").strip()
+        if not session_id:
+            continue
+        summary = grouped.setdefault(
+            session_id,
             {
                 "session_id": session_id,
-                "count": len(records),
-                "agents": [record.agent_name for record in records],
-                "statuses": [record.status.value for record in records],
-            }
+                "count": 0,
+                "agents": [],
+                "statuses": [],
+            },
         )
-    return tuple(summaries)
+        summary["count"] += 1
+        summary["agents"].append(record.get("agent"))
+        summary["statuses"].append(record.get("status"))
+    return tuple(grouped[session_id] for session_id in grouped)
 
 
 def _session_ids(workspace_root: Path) -> tuple[str, ...]:
@@ -357,6 +391,102 @@ def _terminal_error_message(terminal_metadata: dict[str, Any]) -> str | None:
         return None
     error = str(terminal_metadata.get("error") or failure_class).strip()
     return error or failure_class
+
+
+def _workflow_validation_gaps(
+    *,
+    messages: list[RuntimeMessage],
+    approvals: list[ApprovalRecord],
+    child_runs: list[dict[str, Any]],
+    task_list: dict[str, Any],
+    final_text: str,
+) -> tuple[str, ...]:
+    gaps: list[str] = []
+    successful_tools = _successful_tool_names(messages)
+    required_tools = {
+        "skill": "the workflow skill did not run",
+        "task_create": "shared task planning did not create any tasks",
+        "task_list": "the shared task list was never inspected",
+        "grep": "the workflow never used grep before editing",
+        "read": "the workflow never used read before editing",
+        "edit": "the workflow never used edit",
+        "write": "the workflow never used write",
+        "bash": "the workflow never used bash verification",
+    }
+    for tool_name, message in required_tools.items():
+        if tool_name not in successful_tools:
+            gaps.append(message)
+
+    skill_result = _find_skill_result(messages, skill_name="v1-code-workflow")
+    if skill_result is None:
+        gaps.append("the workspace-local v1-code-workflow skill was not applied")
+    elif skill_result.get("mode") != "inline":
+        gaps.append("the workspace-local v1-code-workflow skill did not run inline")
+
+    approval_names = {approval.name for approval in approvals}
+    for tool_name in ("edit", "write", "bash"):
+        if tool_name not in approval_names:
+            gaps.append(f"host approval for {tool_name} was never recorded")
+
+    child_statuses: dict[str, str] = {}
+    for child in child_runs:
+        agent = str(child.get("agent") or "").strip()
+        status = str(child.get("status") or "").strip()
+        if agent:
+            child_statuses[agent] = status
+    for agent_name in ("reviewer", "verifier"):
+        status = child_statuses.get(agent_name)
+        if status is None:
+            gaps.append(f"the {agent_name} child run never executed")
+        elif status != "completed":
+            gaps.append(f"the {agent_name} child run ended with status '{status}'")
+
+    tasks = task_list.get("tasks", ())
+    if not isinstance(tasks, list) or not tasks:
+        gaps.append("the shared task list is empty")
+
+    if not final_text.strip():
+        gaps.append("the assistant did not return a final summary")
+
+    return tuple(gaps)
+
+
+def _successful_tool_names(messages: list[RuntimeMessage]) -> set[str]:
+    successful: set[str] = set()
+    for entry in _tool_result_entries(messages):
+        if str(entry.get("status") or "").strip() == "success":
+            tool_name = str(entry.get("tool_name") or "").strip()
+            if tool_name:
+                successful.add(tool_name)
+    return successful
+
+
+def _tool_result_entries(messages: list[RuntimeMessage]) -> list[dict[str, Any]]:
+    entries: list[dict[str, Any]] = []
+    for message in messages:
+        raw_entries = message.metadata.get("tool_results", ())
+        if not isinstance(raw_entries, list):
+            continue
+        for entry in raw_entries:
+            if isinstance(entry, dict):
+                entries.append(entry)
+    return entries
+
+
+def _find_skill_result(messages: list[RuntimeMessage], *, skill_name: str) -> dict[str, Any] | None:
+    for message in messages:
+        for block in message.content:
+            if not isinstance(block, ToolResultBlock) or not isinstance(block.content, dict):
+                continue
+            if str(block.content.get("skill") or "").strip() == skill_name:
+                return block.content
+    return None
+
+
+def _workflow_error_message(workflow_gaps: tuple[str, ...]) -> str | None:
+    if not workflow_gaps:
+        return None
+    return "Workflow validation failed: " + "; ".join(workflow_gaps)
 
 
 __all__ = [

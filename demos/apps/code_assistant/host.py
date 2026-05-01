@@ -4,6 +4,7 @@ import asyncio
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
+from weavert.child_result_projection import project_child_run_record
 from weavert.hosts import SdkHostRuntime
 from weavert.permissions import PermissionOutcome, PermissionRequest
 from weavert.definitions import PermissionBehavior
@@ -64,15 +65,9 @@ class CodeAssistantHost(SdkHostRuntime):
     async def emit_turn_event(self, session_id: str, event) -> None:
         await SdkHostRuntime.emit_turn_event(self, session_id, event)
         if event.event_type == TurnStreamEventType.CHILD_RUN and event.child_run is not None:
-            self.child_run_events.append(
-                {
-                    "session_id": session_id,
-                    "agent": event.child_run.agent_name,
-                    "status": event.child_run.status.value,
-                    "summary": event.child_run.messages[-1].text if event.child_run.messages else "",
-                    "run_id": event.child_run.run_id,
-                }
-            )
+            projection = project_child_run_record(event.child_run)
+            projection["session_id"] = session_id
+            self.child_run_events.append(projection)
         elif event.event_type == TurnStreamEventType.TERMINAL and event.terminal is not None:
             self.terminal_events.append(
                 {

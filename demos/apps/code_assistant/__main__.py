@@ -60,12 +60,26 @@ def main() -> int:
                 f"- child runs {session['session_id']}: {session['count']} "
                 f"({', '.join(session['agents'])})"
             )
+        if report.child_run_records:
+            print(f"child run records: {len(report.child_run_records)}")
+            for record in report.child_run_records[:10]:
+                print(
+                    f"- child {record['session_id']} {record['agent']}: "
+                    f"{record['status']} -> {record['summary']}"
+                )
         print(f"task lists: {len(report.task_lists)}")
         for task_list in report.task_lists[:5]:
             print(
                 f"- task list {task_list['list_id']}: "
                 f"{len(task_list.get('tasks', []))} tasks"
             )
+            for task in task_list.get("tasks", [])[:5]:
+                readiness = task.get("readiness_state")
+                readiness_text = f", {readiness}" if readiness else ""
+                print(
+                    f"  - {task.get('subject', '<unnamed>')} "
+                    f"[{task.get('status', 'unknown')}{readiness_text}]"
+                )
         if report.memory_root is not None:
             print(f"memory root: {report.memory_root.relative_to(Path.cwd())}")
             print(f"memory documents: {report.memory_documents}")
@@ -99,6 +113,10 @@ def main() -> int:
         print(f"notifications: {len(report.notification_texts)}")
     if report.final_text:
         print(f"assistant: {report.final_text}")
+    if report.workflow_gaps:
+        print(f"workflow gaps: {len(report.workflow_gaps)}")
+        for gap in report.workflow_gaps:
+            print(f"- {gap}")
     if not report.ok:
         print(f"error: {report.error_message}")
         return 2

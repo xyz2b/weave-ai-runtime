@@ -216,6 +216,7 @@ def test_run_demo_with_scripted_model_exercises_tools_planning_and_child_runs(tm
     report, layout = _scripted_run_report(tmp_path)
 
     assert report.ok is True
+    assert report.workflow_gaps == ()
     assert report.final_text == "completed live coding workflow"
     assert [approval.name for approval in report.approvals] == ["edit", "write", "bash"]
     assert all(approval.approved for approval in report.approvals)
@@ -276,6 +277,35 @@ def test_run_demo_surfaces_missing_live_credentials_without_fallback(tmp_path: P
     assert report.final_text == ""
 
 
+def test_run_demo_fails_when_required_workflow_surfaces_do_not_execute(tmp_path: Path) -> None:
+    layout = _layout(tmp_path)
+    reset_demo_state(layout=layout)
+    client = ScriptedModelClient(
+        [
+            text_batch(
+                request_id="req-code-1",
+                text="I inspected mentally and I am done.",
+            )
+        ]
+    )
+
+    report = asyncio.run(
+        run_demo(
+            prompt="Use the default coding workflow.",
+            auto_approve=True,
+            layout=layout,
+            model_client=client,
+            output_writer=lambda _line: None,
+        )
+    )
+
+    assert report.ok is False
+    assert "Workflow validation failed" in str(report.error_message)
+    assert "shared task planning did not create any tasks" in report.workflow_gaps
+    assert "the reviewer child run never executed" in report.workflow_gaps
+    assert "the workflow never used bash verification" in report.workflow_gaps
+
+
 def test_inspect_demo_reports_durable_state_and_reset_clears_generated_outputs(tmp_path: Path) -> None:
     report, layout = _scripted_run_report(tmp_path)
 
@@ -287,6 +317,9 @@ def test_inspect_demo_reports_durable_state_and_reset_clears_generated_outputs(t
     assert inspect_before.persistence_profile["surfaces"]["memory"]["durability"] == "durable"
     assert any(session["session_id"] == report.session_id for session in inspect_before.transcript_sessions)
     assert any(session["session_id"] == report.session_id for session in inspect_before.child_run_sessions)
+    assert {record["agent"] for record in inspect_before.child_run_records} == {"reviewer", "verifier"}
+    assert any(record["summary"] == "review: no issues found" for record in inspect_before.child_run_records)
+    assert inspect_before.task_lists[0]["tasks"][0]["subject"] == "Inspect failing greeting test"
     assert inspect_before.memory_root == layout.workspace_root / ".weavert" / "memory"
 
     reset_demo_state(layout=layout)
@@ -295,4 +328,5 @@ def test_inspect_demo_reports_durable_state_and_reset_clears_generated_outputs(t
     assert inspect_after.workspace_exists is True
     assert inspect_after.transcript_sessions == ()
     assert inspect_after.child_run_sessions == ()
+    assert inspect_after.child_run_records == ()
     assert inspect_after.task_lists == ()
