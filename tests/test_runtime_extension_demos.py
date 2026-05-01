@@ -123,11 +123,14 @@ def test_runtime_extension_demo_runs_from_repo_root(
         assert line in completed.stdout
 
 
-def test_runtime_extension_readme_lists_project_demo_layer() -> None:
+def test_runtime_extension_readme_lists_project_and_live_app_demo_layers() -> None:
     readme = README.read_text(encoding="utf-8")
 
     assert "## Seam basics" in readme
     assert "## Semantic demos" in readme
     assert "## Project demos" in readme
+    assert "## Live app demos" in readme
     assert "multiple stable extension seams into a single project-shaped workflow" in readme
     assert "python3 -B -m demos.projects.release_workflow_demo" in readme
+    assert "python3 -B -m demos.apps.code_assistant run" in readme
+    assert "host-bound coding workflow" in readme

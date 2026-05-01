@@ -4,10 +4,11 @@ Run every command from the repository root. The demo modules bootstrap `src/` au
 
 The shared offline model helper lives in [`demos/_shared/scripted_model.py`](./_shared/scripted_model.py). The agent, skill, and project demos use it so they run without external model credentials.
 
-There are two distinct demo tracks in this repository:
+There are now three distinct demo tracks in this repository:
 
 - the offline seam demos in this README, which use the scripted helper and never hit a live provider
-- the bundled live OpenAI path, which uses the runtime default `openai_default` route backed by Responses API
+- the live app demo layer under `demos/apps/`, which uses host-bound runtime workflows against a real model route
+- the lower-level bundled live OpenAI path, which uses the runtime default `openai_default` route backed by Responses API
 
 These demos intentionally stay on stable public extension surfaces:
 
@@ -18,16 +19,31 @@ These demos intentionally stay on stable public extension surfaces:
 
 Run the seam-basics demos first if you want the minimum runnable extension surfaces. Then run the semantic demos to learn how skill hooks are authored, how default hook registration differs from session-local registration, and how package admission differs from activation.
 
-## Offline demos vs live OpenAI path
+## Offline demos vs live paths
 
 Everything in the tables below is intentionally offline and deterministic.
 If you only want to learn extension seams, stay on this path and do not export any provider credentials.
 
-If you want to exercise the bundled live coding path instead, set:
+If you want to exercise the live paths instead, set:
 
 - `OPENAI_API_KEY` (required)
 - `OPENAI_BASE_URL` (optional)
 - `OPENAI_MODEL` (optional, defaults to `gpt-4.1-mini`)
+
+If you want the app-shaped live validation surface, start here:
+
+```bash
+python3 -B -m demos.apps.code_assistant reset
+python3 -B -m demos.apps.code_assistant run
+python3 -B -m demos.apps.code_assistant inspect
+```
+
+That path is intentionally different from the lower-level provider smoke:
+
+- `demos.apps.code_assistant` validates a host-bound coding workflow with approvals, task planning, child agents, and durable state
+- `scripts/openai_responses_live_smoke.py` validates the bundled OpenAI adapter behavior and tool-calling transport details
+
+If you only want the lower-level provider smoke, use the bundled live OpenAI path below.
 
 Minimal live check from the repo root:
 
@@ -99,5 +115,20 @@ Run them after the seam-basics and semantic demos if you want to see how the pie
 | Demo | What it simulates | Extension seams | Run command | Expected output |
 | --- | --- | --- | --- | --- |
 | Release workflow | A release-readiness review for a small project workspace | file-backed `tool` + file-backed `agent` + file-backed `skill` + package-contributed context/capability | `python3 -B -m demos.projects.release_workflow_demo` | Prints the discovered workspace facts, the active release-freeze context, a child-generated release summary, and a final release verdict. |
+
+## Live app demos
+
+These demos sit above the offline seam and project layers. They use a real model-backed route, bind a host, and keep durable runtime artifacts in a resettable workspace.
+
+| Demo | What it validates | Run command | Expected output |
+| --- | --- | --- | --- |
+| Code assistant | Host-bound live coding with approvals, task-list planning, reviewer/verifier child runs, and durable state inspection | `python3 -B -m demos.apps.code_assistant run` | Prompts for edit/write/bash approval, updates the mutable mini repo, prints reviewer/verifier child-run summaries, and leaves transcripts plus other durable state under `demos/apps/code_assistant/state/mini_repo/.weavert/`. |
+
+Reset and inspect commands for the same app:
+
+```bash
+python3 -B -m demos.apps.code_assistant reset
+python3 -B -m demos.apps.code_assistant inspect
+```
 
 If you want an automated check that these commands still work, run `pytest tests/test_runtime_extension_demos.py`.
