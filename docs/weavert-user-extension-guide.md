@@ -283,6 +283,133 @@ bundled > user > project
 - 项目级同名定义不会天然覆盖 builtin。
 - 真要替换 builtin，应在 Python 装配层用 `BuiltinPackConfig`。
 
+### 2.5.1 推荐做法：用 replacement 替换 builtin
+
+如果你的目标不是“新增一个能力”，而是“保留 builtin 的名字，但换掉它的实现、prompt 或 workflow”，推荐直接使用 `BuiltinPackConfig` 的 replacement 配置：
+
+- `tool_replacements`
+- `agent_replacements`
+- `skill_replacements`
+
+这比在 `.weavert/` 目录里放一个同名 definition 更可靠，也更符合当前 runtime 的设计方式。
+
+#### 什么时候应该这样做
+
+这条路径适合下面几类需求：
+
+- 想保留 `main-router` 这个名字，但换成你自己的路由 prompt
+- 想保留 `read`、`write`、`bash` 这类 builtin tool 的调用名，但接上自己的实现
+- 想保留 `debug`、`verify` 这类 builtin skill 的名字，但替换成项目自己的工作流
+
+如果你明确是在“替换内置能力”，就优先用 replacement，不要把同名 file-backed definition 当作覆盖机制。
+
+#### 为什么推荐这样做
+
+对使用者来说，最重要的是记住这一点：
+
+- `.weavert/` 下的同名 definition，不应该被默认理解成 builtin override
+- 想替换 builtin，应该在 runtime 装配时显式声明
+- 这样更直观，也更稳定
+
+可以把它理解成：
+
+```text
+新增能力：放到 .weavert/
+替换 builtin：写到 BuiltinPackConfig
+```
+
+#### 最小示例
+
+```python
+from pathlib import Path
+
+from weavert.definitions import AgentDefinition, SkillDefinition, ToolDefinition
+from weavert.runtime_kernel import BuiltinPackConfig, RuntimeConfig, assemble_runtime
+
+
+def custom_read(tool_input, context):
+    return {
+        "source": "custom-read",
+        "file_path": tool_input["file_path"],
+    }
+
+
+runtime = assemble_runtime(
+    RuntimeConfig(
+        working_directory=Path.cwd(),
+        builtins=BuiltinPackConfig(
+            tool_replacements={
+                "read": ToolDefinition(
+                    name="read",
+                    description="Custom replacement for builtin read",
+                    input_schema={
+                        "type": "object",
+                        "properties": {
+                            "file_path": {"type": "string"},
+                        },
+                        "required": ["file_path"],
+                        "additionalProperties": False,
+                    },
+                    execute=custom_read,
+                )
+            },
+            agent_replacements={
+                "main-router": AgentDefinition(
+                    name="main-router",
+                    description="Custom main router",
+                    prompt="Route requests using project-specific rules first.",
+                    tools=("*",),
+                    skills=("*",),
+                )
+            },
+            skill_replacements={
+                "debug": SkillDefinition(
+                    name="debug",
+                    description="Project-specific debug workflow",
+                    content="Reproduce the issue, inspect project conventions, and prefer the smallest local fix.",
+                )
+            },
+        ),
+    )
+)
+```
+
+#### 使用时记住两条
+
+1. replacement 字典的 key，要写你想替换的 builtin 名字。
+2. replacement definition 自身的 `name`，也应与目标 builtin 保持一致。
+
+#### 一个常见误区
+
+下面这种写法，当前不应该被当成“覆盖 builtin”的标准做法：
+
+```text
+.weavert/
+  tools/
+    read.py
+  agents/
+    main-router.md
+  skills/
+    debug/
+      SKILL.md
+```
+
+它们可以是自定义 definitions，但不应默认指望它们天然替换内置能力。
+
+如果你的目标是：
+
+- 保留 builtin 名字并替换它：用 `*_replacements`
+- 彻底关闭某个 builtin：用 `disabled_*`
+- 新增一个全新的能力：用 `.weavert/` 或 `extra_*`
+
+#### 选择建议
+
+可以按下面的方式判断：
+
+- 想替换 builtin：用 `tool_replacements` / `agent_replacements` / `skill_replacements`
+- 想禁用 builtin：用 `disabled_tools` / `disabled_agents` / `disabled_skills`
+- 想新增能力：用 `.weavert/` discovery 或 `extra_*`
+
 ### 2.6 三种常见 agent 组合：planning、ops、coordinator
 
 现在 builtin pack 已把 planning task list 和 background job control 明确拆开，所以定义 agent 时最好直接按职责配 tool pool，而不是给所有 agent 一把大锤。
