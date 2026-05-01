@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -10,6 +11,7 @@ import pytest
 from demos._shared.common import extract_tool_result
 from demos._shared.scripted_model import ScriptedModelClient, text_batch, tool_call_batch
 from demos.apps.code_assistant.app import (
+    CODE_ASSISTANT_STATE_ROOT_ENV,
     _print_task_list,
     assemble_demo_runtime,
     default_layout,
@@ -24,10 +26,32 @@ from weavert.runtime_kernel import RuntimeDistribution
 from weavert.tool_runtime import ToolContext
 
 PYTHON = sys.executable
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def _layout(tmp_path: Path):
     return default_layout(state_root=tmp_path / "state")
+
+
+def _cli_env(tmp_path: Path) -> dict[str, str]:
+    env = dict(os.environ)
+    env[CODE_ASSISTANT_STATE_ROOT_ENV] = str(tmp_path / "cli-state")
+    return env
+
+
+def _run_code_assistant_cli(
+    *args: str,
+    env: dict[str, str],
+    input_text: str | None = None,
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [PYTHON, "-B", "-m", "demos.apps.code_assistant", *args],
+        cwd=ROOT,
+        env=env,
+        input=input_text,
+        capture_output=True,
+        text=True,
+    )
 
 
 def _scripted_run_report(tmp_path: Path):
@@ -425,6 +449,41 @@ def test_shell_resume_lists_sessions_and_reattaches_without_model_turn(tmp_path:
     assert any("reattached session: resume-target" in line for line in output_lines)
 
 
+def test_shell_inspect_highlights_live_current_session_over_persisted_history(tmp_path: Path) -> None:
+    layout = _layout(tmp_path)
+    reset_demo_state(layout=layout)
+    seed_client = ScriptedModelClient([text_batch(request_id="req-seed-1", text="seeded transcript")])
+    asyncio.run(
+        run_demo(
+            prompt="Seed a persisted transcript.",
+            session_id="persisted-session",
+            auto_approve=True,
+            validate_workflow=False,
+            layout=layout,
+            model_client=seed_client,
+            output_writer=lambda _line: None,
+        )
+    )
+
+    output_lines: list[str] = []
+    idle_client = ScriptedModelClient([])
+    report = asyncio.run(
+        shell_demo(
+            session_id="live-shell",
+            auto_approve=True,
+            layout=layout,
+            model_client=idle_client,
+            input_reader=_iter_input(["/inspect", "/exit"]),
+            output_writer=output_lines.append,
+        )
+    )
+
+    assert report.ok is True
+    assert any("transcript sessions: 2" in line for line in output_lines)
+    assert any("current transcript: live-shell" in line for line in output_lines)
+    assert not any("latest transcript:" in line for line in output_lines)
+
+
 def test_shell_inspect_tasks_and_jobs_are_host_owned(tmp_path: Path) -> None:
     layout = _layout(tmp_path)
     reset_demo_state(layout=layout)
@@ -446,6 +505,10 @@ def test_shell_inspect_tasks_and_jobs_are_host_owned(tmp_path: Path) -> None:
     assert report.local_commands == ("inspect", "tasks", "jobs", "exit")
     assert len(idle_client.requests) == 0
     assert any("code assistant inspect" in line for line in output_lines)
+    assert any("transcript sessions: 1" in line for line in output_lines)
+    assert any(f"current transcript: {report.session_id}" in line for line in output_lines)
+    assert any("task lists: 1" in line for line in output_lines)
+    assert f"current task list: session:{report.session_id}" in output_lines
     assert f"task list: session:{report.session_id}" in output_lines
     assert any("jobs: 0" in line for line in output_lines)
 
@@ -600,6 +663,58 @@ def test_run_demo_surfaces_missing_live_credentials_without_fallback(tmp_path: P
     assert report.final_text == ""
 
 
+def test_run_demo_succeeds_through_bundled_openai_route_when_stream_is_stubbed(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    layout = _layout(tmp_path)
+    reset_demo_state(layout=layout)
+
+    def fake_post_json_stream(_url: str, _payload: dict[str, object], *, api_key: str):
+        assert api_key == "test-key"
+        return iter(
+            [
+                {"type": "response.created", "response": {"id": "resp-code-assistant-live"}},
+                {"type": "response.output_text.delta", "delta": "Hello "},
+                {"type": "response.output_text.delta", "delta": "from live route"},
+                {
+                    "type": "response.completed",
+                    "response": {
+                        "id": "resp-code-assistant-live",
+                        "status": "completed",
+                        "output": [
+                            {
+                                "type": "message",
+                                "role": "assistant",
+                                "content": [{"type": "output_text", "text": "Hello from live route"}],
+                            }
+                        ],
+                        "usage": {"input_tokens": 6, "output_tokens": 4},
+                    },
+                },
+            ]
+        )
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr("weavert.openai_client._post_json_stream", fake_post_json_stream)
+
+    report = asyncio.run(
+        run_demo(
+            prompt="Say hello.",
+            auto_approve=True,
+            validate_workflow=False,
+            layout=layout,
+            output_writer=lambda _line: None,
+        )
+    )
+
+    assert report.ok is True
+    assert report.default_model_route == OPENAI_ROUTE_NAME
+    assert report.final_text == "Hello from live route"
+    assert report.task_list_id == f"session:{report.session_id}"
+    assert report.transcript_path.exists()
+
+
 def test_run_demo_fails_when_required_workflow_surfaces_do_not_execute(tmp_path: Path) -> None:
     layout = _layout(tmp_path)
     reset_demo_state(layout=layout)
@@ -657,3 +772,50 @@ def test_inspect_demo_reports_durable_state_and_reset_clears_generated_outputs(t
     assert inspect_after.child_run_sessions == ()
     assert inspect_after.child_run_records == ()
     assert inspect_after.task_lists == ()
+
+
+def test_code_assistant_cli_respects_state_root_override_and_runs_shell_commands(tmp_path: Path) -> None:
+    env = _cli_env(tmp_path)
+    state_root = tmp_path / "cli-state"
+
+    reset = _run_code_assistant_cli("reset", env=env)
+    assert reset.returncode == 0
+    assert f"workspace: {state_root / 'mini_repo'}" in reset.stdout
+
+    inspect = _run_code_assistant_cli("inspect", env=env)
+    assert inspect.returncode == 0
+    assert f"state root: {state_root}" in inspect.stdout
+    assert f"workspace: {state_root / 'mini_repo'}" in inspect.stdout
+
+    shell = _run_code_assistant_cli(
+        "shell",
+        "--session-id",
+        "cli-shell",
+        "--auto-approve",
+        env=env,
+        input_text="/inspect\n/tasks\n/jobs\n/exit\n",
+    )
+    assert shell.returncode == 0
+    assert "current transcript: cli-shell" in shell.stdout
+    assert "current task list: session:cli-shell" in shell.stdout
+    assert "jobs: 0" in shell.stdout
+
+
+def test_code_assistant_cli_run_surfaces_auth_failure_in_subprocess(tmp_path: Path) -> None:
+    env = _cli_env(tmp_path)
+    env.pop("OPENAI_API_KEY", None)
+
+    completed = _run_code_assistant_cli(
+        "run",
+        "--session-id",
+        "cli-run",
+        "--auto-approve",
+        "--prompt",
+        "Say hello.",
+        env=env,
+    )
+
+    assert completed.returncode == 2
+    assert "code assistant demo run" in completed.stdout
+    assert "default route: openai_default" in completed.stdout
+    assert "error: Bundled OpenAI route 'openai_default' requires OPENAI_API_KEY" in completed.stdout

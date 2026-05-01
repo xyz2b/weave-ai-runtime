@@ -7,6 +7,13 @@ from pathlib import Path
 from .app import DEFAULT_PROMPT, default_layout, inspect_demo, reset_demo_state, run_demo, shell_demo
 
 
+def _display_path(path: Path) -> str:
+    try:
+        return str(path.relative_to(Path.cwd()))
+    except ValueError:
+        return str(path)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run the AI coding shell MVP demo.")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -37,8 +44,8 @@ def main() -> int:
     if args.command == "reset":
         workspace_root = reset_demo_state(layout=layout)
         print("code assistant demo reset")
-        print(f"workspace: {workspace_root.relative_to(Path.cwd())}")
-        print(f"fixture: {layout.fixture_root.relative_to(Path.cwd())}")
+        print(f"workspace: {_display_path(workspace_root)}")
+        print(f"fixture: {_display_path(layout.fixture_root)}")
         print("state cleared: live edits, transcripts, child runs, task lists, and memory were reset")
         return 0
 
@@ -46,12 +53,12 @@ def main() -> int:
         report = inspect_demo(layout=layout)
         print("code assistant demo inspect")
         print(f"workspace exists: {'yes' if report.workspace_exists else 'no'}")
-        print(f"fixture: {report.fixture_root.relative_to(Path.cwd())}")
-        print(f"state root: {report.state_root.relative_to(Path.cwd())}")
+        print(f"fixture: {_display_path(report.fixture_root)}")
+        print(f"state root: {_display_path(report.state_root)}")
         if not report.workspace_exists:
             print("hint: run `python3 -B -m demos.apps.code_assistant reset`, `shell`, or `run` first")
             return 0
-        print(f"workspace: {report.workspace_root.relative_to(Path.cwd())}")
+        print(f"workspace: {_display_path(report.workspace_root)}")
         print(f"distribution: {report.distribution}")
         print(f"default route: {report.default_model_route}")
         print(
@@ -60,7 +67,7 @@ def main() -> int:
         )
         print(f"transcript sessions: {len(report.transcript_sessions)}")
         for session in report.transcript_sessions[:5]:
-            relative = Path(session['path']).relative_to(Path.cwd())
+            relative = _display_path(Path(session["path"]))
             print(f"- transcript {session['session_id']}: {relative} ({session['entries']} entries)")
         print(f"child run sessions: {len(report.child_run_sessions)}")
         for session in report.child_run_sessions[:5]:
@@ -77,8 +84,9 @@ def main() -> int:
                 )
         print(f"task lists: {len(report.task_lists)}")
         for task_list in report.task_lists[:5]:
+            task_list_id = task_list.get("list_id") or task_list.get("task_list_id") or "<unknown>"
             print(
-                f"- task list {task_list['list_id']}: "
+                f"- task list {task_list_id}: "
                 f"{len(task_list.get('tasks', []))} tasks"
             )
             for task in task_list.get("tasks", [])[:5]:
@@ -89,7 +97,7 @@ def main() -> int:
                     f"[{task.get('status', 'unknown')}{readiness_text}]"
                 )
         if report.memory_root is not None:
-            print(f"memory root: {report.memory_root.relative_to(Path.cwd())}")
+            print(f"memory root: {_display_path(report.memory_root)}")
             print(f"memory documents: {report.memory_documents}")
         return 0
 
@@ -103,14 +111,14 @@ def main() -> int:
         )
         print("code assistant demo shell")
         print(f"session: {report.session_id}")
-        print(f"workspace: {report.workspace_root.relative_to(Path.cwd())}")
+        print(f"workspace: {_display_path(report.workspace_root)}")
         print(f"distribution: {report.distribution}")
         print(f"default route: {report.default_model_route}")
         print(f"prompts: {report.prompt_count}")
         print(f"local commands: {len(report.local_commands)}")
-        print(f"transcript: {report.transcript_path.relative_to(Path.cwd())}")
-        print(f"child run index: {report.child_run_index_path.relative_to(Path.cwd())}")
-        print(f"memory root: {report.memory_root.relative_to(Path.cwd())}")
+        print(f"transcript: {_display_path(report.transcript_path)}")
+        print(f"child run index: {_display_path(report.child_run_index_path)}")
+        print(f"memory root: {_display_path(report.memory_root)}")
         if not report.ok:
             print(f"error: {report.error_message}")
             return 2
@@ -127,7 +135,7 @@ def main() -> int:
     )
     print("code assistant demo run")
     print(f"session: {report.session_id}")
-    print(f"workspace: {report.workspace_root.relative_to(Path.cwd())}")
+    print(f"workspace: {_display_path(report.workspace_root)}")
     print(f"distribution: {report.distribution}")
     print(f"default route: {report.default_model_route}")
     print(f"task list: {report.task_list_id}")
@@ -138,9 +146,9 @@ def main() -> int:
     print(f"child runs: {len(report.child_runs)}")
     for child in report.child_runs:
         print(f"- child {child['agent']}: {child['status']} -> {child['summary']}")
-    print(f"transcript: {report.transcript_path.relative_to(Path.cwd())}")
-    print(f"child run index: {report.child_run_index_path.relative_to(Path.cwd())}")
-    print(f"memory root: {report.memory_root.relative_to(Path.cwd())}")
+    print(f"transcript: {_display_path(report.transcript_path)}")
+    print(f"child run index: {_display_path(report.child_run_index_path)}")
+    print(f"memory root: {_display_path(report.memory_root)}")
     if report.notification_texts:
         print(f"notifications: {len(report.notification_texts)}")
     if report.final_text:

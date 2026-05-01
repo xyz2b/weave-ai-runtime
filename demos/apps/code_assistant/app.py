@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
@@ -29,6 +30,7 @@ from .builtin_overrides import (
 from .host import ApprovalRecord, CodeAssistantHost
 
 DEFAULT_SESSION_PREFIX = "code-assistant"
+CODE_ASSISTANT_STATE_ROOT_ENV = "WEAVERT_CODE_ASSISTANT_STATE_ROOT"
 DEFAULT_PROMPT = """Work in the current mini repo.
 
 Goal:
@@ -120,6 +122,8 @@ class InspectReport:
     task_lists: tuple[dict[str, Any], ...]
     memory_root: Path | None
     memory_documents: int
+    highlighted_session_id: str | None = None
+    highlighted_task_list_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -144,9 +148,10 @@ class LocalCommandOutcome:
 
 def default_layout(*, state_root: Path | None = None) -> CodeAssistantLayout:
     demo_root = PROJECT_ROOT / "demos" / "apps" / "code_assistant"
+    env_state_root = os.environ.get(CODE_ASSISTANT_STATE_ROOT_ENV, "").strip()
     return CodeAssistantLayout(
         demo_root=demo_root,
-        state_root=state_root or (demo_root / "state"),
+        state_root=state_root or (Path(env_state_root).expanduser() if env_state_root else demo_root / "state"),
     )
 
 
@@ -339,6 +344,7 @@ async def shell_demo(
                     bound=bound,
                     layout=resolved_layout,
                     session_id=active_session_id,
+                    session=session,
                     output_writer=output_writer,
                 )
                 if outcome.resume_session_id is not None:
@@ -429,29 +435,70 @@ async def _inspect_demo_async(*, layout: CodeAssistantLayout | None = None) -> I
         )
 
     runtime = assemble_demo_runtime(layout=resolved_layout)
+    return await _inspect_runtime_state(
+        runtime=runtime,
+        workspace_root=workspace_root,
+        fixture_root=resolved_layout.fixture_root,
+        state_root=resolved_layout.state_root,
+    )
+
+
+async def _inspect_runtime_state(
+    *,
+    runtime,
+    workspace_root: Path,
+    fixture_root: Path,
+    state_root: Path,
+    current_session_id: str | None = None,
+    current_session: Any = None,
+    bound: Any = None,
+) -> InspectReport:
     agent = runtime.kernel.agent_registry.get("code-assistant")
     transcript_sessions = _transcript_sessions(workspace_root)
     child_run_records = await _child_run_records(runtime=runtime, session_ids=_session_ids(workspace_root))
     child_run_sessions = _summarize_child_run_sessions(child_run_records)
-    task_lists = await runtime.list_task_lists()
+    task_lists = list(await runtime.list_task_lists())
     memory_root = None
     memory_documents = 0
     if agent is not None:
         memory_context = _memory_context(
             runtime=runtime,
             agent=agent,
-            session_id=transcript_sessions[0]["session_id"] if transcript_sessions else "inspect-preview",
+            session_id=current_session_id
+            or (transcript_sessions[0]["session_id"] if transcript_sessions else "inspect-preview"),
             cwd=workspace_root,
         )
         memory_root = memory_context.memory_root
         if memory_root.exists():
             memory_documents = sum(1 for path in memory_root.rglob("*.md") if path.is_file())
 
+    highlighted_task_list_id: str | None = None
+    if current_session_id is not None:
+        live_session = current_session
+        if live_session is None and hasattr(runtime, "services") and hasattr(runtime.services, "sessions"):
+            sessions = runtime.services.sessions
+            if hasattr(sessions, "get"):
+                live_session = sessions.get(current_session_id)
+        transcript_sessions = _merge_current_transcript_session(
+            transcript_sessions=transcript_sessions,
+            workspace_root=workspace_root,
+            session_id=current_session_id,
+            session=live_session,
+        )
+        current_task_list = await _load_current_task_list(
+            runtime=runtime,
+            bound=bound,
+            session_id=current_session_id,
+        )
+        if current_task_list is not None:
+            highlighted_task_list_id = _task_list_identifier(current_task_list)
+            task_lists = _merge_current_task_list(task_lists=task_lists, current_task_list=current_task_list)
+
     return InspectReport(
         workspace_exists=True,
         workspace_root=workspace_root,
-        fixture_root=resolved_layout.fixture_root,
-        state_root=resolved_layout.state_root,
+        fixture_root=fixture_root,
+        state_root=state_root,
         distribution=runtime.kernel.distribution,
         default_model_route=runtime.kernel.config.default_model_route,
         persistence_profile=runtime.query_persistence_profile(),
@@ -461,6 +508,8 @@ async def _inspect_demo_async(*, layout: CodeAssistantLayout | None = None) -> I
         task_lists=tuple(task_lists),
         memory_root=memory_root,
         memory_documents=memory_documents,
+        highlighted_session_id=current_session_id,
+        highlighted_task_list_id=highlighted_task_list_id,
     )
 
 
@@ -493,6 +542,7 @@ async def _handle_local_command(
     bound,
     layout: CodeAssistantLayout,
     session_id: str,
+    session,
     output_writer,
 ) -> LocalCommandOutcome:
     if command.name == "help":
@@ -503,7 +553,15 @@ async def _handle_local_command(
         return LocalCommandOutcome(exit_shell=True)
     if command.name == "inspect":
         _print_inspect_report(
-            await _inspect_demo_async(layout=layout),
+            await _inspect_runtime_state(
+                runtime=bound.runtime,
+                workspace_root=layout.workspace_root,
+                fixture_root=layout.fixture_root,
+                state_root=layout.state_root,
+                current_session_id=session_id,
+                current_session=session,
+                bound=bound,
+            ),
             output_writer=output_writer,
             current_session_id=session_id,
         )
@@ -608,14 +666,18 @@ def _print_inspect_report(
         f"{report.persistence_profile.get('profile_kind', 'unknown')}"
     )
     output_writer(f"transcript sessions: {len(report.transcript_sessions)}")
-    if report.transcript_sessions:
-        latest = report.transcript_sessions[0]
-        output_writer(
-            f"latest transcript: {latest['session_id']} "
-            f"({_display_path(Path(latest['path']))}, {latest['entries']} entries)"
-        )
+    highlighted_transcript = _find_transcript_session(
+        report.transcript_sessions,
+        session_id=report.highlighted_session_id,
+    )
+    if highlighted_transcript is not None:
+        output_writer(_format_transcript_session_line(label="current transcript", session=highlighted_transcript))
+    elif report.transcript_sessions:
+        output_writer(_format_transcript_session_line(label="latest transcript", session=report.transcript_sessions[0]))
     output_writer(f"child run sessions: {len(report.child_run_sessions)}")
     output_writer(f"task lists: {len(report.task_lists)}")
+    if report.highlighted_task_list_id is not None:
+        output_writer(f"current task list: {report.highlighted_task_list_id}")
     if report.memory_root is not None:
         output_writer(f"memory root: {_display_path(report.memory_root)}")
         output_writer(f"memory documents: {report.memory_documents}")
@@ -757,15 +819,105 @@ def _transcript_sessions(workspace_root: Path) -> list[dict[str, Any]]:
         return []
     sessions: list[dict[str, Any]] = []
     for path in sorted(transcripts_root.glob("*.jsonl"), key=lambda item: item.stat().st_mtime, reverse=True):
-        line_count = sum(1 for line in path.read_text(encoding="utf-8").splitlines() if line.strip())
         sessions.append(
             {
                 "session_id": path.stem,
                 "path": path,
-                "entries": line_count,
+                "entries": _count_transcript_entries(path),
             }
         )
     return sessions
+
+
+def _count_transcript_entries(path: Path) -> int:
+    return sum(1 for line in path.read_text(encoding="utf-8").splitlines() if line.strip())
+
+
+def _merge_current_transcript_session(
+    *,
+    transcript_sessions: list[dict[str, Any]],
+    workspace_root: Path,
+    session_id: str,
+    session: Any = None,
+) -> list[dict[str, Any]]:
+    transcript_path = workspace_root / ".weavert" / "transcripts" / f"{session_id}.jsonl"
+    live_entries = None
+    if session is not None and hasattr(session, "messages"):
+        live_entries = len(tuple(session.messages))
+    entry = {
+        "session_id": session_id,
+        "path": transcript_path,
+        "entries": live_entries if live_entries is not None else _count_transcript_entries(transcript_path)
+        if transcript_path.exists()
+        else 0,
+        "live": session is not None,
+        "persisted": transcript_path.exists(),
+    }
+    merged = [entry]
+    merged.extend(
+        item for item in transcript_sessions if str(item.get("session_id") or "") != session_id
+    )
+    return merged
+
+
+async def _load_current_task_list(
+    *,
+    runtime,
+    bound,
+    session_id: str,
+) -> dict[str, Any] | None:
+    if bound is not None:
+        return await bound.get_task_list(session_id=session_id, include_archived=True)
+    return await runtime.get_task_list(session_id=session_id, include_archived=True)
+
+
+def _task_list_identifier(task_list: dict[str, Any]) -> str | None:
+    task_list_id = task_list.get("list_id") or task_list.get("task_list_id")
+    if not isinstance(task_list_id, str):
+        return None
+    value = task_list_id.strip()
+    return value or None
+
+
+def _merge_current_task_list(
+    *,
+    task_lists: list[dict[str, Any]],
+    current_task_list: dict[str, Any],
+) -> list[dict[str, Any]]:
+    current_task_list_id = _task_list_identifier(current_task_list)
+    if current_task_list_id is None:
+        return list(task_lists)
+    merged = [current_task_list]
+    merged.extend(
+        item for item in task_lists if _task_list_identifier(item) != current_task_list_id
+    )
+    return merged
+
+
+def _find_transcript_session(
+    sessions: tuple[dict[str, Any], ...] | list[dict[str, Any]],
+    *,
+    session_id: str | None,
+) -> dict[str, Any] | None:
+    if session_id is None:
+        return None
+    for session in sessions:
+        if str(session.get("session_id") or "") == session_id:
+            return session
+    return None
+
+
+def _format_transcript_session_line(*, label: str, session: dict[str, Any]) -> str:
+    status: list[str] = []
+    if session.get("live") is True:
+        status.append("live")
+    if session.get("persisted") is True:
+        status.append("persisted")
+    status_suffix = f", {', '.join(status)}" if status else ""
+    return (
+        f"{label}: {session['session_id']} "
+        f"({_display_path(Path(session['path']))}, {session['entries']} entries{status_suffix})"
+    )
 
 
 def _final_status(terminal_metadata: dict[str, Any], terminal_stop_reason: str | None) -> str:
@@ -894,6 +1046,7 @@ def _session_child_runs(records: list[dict[str, Any]], *, session_id: str) -> li
 
 
 __all__ = [
+    "CODE_ASSISTANT_STATE_ROOT_ENV",
     "CodeAssistantLayout",
     "DEFAULT_PROMPT",
     "InspectReport",
