@@ -4,12 +4,20 @@ import argparse
 import asyncio
 from pathlib import Path
 
-from .app import DEFAULT_PROMPT, default_layout, inspect_demo, reset_demo_state, run_demo
+from .app import DEFAULT_PROMPT, default_layout, inspect_demo, reset_demo_state, run_demo, shell_demo
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Run the live code assistant app demo.")
+    parser = argparse.ArgumentParser(description="Run the AI coding shell MVP demo.")
     subparsers = parser.add_subparsers(dest="command", required=True)
+
+    shell_parser = subparsers.add_parser("shell", help="Run the interactive AI coding shell.")
+    shell_parser.add_argument("--session-id", default=None, help="Optional stable session id.")
+    shell_parser.add_argument(
+        "--auto-approve",
+        action="store_true",
+        help="Auto-approve edit, write, and bash actions during the shell session.",
+    )
 
     run_parser = subparsers.add_parser("run", help="Run the live code assistant workflow.")
     run_parser.add_argument("--prompt", default=DEFAULT_PROMPT, help="Prompt to give the code assistant.")
@@ -41,7 +49,7 @@ def main() -> int:
         print(f"fixture: {report.fixture_root.relative_to(Path.cwd())}")
         print(f"state root: {report.state_root.relative_to(Path.cwd())}")
         if not report.workspace_exists:
-            print("hint: run `python3 -B -m demos.apps.code_assistant reset` or `run` first")
+            print("hint: run `python3 -B -m demos.apps.code_assistant reset`, `shell`, or `run` first")
             return 0
         print(f"workspace: {report.workspace_root.relative_to(Path.cwd())}")
         print(f"distribution: {report.distribution}")
@@ -83,6 +91,30 @@ def main() -> int:
         if report.memory_root is not None:
             print(f"memory root: {report.memory_root.relative_to(Path.cwd())}")
             print(f"memory documents: {report.memory_documents}")
+        return 0
+
+    if args.command == "shell":
+        report = asyncio.run(
+            shell_demo(
+                session_id=args.session_id,
+                auto_approve=args.auto_approve,
+                layout=layout,
+            )
+        )
+        print("code assistant demo shell")
+        print(f"session: {report.session_id}")
+        print(f"workspace: {report.workspace_root.relative_to(Path.cwd())}")
+        print(f"distribution: {report.distribution}")
+        print(f"default route: {report.default_model_route}")
+        print(f"prompts: {report.prompt_count}")
+        print(f"local commands: {len(report.local_commands)}")
+        print(f"transcript: {report.transcript_path.relative_to(Path.cwd())}")
+        print(f"child run index: {report.child_run_index_path.relative_to(Path.cwd())}")
+        print(f"memory root: {report.memory_root.relative_to(Path.cwd())}")
+        if not report.ok:
+            print(f"error: {report.error_message}")
+            return 2
+        print("status: ok")
         return 0
 
     report = asyncio.run(

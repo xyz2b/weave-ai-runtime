@@ -34,13 +34,13 @@ If you want the app-shaped live validation surface, start here:
 
 ```bash
 python3 -B -m demos.apps.code_assistant reset
-python3 -B -m demos.apps.code_assistant run
+python3 -B -m demos.apps.code_assistant shell
 python3 -B -m demos.apps.code_assistant inspect
 ```
 
 That path is intentionally different from the lower-level provider smoke:
 
-- `demos.apps.code_assistant` validates a host-bound coding workflow with approvals, task planning, child agents, and durable state
+- `demos.apps.code_assistant` validates a host-bound AI coding shell with approvals, local runtime commands, structured shell execution, child agents, skills, tasks, jobs, and durable state
 - `scripts/openai_responses_live_smoke.py` validates the bundled OpenAI adapter behavior and tool-calling transport details
 
 If you only want the lower-level provider smoke, use the bundled live OpenAI path below.
@@ -122,13 +122,14 @@ These demos sit above the offline seam and project layers. They use a real model
 
 | Demo | What it validates | Run command | Expected output |
 | --- | --- | --- | --- |
-| Code assistant | Host-bound live coding with approvals, task-list planning, reviewer/verifier child runs, and durable state inspection | `python3 -B -m demos.apps.code_assistant run` | Prompts for edit/write/bash approval, updates the mutable mini repo, prints reviewer/verifier child-run summaries, and leaves transcripts plus other durable state under `demos/apps/code_assistant/state/mini_repo/.weavert/`. |
+| Code assistant | Host-bound AI coding shell MVP with local commands, structured `bash`, planning/review/verification agents, reusable skills, and durable state inspection | `python3 -B -m demos.apps.code_assistant shell` | Starts an interactive coding shell, renders assistant and tool activity through the host, supports `/tasks` and `/jobs`, and leaves transcripts plus other durable state under `demos/apps/code_assistant/state/mini_repo/.weavert/`. |
 
-Reset and inspect commands for the same app:
+Reset, inspect, and scripted smoke commands for the same app:
 
 ```bash
 python3 -B -m demos.apps.code_assistant reset
 python3 -B -m demos.apps.code_assistant inspect
+python3 -B -m demos.apps.code_assistant run --auto-approve
 ```
 
 If you want an automated check that these commands still work, run `pytest tests/test_runtime_extension_demos.py`.
