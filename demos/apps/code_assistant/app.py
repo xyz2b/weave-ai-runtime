@@ -405,6 +405,10 @@ async def shell_demo(
 
 
 def inspect_demo(*, layout: CodeAssistantLayout | None = None) -> InspectReport:
+    return asyncio.run(_inspect_demo_async(layout=layout))
+
+
+async def _inspect_demo_async(*, layout: CodeAssistantLayout | None = None) -> InspectReport:
     resolved_layout = layout or default_layout()
     workspace_root = resolved_layout.workspace_root
     if not workspace_root.exists():
@@ -427,9 +431,9 @@ def inspect_demo(*, layout: CodeAssistantLayout | None = None) -> InspectReport:
     runtime = assemble_demo_runtime(layout=resolved_layout)
     agent = runtime.kernel.agent_registry.get("code-assistant")
     transcript_sessions = _transcript_sessions(workspace_root)
-    child_run_records = asyncio.run(_child_run_records(runtime=runtime, session_ids=_session_ids(workspace_root)))
+    child_run_records = await _child_run_records(runtime=runtime, session_ids=_session_ids(workspace_root))
     child_run_sessions = _summarize_child_run_sessions(child_run_records)
-    task_lists = asyncio.run(runtime.list_task_lists())
+    task_lists = await runtime.list_task_lists()
     memory_root = None
     memory_documents = 0
     if agent is not None:
@@ -499,7 +503,7 @@ async def _handle_local_command(
         return LocalCommandOutcome(exit_shell=True)
     if command.name == "inspect":
         _print_inspect_report(
-            inspect_demo(layout=layout),
+            await _inspect_demo_async(layout=layout),
             output_writer=output_writer,
             current_session_id=session_id,
         )

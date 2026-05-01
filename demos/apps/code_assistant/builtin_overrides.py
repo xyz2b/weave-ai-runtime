@@ -582,6 +582,7 @@ def _resolve_shell_cwd(context: ToolContext, raw_cwd: Any) -> Path:
 
 def _blocked_command_reason(command: str, *, workspace_root: Path, cwd: Path) -> str | None:
     lowered = command.lower()
+    tokens = _command_tokens(command)
     blocked_patterns = {
         "git reset --hard": "Blocked destructive command: git reset --hard",
         "git clean -fd": "Blocked destructive command: git clean -fd",
@@ -593,6 +594,12 @@ def _blocked_command_reason(command: str, *, workspace_root: Path, cwd: Path) ->
     for pattern, message in blocked_patterns.items():
         if pattern in lowered:
             return message
+    inline_reason = _inline_code_reason(tokens)
+    if inline_reason is not None:
+        return inline_reason
+    path_reason = _outside_workspace_path_reason(tokens, workspace_root=workspace_root, cwd=cwd)
+    if path_reason is not None:
+        return path_reason
     if cwd != workspace_root and workspace_root not in cwd.parents:
         return f"Blocked shell command outside the workspace: {cwd}"
     return None
@@ -625,7 +632,13 @@ def _classify_command(command: str) -> ShellClassification:
         return ShellClassification("list", "List workspace paths", ToolRiskLevel.READ, True)
     if first in {"pytest", "tox", "nox"}:
         return ShellClassification("test", "Run verification tests", ToolRiskLevel.EXEC, False)
-    if first.startswith("python") and second == "-m" and third == "unittest":
+    if first.startswith("python") and second == "-m" and third in {"unittest", "pytest"}:
+        return ShellClassification("test", "Run verification tests", ToolRiskLevel.EXEC, False)
+    if first == "make" and second in {"test", "check"}:
+        return ShellClassification("test", "Run verification tests", ToolRiskLevel.EXEC, False)
+    if first == "cargo" and second in {"test", "nextest"}:
+        return ShellClassification("test", "Run verification tests", ToolRiskLevel.EXEC, False)
+    if first == "go" and second == "test":
         return ShellClassification("test", "Run verification tests", ToolRiskLevel.EXEC, False)
     if first in {"npm", "pnpm", "yarn"} and (
         second == "test" or (second == "run" and third == "test")
@@ -770,6 +783,77 @@ def _command_tokens(command: str) -> list[str]:
         return shlex.split(command)
     except ValueError:
         return command.split()
+
+
+def _inline_code_reason(tokens: list[str]) -> str | None:
+    if len(tokens) < 2:
+        return None
+    executable = tokens[0].lower()
+    inline_flags = {"-c", "-e", "-r", "-command", "-lc"}
+    supports_inline_code = (
+        executable.startswith("python")
+        or executable in {"bash", "sh", "zsh", "pwsh", "powershell", "node", "perl", "ruby", "php"}
+    )
+    if not supports_inline_code:
+        return None
+    for token in tokens[1:]:
+        if token.lower() in inline_flags:
+            return (
+                "Blocked inline interpreter command because workspace confinement cannot be "
+                f"enforced safely: {tokens[0]} {token}"
+            )
+    return None
+
+
+def _outside_workspace_path_reason(
+    tokens: list[str],
+    *,
+    workspace_root: Path,
+    cwd: Path,
+) -> str | None:
+    if len(tokens) < 2:
+        return None
+    pending_redirect = False
+    for raw_token in tokens[1:]:
+        candidate = raw_token
+        if pending_redirect:
+            pending_redirect = False
+        else:
+            if raw_token in {"<", ">", ">>", "1>", "2>", "1>>", "2>>"}:
+                pending_redirect = True
+                continue
+            candidate = _strip_redirection_prefix(raw_token)
+        if "://" in candidate or not _looks_like_explicit_path(candidate):
+            continue
+        resolved = _resolve_command_path(candidate, cwd=cwd)
+        if resolved != workspace_root and workspace_root not in resolved.parents:
+            return f"Blocked shell path outside the workspace: {candidate}"
+    return None
+
+
+def _strip_redirection_prefix(token: str) -> str:
+    stripped = token.lstrip("0123456789")
+    for prefix in (">>", ">", "<"):
+        if stripped.startswith(prefix) and len(stripped) > len(prefix):
+            return stripped[len(prefix):]
+    return token
+
+
+def _looks_like_explicit_path(token: str) -> bool:
+    if token in {".", "..", "~"}:
+        return True
+    if token.startswith(("/", "~/", "./", "../", "..\\")):
+        return True
+    if len(token) >= 3 and token[1] == ":" and token[2] in {"\\", "/"}:
+        return True
+    return False
+
+
+def _resolve_command_path(token: str, *, cwd: Path) -> Path:
+    candidate = Path(token).expanduser()
+    if candidate.is_absolute():
+        return candidate.resolve(strict=False)
+    return (cwd / candidate).resolve(strict=False)
 
 
 def _job_service_for(context: ToolContext) -> Any | None:

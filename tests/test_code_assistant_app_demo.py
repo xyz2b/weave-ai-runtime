@@ -17,6 +17,7 @@ from demos.apps.code_assistant.app import (
     run_demo,
     shell_demo,
 )
+from demos.apps.code_assistant.builtin_overrides import _classify_command
 from weavert.openai_client import OPENAI_ROUTE_NAME
 from weavert.runtime_kernel import RuntimeDistribution
 from weavert.tool_runtime import ToolContext
@@ -227,6 +228,12 @@ def _iter_input(lines: list[str]):
     return _reader
 
 
+def _result_payload(result: object) -> dict[str, object]:
+    payload = getattr(result, "value", result)
+    assert isinstance(payload, dict)
+    return payload
+
+
 def test_reset_demo_state_materializes_shell_agents_and_skills(tmp_path: Path) -> None:
     layout = _layout(tmp_path)
     workspace = reset_demo_state(layout=layout)
@@ -338,7 +345,7 @@ def test_shell_demo_reuses_a_session_and_keeps_local_commands_host_owned(tmp_pat
                 request_id="req-shell-1",
                 tool_name="bash",
                 tool_input={
-                    "command": "python3 -c \"print('bg ok')\"",
+                    "command": "sleep 30",
                     "description": "Run a background check",
                     "run_in_background": True,
                 },
@@ -417,6 +424,31 @@ def test_shell_resume_lists_sessions_and_reattaches_without_model_turn(tmp_path:
     assert any("reattached session: resume-target" in line for line in output_lines)
 
 
+def test_shell_inspect_tasks_and_jobs_are_host_owned(tmp_path: Path) -> None:
+    layout = _layout(tmp_path)
+    reset_demo_state(layout=layout)
+    output_lines: list[str] = []
+    idle_client = ScriptedModelClient([])
+
+    report = asyncio.run(
+        shell_demo(
+            auto_approve=True,
+            layout=layout,
+            model_client=idle_client,
+            input_reader=_iter_input(["/inspect", "/tasks", "/jobs", "/exit"]),
+            output_writer=output_lines.append,
+        )
+    )
+
+    assert report.ok is True
+    assert report.prompt_count == 0
+    assert report.local_commands == ("inspect", "tasks", "jobs", "exit")
+    assert len(idle_client.requests) == 0
+    assert any("code assistant inspect" in line for line in output_lines)
+    assert any("task list:" in line for line in output_lines)
+    assert any("jobs: 0" in line for line in output_lines)
+
+
 def test_replacement_bash_returns_structured_results_and_background_jobs(tmp_path: Path) -> None:
     layout = _layout(tmp_path)
     reset_demo_state(layout=layout)
@@ -440,7 +472,7 @@ def test_replacement_bash_returns_structured_results_and_background_jobs(tmp_pat
         )
         background_result = await bash_tool.execute(
             {
-                "command": "python3 -c \"import time; time.sleep(30)\"",
+                "command": "sleep 30",
                 "description": "Sleep in background",
                 "run_in_background": True,
             },
@@ -465,6 +497,58 @@ def test_replacement_bash_returns_structured_results_and_background_jobs(tmp_pat
     assert any(job["job_id"] == background["job_id"] for job in jobs)
     assert stopped["status"] == "stopped"
     assert stopped["result"]["status"] == "stopped"
+
+
+def test_replacement_bash_blocks_workspace_escapes(tmp_path: Path) -> None:
+    layout = _layout(tmp_path)
+    reset_demo_state(layout=layout)
+    runtime = assemble_demo_runtime(layout=layout)
+    bash_tool = runtime.kernel.tool_registry.get("bash")
+    assert bash_tool is not None
+
+    context = ToolContext(
+        session_id="shell-test",
+        turn_id="turn-1",
+        agent_name="code-assistant",
+        cwd=layout.workspace_root,
+        tool_registry=runtime.kernel.tool_registry,
+        runtime_services=runtime.services,
+    )
+    outside_path = tmp_path / "outside-proof.txt"
+
+    async def scenario():
+        absolute_read = await bash_tool.execute(
+            {"command": "cat /etc/hosts", "description": "Read outside workspace"},
+            context,
+        )
+        inline_write = await bash_tool.execute(
+            {
+                "command": (
+                    "python3 -c \"from pathlib import Path; "
+                    f"Path('{outside_path}').write_text('outside proof', encoding='utf-8')\""
+                ),
+                "description": "Write outside workspace",
+            },
+            context,
+        )
+        return absolute_read, inline_write
+
+    absolute_read, inline_write = asyncio.run(scenario())
+    absolute_payload = _result_payload(absolute_read)
+    inline_payload = _result_payload(inline_write)
+
+    assert absolute_payload["status"] == "blocked"
+    assert "outside the workspace" in str(absolute_payload["stderr"])
+    assert inline_payload["status"] == "blocked"
+    assert "inline interpreter command" in str(inline_payload["stderr"])
+    assert not outside_path.exists()
+
+
+def test_replacement_bash_classifies_common_test_commands() -> None:
+    assert _classify_command("python3 -m pytest -q").name == "test"
+    assert _classify_command("make test").name == "test"
+    assert _classify_command("cargo test").name == "test"
+    assert _classify_command("go test ./...").name == "test"
 
 
 def test_run_demo_surfaces_missing_live_credentials_without_fallback(tmp_path: Path, monkeypatch) -> None:
