@@ -1718,7 +1718,15 @@ def test_runtime_stream_prompt_closes_helper_owned_session_on_error(tmp_path: Pa
 
 def test_runtime_bundles_openai_route_and_surfaces_missing_credentials_at_invocation(
     tmp_path: Path,
+    monkeypatch,
 ) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "ambient-key")
+    monkeypatch.setenv("OPENAI_MODEL", "ambient-model")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://ambient.invalid/v1")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_MODEL", raising=False)
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+
     runtime = assemble_runtime(RuntimeConfig(working_directory=tmp_path))
 
     assert OPENAI_PROVIDER_NAME in runtime.kernel.config.model_providers

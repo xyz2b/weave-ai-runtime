@@ -43,9 +43,23 @@ def _layout(tmp_path: Path):
     return default_layout(state_root=tmp_path / "state")
 
 
-def _cli_env(tmp_path: Path) -> dict[str, str]:
+def _cli_env(
+    tmp_path: Path,
+    *,
+    openai_api_key: str | None = None,
+    openai_model: str | None = None,
+    openai_base_url: str | None = None,
+) -> dict[str, str]:
     env = dict(os.environ)
     env[CODE_ASSISTANT_STATE_ROOT_ENV] = str(tmp_path / "cli-state")
+    for name in ("OPENAI_API_KEY", "OPENAI_MODEL", "OPENAI_BASE_URL"):
+        env.pop(name, None)
+    if openai_api_key is not None:
+        env["OPENAI_API_KEY"] = openai_api_key
+    if openai_model is not None:
+        env["OPENAI_MODEL"] = openai_model
+    if openai_base_url is not None:
+        env["OPENAI_BASE_URL"] = openai_base_url
     return env
 
 
@@ -1844,7 +1858,12 @@ def test_shell_demo_ignores_noop_write_when_computing_workflow_revisions(tmp_pat
 def test_run_demo_surfaces_missing_live_credentials_without_fallback(tmp_path: Path, monkeypatch) -> None:
     layout = _layout(tmp_path)
     reset_demo_state(layout=layout)
+    monkeypatch.setenv("OPENAI_API_KEY", "ambient-key")
+    monkeypatch.setenv("OPENAI_MODEL", "ambient-model")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://ambient.invalid/v1")
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_MODEL", raising=False)
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
 
     report = asyncio.run(
         run_demo(
@@ -2000,9 +2019,17 @@ def test_code_assistant_cli_respects_state_root_override_and_runs_shell_commands
     assert "jobs: 0" in shell.stdout
 
 
-def test_code_assistant_cli_run_surfaces_auth_failure_in_subprocess(tmp_path: Path) -> None:
+def test_code_assistant_cli_run_surfaces_auth_failure_in_subprocess(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "ambient-key")
+    monkeypatch.setenv("OPENAI_MODEL", "ambient-model")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://ambient.invalid/v1")
     env = _cli_env(tmp_path)
-    env.pop("OPENAI_API_KEY", None)
+    assert "OPENAI_API_KEY" not in env
+    assert "OPENAI_MODEL" not in env
+    assert "OPENAI_BASE_URL" not in env
 
     completed = _run_code_assistant_cli(
         "run",
