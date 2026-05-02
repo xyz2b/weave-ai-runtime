@@ -10,9 +10,12 @@ import pytest
 
 from demos._shared.common import extract_tool_result
 from demos._shared.scripted_model import ScriptedModelClient, text_batch, tool_call_batch
+import demos.apps.code_assistant.__main__ as code_assistant_main
 from demos.apps.code_assistant.app import (
     CODE_ASSISTANT_STATE_ROOT_ENV,
     _print_task_list,
+    RunReport,
+    WorkflowLedger,
     assemble_demo_runtime,
     default_layout,
     inspect_demo,
@@ -83,58 +86,78 @@ def _scripted_run_report(tmp_path: Path):
         return tool_call_batch(
             request_id="req-code-2",
             tool_name="agent",
-            tool_input={"agent": "coding-planner", "prompt": "Plan the work and create shared tasks."},
+            tool_input={
+                "agent": "coding-planner",
+                "max_turns": 8,
+                "prompt": (
+                    "Inspect the current task list plus only the test and source files needed for this task. "
+                    "Leave a short shared task plan and return a concise planning summary."
+                ),
+            },
             call_id="call-planner",
         )
 
-    def _planner_child_batch(request):
+    def _planner_task_list_batch(request):
         assert request.agent is not None
         assert request.agent.name == "coding-planner"
         assert {"read", "glob", "grep", "task_create", "task_list"}.issubset(
             set(request.turn_context.available_tools)
         )
-        return text_batch(request_id="req-planner-1", text="plan: inspect, fix, verify")
+        return tool_call_batch(
+            request_id="req-planner-1",
+            tool_name="task_list",
+            tool_input={},
+            call_id="call-planner-task-list",
+        )
 
-    def _task_one_batch(request):
+    def _planner_grep_batch(request):
+        assert request.agent is not None
+        assert request.agent.name == "coding-planner"
+        return tool_call_batch(
+            request_id="req-planner-2",
+            tool_name="grep",
+            tool_input={"pattern": "DEFAULT_NAME", "path": "src"},
+            call_id="call-planner-grep",
+        )
+
+    def _planner_task_one_batch(request):
+        assert request.agent is not None
+        assert request.agent.name == "coding-planner"
+        return tool_call_batch(
+            request_id="req-planner-3",
+            tool_name="task_create",
+            tool_input={"subject": "Inspect the failing greeting flow"},
+            call_id="call-planner-task-one",
+        )
+
+    def _planner_task_two_batch(request):
+        assert request.agent is not None
+        assert request.agent.name == "coding-planner"
+        return tool_call_batch(
+            request_id="req-planner-4",
+            tool_name="task_create",
+            tool_input={"subject": "Fix greeting and add live note"},
+            call_id="call-planner-task-two",
+        )
+
+    def _planner_summary_batch(request):
+        assert request.agent is not None
+        assert request.agent.name == "coding-planner"
+        return text_batch(request_id="req-planner-5", text="plan: inspect the greeting flow, update the default name, add the note, then verify")
+
+    def _task_list_batch(request):
         _assert_main_request(request)
         return tool_call_batch(
             request_id="req-code-3",
-            tool_name="task_create",
-            tool_input={"subject": "Inspect the failing greeting flow"},
-            call_id="call-task-one",
-        )
-
-    def _task_two_batch(request):
-        _assert_main_request(request)
-        return tool_call_batch(
-            request_id="req-code-4",
-            tool_name="task_create",
-            tool_input={"subject": "Fix greeting and add live note"},
-            call_id="call-task-two",
-        )
-
-    def _grep_batch(request):
-        _assert_main_request(request)
-        return tool_call_batch(
-            request_id="req-code-5",
-            tool_name="grep",
-            tool_input={"pattern": "WeaveRT", "path": "tests"},
-            call_id="call-grep",
-        )
-
-    def _read_batch(request):
-        _assert_main_request(request)
-        return tool_call_batch(
-            request_id="req-code-6",
-            tool_name="read",
-            tool_input={"file_path": "src/demo_service/greeting.py"},
-            call_id="call-read",
+            tool_name="task_list",
+            tool_input={},
+            call_id="call-task-list",
         )
 
     def _edit_batch(request):
         _assert_main_request(request)
         return tool_call_batch(
-            request_id="req-code-7",
+            request_id="req-code-4",
             tool_name="edit",
             tool_input={
                 "file_path": "src/demo_service/greeting.py",
@@ -147,7 +170,7 @@ def _scripted_run_report(tmp_path: Path):
     def _write_batch(request):
         _assert_main_request(request)
         return tool_call_batch(
-            request_id="req-code-8",
+            request_id="req-code-5",
             tool_name="write",
             tool_input={
                 "file_path": "notes/live_demo.md",
@@ -159,7 +182,7 @@ def _scripted_run_report(tmp_path: Path):
     def _bash_batch(request):
         _assert_main_request(request)
         return tool_call_batch(
-            request_id="req-code-9",
+            request_id="req-code-6",
             tool_name="bash",
             tool_input={
                 "command": "python3 -m unittest discover -s tests",
@@ -171,7 +194,7 @@ def _scripted_run_report(tmp_path: Path):
     def _reviewer_batch(request):
         _assert_main_request(request)
         return tool_call_batch(
-            request_id="req-code-10",
+            request_id="req-code-7",
             tool_name="agent",
             tool_input={"agent": "reviewer", "prompt": "Review the greeting change and note."},
             call_id="call-reviewer",
@@ -181,12 +204,12 @@ def _scripted_run_report(tmp_path: Path):
         assert request.agent is not None
         assert request.agent.name == "reviewer"
         assert {"read", "glob", "grep", "task_list"} == set(request.turn_context.available_tools)
-        return text_batch(request_id="req-reviewer-1", text="review: no issues found")
+        return text_batch(request_id="req-reviewer-1", text="review: pass")
 
     def _verifier_batch(request):
         _assert_main_request(request)
         return tool_call_batch(
-            request_id="req-code-11",
+            request_id="req-code-8",
             tool_name="agent",
             tool_input={"agent": "verifier", "prompt": "Confirm the verification result."},
             call_id="call-verifier",
@@ -198,30 +221,22 @@ def _scripted_run_report(tmp_path: Path):
         assert {"read", "glob", "grep", "bash", "task_list", "job_get", "job_list", "job_stop"} == set(
             request.turn_context.available_tools
         )
-        return text_batch(request_id="req-verifier-1", text="verification: tests passed")
-
-    def _task_list_batch(request):
-        _assert_main_request(request)
-        return tool_call_batch(
-            request_id="req-code-12",
-            tool_name="task_list",
-            tool_input={},
-            call_id="call-task-list",
-        )
+        return text_batch(request_id="req-verifier-1", text="verification: pass")
 
     def _final_batch(request):
         _assert_main_request(request)
-        return text_batch(request_id="req-code-13", text="completed coding shell workflow")
+        return text_batch(request_id="req-code-9", text="completed coding shell workflow")
 
     client = ScriptedModelClient(
         [
             _coding_loop_batch,
             _planner_batch,
-            _planner_child_batch,
-            _task_one_batch,
-            _task_two_batch,
-            _grep_batch,
-            _read_batch,
+            _planner_task_list_batch,
+            _planner_grep_batch,
+            _planner_task_one_batch,
+            _planner_task_two_batch,
+            _planner_summary_batch,
+            _task_list_batch,
             _edit_batch,
             _write_batch,
             _bash_batch,
@@ -229,7 +244,6 @@ def _scripted_run_report(tmp_path: Path):
             _reviewer_child_batch,
             _verifier_batch,
             _verifier_child_batch,
-            _task_list_batch,
             _final_batch,
         ]
     )
@@ -243,6 +257,41 @@ def _scripted_run_report(tmp_path: Path):
         )
     )
     return report, layout
+
+
+def _run_scripted_demo(tmp_path: Path, scripted_batches: list[object]):
+    layout = _layout(tmp_path)
+    reset_demo_state(layout=layout)
+    client = ScriptedModelClient(scripted_batches)
+    report = asyncio.run(
+        run_demo(
+            prompt="Use the default coding workflow.",
+            auto_approve=True,
+            layout=layout,
+            model_client=client,
+            output_writer=lambda _line: None,
+        )
+    )
+    return report, layout
+
+
+def _assert_code_assistant_request(request) -> None:
+    assert request.agent is not None
+    assert request.agent.name == "code-assistant"
+    assert {"read", "glob", "grep", "edit", "write", "bash", "agent", "skill"}.issubset(
+        set(request.turn_context.available_tools)
+    )
+    assert {"coding-loop", "review-change", "verify-change"}.issubset(
+        set(request.turn_context.available_skills)
+    )
+
+
+def _assert_planner_request(request) -> None:
+    assert request.agent is not None
+    assert request.agent.name == "coding-planner"
+    assert {"read", "glob", "grep", "task_create", "task_list"}.issubset(
+        set(request.turn_context.available_tools)
+    )
 
 
 def _iter_input(lines: list[str]):
@@ -286,6 +335,11 @@ def _latest_shell_session_id(request) -> str:
 def test_reset_demo_state_materializes_shell_agents_and_skills(tmp_path: Path) -> None:
     layout = _layout(tmp_path)
     workspace = reset_demo_state(layout=layout)
+    planner_definition = (workspace / ".weavert" / "agents" / "coding-planner.md").read_text(encoding="utf-8")
+    assistant_definition = (workspace / ".weavert" / "agents" / "code-assistant.md").read_text(encoding="utf-8")
+    coding_loop_skill = (workspace / ".weavert" / "skills" / "coding-loop" / "SKILL.md").read_text(
+        encoding="utf-8"
+    )
 
     assert workspace == layout.workspace_root
     assert (workspace / ".weavert" / "agents" / "code-assistant.md").exists()
@@ -296,6 +350,10 @@ def test_reset_demo_state_materializes_shell_agents_and_skills(tmp_path: Path) -
     assert (workspace / ".weavert" / "skills" / "review-change" / "SKILL.md").exists()
     assert (workspace / "src" / "demo_service" / "greeting.py").exists()
     assert not (layout.fixture_root / ".weavert" / "transcripts").exists()
+    assert "Limit repo inspection to only the files needed" in planner_definition
+    assert "`max_turns: 8`" in assistant_definition
+    assert "visible shared plan" in assistant_definition
+    assert "`max_turns: 8`" in coding_loop_skill
 
 
 def test_demo_runtime_defaults_to_full_distribution_and_replaces_only_bash(tmp_path: Path) -> None:
@@ -326,6 +384,10 @@ def test_demo_runtime_defaults_to_full_distribution_and_replaces_only_bash(tmp_p
     assert planner is not None
     assert reviewer is not None
     assert verifier is not None
+    assert code_assistant.max_turns == 16
+    assert planner.max_turns == 8
+    assert reviewer.max_turns == 4
+    assert verifier.max_turns == 4
     assert {"read", "glob", "grep", "edit", "write", "bash", "agent", "skill", "task_*", "job_*"} == set(
         code_assistant.tools
     )
@@ -342,6 +404,7 @@ def test_run_demo_with_scripted_model_exercises_shell_agents_tools_and_child_run
 
     assert report.ok is True
     assert report.workflow_gaps == ()
+    assert report.workflow_advisories == ()
     assert report.workflow_ledger.current_state == "ready_to_summarize"
     assert report.workflow_ledger.change_revision == 2
     assert report.workflow_ledger.verified_revision == 2
@@ -389,6 +452,574 @@ def test_run_demo_with_scripted_model_exercises_shell_agents_tools_and_child_run
         text=True,
     )
     assert "OK" in completed.stdout or "OK" in completed.stderr
+
+
+def test_run_demo_accepts_planner_side_inspection_without_parent_read_or_grep(tmp_path: Path) -> None:
+    report, _layout = _scripted_run_report(tmp_path)
+    parent_tool_names = [
+        str(entry.get("tool_name") or "")
+        for message in report.messages
+        for entry in message.metadata.get("tool_results", ())
+        if isinstance(message.metadata.get("tool_results"), list) and isinstance(entry, dict)
+    ]
+
+    assert report.ok is True
+    assert report.workflow_gaps == ()
+    assert "grep" not in parent_tool_names
+    assert "read" not in parent_tool_names
+
+
+def test_run_demo_surfaces_degraded_planner_as_advisory_when_shared_tasks_exist(tmp_path: Path) -> None:
+    def _coding_loop_batch(request):
+        _assert_code_assistant_request(request)
+        return tool_call_batch(
+            request_id="req-code-1",
+            tool_name="skill",
+            tool_input={"skill": "coding-loop"},
+            call_id="call-skill",
+        )
+
+    def _planner_batch(request):
+        _assert_code_assistant_request(request)
+        return tool_call_batch(
+            request_id="req-code-2",
+            tool_name="agent",
+            tool_input={
+                "agent": "coding-planner",
+                "max_turns": 8,
+                "prompt": "Inspect only the necessary files, leave shared tasks, and summarize the plan.",
+            },
+            call_id="call-planner",
+        )
+
+    def _planner_task_list_one(request):
+        _assert_planner_request(request)
+        return tool_call_batch(
+            request_id="req-planner-1",
+            tool_name="task_list",
+            tool_input={},
+            call_id="call-planner-task-list-1",
+        )
+
+    def _planner_grep_one(request):
+        _assert_planner_request(request)
+        return tool_call_batch(
+            request_id="req-planner-2",
+            tool_name="grep",
+            tool_input={"pattern": "DEFAULT_NAME", "path": "src"},
+            call_id="call-planner-grep-1",
+        )
+
+    def _planner_task_create_one(request):
+        _assert_planner_request(request)
+        return tool_call_batch(
+            request_id="req-planner-3",
+            tool_name="task_create",
+            tool_input={"subject": "Inspect the greeting implementation"},
+            call_id="call-planner-task-create-1",
+        )
+
+    def _planner_task_create_two(request):
+        _assert_planner_request(request)
+        return tool_call_batch(
+            request_id="req-planner-4",
+            tool_name="task_create",
+            tool_input={"subject": "Update the greeting and add the live note"},
+            call_id="call-planner-task-create-2",
+        )
+
+    def _planner_task_list_two(request):
+        _assert_planner_request(request)
+        return tool_call_batch(
+            request_id="req-planner-5",
+            tool_name="task_list",
+            tool_input={},
+            call_id="call-planner-task-list-2",
+        )
+
+    def _planner_grep_two(request):
+        _assert_planner_request(request)
+        return tool_call_batch(
+            request_id="req-planner-6",
+            tool_name="grep",
+            tool_input={"pattern": "Hello", "path": "tests"},
+            call_id="call-planner-grep-2",
+        )
+
+    def _planner_task_list_three(request):
+        _assert_planner_request(request)
+        return tool_call_batch(
+            request_id="req-planner-7",
+            tool_name="task_list",
+            tool_input={},
+            call_id="call-planner-task-list-3",
+        )
+
+    def _planner_grep_three(request):
+        _assert_planner_request(request)
+        return tool_call_batch(
+            request_id="req-planner-8",
+            tool_name="grep",
+            tool_input={"pattern": "greet", "path": "src/demo_service"},
+            call_id="call-planner-grep-3",
+        )
+
+    def _task_list_batch(request):
+        _assert_code_assistant_request(request)
+        return tool_call_batch(
+            request_id="req-code-3",
+            tool_name="task_list",
+            tool_input={},
+            call_id="call-task-list",
+        )
+
+    def _edit_batch(request):
+        _assert_code_assistant_request(request)
+        return tool_call_batch(
+            request_id="req-code-4",
+            tool_name="edit",
+            tool_input={
+                "file_path": "src/demo_service/greeting.py",
+                "old_string": 'DEFAULT_NAME = "runtime"',
+                "new_string": 'DEFAULT_NAME = "WeaveRT"',
+            },
+            call_id="call-edit",
+        )
+
+    def _write_batch(request):
+        _assert_code_assistant_request(request)
+        return tool_call_batch(
+            request_id="req-code-5",
+            tool_name="write",
+            tool_input={"file_path": "notes/live_demo.md", "content": "Degraded planning still left a usable plan.\n"},
+            call_id="call-write",
+        )
+
+    def _bash_batch(request):
+        _assert_code_assistant_request(request)
+        return tool_call_batch(
+            request_id="req-code-6",
+            tool_name="bash",
+            tool_input={"command": "python3 -m unittest discover -s tests", "description": "Run unit tests"},
+            call_id="call-bash",
+        )
+
+    def _reviewer_batch(request):
+        _assert_code_assistant_request(request)
+        return tool_call_batch(
+            request_id="req-code-7",
+            tool_name="agent",
+            tool_input={"agent": "reviewer", "prompt": "Review the final workspace."},
+            call_id="call-reviewer",
+        )
+
+    def _reviewer_child_batch(request):
+        assert request.agent is not None
+        assert request.agent.name == "reviewer"
+        return text_batch(request_id="req-reviewer-1", text="review: pass")
+
+    def _verifier_batch(request):
+        _assert_code_assistant_request(request)
+        return tool_call_batch(
+            request_id="req-code-8",
+            tool_name="agent",
+            tool_input={"agent": "verifier", "prompt": "Confirm the verification result."},
+            call_id="call-verifier",
+        )
+
+    def _verifier_child_batch(request):
+        assert request.agent is not None
+        assert request.agent.name == "verifier"
+        return text_batch(request_id="req-verifier-1", text="verification: pass")
+
+    def _final_batch(request):
+        _assert_code_assistant_request(request)
+        return text_batch(request_id="req-code-9", text="completed despite planner degradation")
+
+    report, _layout = _run_scripted_demo(
+        tmp_path,
+        [
+            _coding_loop_batch,
+            _planner_batch,
+            _planner_task_list_one,
+            _planner_grep_one,
+            _planner_task_create_one,
+            _planner_task_create_two,
+            _planner_task_list_two,
+            _planner_grep_two,
+            _planner_task_list_three,
+            _planner_grep_three,
+            _task_list_batch,
+            _edit_batch,
+            _write_batch,
+            _bash_batch,
+            _reviewer_batch,
+            _reviewer_child_batch,
+            _verifier_batch,
+            _verifier_child_batch,
+            _final_batch,
+        ],
+    )
+
+    assert report.ok is True
+    assert report.workflow_gaps == ()
+    assert report.child_runs[0]["agent"] == "coding-planner"
+    assert report.child_runs[0]["status"] == "max_turns"
+    assert len(report.workflow_advisories) == 1
+    assert "planner degraded" in report.workflow_advisories[0]
+
+
+def test_run_demo_rejects_late_inspection_after_the_first_material_edit(tmp_path: Path) -> None:
+    def _coding_loop_batch(request):
+        _assert_code_assistant_request(request)
+        return tool_call_batch(
+            request_id="req-code-1",
+            tool_name="skill",
+            tool_input={"skill": "coding-loop"},
+            call_id="call-skill",
+        )
+
+    def _planner_batch(request):
+        _assert_code_assistant_request(request)
+        return tool_call_batch(
+            request_id="req-code-2",
+            tool_name="agent",
+            tool_input={
+                "agent": "coding-planner",
+                "max_turns": 8,
+                "prompt": "Create a short shared task plan before editing.",
+            },
+            call_id="call-planner",
+        )
+
+    def _planner_task_list_batch(request):
+        _assert_planner_request(request)
+        return tool_call_batch(
+            request_id="req-planner-1",
+            tool_name="task_list",
+            tool_input={},
+            call_id="call-planner-task-list",
+        )
+
+    def _planner_task_create_batch(request):
+        _assert_planner_request(request)
+        return tool_call_batch(
+            request_id="req-planner-2",
+            tool_name="task_create",
+            tool_input={"subject": "Fix the greeting and note file"},
+            call_id="call-planner-task-create",
+        )
+
+    def _planner_summary_batch(request):
+        _assert_planner_request(request)
+        return text_batch(request_id="req-planner-3", text="plan: make the greeting change, add the note, then verify")
+
+    def _edit_batch(request):
+        _assert_code_assistant_request(request)
+        return tool_call_batch(
+            request_id="req-code-3",
+            tool_name="edit",
+            tool_input={
+                "file_path": "src/demo_service/greeting.py",
+                "old_string": 'DEFAULT_NAME = "runtime"',
+                "new_string": 'DEFAULT_NAME = "WeaveRT"',
+            },
+            call_id="call-edit",
+        )
+
+    def _read_batch(request):
+        _assert_code_assistant_request(request)
+        return tool_call_batch(
+            request_id="req-code-4",
+            tool_name="read",
+            tool_input={"file_path": "src/demo_service/greeting.py"},
+            call_id="call-read",
+        )
+
+    def _write_batch(request):
+        _assert_code_assistant_request(request)
+        return tool_call_batch(
+            request_id="req-code-5",
+            tool_name="write",
+            tool_input={"file_path": "notes/live_demo.md", "content": "Late inspection should not pass validation.\n"},
+            call_id="call-write",
+        )
+
+    def _bash_batch(request):
+        _assert_code_assistant_request(request)
+        return tool_call_batch(
+            request_id="req-code-6",
+            tool_name="bash",
+            tool_input={"command": "python3 -m unittest discover -s tests", "description": "Run unit tests"},
+            call_id="call-bash",
+        )
+
+    def _reviewer_batch(request):
+        _assert_code_assistant_request(request)
+        return tool_call_batch(
+            request_id="req-code-7",
+            tool_name="agent",
+            tool_input={"agent": "reviewer", "prompt": "Review the final workspace."},
+            call_id="call-reviewer",
+        )
+
+    def _reviewer_child_batch(request):
+        assert request.agent is not None
+        assert request.agent.name == "reviewer"
+        return text_batch(request_id="req-reviewer-1", text="review: pass")
+
+    def _verifier_batch(request):
+        _assert_code_assistant_request(request)
+        return tool_call_batch(
+            request_id="req-code-8",
+            tool_name="agent",
+            tool_input={"agent": "verifier", "prompt": "Confirm the verification result."},
+            call_id="call-verifier",
+        )
+
+    def _verifier_child_batch(request):
+        assert request.agent is not None
+        assert request.agent.name == "verifier"
+        return text_batch(request_id="req-verifier-1", text="verification: pass")
+
+    def _final_batch(request):
+        _assert_code_assistant_request(request)
+        return text_batch(request_id="req-code-9", text="completed with late inspection")
+
+    report, _layout = _run_scripted_demo(
+        tmp_path,
+        [
+            _coding_loop_batch,
+            _planner_batch,
+            _planner_task_list_batch,
+            _planner_task_create_batch,
+            _planner_summary_batch,
+            _edit_batch,
+            _read_batch,
+            _write_batch,
+            _bash_batch,
+            _reviewer_batch,
+            _reviewer_child_batch,
+            _verifier_batch,
+            _verifier_child_batch,
+            _final_batch,
+        ],
+    )
+
+    assert report.ok is False
+    assert "repository inspection only happened after the first material edit" in report.workflow_gaps
+    assert report.workflow_advisories == ()
+
+
+def test_run_demo_does_not_let_parent_created_tasks_mask_planner_failure(tmp_path: Path) -> None:
+    def _coding_loop_batch(request):
+        _assert_code_assistant_request(request)
+        return tool_call_batch(
+            request_id="req-code-1",
+            tool_name="skill",
+            tool_input={"skill": "coding-loop"},
+            call_id="call-skill",
+        )
+
+    def _planner_batch(request):
+        _assert_code_assistant_request(request)
+        return tool_call_batch(
+            request_id="req-code-2",
+            tool_name="agent",
+            tool_input={
+                "agent": "coding-planner",
+                "max_turns": 8,
+                "prompt": "Inspect briefly, then leave a visible shared plan before editing.",
+            },
+            call_id="call-planner",
+        )
+
+    def _planner_task_list_one(request):
+        _assert_planner_request(request)
+        return tool_call_batch(
+            request_id="req-planner-1",
+            tool_name="task_list",
+            tool_input={},
+            call_id="call-planner-task-list-1",
+        )
+
+    def _planner_grep_one(request):
+        _assert_planner_request(request)
+        return tool_call_batch(
+            request_id="req-planner-2",
+            tool_name="grep",
+            tool_input={"pattern": "DEFAULT_NAME", "path": "src"},
+            call_id="call-planner-grep-1",
+        )
+
+    def _planner_task_list_two(request):
+        _assert_planner_request(request)
+        return tool_call_batch(
+            request_id="req-planner-3",
+            tool_name="task_list",
+            tool_input={},
+            call_id="call-planner-task-list-2",
+        )
+
+    def _planner_grep_two(request):
+        _assert_planner_request(request)
+        return tool_call_batch(
+            request_id="req-planner-4",
+            tool_name="grep",
+            tool_input={"pattern": "Hello", "path": "tests"},
+            call_id="call-planner-grep-2",
+        )
+
+    def _planner_task_list_three(request):
+        _assert_planner_request(request)
+        return tool_call_batch(
+            request_id="req-planner-5",
+            tool_name="task_list",
+            tool_input={},
+            call_id="call-planner-task-list-3",
+        )
+
+    def _planner_grep_three(request):
+        _assert_planner_request(request)
+        return tool_call_batch(
+            request_id="req-planner-6",
+            tool_name="grep",
+            tool_input={"pattern": "greet", "path": "src/demo_service"},
+            call_id="call-planner-grep-3",
+        )
+
+    def _planner_task_list_four(request):
+        _assert_planner_request(request)
+        return tool_call_batch(
+            request_id="req-planner-7",
+            tool_name="task_list",
+            tool_input={},
+            call_id="call-planner-task-list-4",
+        )
+
+    def _planner_grep_four(request):
+        _assert_planner_request(request)
+        return tool_call_batch(
+            request_id="req-planner-8",
+            tool_name="grep",
+            tool_input={"pattern": "notes", "path": "."},
+            call_id="call-planner-grep-4",
+        )
+
+    def _task_create_batch(request):
+        _assert_code_assistant_request(request)
+        return tool_call_batch(
+            request_id="req-code-3",
+            tool_name="task_create",
+            tool_input={"subject": "Parent-created fallback task"},
+            call_id="call-parent-task-create",
+        )
+
+    def _grep_batch(request):
+        _assert_code_assistant_request(request)
+        return tool_call_batch(
+            request_id="req-code-4",
+            tool_name="grep",
+            tool_input={"pattern": "DEFAULT_NAME", "path": "src"},
+            call_id="call-parent-grep",
+        )
+
+    def _edit_batch(request):
+        _assert_code_assistant_request(request)
+        return tool_call_batch(
+            request_id="req-code-5",
+            tool_name="edit",
+            tool_input={
+                "file_path": "src/demo_service/greeting.py",
+                "old_string": 'DEFAULT_NAME = "runtime"',
+                "new_string": 'DEFAULT_NAME = "WeaveRT"',
+            },
+            call_id="call-edit",
+        )
+
+    def _write_batch(request):
+        _assert_code_assistant_request(request)
+        return tool_call_batch(
+            request_id="req-code-6",
+            tool_name="write",
+            tool_input={"file_path": "notes/live_demo.md", "content": "Parent-created tasks should not hide planner failure.\n"},
+            call_id="call-write",
+        )
+
+    def _bash_batch(request):
+        _assert_code_assistant_request(request)
+        return tool_call_batch(
+            request_id="req-code-7",
+            tool_name="bash",
+            tool_input={"command": "python3 -m unittest discover -s tests", "description": "Run unit tests"},
+            call_id="call-bash",
+        )
+
+    def _reviewer_batch(request):
+        _assert_code_assistant_request(request)
+        return tool_call_batch(
+            request_id="req-code-8",
+            tool_name="agent",
+            tool_input={"agent": "reviewer", "prompt": "Review the final workspace."},
+            call_id="call-reviewer",
+        )
+
+    def _reviewer_child_batch(request):
+        assert request.agent is not None
+        assert request.agent.name == "reviewer"
+        return text_batch(request_id="req-reviewer-1", text="review: pass")
+
+    def _verifier_batch(request):
+        _assert_code_assistant_request(request)
+        return tool_call_batch(
+            request_id="req-code-9",
+            tool_name="agent",
+            tool_input={"agent": "verifier", "prompt": "Confirm the verification result."},
+            call_id="call-verifier",
+        )
+
+    def _verifier_child_batch(request):
+        assert request.agent is not None
+        assert request.agent.name == "verifier"
+        return text_batch(request_id="req-verifier-1", text="verification: pass")
+
+    def _final_batch(request):
+        _assert_code_assistant_request(request)
+        return text_batch(request_id="req-code-10", text="completed with parent-created fallback tasks")
+
+    report, _layout = _run_scripted_demo(
+        tmp_path,
+        [
+            _coding_loop_batch,
+            _planner_batch,
+            _planner_task_list_one,
+            _planner_grep_one,
+            _planner_task_list_two,
+            _planner_grep_two,
+            _planner_task_list_three,
+            _planner_grep_three,
+            _planner_task_list_four,
+            _planner_grep_four,
+            _task_create_batch,
+            _grep_batch,
+            _edit_batch,
+            _write_batch,
+            _bash_batch,
+            _reviewer_batch,
+            _reviewer_child_batch,
+            _verifier_batch,
+            _verifier_child_batch,
+            _final_batch,
+        ],
+    )
+
+    assert report.ok is False
+    assert report.child_runs[0]["status"] == "max_turns"
+    assert (
+        "the coding-planner child run ended with status 'max_turns' without leaving a planner-authored shared plan outcome"
+        in report.workflow_gaps
+    )
+    assert report.workflow_advisories == ()
 
 
 def test_shell_demo_reuses_a_session_and_keeps_local_commands_host_owned(tmp_path: Path) -> None:
@@ -1105,7 +1736,7 @@ def test_inspect_demo_reports_durable_state_and_reset_clears_generated_outputs(t
         "reviewer",
         "verifier",
     }
-    assert any(record["summary"] == "review: no issues found" for record in inspect_before.child_run_records)
+    assert any(record["summary"] == "review: pass" for record in inspect_before.child_run_records)
     assert inspect_before.task_lists[0]["tasks"][0]["subject"] == "Inspect the failing greeting flow"
     assert inspect_before.memory_root == layout.workspace_root / ".weavert" / "memory"
 
@@ -1164,3 +1795,60 @@ def test_code_assistant_cli_run_surfaces_auth_failure_in_subprocess(tmp_path: Pa
     assert "code assistant demo run" in completed.stdout
     assert "default route: openai_default" in completed.stdout
     assert "error: Bundled OpenAI route 'openai_default' requires OPENAI_API_KEY" in completed.stdout
+
+
+def test_code_assistant_cli_run_prints_workflow_advisories(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    report = RunReport(
+        session_id="cli-advisory",
+        workspace_root=tmp_path / "workspace",
+        fixture_root=tmp_path / "fixture",
+        distribution=RuntimeDistribution.FULL.value,
+        default_model_route=OPENAI_ROUTE_NAME,
+        persistence_profile={},
+        messages=(),
+        final_text="completed coding shell workflow",
+        approvals=(),
+        child_runs=(
+            {
+                "agent": "coding-planner",
+                "status": "max_turns",
+                "summary": "planner stopped after leaving shared tasks",
+            },
+        ),
+        task_list_id="session:cli-advisory",
+        task_list={"tasks": []},
+        transcript_path=tmp_path / "workspace" / "transcript.jsonl",
+        child_run_index_path=tmp_path / "workspace" / "child-runs.json",
+        memory_root=tmp_path / "workspace" / "memory",
+        notification_texts=(),
+        terminal_stop_reason=None,
+        terminal_metadata={},
+        workflow_ledger=WorkflowLedger(
+            change_revision=2,
+            verified_revision=2,
+            reviewed_revision=2,
+            current_state="ready_to_summarize",
+        ),
+        workflow_gaps=(),
+        workflow_advisories=("planner degraded: the coding-planner child run ended with status 'max_turns'",),
+        workflow_warnings=(),
+        ok=True,
+        error_message=None,
+    )
+
+    async def _fake_run_demo(**_kwargs):
+        return report
+
+    monkeypatch.setattr(code_assistant_main, "run_demo", _fake_run_demo)
+    monkeypatch.setattr(sys, "argv", ["code_assistant", "run", "--auto-approve"])
+
+    exit_code = code_assistant_main.main()
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "workflow advisories: 1" in output
+    assert "planner degraded: the coding-planner child run ended with status 'max_turns'" in output

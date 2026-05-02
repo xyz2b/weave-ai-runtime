@@ -11,6 +11,7 @@ from uuid import uuid4
 
 from demos._shared.bootstrap import PROJECT_ROOT
 
+from weavert.agent_execution import AgentRunRecord
 from weavert.child_result_projection import project_child_run_record
 from weavert.contracts import MessageRole, RuntimeMessage, ToolResultBlock
 from weavert.definitions import DefinitionSource
@@ -36,14 +37,14 @@ DEFAULT_PROMPT = """Work in the current mini repo.
 
 Goal:
 1. Apply the `coding-loop` skill at the start of the task.
-2. Ask the `coding-planner` agent to turn the goal into a short shared task plan.
+2. Ask the `coding-planner` agent with `max_turns: 8` to inspect only the shared task list plus the files needed for this change, leave a short visible shared task plan, and return a concise planning summary.
 3. Make the greeting tests pass by updating the default greeting to "Hello, WeaveRT.".
 4. Add a new file at notes/live_demo.md with one short sentence describing the change.
 5. Run `python3 -m unittest discover -s tests`.
 6. Ask the `reviewer` agent to review the final workspace.
 7. Ask the `verifier` agent to confirm the verification result.
 
-Keep the shared task list current while you work.
+Keep the shared task list current while you work, and treat planner-created tasks as the visible plan you execute.
 """
 
 
@@ -83,6 +84,7 @@ class RunReport:
     terminal_metadata: dict[str, Any]
     workflow_ledger: "WorkflowLedger"
     workflow_gaps: tuple[str, ...]
+    workflow_advisories: tuple[str, ...]
     workflow_warnings: tuple[str, ...]
     ok: bool
     error_message: str | None = None
@@ -154,6 +156,37 @@ class WorkflowLedger:
             "last_verification_outcome": self.last_verification_outcome,
             "last_review_outcome": self.last_review_outcome,
         }
+
+
+@dataclass(frozen=True, slots=True)
+class WorkflowValidationResult:
+    workflow_gaps: tuple[str, ...]
+    workflow_advisories: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ToolResultEvent:
+    scope: str
+    agent_name: str | None
+    run_id: str | None
+    tool_name: str
+    status: str
+    created_at: datetime
+    content: dict[str, Any]
+
+
+@dataclass(frozen=True, slots=True)
+class PlanningOutcome:
+    classification: str
+    terminal_status: str | None
+    summary: str | None
+    visible_task_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class InspectionOutcome:
+    satisfied: bool
+    late_only: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -274,6 +307,8 @@ async def run_demo(
     memory_context = _memory_context(runtime=runtime, agent=agent, session_id=resolved_session_id, cwd=workspace_root)
     transcript_path = workspace_root / ".weavert" / "transcripts" / f"{resolved_session_id}.jsonl"
     child_run_index_path = workspace_root / ".weavert" / "child_runs" / "sessions" / f"{resolved_session_id}.json"
+    child_run_records = tuple(await runtime.agent_runtime.run_store.list_by_session(resolved_session_id))
+    session_child_runs = _project_child_runs(child_run_records, session_id=resolved_session_id)
     final_text = _last_assistant_text(list(outcome.messages))
     error_message = _terminal_error_message(outcome.terminal_metadata)
     workflow_ledger = await _workflow_ledger_for_session(
@@ -286,14 +321,18 @@ async def run_demo(
         include_summary_warning=bool(final_text),
     )
     workflow_gaps: tuple[str, ...] = ()
+    workflow_advisories: tuple[str, ...] = ()
     if error_message is None and validate_workflow:
-        workflow_gaps = _workflow_validation_gaps(
+        validation = _workflow_validation_result(
             messages=list(outcome.messages),
             approvals=[approval for approval in host.approvals if approval.session_id == resolved_session_id],
-            child_runs=_session_child_runs(host.child_run_events, session_id=resolved_session_id),
+            child_run_records=list(child_run_records),
             task_list=task_list,
             final_text=final_text,
+            workflow_ledger=workflow_ledger,
         )
+        workflow_gaps = validation.workflow_gaps
+        workflow_advisories = validation.workflow_advisories
     return RunReport(
         session_id=resolved_session_id,
         workspace_root=workspace_root,
@@ -304,7 +343,7 @@ async def run_demo(
         messages=outcome.messages,
         final_text=final_text,
         approvals=tuple(host.approvals),
-        child_runs=tuple(_session_child_runs(host.child_run_events, session_id=resolved_session_id)),
+        child_runs=session_child_runs,
         task_list_id=task_list_id,
         task_list=task_list,
         transcript_path=transcript_path,
@@ -315,6 +354,7 @@ async def run_demo(
         terminal_metadata=outcome.terminal_metadata,
         workflow_ledger=workflow_ledger,
         workflow_gaps=workflow_gaps,
+        workflow_advisories=workflow_advisories,
         workflow_warnings=workflow_warnings,
         ok=error_message is None and not workflow_gaps,
         error_message=error_message or _workflow_error_message(workflow_gaps),
@@ -1487,29 +1527,27 @@ def _terminal_error_message(terminal_metadata: dict[str, Any]) -> str | None:
     return error or failure_class
 
 
-def _workflow_validation_gaps(
+def _workflow_validation_result(
     *,
     messages: list[RuntimeMessage],
     approvals: list[ApprovalRecord],
-    child_runs: list[dict[str, Any]],
+    child_run_records: list[AgentRunRecord],
     task_list: dict[str, Any],
     final_text: str,
-) -> tuple[str, ...]:
+    workflow_ledger: WorkflowLedger,
+) -> WorkflowValidationResult:
     gaps: list[str] = []
-    successful_tools = _successful_tool_names(messages)
-    required_tools = {
-        "skill": "the workflow skill did not run",
-        "task_create": "shared task planning did not create any tasks",
-        "task_list": "the shared task list was never inspected",
-        "grep": "the workflow never used grep before editing",
-        "read": "the workflow never used read before editing",
-        "edit": "the workflow never used edit",
-        "write": "the workflow never used write",
-        "bash": "the workflow never used bash verification",
-    }
-    for tool_name, message in required_tools.items():
-        if tool_name not in successful_tools:
-            gaps.append(message)
+    advisories: list[str] = []
+    parent_events = _tool_result_events(messages, scope="parent")
+    planner_records = _child_run_records_for_agent(child_run_records, agent_name="coding-planner")
+    planner_events = _child_tool_result_events(planner_records, scope="planner")
+    verifier_records = _child_run_records_for_agent(child_run_records, agent_name="verifier")
+    verifier_events = _child_tool_result_events(verifier_records, scope="verifier")
+    planning_outcome = _planning_outcome(planner_records=planner_records, task_list=task_list)
+    inspection_outcome = _inspection_outcome(parent_events + planner_events)
+
+    if not _has_successful_tool(parent_events, "skill"):
+        gaps.append("the workflow skill did not run")
 
     skill_result = _find_skill_result(messages, skill_name="coding-loop")
     if skill_result is None:
@@ -1517,19 +1555,36 @@ def _workflow_validation_gaps(
     elif skill_result.get("mode") != "inline":
         gaps.append("the workspace-local coding-loop skill did not run inline")
 
+    if not _has_successful_tool(parent_events + planner_events, "task_list"):
+        gaps.append("the shared task list was never inspected")
+
+    if planning_outcome.classification == "failed":
+        gaps.append(_planning_failure_message(planning_outcome))
+    elif planning_outcome.classification == "degraded":
+        advisories.append(_planning_advisory_message(planning_outcome))
+
+    if not inspection_outcome.satisfied:
+        if inspection_outcome.late_only:
+            gaps.append("repository inspection only happened after the first material edit")
+        else:
+            gaps.append("the workflow never used glob, grep, or read before the first material edit")
+
+    for tool_name in ("edit", "write"):
+        if not _has_successful_tool(parent_events, tool_name):
+            gaps.append(f"the workflow never used {tool_name}")
+
+    if not _has_successful_verification_shell(parent_events + verifier_events):
+        gaps.append("the workflow never used bash verification")
+
     approval_names = {approval.name for approval in approvals}
     for tool_name in ("edit", "write", "bash"):
         if tool_name not in approval_names:
             gaps.append(f"host approval for {tool_name} was never recorded")
 
-    child_statuses: dict[str, str] = {}
-    for child in child_runs:
-        agent_name = str(child.get("agent") or "").strip()
-        status = str(child.get("status") or "").strip()
-        if agent_name:
-            child_statuses[agent_name] = status
-    for agent_name in ("coding-planner", "reviewer", "verifier"):
-        status = child_statuses.get(agent_name)
+    for agent_name in ("reviewer", "verifier"):
+        status = _latest_child_run_status(
+            _child_run_records_for_agent(child_run_records, agent_name=agent_name)
+        )
         if status is None:
             gaps.append(f"the {agent_name} child run never executed")
         elif status != "completed":
@@ -1539,32 +1594,249 @@ def _workflow_validation_gaps(
     if not isinstance(tasks, list) or not tasks:
         gaps.append("the shared task list is empty")
 
+    if workflow_ledger.change_revision > 0 and workflow_ledger.verified_revision < workflow_ledger.change_revision:
+        gaps.append("the latest revision is not covered by verification")
+    if workflow_ledger.change_revision > 0 and workflow_ledger.reviewed_revision < workflow_ledger.change_revision:
+        gaps.append("the latest revision is not covered by review")
+
     if not final_text.strip():
         gaps.append("the assistant did not return a final summary")
 
-    return tuple(gaps)
+    return WorkflowValidationResult(
+        workflow_gaps=tuple(gaps),
+        workflow_advisories=tuple(advisories),
+    )
 
 
-def _successful_tool_names(messages: list[RuntimeMessage]) -> set[str]:
-    successful: set[str] = set()
-    for entry in _tool_result_entries(messages):
-        if str(entry.get("status") or "").strip() == "success":
-            tool_name = str(entry.get("tool_name") or "").strip()
-            if tool_name:
-                successful.add(tool_name)
-    return successful
+def _project_child_runs(
+    child_run_records: tuple[AgentRunRecord, ...] | list[AgentRunRecord],
+    *,
+    session_id: str,
+) -> tuple[dict[str, Any], ...]:
+    projected: list[dict[str, Any]] = []
+    for record in child_run_records:
+        projection = project_child_run_record(record)
+        projection["session_id"] = session_id
+        projected.append(projection)
+    return tuple(projected)
 
 
-def _tool_result_entries(messages: list[RuntimeMessage]) -> list[dict[str, Any]]:
-    entries: list[dict[str, Any]] = []
+def _tool_result_events(
+    messages: tuple[RuntimeMessage, ...] | list[RuntimeMessage],
+    *,
+    scope: str,
+    agent_name: str | None = None,
+    run_id: str | None = None,
+) -> list[ToolResultEvent]:
+    events: list[ToolResultEvent] = []
     for message in messages:
-        raw_entries = message.metadata.get("tool_results", ())
-        if not isinstance(raw_entries, list):
+        for entry, content in _tool_result_pairs(message):
+            status = str(entry.get("status") or "").strip()
+            tool_name = str(entry.get("tool_name") or "").strip()
+            if not status or not tool_name:
+                continue
+            payload = content if isinstance(content, dict) else {}
+            events.append(
+                ToolResultEvent(
+                    scope=scope,
+                    agent_name=agent_name,
+                    run_id=run_id,
+                    tool_name=tool_name,
+                    status=status,
+                    created_at=message.created_at,
+                    content=payload,
+                )
+            )
+    return events
+
+
+def _child_tool_result_events(
+    records: tuple[AgentRunRecord, ...] | list[AgentRunRecord],
+    *,
+    scope: str,
+) -> list[ToolResultEvent]:
+    events: list[ToolResultEvent] = []
+    for record in records:
+        events.extend(
+            _tool_result_events(
+                record.messages,
+                scope=scope,
+                agent_name=record.agent_name,
+                run_id=record.run_id,
+            )
+        )
+    return events
+
+
+def _child_run_records_for_agent(
+    child_run_records: tuple[AgentRunRecord, ...] | list[AgentRunRecord],
+    *,
+    agent_name: str,
+) -> list[AgentRunRecord]:
+    return [record for record in child_run_records if record.agent_name == agent_name]
+
+
+def _latest_child_run_status(records: tuple[AgentRunRecord, ...] | list[AgentRunRecord]) -> str | None:
+    if not records:
+        return None
+    return records[-1].status.value
+
+
+def _planning_outcome(
+    *,
+    planner_records: tuple[AgentRunRecord, ...] | list[AgentRunRecord],
+    task_list: dict[str, Any],
+) -> PlanningOutcome:
+    if not planner_records:
+        return PlanningOutcome(
+            classification="failed",
+            terminal_status=None,
+            summary=None,
+            visible_task_ids=(),
+        )
+    visible_task_ids = _visible_task_ids(task_list)
+    best = PlanningOutcome(classification="failed", terminal_status=None, summary=None, visible_task_ids=())
+    best_rank = -1
+    for record in planner_records:
+        planner_task_ids = _planner_visible_task_ids(record, visible_task_ids=visible_task_ids)
+        summary = _last_assistant_text(list(record.messages)).strip() or None
+        if record.status.value == "completed" and summary and planner_task_ids:
+            classification = "completed"
+        elif record.status.value != "completed" and planner_task_ids:
+            classification = "degraded"
+        else:
+            classification = "failed"
+        outcome = PlanningOutcome(
+            classification=classification,
+            terminal_status=record.status.value,
+            summary=summary,
+            visible_task_ids=planner_task_ids,
+        )
+        rank = {"failed": 0, "degraded": 1, "completed": 2}[classification]
+        if rank >= best_rank:
+            best = outcome
+            best_rank = rank
+    return best
+
+
+def _planning_failure_message(outcome: PlanningOutcome) -> str:
+    if outcome.terminal_status is None:
+        return "the coding-planner child run never executed"
+    if outcome.terminal_status == "completed":
+        return "the planning phase did not leave a planner-authored shared plan outcome"
+    return (
+        "the coding-planner child run ended with status "
+        f"'{outcome.terminal_status}' without leaving a planner-authored shared plan outcome"
+    )
+
+
+def _planning_advisory_message(outcome: PlanningOutcome) -> str:
+    task_label = "task" if len(outcome.visible_task_ids) == 1 else "tasks"
+    return (
+        "planner degraded: the coding-planner child run ended with status "
+        f"'{outcome.terminal_status}' after leaving {len(outcome.visible_task_ids)} visible shared {task_label}"
+    )
+
+
+def _visible_task_ids(task_list: dict[str, Any]) -> set[str]:
+    tasks = task_list.get("tasks", ())
+    if not isinstance(tasks, list):
+        return set()
+    task_ids: set[str] = set()
+    for task in tasks:
+        if not isinstance(task, dict):
             continue
-        for entry in raw_entries:
-            if isinstance(entry, dict):
-                entries.append(entry)
-    return entries
+        task_id = str(task.get("task_id") or "").strip()
+        if task_id:
+            task_ids.add(task_id)
+    return task_ids
+
+
+def _planner_visible_task_ids(
+    record: AgentRunRecord,
+    *,
+    visible_task_ids: set[str],
+) -> tuple[str, ...]:
+    task_ids: list[str] = []
+    seen: set[str] = set()
+    for event in _tool_result_events(
+        record.messages,
+        scope="planner",
+        agent_name=record.agent_name,
+        run_id=record.run_id,
+    ):
+        if event.status != "success" or not _is_planner_task_mutation(event.tool_name):
+            continue
+        task_id = _task_id_from_content(event.content)
+        if task_id is None or task_id in seen or task_id not in visible_task_ids:
+            continue
+        seen.add(task_id)
+        task_ids.append(task_id)
+    return tuple(task_ids)
+
+
+def _is_planner_task_mutation(tool_name: str) -> bool:
+    return tool_name in {
+        "task_assign_next",
+        "task_block",
+        "task_claim",
+        "task_create",
+        "task_release",
+        "task_unarchive",
+        "task_unblock",
+        "task_update",
+    }
+
+
+def _task_id_from_content(content: dict[str, Any]) -> str | None:
+    task = content.get("task")
+    if not isinstance(task, dict):
+        return None
+    task_id = str(task.get("task_id") or "").strip()
+    return task_id or None
+
+
+def _inspection_outcome(events: tuple[ToolResultEvent, ...] | list[ToolResultEvent]) -> InspectionOutcome:
+    first_edit_at = _first_material_edit_at(events)
+    late_only = False
+    for event in events:
+        if event.status != "success" or event.tool_name not in {"glob", "grep", "read"}:
+            continue
+        if first_edit_at is None or event.created_at < first_edit_at:
+            return InspectionOutcome(satisfied=True)
+        late_only = True
+    return InspectionOutcome(satisfied=False, late_only=late_only)
+
+
+def _first_material_edit_at(events: tuple[ToolResultEvent, ...] | list[ToolResultEvent]) -> datetime | None:
+    material_times = [
+        event.created_at
+        for event in events
+        if event.status == "success"
+        and event.tool_name in {"edit", "write"}
+        and _tool_result_materially_changed(tool_name=event.tool_name, content=event.content)
+    ]
+    if not material_times:
+        return None
+    return min(material_times)
+
+
+def _has_successful_tool(
+    events: tuple[ToolResultEvent, ...] | list[ToolResultEvent],
+    tool_name: str,
+) -> bool:
+    return any(event.status == "success" and event.tool_name == tool_name for event in events)
+
+
+def _has_successful_verification_shell(
+    events: tuple[ToolResultEvent, ...] | list[ToolResultEvent],
+) -> bool:
+    for event in events:
+        if event.status != "success" or event.tool_name != "bash":
+            continue
+        if _is_verification_shell_result(event.content):
+            return True
+    return False
 
 
 def _find_skill_result(messages: list[RuntimeMessage], *, skill_name: str) -> dict[str, Any] | None:

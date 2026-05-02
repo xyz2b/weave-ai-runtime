@@ -186,6 +186,10 @@ def main() -> int:
         print(f"workflow warnings: {len(report.workflow_warnings)}")
         for warning in report.workflow_warnings:
             print(f"- {warning}")
+    if report.workflow_advisories:
+        print(f"workflow advisories: {len(report.workflow_advisories)}")
+        for advisory in report.workflow_advisories:
+            print(f"- {advisory}")
     if report.workflow_gaps:
         print(f"workflow gaps: {len(report.workflow_gaps)}")
         for gap in report.workflow_gaps:

@@ -40,7 +40,7 @@ python3 -B -m demos.apps.code_assistant inspect
 
 That path is intentionally different from the lower-level provider smoke:
 
-- `demos.apps.code_assistant` validates a host-bound reactive AI coding shell with approvals, local runtime commands, `bash v2` shell sessions, child agents, skills, tasks, jobs, workflow gates, and durable state
+- `demos.apps.code_assistant` validates a host-bound reactive AI coding shell with approvals, local runtime commands, `bash v2` shell sessions, child agents, skills, tasks, jobs, blocking-vs-advisory workflow diagnostics, and durable state
 - `scripts/openai_responses_live_smoke.py` validates the bundled OpenAI adapter behavior and tool-calling transport details
 
 If you only want the lower-level provider smoke, use the bundled live OpenAI path below.
@@ -122,7 +122,7 @@ These demos sit above the offline seam and project layers. They use a real model
 
 | Demo | What it validates | Run command | Expected output |
 | --- | --- | --- | --- |
-| Code assistant | Host-bound reactive AI coding shell V2 with local commands, session-oriented `bash`, planning/review/verification phases, reusable skills, workflow-gate visibility, and durable state inspection | `python3 -B -m demos.apps.code_assistant shell` | Starts an interactive coding shell, reactively renders assistant, task, job, and workflow activity through the host, supports `/tasks`, `/jobs`, and `/inspect`, and leaves transcripts plus other durable state under `demos/apps/code_assistant/state/mini_repo/.weavert/`. |
+| Code assistant | Host-bound reactive AI coding shell V2 with local commands, session-oriented `bash`, planning/review/verification phases, reusable skills, reliable live-smoke validation, advisory planner degradation, and durable state inspection | `python3 -B -m demos.apps.code_assistant shell` | Starts an interactive coding shell, reactively renders assistant, task, job, and workflow activity through the host, supports `/tasks`, `/jobs`, and `/inspect`, and leaves transcripts plus other durable state under `demos/apps/code_assistant/state/mini_repo/.weavert/`. |
 
 Reset, inspect, and scripted smoke commands for the same app:
 
@@ -131,5 +131,7 @@ python3 -B -m demos.apps.code_assistant reset
 python3 -B -m demos.apps.code_assistant inspect
 python3 -B -m demos.apps.code_assistant run --auto-approve
 ```
+
+That `run --auto-approve` smoke now treats missing planning, inspection, verification, or review coverage as blocking `workflow gaps`, while surfacing planner degradation that still left a usable shared plan as non-blocking `workflow advisories`.
 
 If you want an automated check that these commands still work, run `pytest tests/test_runtime_extension_demos.py`.

@@ -5,7 +5,7 @@ user-invocable: false
 ---
 Follow this order in the current turn:
 
-1. Enter the planning phase first for non-trivial work by asking the `coding-planner` agent for a short ordered plan.
+1. Enter the planning phase first for non-trivial work by asking the `coding-planner` agent with `max_turns: 8` for a short ordered plan that inspects only the task list and the files needed for the current change.
 2. Keep the shared task list current throughout the turn.
 3. Inspect the workspace with `glob`, `grep`, or `read` before editing.
 4. Make the smallest useful edit with `edit` or `write`.

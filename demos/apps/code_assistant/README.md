@@ -4,7 +4,7 @@ Run every command from the repository root.
 
 This app is the repository's reactive V2 AI coding shell. It keeps the durable live-runtime path from the earlier demo, but now combines an interactive `bash v2` surface, reactive runtime observability, and an app-owned workflow ledger on top of the same host, agent, tool, and skill composition:
 
-- `host`: shell loop, local commands, approvals, reactive job or task rendering, workflow warnings
+- `host`: shell loop, local commands, approvals, reactive job or task rendering, workflow warnings and advisories
 - `tool`: bundled coding tools plus the app-specific `bash v2` replacement
 - `agent`: `code-assistant`, `coding-planner`, `reviewer`, and `verifier`
 - `skill`: coding discipline and reusable plan, verify, and review workflow skills
@@ -94,6 +94,8 @@ python3 -B -m demos.apps.code_assistant run \
   --auto-approve
 ```
 
+The live `run` path now succeeds when the workflow leaves a real planning outcome, inspects the repo before the first material edit, verifies the latest revision, reviews the latest revision, and returns a final summary. If the planner degrades after leaving a usable shared plan, the command still succeeds and prints that condition as a non-blocking `workflow advisories` entry.
+
 ## Approval behavior
 
 The host uses the ordinary permission path for `edit`, `write`, and `bash`.
@@ -127,6 +129,15 @@ The host computes a workflow ledger from durable runtime-owned signals:
 - `ready_to_summarize`
 
 Successful `edit` or `write` results advance the change revision and invalidate older verification or review coverage. Successful verification outcomes and successful reviewer or verifier summaries move the session forward again. `/inspect` and the interactive shell both show this state without spending another model turn.
+
+## Reliable success contract
+
+The app now separates blocking workflow failures from visible-but-non-blocking degradation:
+
+- `workflow gaps`: blocking failures such as missing planner outcome, missing pre-edit inspection, or missing latest-revision verification or review coverage
+- `workflow advisories`: non-blocking diagnostics such as the planner hitting `max_turns` after it already left a usable shared task plan
+
+The planner contract for the default live task is intentionally narrow: inspect the shared task list first, inspect only the files needed for the greeting change, leave a visible shared task plan, and then return a concise summary. The workspace-local planner definition uses `maxTurns: 8`, and the live prompt now tells the parent agent to invoke the planner with `max_turns: 8` so the effective planner budget is no longer capped lower at runtime.
 
 ## Deferred scope
 
@@ -171,6 +182,7 @@ You should see all of the following:
 - host approval handling, unless `--auto-approve` is used
 - reactive task or job updates while the shell is live
 - workflow state lines such as `pending_verification` or `pending_review`
+- `workflow advisories` only when the workflow materially succeeds but the planner still degraded
 - a durable transcript at `demos/apps/code_assistant/state/mini_repo/.weavert/transcripts/live-smoke.jsonl`
 - child-run records for `coding-planner`, `reviewer`, and `verifier`
 - a shared task list whose id starts with `session:live-smoke`
