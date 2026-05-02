@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timedelta, timezone
 import os
 import subprocess
 import sys
@@ -13,7 +14,10 @@ from demos._shared.scripted_model import ScriptedModelClient, text_batch, tool_c
 import demos.apps.code_assistant.__main__ as code_assistant_main
 from demos.apps.code_assistant.app import (
     CODE_ASSISTANT_STATE_ROOT_ENV,
+    _inspection_outcome,
     _print_task_list,
+    _tool_result_events,
+    _workflow_validation_result,
     RunReport,
     WorkflowLedger,
     assemble_demo_runtime,
@@ -24,8 +28,10 @@ from demos.apps.code_assistant.app import (
     shell_demo,
 )
 from demos.apps.code_assistant.builtin_overrides import _classify_command
+from demos.apps.code_assistant.host import ApprovalRecord
+from weavert.agent_execution import AgentRunRecord, AgentRunStatus, SpawnMode
 from weavert.openai_client import OPENAI_ROUTE_NAME
-from weavert.contracts import ToolResultBlock
+from weavert.contracts import MessageRole, RuntimeMessage, ToolResultBlock
 from weavert.runtime_kernel import RuntimeDistribution
 from weavert.tool_runtime import ToolContext
 
@@ -1020,6 +1026,223 @@ def test_run_demo_does_not_let_parent_created_tasks_mask_planner_failure(tmp_pat
         in report.workflow_gaps
     )
     assert report.workflow_advisories == ()
+
+
+def test_inspection_outcome_accepts_same_message_read_before_edit() -> None:
+    created_at = datetime(2026, 5, 2, tzinfo=timezone.utc)
+    message = RuntimeMessage(
+        message_id="same-message-inspection",
+        role=MessageRole.USER,
+        created_at=created_at,
+        content=(
+            ToolResultBlock(
+                tool_use_id="call-read",
+                content={"file_path": "src/demo_service/greeting.py"},
+            ),
+            ToolResultBlock(
+                tool_use_id="call-edit",
+                content={"updated": True},
+            ),
+        ),
+        metadata={
+            "tool_results": [
+                {"tool_use_id": "call-read", "tool_name": "read", "status": "success"},
+                {"tool_use_id": "call-edit", "tool_name": "edit", "status": "success"},
+            ]
+        },
+    )
+
+    outcome = _inspection_outcome(_tool_result_events([message], scope="parent"))
+
+    assert outcome.satisfied is True
+    assert outcome.late_only is False
+
+
+def test_workflow_validation_ignores_previous_turn_planner_evidence() -> None:
+    base = datetime(2026, 5, 2, tzinfo=timezone.utc)
+    old_planner_record = AgentRunRecord(
+        run_id="planner-old",
+        parent_run_id="parent-old",
+        session_id="shared-session",
+        parent_turn_id="turn-old",
+        turn_id="planner-turn-old",
+        agent_name="coding-planner",
+        spawn_mode=SpawnMode.SYNC,
+        status=AgentRunStatus.COMPLETED,
+        messages=(
+            RuntimeMessage(
+                message_id="planner-old-tools",
+                role=MessageRole.USER,
+                created_at=base,
+                content=(
+                    ToolResultBlock(tool_use_id="old-task-list", content={"tasks": []}),
+                    ToolResultBlock(tool_use_id="old-grep", content={"matches": []}),
+                    ToolResultBlock(
+                        tool_use_id="old-task-create",
+                        content={"task": {"task_id": "task-old"}},
+                    ),
+                ),
+                metadata={
+                    "tool_results": [
+                        {
+                            "tool_use_id": "old-task-list",
+                            "tool_name": "task_list",
+                            "status": "success",
+                        },
+                        {
+                            "tool_use_id": "old-grep",
+                            "tool_name": "grep",
+                            "status": "success",
+                        },
+                        {
+                            "tool_use_id": "old-task-create",
+                            "tool_name": "task_create",
+                            "status": "success",
+                        },
+                    ]
+                },
+            ),
+            RuntimeMessage(
+                message_id="planner-old-summary",
+                role=MessageRole.ASSISTANT,
+                created_at=base + timedelta(seconds=1),
+                content="plan: inspect, edit, verify",
+            ),
+        ),
+    )
+    reviewer_record = AgentRunRecord(
+        run_id="reviewer-current",
+        parent_run_id="parent-current",
+        session_id="shared-session",
+        parent_turn_id="turn-current",
+        turn_id="reviewer-turn-current",
+        agent_name="reviewer",
+        spawn_mode=SpawnMode.SYNC,
+        status=AgentRunStatus.COMPLETED,
+    )
+    verifier_record = AgentRunRecord(
+        run_id="verifier-current",
+        parent_run_id="parent-current",
+        session_id="shared-session",
+        parent_turn_id="turn-current",
+        turn_id="verifier-turn-current",
+        agent_name="verifier",
+        spawn_mode=SpawnMode.SYNC,
+        status=AgentRunStatus.COMPLETED,
+    )
+    messages = [
+        RuntimeMessage(
+            message_id="skill",
+            role=MessageRole.USER,
+            created_at=base + timedelta(minutes=10),
+            content=(
+                ToolResultBlock(
+                    tool_use_id="call-skill",
+                    content={"skill": "coding-loop", "mode": "inline"},
+                ),
+            ),
+            metadata={
+                "tool_results": [
+                    {"tool_use_id": "call-skill", "tool_name": "skill", "status": "success"},
+                ]
+            },
+        ),
+        RuntimeMessage(
+            message_id="edit",
+            role=MessageRole.USER,
+            created_at=base + timedelta(minutes=11),
+            content=(ToolResultBlock(tool_use_id="call-edit", content={"updated": True}),),
+            metadata={
+                "tool_results": [
+                    {"tool_use_id": "call-edit", "tool_name": "edit", "status": "success"},
+                ]
+            },
+        ),
+        RuntimeMessage(
+            message_id="write",
+            role=MessageRole.USER,
+            created_at=base + timedelta(minutes=12),
+            content=(ToolResultBlock(tool_use_id="call-write", content={"changed": True}),),
+            metadata={
+                "tool_results": [
+                    {"tool_use_id": "call-write", "tool_name": "write", "status": "success"},
+                ]
+            },
+        ),
+        RuntimeMessage(
+            message_id="bash",
+            role=MessageRole.USER,
+            created_at=base + timedelta(minutes=13),
+            content=(
+                ToolResultBlock(
+                    tool_use_id="call-bash",
+                    content={
+                        "classification": "test",
+                        "status": "completed",
+                        "exit_code": 0,
+                    },
+                ),
+            ),
+            metadata={
+                "tool_results": [
+                    {"tool_use_id": "call-bash", "tool_name": "bash", "status": "success"},
+                ]
+            },
+        ),
+        RuntimeMessage(
+            message_id="final",
+            role=MessageRole.ASSISTANT,
+            created_at=base + timedelta(minutes=14),
+            content="done",
+        ),
+    ]
+
+    validation = _workflow_validation_result(
+        messages=messages,
+        approvals=[
+            ApprovalRecord(
+                session_id="shared-session",
+                target="edit",
+                name="edit",
+                approved=True,
+                summary="ok",
+                payload={},
+            ),
+            ApprovalRecord(
+                session_id="shared-session",
+                target="write",
+                name="write",
+                approved=True,
+                summary="ok",
+                payload={},
+            ),
+            ApprovalRecord(
+                session_id="shared-session",
+                target="bash",
+                name="bash",
+                approved=True,
+                summary="ok",
+                payload={},
+            ),
+        ],
+        child_run_records=[old_planner_record, reviewer_record, verifier_record],
+        task_list={"tasks": [{"task_id": "task-old", "subject": "Previous planner task"}]},
+        final_text="done",
+        workflow_ledger=WorkflowLedger(
+            change_revision=2,
+            verified_revision=2,
+            reviewed_revision=2,
+            current_state="ready_to_summarize",
+        ),
+        current_turn_id="turn-current",
+    )
+
+    assert validation.workflow_gaps == (
+        "the shared task list was never inspected",
+        "the coding-planner child run never executed",
+        "the workflow never used glob, grep, or read before the first material edit",
+    )
+    assert validation.workflow_advisories == ()
 
 
 def test_shell_demo_reuses_a_session_and_keeps_local_commands_host_owned(tmp_path: Path) -> None:

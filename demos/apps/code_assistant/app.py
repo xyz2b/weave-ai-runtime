@@ -172,6 +172,8 @@ class ToolResultEvent:
     tool_name: str
     status: str
     created_at: datetime
+    message_index: int
+    result_index: int
     content: dict[str, Any]
 
 
@@ -194,6 +196,7 @@ class PromptOutcome:
     messages: tuple[RuntimeMessage, ...]
     terminal_stop_reason: str | None
     terminal_metadata: dict[str, Any]
+    turn_id: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -330,6 +333,7 @@ async def run_demo(
             task_list=task_list,
             final_text=final_text,
             workflow_ledger=workflow_ledger,
+            current_turn_id=outcome.turn_id,
         )
         workflow_gaps = validation.workflow_gaps
         workflow_advisories = validation.workflow_advisories
@@ -717,8 +721,15 @@ async def _run_session_prompt(*, session, prompt: str) -> PromptOutcome:
     messages: list[RuntimeMessage] = []
     terminal_stop_reason: str | None = None
     terminal_metadata: dict[str, Any] = {}
+    turn_id: str | None = None
     session.enqueue_event(InboundEvent(InboundEventType.USER_PROMPT, prompt))
     async for event in session.stream_until_idle():
+        if turn_id is None:
+            request = event.request
+            if request is not None:
+                turn_id = request.turn_context.turn_id
+            else:
+                turn_id = getattr(getattr(session, "state", None), "active_turn_id", None)
         if event.event_type == TurnStreamEventType.MESSAGE and event.message is not None:
             messages.append(event.message)
         elif event.event_type == TurnStreamEventType.TERMINAL and event.terminal is not None:
@@ -728,6 +739,7 @@ async def _run_session_prompt(*, session, prompt: str) -> PromptOutcome:
         messages=tuple(messages),
         terminal_stop_reason=terminal_stop_reason,
         terminal_metadata=terminal_metadata,
+        turn_id=turn_id,
     )
 
 
@@ -1535,13 +1547,18 @@ def _workflow_validation_result(
     task_list: dict[str, Any],
     final_text: str,
     workflow_ledger: WorkflowLedger,
+    current_turn_id: str | None = None,
 ) -> WorkflowValidationResult:
     gaps: list[str] = []
     advisories: list[str] = []
     parent_events = _tool_result_events(messages, scope="parent")
-    planner_records = _child_run_records_for_agent(child_run_records, agent_name="coding-planner")
+    current_turn_records = _child_run_records_for_parent_turn(
+        child_run_records,
+        parent_turn_id=current_turn_id,
+    )
+    planner_records = _child_run_records_for_agent(current_turn_records, agent_name="coding-planner")
     planner_events = _child_tool_result_events(planner_records, scope="planner")
-    verifier_records = _child_run_records_for_agent(child_run_records, agent_name="verifier")
+    verifier_records = _child_run_records_for_agent(current_turn_records, agent_name="verifier")
     verifier_events = _child_tool_result_events(verifier_records, scope="verifier")
     planning_outcome = _planning_outcome(planner_records=planner_records, task_list=task_list)
     inspection_outcome = _inspection_outcome(parent_events + planner_events)
@@ -1583,7 +1600,7 @@ def _workflow_validation_result(
 
     for agent_name in ("reviewer", "verifier"):
         status = _latest_child_run_status(
-            _child_run_records_for_agent(child_run_records, agent_name=agent_name)
+            _child_run_records_for_agent(current_turn_records, agent_name=agent_name)
         )
         if status is None:
             gaps.append(f"the {agent_name} child run never executed")
@@ -1629,8 +1646,8 @@ def _tool_result_events(
     run_id: str | None = None,
 ) -> list[ToolResultEvent]:
     events: list[ToolResultEvent] = []
-    for message in messages:
-        for entry, content in _tool_result_pairs(message):
+    for message_index, message in enumerate(messages):
+        for result_index, (entry, content) in enumerate(_tool_result_pairs(message)):
             status = str(entry.get("status") or "").strip()
             tool_name = str(entry.get("tool_name") or "").strip()
             if not status or not tool_name:
@@ -1644,6 +1661,8 @@ def _tool_result_events(
                     tool_name=tool_name,
                     status=status,
                     created_at=message.created_at,
+                    message_index=message_index,
+                    result_index=result_index,
                     content=payload,
                 )
             )
@@ -1674,6 +1693,16 @@ def _child_run_records_for_agent(
     agent_name: str,
 ) -> list[AgentRunRecord]:
     return [record for record in child_run_records if record.agent_name == agent_name]
+
+
+def _child_run_records_for_parent_turn(
+    child_run_records: tuple[AgentRunRecord, ...] | list[AgentRunRecord],
+    *,
+    parent_turn_id: str | None,
+) -> list[AgentRunRecord]:
+    if not parent_turn_id:
+        return list(child_run_records)
+    return [record for record in child_run_records if record.parent_turn_id == parent_turn_id]
 
 
 def _latest_child_run_status(records: tuple[AgentRunRecord, ...] | list[AgentRunRecord]) -> str | None:
@@ -1797,28 +1826,39 @@ def _task_id_from_content(content: dict[str, Any]) -> str | None:
 
 
 def _inspection_outcome(events: tuple[ToolResultEvent, ...] | list[ToolResultEvent]) -> InspectionOutcome:
-    first_edit_at = _first_material_edit_at(events)
+    ordered_events = sorted(events, key=_tool_result_event_order_key)
+    first_edit_key = _first_material_edit_key(ordered_events)
     late_only = False
-    for event in events:
+    for event in ordered_events:
         if event.status != "success" or event.tool_name not in {"glob", "grep", "read"}:
             continue
-        if first_edit_at is None or event.created_at < first_edit_at:
+        if first_edit_key is None or _tool_result_event_order_key(event) < first_edit_key:
             return InspectionOutcome(satisfied=True)
         late_only = True
     return InspectionOutcome(satisfied=False, late_only=late_only)
 
 
-def _first_material_edit_at(events: tuple[ToolResultEvent, ...] | list[ToolResultEvent]) -> datetime | None:
-    material_times = [
-        event.created_at
+def _first_material_edit_key(
+    events: tuple[ToolResultEvent, ...] | list[ToolResultEvent],
+) -> tuple[datetime, int, int] | None:
+    material_keys = [
+        _tool_result_event_order_key(event)
         for event in events
         if event.status == "success"
         and event.tool_name in {"edit", "write"}
         and _tool_result_materially_changed(tool_name=event.tool_name, content=event.content)
     ]
-    if not material_times:
+    if not material_keys:
         return None
-    return min(material_times)
+    return min(material_keys)
+
+
+def _tool_result_event_order_key(event: ToolResultEvent) -> tuple[datetime, int, int]:
+    return (
+        event.created_at,
+        event.message_index,
+        event.result_index,
+    )
 
 
 def _has_successful_tool(
