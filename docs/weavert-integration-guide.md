@@ -1163,6 +1163,8 @@ legacy `RuntimeServices.memory.collect()`、`RuntimeServices.hooks.collect()`、
   - leader-only
   - 需要唯一 teammate `name` 和 `agent`
   - 可以附带 `cwd`、`model`、`model_route`、`permission_mode`、`isolation`、`max_turns`
+  - 其中 `max_turns` 是本次调用的动态执行预算；如果目标 agent 自身定义了 `maxTurns`，实际生效值取两者较小值
+  - 如果目标 agent 和调用都没有设置 turn 上限，runtime 当前会使用 `8` 作为默认 fallback
 - `team_send`
   - leader 和 teammate 都可调用
   - `to=\"leader\"` -> leader

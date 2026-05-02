@@ -370,6 +370,24 @@ You are a focused reviewer. Find regressions, unsafe edits, and missing tests.
 
 这里的 `worker` 只是角色化命名示例。当前不要自动假设 runtime 已经内置了一个同名 official bundled agent，除非相关 first-party package 明确把它装配出来。
 
+#### 5.2.1 `maxTurns` 与运行时 `max_turns`
+
+`maxTurns` 是 agent definition 里的静态字段，用来描述该 agent 的默认最大执行轮数。
+运行时调用方也可以在 invocation 中传入 `max_turns`，把它作为本次调用的动态预算。
+
+两者同时存在时，实际生效值取较小值：
+
+```text
+effective_max_turns = min(agent.maxTurns, invocation.max_turns)
+```
+
+这意味着运行时 `max_turns` 只能进一步收紧预算，不能突破 agent 自身定义的上限。
+
+如果两边都没有设置，runtime 当前会使用 `8` 作为默认 fallback。
+
+这里的 “turn” 指 agent 在一次执行中的内部迭代次数，不是用户对话消息轮次。
+通常每次模型请求完成并进入下一轮恢复/推进时，都会消耗一轮 turn。
+
 ### 5.3 Agent 的推荐写法
 
 #### 5.3.1 实现型 worker
