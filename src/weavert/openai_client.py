@@ -379,12 +379,17 @@ def _build_responses_request(
     *,
     model_name: str,
 ) -> tuple[dict[str, Any], dict[str, _ResponsesFunctionToolSpec]]:
+    input_items, continuation_instructions = _serialize_request_input(request.messages)
     payload: dict[str, Any] = {
         "model": model_name,
-        "input": _serialize_request_input(request.messages),
+        "input": input_items,
     }
-    if request.system_prompt.strip():
-        payload["instructions"] = request.system_prompt
+    instructions = _merge_responses_instructions(
+        request.system_prompt,
+        continuation_instructions,
+    )
+    if instructions:
+        payload["instructions"] = instructions
     if request.max_output_tokens is not None:
         payload["max_output_tokens"] = request.max_output_tokens
     tool_specs_by_name: dict[str, _ResponsesFunctionToolSpec] = {}
@@ -408,11 +413,34 @@ def _provider_parallel_tool_calls_enabled(metadata: Mapping[str, Any] | None) ->
     return False
 
 
-def _serialize_request_input(messages: Iterable[RuntimeMessage]) -> list[dict[str, Any]]:
+def _merge_responses_instructions(
+    system_prompt: str,
+    continuation_instructions: Iterable[str],
+) -> str:
+    sections: list[str] = []
+    if system_prompt.strip():
+        sections.append(system_prompt)
+    sections.extend(text for text in continuation_instructions if text.strip())
+    return "\n\n".join(sections)
+
+
+def _serialize_request_input(
+    messages: Iterable[RuntimeMessage],
+) -> tuple[list[dict[str, Any]], tuple[str, ...]]:
     input_items: list[dict[str, Any]] = []
+    continuation_instructions: list[str] = []
+    allow_post_tool_system_fold = False
     for message in messages:
+        folded_system_text = _post_tool_system_instruction_text(
+            message,
+            allow_fold=allow_post_tool_system_fold,
+        )
+        if folded_system_text is not None:
+            continuation_instructions.append(folded_system_text)
+            continue
         role = _responses_role_for_message(message.role)
         buffered_text: list[str] = []
+        emitted_tool_result = False
 
         def flush_text() -> None:
             if not buffered_text:
@@ -457,8 +485,27 @@ def _serialize_request_input(messages: Iterable[RuntimeMessage]) -> list[dict[st
                         "output": _serialize_tool_result_output(block),
                     }
                 )
+                emitted_tool_result = True
         flush_text()
-    return input_items
+        if message.role != MessageRole.SYSTEM:
+            allow_post_tool_system_fold = emitted_tool_result
+    return input_items, tuple(continuation_instructions)
+
+
+def _post_tool_system_instruction_text(
+    message: RuntimeMessage,
+    *,
+    allow_fold: bool,
+) -> str | None:
+    if not allow_fold or message.role != MessageRole.SYSTEM:
+        return None
+    text_parts: list[str] = []
+    for block in message.content:
+        text = _content_block_text(block)
+        if text is None:
+            return None
+        text_parts.append(text)
+    return "".join(text_parts)
 
 
 

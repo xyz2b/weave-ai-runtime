@@ -19,6 +19,7 @@ from weavert.devtools.tool_impls import _GLOB_TOOL_MAX_MATCHES
 from weavert.openai_client import (
     BundledOpenAIModelClient,
     OPENAI_ROUTE_NAME,
+    _build_responses_request_payload,
     _tool_definition_to_function_tool,
 )
 from weavert.runtime_kernel import BuiltinPackConfig, RuntimeConfig, assemble_runtime
@@ -94,6 +95,141 @@ def _nested_roundtrip_tool() -> ToolDefinition:
             "additionalProperties": False,
         },
     )
+
+
+def test_build_responses_request_folds_post_tool_system_guidance_into_instructions() -> None:
+    payload = _build_responses_request_payload(
+        _make_request(
+            messages=(
+                RuntimeMessage(
+                    message_id="user-1",
+                    role=MessageRole.USER,
+                    content=(TextBlock(text="Find the release notes."),),
+                ),
+                RuntimeMessage(
+                    message_id="assistant-1",
+                    role=MessageRole.ASSISTANT,
+                    content=(
+                        TextBlock(text="I will inspect the file."),
+                        ToolUseBlock(tool_use_id="call_prev", name="lookup", input={"path": "CHANGELOG.md"}),
+                    ),
+                ),
+                RuntimeMessage(
+                    message_id="user-2",
+                    role=MessageRole.USER,
+                    content=(
+                        ToolResultBlock(
+                            tool_use_id="call_prev",
+                            content={"path": "CHANGELOG.md", "found": True},
+                        ),
+                    ),
+                ),
+                RuntimeMessage(
+                    message_id="system-1",
+                    role=MessageRole.SYSTEM,
+                    content=(TextBlock(text="Summarize the results briefly."),),
+                ),
+            ),
+        ),
+        model_name="gpt-test",
+    )
+
+    assert payload["instructions"] == "System prompt\n\nSummarize the results briefly."
+    assert payload["input"] == [
+        {
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": "Find the release notes."}],
+        },
+        {
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "output_text", "text": "I will inspect the file."}],
+            "status": "completed",
+        },
+        {
+            "type": "function_call",
+            "call_id": "call_prev",
+            "name": "lookup",
+            "arguments": '{"path":"CHANGELOG.md"}',
+            "status": "completed",
+        },
+        {
+            "type": "function_call_output",
+            "call_id": "call_prev",
+            "output": '{"path":"CHANGELOG.md","found":true}',
+        },
+    ]
+
+
+def test_build_responses_request_leaves_non_post_tool_system_messages_in_input() -> None:
+    payload = _build_responses_request_payload(
+        _make_request(
+            messages=(
+                RuntimeMessage(
+                    message_id="user-1",
+                    role=MessageRole.USER,
+                    content=(TextBlock(text="Find the release notes."),),
+                ),
+                RuntimeMessage(
+                    message_id="system-1",
+                    role=MessageRole.SYSTEM,
+                    content=(TextBlock(text="Prefer concise file summaries."),),
+                ),
+                RuntimeMessage(
+                    message_id="assistant-1",
+                    role=MessageRole.ASSISTANT,
+                    content=(
+                        TextBlock(text="I will inspect the file."),
+                        ToolUseBlock(tool_use_id="call_prev", name="lookup", input={"path": "CHANGELOG.md"}),
+                    ),
+                ),
+                RuntimeMessage(
+                    message_id="user-2",
+                    role=MessageRole.USER,
+                    content=(
+                        ToolResultBlock(
+                            tool_use_id="call_prev",
+                            content={"path": "CHANGELOG.md", "found": True},
+                        ),
+                    ),
+                ),
+            ),
+        ),
+        model_name="gpt-test",
+    )
+
+    assert payload["instructions"] == "System prompt"
+    assert payload["input"] == [
+        {
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": "Find the release notes."}],
+        },
+        {
+            "type": "message",
+            "role": "system",
+            "content": [{"type": "input_text", "text": "Prefer concise file summaries."}],
+        },
+        {
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "output_text", "text": "I will inspect the file."}],
+            "status": "completed",
+        },
+        {
+            "type": "function_call",
+            "call_id": "call_prev",
+            "name": "lookup",
+            "arguments": '{"path":"CHANGELOG.md"}',
+            "status": "completed",
+        },
+        {
+            "type": "function_call_output",
+            "call_id": "call_prev",
+            "output": '{"path":"CHANGELOG.md","found":true}',
+        },
+    ]
 
 
 def test_complete_serializes_responses_payload_with_tools_and_tool_results(monkeypatch) -> None:
