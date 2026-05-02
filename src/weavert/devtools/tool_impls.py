@@ -132,9 +132,15 @@ async def edit_file_tool(tool_input: dict[str, Any], context: ToolContext) -> di
 
 async def write_file_tool(tool_input: dict[str, Any], context: ToolContext) -> dict[str, Any]:
     path = _resolve_path(context.cwd, tool_input["file_path"], context=context)
+    original = path.read_text(encoding="utf-8") if path.exists() else None
+    changed = original != tool_input["content"]
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(tool_input["content"], encoding="utf-8")
-    return {"file_path": str(path), "bytes_written": len(tool_input["content"].encode("utf-8"))}
+    return {
+        "file_path": str(path),
+        "bytes_written": len(tool_input["content"].encode("utf-8")),
+        "changed": changed,
+    }
 
 
 def validate_bash_tool(tool_input: dict[str, Any], _: ToolContext) -> ValidationOutcome:

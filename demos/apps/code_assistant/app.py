@@ -457,16 +457,16 @@ async def shell_demo(
                         session_id=active_session_id,
                         live_messages=tuple(session.messages),
                     )
-                    warning = _workflow_warning_for_user_prompt(
-                        outcome.dispatch_prompt,
-                        workflow_ledger,
+                    turn_warnings = _workflow_warnings_for_turn(
+                        prompt=outcome.dispatch_prompt,
+                        assistant_text=_last_assistant_text(list(prompt_outcome.messages)),
+                        ledger=workflow_ledger,
                     )
-                    if warning is not None:
-                        workflow_warnings.append(warning)
+                    workflow_warnings.extend(turn_warnings)
                     host.render_workflow_state(
                         session_id=active_session_id,
                         ledger=workflow_ledger.to_payload(),
-                        warning=warning,
+                        warning=turn_warnings[0] if turn_warnings else None,
                     )
                     continue
                 if outcome.exit_shell:
@@ -495,13 +495,16 @@ async def shell_demo(
                 session_id=active_session_id,
                 live_messages=tuple(session.messages),
             )
-            warning = _workflow_warning_for_user_prompt(text, workflow_ledger)
-            if warning is not None:
-                workflow_warnings.append(warning)
+            turn_warnings = _workflow_warnings_for_turn(
+                prompt=text,
+                assistant_text=_last_assistant_text(list(prompt_outcome.messages)),
+                ledger=workflow_ledger,
+            )
+            workflow_warnings.extend(turn_warnings)
             host.render_workflow_state(
                 session_id=active_session_id,
                 ledger=workflow_ledger.to_payload(),
-                warning=warning,
+                warning=turn_warnings[0] if turn_warnings else None,
             )
 
         unsubscribe_jobs()
@@ -775,7 +778,11 @@ def _build_workflow_ledger(
         for entry, content in _tool_result_pairs(message):
             tool_name = str(entry.get("tool_name") or "").strip()
             status = str(entry.get("status") or "").strip()
-            if tool_name in {"edit", "write"} and status == "success":
+            if (
+                tool_name in {"edit", "write"}
+                and status == "success"
+                and _tool_result_materially_changed(tool_name=tool_name, content=content)
+            ):
                 change_revision += 1
                 revision_times.append(message.created_at)
                 continue
@@ -855,13 +862,30 @@ def _workflow_warnings_for_state(
     ledger: WorkflowLedger,
     *,
     include_summary_warning: bool,
+    summary_label: str = "Final summary",
 ) -> tuple[str, ...]:
     if not include_summary_warning:
         return ()
     if ledger.current_state not in {"pending_verification", "pending_review"}:
         return ()
     return (
-        f"Final summary was produced while the workflow was still {ledger.current_state}.",
+        f"{summary_label} was produced while the workflow was still {ledger.current_state}.",
+    )
+
+
+def _workflow_warnings_for_turn(
+    *,
+    prompt: str,
+    assistant_text: str,
+    ledger: WorkflowLedger,
+) -> tuple[str, ...]:
+    prompt_warning = _workflow_warning_for_user_prompt(prompt, ledger)
+    if prompt_warning is not None:
+        return (prompt_warning,)
+    return _workflow_warnings_for_state(
+        ledger,
+        include_summary_warning=bool(assistant_text),
+        summary_label="Assistant response",
     )
 
 
@@ -903,6 +927,14 @@ def _tool_result_pairs(message: RuntimeMessage) -> tuple[tuple[dict[str, Any], d
             continue
         pairs.append((entry, block.content))
     return tuple(pairs)
+
+
+def _tool_result_materially_changed(*, tool_name: str, content: dict[str, Any]) -> bool:
+    if tool_name == "edit":
+        return bool(content.get("updated", True))
+    if tool_name == "write":
+        return bool(content.get("changed", True))
+    return False
 
 
 def _is_verification_shell_result(content: dict[str, Any]) -> bool:

@@ -254,6 +254,18 @@ def _iter_input(lines: list[str]):
     return _reader
 
 
+def _iter_input_then_eof(lines: list[str]):
+    iterator = iter(lines)
+
+    def _reader(_prompt: str) -> str:
+        try:
+            return next(iterator)
+        except StopIteration as exc:
+            raise EOFError from exc
+
+    return _reader
+
+
 def _result_payload(result: object) -> dict[str, object]:
     payload = getattr(result, "value", result)
     assert isinstance(payload, dict)
@@ -694,6 +706,78 @@ def test_replacement_bash_v2_session_lifecycle_and_unsupported_tui(tmp_path: Pat
     assert any(job["metadata"].get("shell_session_id") == start["shell_session_id"] for job in jobs)
 
 
+def test_replacement_bash_session_stop_falls_back_to_kill_when_term_is_ignored(tmp_path: Path) -> None:
+    layout = _layout(tmp_path)
+    reset_demo_state(layout=layout)
+    runtime = assemble_demo_runtime(layout=layout)
+    bash_tool = runtime.kernel.tool_registry.get("bash")
+    assert bash_tool is not None
+
+    context = ToolContext(
+        session_id="shell-test",
+        turn_id="turn-1",
+        agent_name="code-assistant",
+        cwd=layout.workspace_root,
+        tool_registry=runtime.kernel.tool_registry,
+        runtime_services=runtime.services,
+    )
+
+    async def scenario():
+        start = await bash_tool.execute(
+            {"action": "start", "command": "trap '' TERM; while true; do sleep 1; done"},
+            context,
+        )
+        stop = await asyncio.wait_for(
+            bash_tool.execute(
+                {"action": "stop", "shell_session_id": start["shell_session_id"]},
+                context,
+            ),
+            timeout=2,
+        )
+        return _result_payload(stop)
+
+    stop_payload = asyncio.run(scenario())
+
+    assert stop_payload["status"] == "stopped"
+    assert stop_payload["session_status"] == "stopped"
+
+
+def test_replacement_bash_background_stop_falls_back_to_kill_when_term_is_ignored(tmp_path: Path) -> None:
+    layout = _layout(tmp_path)
+    reset_demo_state(layout=layout)
+    runtime = assemble_demo_runtime(layout=layout)
+    bash_tool = runtime.kernel.tool_registry.get("bash")
+    assert bash_tool is not None
+
+    context = ToolContext(
+        session_id="shell-test",
+        turn_id="turn-1",
+        agent_name="code-assistant",
+        cwd=layout.workspace_root,
+        tool_registry=runtime.kernel.tool_registry,
+        runtime_services=runtime.services,
+    )
+
+    async def scenario():
+        background = await bash_tool.execute(
+            {
+                "command": "trap '' TERM; while true; do sleep 1; done",
+                "run_in_background": True,
+            },
+            context,
+        )
+        stopped = await asyncio.wait_for(
+            runtime.stop_job(background["job_id"], session_id="shell-test"),
+            timeout=2,
+        )
+        return stopped
+
+    stopped = asyncio.run(scenario())
+
+    assert stopped["status"] == "stopped"
+    assert stopped["result"]["status"] == "stopped"
+
+
 def test_replacement_bash_blocks_workspace_escapes(tmp_path: Path) -> None:
     layout = _layout(tmp_path)
     reset_demo_state(layout=layout)
@@ -828,6 +912,79 @@ def test_shell_demo_warns_on_exit_when_latest_change_is_pending_verification(tmp
     assert report.workflow_ledger.current_state == "pending_verification"
     assert any("pending_verification" in warning for warning in report.workflow_warnings)
     assert any("[workflow:warning]" in line for line in output_lines)
+
+
+def test_shell_demo_warns_when_assistant_response_leaves_pending_verification(tmp_path: Path) -> None:
+    layout = _layout(tmp_path)
+    reset_demo_state(layout=layout)
+    output_lines: list[str] = []
+    client = ScriptedModelClient(
+        [
+            tool_call_batch(
+                request_id="req-workflow-1",
+                tool_name="edit",
+                tool_input={
+                    "file_path": "src/demo_service/greeting.py",
+                    "old_string": 'DEFAULT_NAME = "runtime"',
+                    "new_string": 'DEFAULT_NAME = "WeaveRT"',
+                },
+                call_id="call-workflow-edit",
+            ),
+            text_batch(request_id="req-workflow-2", text="Done. Updated the greeting."),
+        ]
+    )
+
+    report = asyncio.run(
+        shell_demo(
+            auto_approve=True,
+            layout=layout,
+            model_client=client,
+            input_reader=_iter_input_then_eof(["Change the greeting."]),
+            output_writer=output_lines.append,
+        )
+    )
+
+    assert report.ok is True
+    assert report.workflow_ledger.current_state == "pending_verification"
+    assert any("pending_verification" in warning for warning in report.workflow_warnings)
+    assert any("Assistant response" in warning for warning in report.workflow_warnings)
+    assert any("[workflow:warning]" in line for line in output_lines)
+
+
+def test_shell_demo_ignores_noop_write_when_computing_workflow_revisions(tmp_path: Path) -> None:
+    layout = _layout(tmp_path)
+    reset_demo_state(layout=layout)
+    output_lines: list[str] = []
+    content = (layout.workspace_root / "src" / "demo_service" / "greeting.py").read_text(encoding="utf-8")
+    client = ScriptedModelClient(
+        [
+            tool_call_batch(
+                request_id="req-write-1",
+                tool_name="write",
+                tool_input={
+                    "file_path": "src/demo_service/greeting.py",
+                    "content": content,
+                },
+                call_id="call-write-same",
+            ),
+            text_batch(request_id="req-write-2", text="Rewrote the greeting file."),
+        ]
+    )
+
+    report = asyncio.run(
+        shell_demo(
+            auto_approve=True,
+            layout=layout,
+            model_client=client,
+            input_reader=_iter_input_then_eof(["Rewrite the greeting file."]),
+            output_writer=output_lines.append,
+        )
+    )
+
+    assert report.ok is True
+    assert report.workflow_ledger.current_state == "clean"
+    assert report.workflow_ledger.change_revision == 0
+    assert report.workflow_warnings == ()
 
 
 def test_run_demo_surfaces_missing_live_credentials_without_fallback(tmp_path: Path, monkeypatch) -> None:

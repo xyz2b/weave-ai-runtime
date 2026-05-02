@@ -37,6 +37,7 @@ _PREVIEW_MAX_LINES = 12
 _DEFAULT_TIMEOUT_MS = 60_000
 _SESSION_OUTPUT_MAX_CHARS = 12_000
 _SESSION_OUTPUT_MAX_CHUNKS = 256
+_STOP_GRACE_SECONDS = 0.5
 
 
 @dataclass(frozen=True, slots=True)
@@ -884,8 +885,7 @@ async def _stop_shell_session(shell_session_id: str) -> None:
     if handle is None:
         return
     handle.stop_requested = True
-    if handle.process.returncode is None:
-        handle.process.terminate()
+    await _terminate_process(handle.process)
     if handle.wait_task is not None:
         await handle.wait_task
 
@@ -1236,9 +1236,33 @@ async def _terminate_background_shell(job_id: str) -> None:
     handle = _BACKGROUND_SHELLS.get(job_id)
     if handle is None:
         return
-    if handle.process.returncode is None:
-        handle.process.terminate()
+    await _terminate_process(handle.process)
     await handle.monitor_task
+
+
+async def _terminate_process(
+    process: asyncio.subprocess.Process,
+    *,
+    grace_period_seconds: float = _STOP_GRACE_SECONDS,
+) -> None:
+    if process.returncode is not None:
+        return
+    try:
+        process.terminate()
+    except ProcessLookupError:
+        return
+    try:
+        await asyncio.wait_for(process.wait(), timeout=grace_period_seconds)
+        return
+    except asyncio.TimeoutError:
+        pass
+    if process.returncode is not None:
+        return
+    try:
+        process.kill()
+    except ProcessLookupError:
+        return
+    await process.wait()
 
 
 async def _run_foreground_shell(
