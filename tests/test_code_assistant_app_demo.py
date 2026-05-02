@@ -22,6 +22,7 @@ from demos.apps.code_assistant.app import (
 )
 from demos.apps.code_assistant.builtin_overrides import _classify_command
 from weavert.openai_client import OPENAI_ROUTE_NAME
+from weavert.contracts import ToolResultBlock
 from weavert.runtime_kernel import RuntimeDistribution
 from weavert.tool_runtime import ToolContext
 
@@ -259,6 +260,17 @@ def _result_payload(result: object) -> dict[str, object]:
     return payload
 
 
+def _latest_shell_session_id(request) -> str:
+    for message in reversed(request.messages):
+        for block in message.content:
+            if not isinstance(block, ToolResultBlock) or not isinstance(block.content, dict):
+                continue
+            shell_session_id = str(block.content.get("shell_session_id") or "").strip()
+            if shell_session_id:
+                return shell_session_id
+    raise AssertionError("Missing shell_session_id in prior tool results")
+
+
 def test_reset_demo_state_materializes_shell_agents_and_skills(tmp_path: Path) -> None:
     layout = _layout(tmp_path)
     workspace = reset_demo_state(layout=layout)
@@ -293,8 +305,10 @@ def test_demo_runtime_defaults_to_full_distribution_and_replaces_only_bash(tmp_p
     assert profile["surfaces"]["child_runs"]["durability"] == "durable"
     assert profile["surfaces"]["task_lists"]["durability"] == "durable"
     assert bash_tool is not None
+    assert "action" in bash_tool.input_schema["properties"]
     assert "description" in bash_tool.input_schema["properties"]
     assert "run_in_background" in bash_tool.input_schema["properties"]
+    assert "shell_session_id" in bash_tool.input_schema["properties"]
     assert bash_tool.metadata["builtin_owner"] == "weavert-devtools"
     assert code_assistant is not None
     assert planner is not None
@@ -316,6 +330,11 @@ def test_run_demo_with_scripted_model_exercises_shell_agents_tools_and_child_run
 
     assert report.ok is True
     assert report.workflow_gaps == ()
+    assert report.workflow_ledger.current_state == "ready_to_summarize"
+    assert report.workflow_ledger.change_revision == 2
+    assert report.workflow_ledger.verified_revision == 2
+    assert report.workflow_ledger.reviewed_revision == 2
+    assert report.workflow_warnings == ()
     assert report.final_text == "completed coding shell workflow"
     assert [approval.name for approval in report.approvals] == ["edit", "write", "bash"]
     assert all(approval.approved for approval in report.approvals)
@@ -402,6 +421,7 @@ def test_shell_demo_reuses_a_session_and_keeps_local_commands_host_owned(tmp_pat
     assert report.ok is True
     assert report.prompt_count == 2
     assert report.local_commands == ("help", "jobs", "exit")
+    assert report.workflow_ledger.current_state == "clean"
     assert report.transcript_path.exists()
     assert len(client.requests) == 3
     assert [approval.name for approval in report.approvals] == ["bash"]
@@ -482,6 +502,7 @@ def test_shell_inspect_highlights_live_current_session_over_persisted_history(tm
     assert any("transcript sessions: 2" in line for line in output_lines)
     assert any("current transcript: live-shell" in line for line in output_lines)
     assert not any("latest transcript:" in line for line in output_lines)
+    assert any("workflow: clean" in line for line in output_lines)
 
 
 def test_shell_inspect_tasks_and_jobs_are_host_owned(tmp_path: Path) -> None:
@@ -590,6 +611,89 @@ def test_replacement_bash_returns_structured_results_and_background_jobs(tmp_pat
     assert stopped["result"]["status"] == "stopped"
 
 
+def test_replacement_bash_v2_session_lifecycle_and_unsupported_tui(tmp_path: Path) -> None:
+    layout = _layout(tmp_path)
+    reset_demo_state(layout=layout)
+    runtime = assemble_demo_runtime(layout=layout)
+    bash_tool = runtime.kernel.tool_registry.get("bash")
+    assert bash_tool is not None
+
+    context = ToolContext(
+        session_id="shell-test",
+        turn_id="turn-1",
+        agent_name="code-assistant",
+        cwd=layout.workspace_root,
+        tool_registry=runtime.kernel.tool_registry,
+        runtime_services=runtime.services,
+    )
+
+    async def scenario():
+        start = await bash_tool.execute(
+            {"action": "start", "command": "cat", "description": "Start an echo session"},
+            context,
+        )
+        shell_session_id = start["shell_session_id"]
+        assert isinstance(shell_session_id, str) and shell_session_id
+        send = await bash_tool.execute(
+            {
+                "action": "send",
+                "shell_session_id": shell_session_id,
+                "stdin": "hello from session\n",
+            },
+            context,
+        )
+        await asyncio.sleep(0.1)
+        read = await bash_tool.execute(
+            {"action": "read", "shell_session_id": shell_session_id},
+            context,
+        )
+        stop = await bash_tool.execute(
+            {"action": "stop", "shell_session_id": shell_session_id},
+            context,
+        )
+        interrupt_start = await bash_tool.execute(
+            {"action": "start", "command": "cat", "description": "Start an interruptible session"},
+            context,
+        )
+        interrupt_session_id = interrupt_start["shell_session_id"]
+        interrupt = await bash_tool.execute(
+            {"action": "interrupt", "shell_session_id": interrupt_session_id},
+            context,
+        )
+        await asyncio.sleep(0.05)
+        interrupt_stop = await bash_tool.execute(
+            {"action": "stop", "shell_session_id": interrupt_session_id},
+            context,
+        )
+        unsupported = await bash_tool.execute(
+            {"action": "start", "command": "vim src/demo_service/greeting.py"},
+            context,
+        )
+        jobs_result = await runtime.list_jobs(session_id="shell-test")
+        return start, send, read, stop, interrupt, interrupt_stop, unsupported, jobs_result
+
+    start, send, read, stop, interrupt, interrupt_stop, unsupported, jobs = asyncio.run(scenario())
+    stop_payload = _result_payload(stop)
+    interrupt_stop_payload = _result_payload(interrupt_stop)
+    unsupported_payload = _result_payload(unsupported)
+
+    assert start["action"] == "start"
+    assert start["session_mode"] == "session"
+    assert start["session_status"] == "running"
+    assert start["session_output_complete"] is False
+    assert send["action"] == "send"
+    assert "hello from session" in str(read["session_output"])
+    assert read["shell_session_id"] == start["shell_session_id"]
+    assert stop_payload["status"] in {"stopped", "completed", "failed"}
+    assert interrupt["action"] == "interrupt"
+    assert interrupt["shell_session_id"] == interrupt_stop_payload["shell_session_id"]
+    assert interrupt_stop_payload["status"] in {"stopped", "completed", "failed"}
+    assert unsupported_payload["status"] == "unsupported"
+    assert unsupported_payload["unsupported_shell"] is True
+    assert "line-oriented" in str(unsupported_payload["unsupported_reason"])
+    assert any(job["metadata"].get("shell_session_id") == start["shell_session_id"] for job in jobs)
+
+
 def test_replacement_bash_blocks_workspace_escapes(tmp_path: Path) -> None:
     layout = _layout(tmp_path)
     reset_demo_state(layout=layout)
@@ -640,6 +744,90 @@ def test_replacement_bash_classifies_common_test_commands() -> None:
     assert _classify_command("make test").name == "test"
     assert _classify_command("cargo test").name == "test"
     assert _classify_command("go test ./...").name == "test"
+
+
+def test_shell_demo_renders_reactive_session_and_watcher_updates(tmp_path: Path) -> None:
+    layout = _layout(tmp_path)
+    reset_demo_state(layout=layout)
+    output_lines: list[str] = []
+
+    def _start_batch(_request):
+        return tool_call_batch(
+            request_id="req-shell-v2-1",
+            tool_name="bash",
+            tool_input={
+                "action": "start",
+                "command": "cat",
+                "description": "Start a reactive shell session",
+            },
+            call_id="call-shell-start",
+        )
+
+    client = ScriptedModelClient(
+        [
+            _start_batch,
+            text_batch(request_id="req-shell-v2-2", text="session output captured"),
+        ]
+    )
+
+    report = asyncio.run(
+        shell_demo(
+            auto_approve=True,
+            layout=layout,
+            model_client=client,
+            input_reader=_iter_input(
+                [
+                    "Start a live shell session.",
+                    "/jobs",
+                    "/exit",
+                ]
+            ),
+            output_writer=output_lines.append,
+        )
+    )
+
+    assert report.ok is True
+    assert report.job_watch_events
+    assert report.task_watch_events
+    assert report.workflow_events
+    assert any(event["metadata"].get("shell_session_id") for event in report.job_watch_events)
+    assert any("[job:running]" in line for line in output_lines)
+
+
+def test_shell_demo_warns_on_exit_when_latest_change_is_pending_verification(tmp_path: Path) -> None:
+    layout = _layout(tmp_path)
+    reset_demo_state(layout=layout)
+    output_lines: list[str] = []
+    client = ScriptedModelClient(
+        [
+            tool_call_batch(
+                request_id="req-workflow-1",
+                tool_name="edit",
+                tool_input={
+                    "file_path": "src/demo_service/greeting.py",
+                    "old_string": 'DEFAULT_NAME = "runtime"',
+                    "new_string": 'DEFAULT_NAME = "WeaveRT"',
+                },
+                call_id="call-workflow-edit",
+            ),
+            text_batch(request_id="req-workflow-2", text="edited the greeting"),
+        ]
+    )
+
+    report = asyncio.run(
+        shell_demo(
+            auto_approve=True,
+            layout=layout,
+            model_client=client,
+            input_reader=_iter_input(["Change the greeting.", "/exit"]),
+            output_writer=output_lines.append,
+        )
+    )
+
+    assert report.ok is True
+    assert report.workflow_ledger.current_state == "pending_verification"
+    assert any("pending_verification" in warning for warning in report.workflow_warnings)
+    assert any("[workflow:warning]" in line for line in output_lines)
 
 
 def test_run_demo_surfaces_missing_live_credentials_without_fallback(tmp_path: Path, monkeypatch) -> None:

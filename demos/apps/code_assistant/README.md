@@ -1,13 +1,13 @@
-# AI Coding Shell MVP
+# Reactive AI Coding Shell V2
 
 Run every command from the repository root.
 
-This app is the repository's first AI coding shell MVP. It keeps the durable live-runtime path from the earlier demo, but the main surface is now an interactive host shell built from four layers:
+This app is the repository's reactive V2 AI coding shell. It keeps the durable live-runtime path from the earlier demo, but now combines an interactive `bash v2` surface, reactive runtime observability, and an app-owned workflow ledger on top of the same host, agent, tool, and skill composition:
 
-- `host`: shell loop, local commands, approvals, event rendering
-- `tool`: bundled coding tools plus an app-specific `bash` replacement
+- `host`: shell loop, local commands, approvals, reactive job or task rendering, workflow warnings
+- `tool`: bundled coding tools plus the app-specific `bash v2` replacement
 - `agent`: `code-assistant`, `coding-planner`, `reviewer`, and `verifier`
-- `skill`: coding discipline and reusable workflow skills
+- `skill`: coding discipline and reusable plan, verify, and review workflow skills
 
 ## Prerequisites
 
@@ -54,7 +54,7 @@ Use automatic approvals when you want a non-interactive shell session:
 python3 -B -m demos.apps.code_assistant shell --auto-approve
 ```
 
-The shell keeps one session alive across multiple prompts and supports local commands that do not spend model turns:
+The shell keeps one runtime session alive across multiple prompts, reactively renders task or job updates from runtime watchers, and supports local commands that do not spend model turns:
 
 - `/help`
 - `/inspect`
@@ -64,6 +64,13 @@ The shell keeps one session alive across multiple prompts and supports local com
 - `/review`
 - `/verify`
 - `/exit`
+
+The app-local `bash` replacement keeps the public tool name `bash`, but the V2 contract now supports:
+
+- one-shot `exec` behavior for existing short commands
+- `start`, `send`, `read`, `interrupt`, and `stop` actions for longer-lived shell sessions
+- shared job visibility and structured shell-session metadata
+- explicit unsupported outcomes for full-screen terminal UIs such as `vim`, `less`, or `top`
 
 ## Scripted smoke path
 
@@ -102,12 +109,24 @@ The app reuses bundled runtime tools for the main coding loop:
 - `agent`, `skill`
 - `task_*`, `job_*`
 
-Only `bash` is replaced locally for this app. The replacement keeps the public tool name `bash`, but adds:
+Only `bash` is replaced locally for this app. The V2 replacement keeps the public tool name `bash`, while adding:
 
 - command classification for coding-oriented shell work
 - workspace-aware guardrails and clearer high-risk summaries
 - structured stdout or stderr previews
-- background job projection for long-running commands
+- background or session-oriented job projection for longer-lived commands
+- line-oriented shell-session lifecycle support through `start`, `send`, `read`, `interrupt`, and `stop`
+
+## Workflow ledger
+
+The host computes a workflow ledger from durable runtime-owned signals:
+
+- `clean`
+- `pending_verification`
+- `pending_review`
+- `ready_to_summarize`
+
+Successful `edit` or `write` results advance the change revision and invalidate older verification or review coverage. Successful verification outcomes and successful reviewer or verifier summaries move the session forward again. `/inspect` and the interactive shell both show this state without spending another model turn.
 
 ## Deferred scope
 
@@ -138,20 +157,29 @@ python3 -B -m demos.apps.code_assistant inspect
 
 ## Manual live smoke path
 
-A manual live smoke run that preserves the bundled live model route is:
+A manual V2 smoke run that preserves the bundled live model route is:
 
 ```bash
 export OPENAI_API_KEY=your-key
 python3 -B -m demos.apps.code_assistant reset
-python3 -B -m demos.apps.code_assistant run --session-id live-smoke --auto-approve
+python3 -B -m demos.apps.code_assistant shell --session-id live-smoke --auto-approve
 python3 -B -m demos.apps.code_assistant inspect
 ```
 
 You should see all of the following:
 
 - host approval handling, unless `--auto-approve` is used
+- reactive task or job updates while the shell is live
+- workflow state lines such as `pending_verification` or `pending_review`
 - a durable transcript at `demos/apps/code_assistant/state/mini_repo/.weavert/transcripts/live-smoke.jsonl`
 - child-run records for `coding-planner`, `reviewer`, and `verifier`
 - a shared task list whose id starts with `session:live-smoke`
-- a structured `bash` verification result
+- structured `bash` verification results and shell-session metadata
 - `notes/live_demo.md` created inside the mutable workspace
+
+## Acceptance checklist
+
+- unsupported TUI commands return a structured unsupported-shell result instead of hanging the host
+- asynchronous job or task updates leave a readable prompt boundary in the interactive shell
+- `/tasks`, `/jobs`, and `/inspect` still work as fallback snapshot commands
+- summarize or exit while the ledger is still pending verification or pending review surfaces an advisory warning

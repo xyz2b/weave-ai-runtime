@@ -15,10 +15,10 @@ def _display_path(path: Path) -> str:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Run the AI coding shell MVP demo.")
+    parser = argparse.ArgumentParser(description="Run the reactive AI coding shell V2 demo.")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    shell_parser = subparsers.add_parser("shell", help="Run the interactive AI coding shell.")
+    shell_parser = subparsers.add_parser("shell", help="Run the interactive reactive AI coding shell.")
     shell_parser.add_argument("--session-id", default=None, help="Optional stable session id.")
     shell_parser.add_argument(
         "--auto-approve",
@@ -96,6 +96,17 @@ def main() -> int:
                     f"  - {task.get('subject', '<unnamed>')} "
                     f"[{task.get('status', 'unknown')}{readiness_text}]"
                 )
+        if report.workflow_ledger is not None:
+            print(
+                "workflow: "
+                f"{report.workflow_ledger.current_state} "
+                f"(change={report.workflow_ledger.change_revision}, "
+                f"verified={report.workflow_ledger.verified_revision}, "
+                f"reviewed={report.workflow_ledger.reviewed_revision})"
+            )
+        print(f"changed files: {len(report.changed_files)}")
+        for file_path in report.changed_files[:10]:
+            print(f"- changed {file_path}")
         if report.memory_root is not None:
             print(f"memory root: {_display_path(report.memory_root)}")
             print(f"memory documents: {report.memory_documents}")
@@ -119,6 +130,17 @@ def main() -> int:
         print(f"transcript: {_display_path(report.transcript_path)}")
         print(f"child run index: {_display_path(report.child_run_index_path)}")
         print(f"memory root: {_display_path(report.memory_root)}")
+        print(
+            "workflow: "
+            f"{report.workflow_ledger.current_state} "
+            f"(change={report.workflow_ledger.change_revision}, "
+            f"verified={report.workflow_ledger.verified_revision}, "
+            f"reviewed={report.workflow_ledger.reviewed_revision})"
+        )
+        if report.workflow_warnings:
+            print(f"workflow warnings: {len(report.workflow_warnings)}")
+            for warning in report.workflow_warnings:
+                print(f"- {warning}")
         if not report.ok:
             print(f"error: {report.error_message}")
             return 2
@@ -153,6 +175,17 @@ def main() -> int:
         print(f"notifications: {len(report.notification_texts)}")
     if report.final_text:
         print(f"assistant: {report.final_text}")
+    print(
+        "workflow: "
+        f"{report.workflow_ledger.current_state} "
+        f"(change={report.workflow_ledger.change_revision}, "
+        f"verified={report.workflow_ledger.verified_revision}, "
+        f"reviewed={report.workflow_ledger.reviewed_revision})"
+    )
+    if report.workflow_warnings:
+        print(f"workflow warnings: {len(report.workflow_warnings)}")
+        for warning in report.workflow_warnings:
+            print(f"- {warning}")
     if report.workflow_gaps:
         print(f"workflow gaps: {len(report.workflow_gaps)}")
         for gap in report.workflow_gaps:

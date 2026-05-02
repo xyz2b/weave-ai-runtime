@@ -133,4 +133,4 @@ def test_runtime_extension_readme_lists_project_and_live_app_demo_layers() -> No
     assert "multiple stable extension seams into a single project-shaped workflow" in readme
     assert "python3 -B -m demos.projects.release_workflow_demo" in readme
     assert "python3 -B -m demos.apps.code_assistant shell" in readme
-    assert "host-bound AI coding shell" in readme
+    assert "host-bound reactive AI coding shell" in readme
