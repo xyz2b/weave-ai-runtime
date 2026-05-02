@@ -232,6 +232,123 @@ def test_build_responses_request_leaves_non_post_tool_system_messages_in_input()
     ]
 
 
+def test_build_responses_request_folds_post_tool_system_guidance_across_thinking_only_gap() -> None:
+    payload = _build_responses_request_payload(
+        _make_request(
+            messages=(
+                RuntimeMessage(
+                    message_id="assistant-1",
+                    role=MessageRole.ASSISTANT,
+                    content=(
+                        ToolUseBlock(tool_use_id="call_prev", name="lookup", input={"path": "CHANGELOG.md"}),
+                    ),
+                ),
+                RuntimeMessage(
+                    message_id="user-1",
+                    role=MessageRole.USER,
+                    content=(
+                        ToolResultBlock(
+                            tool_use_id="call_prev",
+                            content={"path": "CHANGELOG.md", "found": True},
+                        ),
+                    ),
+                ),
+                RuntimeMessage(
+                    message_id="assistant-2",
+                    role=MessageRole.ASSISTANT,
+                    content=(ThinkingBlock(thinking="hidden reasoning"),),
+                ),
+                RuntimeMessage(
+                    message_id="system-1",
+                    role=MessageRole.SYSTEM,
+                    content=(TextBlock(text="Summarize the results briefly."),),
+                ),
+            ),
+        ),
+        model_name="gpt-test",
+    )
+
+    assert payload["instructions"] == "System prompt\n\nSummarize the results briefly."
+    assert payload["input"] == [
+        {
+            "type": "function_call",
+            "call_id": "call_prev",
+            "name": "lookup",
+            "arguments": '{"path":"CHANGELOG.md"}',
+            "status": "completed",
+        },
+        {
+            "type": "function_call_output",
+            "call_id": "call_prev",
+            "output": '{"path":"CHANGELOG.md","found":true}',
+        },
+    ]
+
+
+def test_build_responses_request_does_not_fold_system_guidance_after_visible_assistant_output() -> None:
+    payload = _build_responses_request_payload(
+        _make_request(
+            messages=(
+                RuntimeMessage(
+                    message_id="assistant-1",
+                    role=MessageRole.ASSISTANT,
+                    content=(
+                        ToolUseBlock(tool_use_id="call_prev", name="lookup", input={"path": "CHANGELOG.md"}),
+                    ),
+                ),
+                RuntimeMessage(
+                    message_id="user-1",
+                    role=MessageRole.USER,
+                    content=(
+                        ToolResultBlock(
+                            tool_use_id="call_prev",
+                            content={"path": "CHANGELOG.md", "found": True},
+                        ),
+                    ),
+                ),
+                RuntimeMessage(
+                    message_id="assistant-2",
+                    role=MessageRole.ASSISTANT,
+                    content=(TextBlock(text="I found the file."),),
+                ),
+                RuntimeMessage(
+                    message_id="system-1",
+                    role=MessageRole.SYSTEM,
+                    content=(TextBlock(text="Summarize the results briefly."),),
+                ),
+            ),
+        ),
+        model_name="gpt-test",
+    )
+
+    assert payload["instructions"] == "System prompt"
+    assert payload["input"] == [
+        {
+            "type": "function_call",
+            "call_id": "call_prev",
+            "name": "lookup",
+            "arguments": '{"path":"CHANGELOG.md"}',
+            "status": "completed",
+        },
+        {
+            "type": "function_call_output",
+            "call_id": "call_prev",
+            "output": '{"path":"CHANGELOG.md","found":true}',
+        },
+        {
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "output_text", "text": "I found the file."}],
+            "status": "completed",
+        },
+        {
+            "type": "message",
+            "role": "system",
+            "content": [{"type": "input_text", "text": "Summarize the results briefly."}],
+        },
+    ]
+
+
 def test_complete_serializes_responses_payload_with_tools_and_tool_results(monkeypatch) -> None:
     captured: dict[str, object] = {}
 

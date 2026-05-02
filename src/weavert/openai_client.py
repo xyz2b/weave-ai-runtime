@@ -429,18 +429,23 @@ def _serialize_request_input(
 ) -> tuple[list[dict[str, Any]], tuple[str, ...]]:
     input_items: list[dict[str, Any]] = []
     continuation_instructions: list[str] = []
-    allow_post_tool_system_fold = False
+    last_emitted_item_type: str | None = None
     for message in messages:
         folded_system_text = _post_tool_system_instruction_text(
             message,
-            allow_fold=allow_post_tool_system_fold,
+            allow_fold=last_emitted_item_type == "function_call_output",
         )
         if folded_system_text is not None:
             continuation_instructions.append(folded_system_text)
             continue
         role = _responses_role_for_message(message.role)
         buffered_text: list[str] = []
-        emitted_tool_result = False
+
+        def append_input_item(item: dict[str, Any]) -> None:
+            nonlocal last_emitted_item_type
+            input_items.append(item)
+            item_type = item.get("type")
+            last_emitted_item_type = item_type if isinstance(item_type, str) else None
 
         def flush_text() -> None:
             if not buffered_text:
@@ -457,7 +462,7 @@ def _serialize_request_input(
             }
             if role == "assistant":
                 item["status"] = "completed"
-            input_items.append(item)
+            append_input_item(item)
 
         for block in message.content:
             text = _content_block_text(block)
@@ -466,7 +471,7 @@ def _serialize_request_input(
                 continue
             if isinstance(block, ToolUseBlock):
                 flush_text()
-                input_items.append(
+                append_input_item(
                     {
                         "type": "function_call",
                         "call_id": block.tool_use_id,
@@ -478,17 +483,14 @@ def _serialize_request_input(
                 continue
             if isinstance(block, ToolResultBlock):
                 flush_text()
-                input_items.append(
+                append_input_item(
                     {
                         "type": "function_call_output",
                         "call_id": block.tool_use_id,
                         "output": _serialize_tool_result_output(block),
                     }
                 )
-                emitted_tool_result = True
         flush_text()
-        if message.role != MessageRole.SYSTEM:
-            allow_post_tool_system_fold = emitted_tool_result
     return input_items, tuple(continuation_instructions)
 
 
