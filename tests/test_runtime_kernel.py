@@ -1190,12 +1190,45 @@ def test_runtime_assembly_preset_provenance_is_published_in_runtime_metadata(
     assert provenance["overridden"] is False
     assert provenance == runtime.metadata["assembly_preset_provenance"]
     assert provenance == runtime.services.metadata["assembly_preset_provenance"]
+    assert provenance == runtime.kernel.config.assembly_preset_metadata()
     assert provenance["baseline"]["selected_first_party_packages"] == list(runtime.kernel.first_party_packages)
     assert assembly_view["assembly_preset_provenance"] == provenance
 
     assembly_view["assembly_preset_provenance"]["name"] = "mutated"
 
     assert runtime.metadata["assembly_preset_provenance"]["name"] == "ordinary-workflow"
+
+
+def test_runtime_assembly_preset_override_detection_captures_full_config_mutations(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    user_home = tmp_path / "user-home"
+    project_root = tmp_path / "project"
+    project_root.mkdir(parents=True)
+    monkeypatch.setattr("weavert.runtime_kernel.config.Path.home", lambda: user_home)
+
+    config = RuntimeConfig.for_headless_live(project_root)
+    config.system_prompt = "custom preset override"
+    config.model_providers[OPENAI_PROVIDER_NAME] = replace(
+        config.model_providers[OPENAI_PROVIDER_NAME],
+        client=FakeModelClient([]),
+    )
+
+    metadata = config.assembly_preset_metadata()
+    runtime = assemble_runtime(config)
+    provenance = runtime.query_assembly_preset_provenance()
+    provider_override = provenance["overrides"]["model_providers"]["current"][OPENAI_PROVIDER_NAME]
+
+    assert metadata["overridden"] is True
+    assert metadata["overrides"]["system_prompt"]["current"] == "custom preset override"
+    assert metadata["overrides"]["model_providers"]["baseline"][OPENAI_PROVIDER_NAME]["client"] != (
+        metadata["overrides"]["model_providers"]["current"][OPENAI_PROVIDER_NAME]["client"]
+    )
+    assert metadata == provenance
+    assert provenance == runtime.kernel.config.assembly_preset_metadata()
+    assert provider_override["client"]["type"].endswith("FakeModelClient")
+    assert runtime.system_prompt == "custom preset override"
 
 
 def test_runtime_headless_live_preset_remains_overrideable_and_matches_manual_assembly(
@@ -1505,7 +1538,7 @@ def test_host_bound_preset_preserves_provenance_when_binding_host(
     assert bound.host.name == "sdk"
     assert provenance["name"] == "host-bound"
     assert provenance["overridden"] is True
-    assert provenance["overrides"]["host_bindings"]["current"] == ["sdk"]
+    assert provenance["overrides"]["host_bindings"]["current"][0]["name"] == "sdk"
 
 
 def test_runtime_assembly_provides_runnable_session_surface(tmp_path: Path) -> None:

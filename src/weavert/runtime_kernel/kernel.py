@@ -138,7 +138,11 @@ from ..tool_runtime import ToolContext
 from ..turn_engine.composer import ContextAssembler
 from ..turn_engine.engine import TurnEngine, TurnStreamEvent, TurnStreamEventType, TurnTerminal
 from ..turn_engine.models import ModelRequest, TranscriptStore
-from .config import DefinitionSourcePaths, RuntimeConfig
+from .config import (
+    DefinitionSourcePaths,
+    RuntimeConfig,
+    _publish_runtime_assembly_preset_metadata,
+)
 from ..execution_policy import DelegationPolicyError, default_delegation_policy_metadata, policy_state_from_metadata
 
 SKILL_DYNAMIC_ROOTS_KEY = "skill_dynamic_roots"
@@ -1668,15 +1672,7 @@ def build_runtime_kernel(config: RuntimeConfig) -> RuntimeKernel:
         distribution=resolved_distribution.value,
         working_directory=config.working_directory,
     )
-    preset_provenance = config.assembly_preset_metadata()
-    if preset_provenance:
-        config = replace(
-            config,
-            metadata={
-                **dict(config.metadata),
-                "assembly_preset_provenance": preset_provenance,
-            },
-        )
+    config = _publish_runtime_assembly_preset_metadata(config)
     config = _with_package_model_binding_baseline(
         config,
         package_service_contributions=package_service_contributions,

@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import json
 import os
 from copy import deepcopy
-from dataclasses import dataclass, field, replace
-from enum import StrEnum
+from dataclasses import dataclass, field, fields, is_dataclass, replace
+from enum import Enum, StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Mapping
 
@@ -483,97 +484,94 @@ class RuntimeConfig:
         return package_name in self.selected_first_party_packages()
 
     def assembly_preset_metadata(self) -> dict[str, Any]:
-        if self.assembly_preset is None:
-            return {}
-        return self.assembly_preset.to_metadata(config=self)
+        published = self.metadata.get("assembly_preset_provenance")
+        if isinstance(published, Mapping):
+            return deepcopy(dict(published))
+        return _live_runtime_assembly_preset_metadata(self)
 
 
-def _serialize_definition_source_paths(paths: DefinitionSourcePaths) -> dict[str, Any]:
-    return {
-        "source": paths.source.value,
-        "root": str(paths.root),
-        "tools_subdir": paths.tools_subdir,
-        "agents_subdir": paths.agents_subdir,
-        "skills_subdir": paths.skills_subdir,
-        "enabled": paths.enabled,
+def _live_runtime_assembly_preset_metadata(config: RuntimeConfig) -> dict[str, Any]:
+    if config.assembly_preset is None:
+        return {}
+    return config.assembly_preset.to_metadata(config=config)
+
+
+def _publish_runtime_assembly_preset_metadata(config: RuntimeConfig) -> RuntimeConfig:
+    preset_metadata = _live_runtime_assembly_preset_metadata(config)
+    if not preset_metadata:
+        return config
+    return replace(
+        config,
+        metadata={
+            **dict(config.metadata),
+            "assembly_preset_provenance": preset_metadata,
+        },
+    )
+
+
+def _runtime_assembly_object_descriptor(value: object) -> dict[str, Any]:
+    value_type = type(value)
+    descriptor: dict[str, Any] = {
+        "type": f"{value_type.__module__}.{value_type.__qualname__}",
+        "instance": hex(id(value)),
     }
+    if callable(value):
+        callable_module = getattr(value, "__module__", value_type.__module__)
+        callable_name = getattr(
+            value,
+            "__qualname__",
+            getattr(value, "__name__", value_type.__qualname__),
+        )
+        descriptor["callable"] = f"{callable_module}.{callable_name}"
+    return descriptor
 
 
-def _serialize_builtins_config(config: BuiltinPackConfig) -> dict[str, Any]:
-    return {
-        "tools_enabled": config.tools_enabled,
-        "agents_enabled": config.agents_enabled,
-        "skills_enabled": config.skills_enabled,
-        "disabled_tools": sorted(config.disabled_tools),
-        "disabled_agents": sorted(config.disabled_agents),
-        "disabled_skills": sorted(config.disabled_skills),
-        "tool_replacements": sorted(config.tool_replacements),
-        "agent_replacements": sorted(config.agent_replacements),
-        "skill_replacements": sorted(config.skill_replacements),
-        "extra_tools": sorted(tool.name for tool in config.extra_tools),
-        "extra_agents": sorted(agent.name for agent in config.extra_agents),
-        "extra_skills": sorted(skill.name for skill in config.extra_skills),
-    }
+def _runtime_assembly_value_sort_key(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
 
 
-def _serialize_model_provider_bindings(
-    bindings: Mapping[str, ModelProviderBinding],
-) -> dict[str, dict[str, Any]]:
-    return {
-        name: {
-            "provider_name": binding.provider_name,
-            "context_window_profiles": len(binding.context_window_profiles),
-            "metadata": deepcopy(dict(binding.metadata)),
+def _serialize_runtime_assembly_value(value: Any) -> Any:
+    if value is None or isinstance(value, str | int | float | bool):
+        return value
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, Enum):
+        return value.value
+    if isinstance(value, bytes):
+        return {
+            "type": "builtins.bytes",
+            "hex": value.hex(),
         }
-        for name, binding in sorted(bindings.items())
-    }
-
-
-def _serialize_model_route_bindings(
-    bindings: Mapping[str, ModelRouteBinding],
-) -> dict[str, dict[str, Any]]:
-    return {
-        name: {
-            "default_model": binding.default_model,
-            "provider_name": binding.provider_name,
-            "provider_binding": binding.provider_binding,
-            "context_window_profiles": len(binding.context_window_profiles),
-            "context_window_policy": (
-                None
-                if binding.context_window_policy is None
-                else {
-                    "trigger_buffer_tokens": binding.context_window_policy.trigger_buffer_tokens,
-                    "reserved_output_tokens_override": (
-                        binding.context_window_policy.reserved_output_tokens_override
-                    ),
-                    "policy_tag": binding.context_window_policy.policy_tag,
-                }
-            ),
-            "metadata": deepcopy(dict(binding.metadata)),
+    if is_dataclass(value):
+        return {
+            field_info.name: _serialize_runtime_assembly_value(getattr(value, field_info.name))
+            for field_info in fields(value)
         }
-        for name, binding in sorted(bindings.items())
-    }
+    if isinstance(value, Mapping):
+        return {
+            str(key): _serialize_runtime_assembly_value(item_value)
+            for key, item_value in sorted(value.items(), key=lambda item: str(item[0]))
+        }
+    if isinstance(value, set | frozenset):
+        return sorted(
+            (_serialize_runtime_assembly_value(item) for item in value),
+            key=_runtime_assembly_value_sort_key,
+        )
+    if isinstance(value, tuple | list):
+        return [_serialize_runtime_assembly_value(item) for item in value]
+    return _runtime_assembly_object_descriptor(value)
 
 
 def _runtime_assembly_preset_snapshot(config: RuntimeConfig) -> dict[str, Any]:
-    return {
-        "working_directory": str(config.working_directory),
-        "distribution": config.resolved_distribution().value,
-        "discovery_sources": [
-            _serialize_definition_source_paths(paths)
-            for paths in config.discovery_sources
-        ],
-        "selected_first_party_packages": list(config.selected_first_party_packages()),
-        "enabled_packages": sorted(config.enabled_packages),
-        "disabled_packages": sorted(config.disabled_packages),
-        "requested_packages": sorted(config.requested_packages),
-        "extra_package_manifest_count": len(tuple(config.extra_package_manifests)),
-        "builtins": _serialize_builtins_config(config.builtins),
-        "host_bindings": sorted(binding.name for binding in config.host_bindings),
-        "model_providers": _serialize_model_provider_bindings(config.model_providers),
-        "model_routes": _serialize_model_route_bindings(config.model_routes),
-        "default_model_route": config.default_model_route,
-    }
+    snapshot: dict[str, Any] = {}
+    for field_info in fields(RuntimeConfig):
+        if field_info.name in {"metadata", "assembly_preset"} or field_info.name.startswith("_"):
+            continue
+        snapshot[field_info.name] = _serialize_runtime_assembly_value(
+            getattr(config, field_info.name)
+        )
+    snapshot["selected_first_party_packages"] = list(config.selected_first_party_packages())
+    return snapshot
 
 
 def _with_runtime_assembly_preset(
