@@ -25,6 +25,8 @@
 - 需要 provider-backed 证据时，再跑 `python3 -B -m demos.projects.coding_workflow_demo --live`。
 - 只有当你确实要接 `HostRuntime`、审批、durable state 或 builtin replacement 时，再进入 `demos/apps/code_assistant/` 这类 HostRuntime-heavy advanced sample。
 
+如果你想看一份基于当前 demo 的 runtime 层验证总结，了解“哪些能力已经被验证成立、哪些仍然是 runtime 易用性缺口”，可以继续看 `docs/weavert-runtime-validation-findings.md`。
+
 ## 1. 先分清三层扩展面
 
 ### 1.1 第一层：能力定义层
