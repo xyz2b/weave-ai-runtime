@@ -6,7 +6,7 @@ import inspect
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, AsyncIterator, Mapping, Sequence
+from typing import Any, AsyncIterator, Literal, Mapping, Sequence
 from uuid import uuid4
 
 from ..agent_execution import InMemoryChildRunStore, SpawnMode
@@ -62,6 +62,7 @@ from ..hooks import (
 )
 from ..invocation_catalog import SkillInvocationProvider
 from ..jobs import DefaultJobService, FileJobStore, InMemoryJobStore, JobScopeFilter, job_record_to_payload
+from ..memory.models import MemoryTurnResult
 from ..memory.providers import FileMemoryProvider
 from ..package_profiles import FIRST_PARTY_PACKAGE_SPECS, distribution_spec
 from ..runtime_package_catalog import (
@@ -135,7 +136,7 @@ from ..tasking import TaskManager
 from ..team_control_plane import FileBackedTeamStore, InMemoryTeamStore
 from ..tool_runtime import ToolContext
 from ..turn_engine.composer import ContextAssembler
-from ..turn_engine.engine import TurnEngine, TurnStreamEvent, TurnStreamEventType
+from ..turn_engine.engine import TurnEngine, TurnStreamEvent, TurnStreamEventType, TurnTerminal
 from ..turn_engine.models import ModelRequest, TranscriptStore
 from .config import DefinitionSourcePaths, RuntimeConfig
 from ..execution_policy import DelegationPolicyError, default_delegation_policy_metadata, policy_state_from_metadata
@@ -168,6 +169,45 @@ class RuntimeKernel:
     services: RuntimeServices | None = None
     hosts: dict[str, HostAdapter] = field(default_factory=dict)
     skill_view_resolver: Any = None
+
+
+@dataclass(frozen=True, slots=True)
+class WorkflowRunFinalizationTask:
+    kind: str
+    task_id: str
+    waited: bool = False
+    result: MemoryTurnResult | None = None
+    error: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class WorkflowRunFinalizationReport:
+    requested: bool = False
+    tasks: tuple[WorkflowRunFinalizationTask, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "tasks", tuple(self.tasks))
+
+    @property
+    def awaited(self) -> bool:
+        return any(task.waited for task in self.tasks)
+
+
+@dataclass(frozen=True, slots=True)
+class WorkflowRunReport:
+    session_id: str
+    agent_name: str
+    cwd: str
+    messages: tuple[RuntimeMessage, ...] = ()
+    terminal: TurnTerminal | None = None
+    final_status: str = "completed"
+    session_owner: Literal["helper", "caller"] = "helper"
+    finalization: WorkflowRunFinalizationReport = field(
+        default_factory=WorkflowRunFinalizationReport
+    )
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "messages", tuple(self.messages))
 
 
 @dataclass(frozen=True, slots=True)
@@ -1126,6 +1166,69 @@ class RuntimeAssembly:
             close_callback=close_callback,
         )
 
+    async def run_prompt_report(
+        self,
+        prompt: str,
+        *,
+        session_id: str | None = None,
+        agent_name: str | None = None,
+        cwd: str | Path | None = None,
+        system_prompt: str | None = None,
+        metadata: dict[str, object] | None = None,
+        wait_for_finalization: bool = False,
+    ) -> WorkflowRunReport:
+        await self.wait_until_ready()
+        session = self.create_session(
+            session_id=session_id,
+            agent_name=agent_name,
+            cwd=cwd,
+            system_prompt=system_prompt,
+        )
+        report: WorkflowRunReport | None = None
+        final_status = "completed"
+        try:
+            report = await self._run_prompt_report_in_session(
+                session,
+                prompt,
+                metadata=metadata,
+                session_owner="helper",
+            )
+            final_status = report.final_status
+        except Exception:
+            final_status = _helper_session_close_status(session, default="failed")
+            raise
+        finally:
+            await session.close(final_status=final_status)
+        assert report is not None  # pragma: no cover - report only stays unset on raised execution paths
+        finalization = await _workflow_run_finalization_report(
+            session,
+            requested=wait_for_finalization,
+            include_consolidation=True,
+        )
+        return replace(report, finalization=finalization)
+
+    async def run_prompt_report_in_session(
+        self,
+        session: SessionController,
+        prompt: str,
+        *,
+        metadata: dict[str, object] | None = None,
+        wait_for_finalization: bool = False,
+    ) -> WorkflowRunReport:
+        await self.wait_until_ready()
+        report = await self._run_prompt_report_in_session(
+            session,
+            prompt,
+            metadata=metadata,
+            session_owner="caller",
+        )
+        finalization = await _workflow_run_finalization_report(
+            session,
+            requested=wait_for_finalization,
+            include_consolidation=False,
+        )
+        return replace(report, finalization=finalization)
+
     async def run_prompt(
         self,
         prompt: str,
@@ -1136,25 +1239,15 @@ class RuntimeAssembly:
         system_prompt: str | None = None,
         metadata: dict[str, object] | None = None,
     ) -> tuple[RuntimeMessage, ...]:
-        await self.wait_until_ready()
-        session = self.create_session(
+        report = await self.run_prompt_report(
+            prompt,
             session_id=session_id,
             agent_name=agent_name,
             cwd=cwd,
             system_prompt=system_prompt,
+            metadata=metadata,
         )
-        final_status = "completed"
-        try:
-            return await self._run_prompt_in_session(
-                session,
-                prompt,
-                metadata=metadata,
-            )
-        except Exception:
-            final_status = _helper_session_close_status(session, default="failed")
-            raise
-        finally:
-            await session.close(final_status=final_status)
+        return report.messages
 
     async def stream_prompt(
         self,
@@ -1199,12 +1292,43 @@ class RuntimeAssembly:
         *,
         metadata: dict[str, object] | None = None,
     ) -> tuple[RuntimeMessage, ...]:
+        report = await self._run_prompt_report_in_session(
+            session,
+            prompt,
+            metadata=metadata,
+            session_owner="caller",
+        )
+        return report.messages
+
+    async def _run_prompt_report_in_session(
+        self,
+        session: SessionController,
+        prompt: str,
+        *,
+        metadata: dict[str, object] | None = None,
+        session_owner: Literal["helper", "caller"],
+    ) -> WorkflowRunReport:
         await self._prepare_one_shot_session(session, prompt, metadata=metadata)
         produced: list[RuntimeMessage] = []
+        terminal: TurnTerminal | None = None
         async for event in session.stream_until_idle():
             if event.event_type == TurnStreamEventType.MESSAGE and event.message is not None:
                 produced.append(event.message)
-        return tuple(produced)
+            elif event.event_type == TurnStreamEventType.TERMINAL and event.terminal is not None:
+                terminal = event.terminal
+        return WorkflowRunReport(
+            session_id=session.state.session_id,
+            agent_name=session.state.current_agent,
+            cwd=session.cwd,
+            messages=tuple(produced),
+            terminal=terminal,
+            final_status=_helper_session_close_status(
+                session,
+                terminal=terminal,
+                default="completed",
+            ),
+            session_owner=session_owner,
+        )
 
     async def _prepare_one_shot_session(
         self,
@@ -4482,6 +4606,100 @@ def _helper_session_close_status(
     if session.state.status == SessionStatus.STOPPED:
         return "stopped"
     return default
+
+
+async def _workflow_run_finalization_report(
+    session: SessionController,
+    *,
+    requested: bool,
+    include_consolidation: bool,
+) -> WorkflowRunFinalizationReport:
+    tasks = _workflow_run_finalization_tasks(
+        session,
+        include_consolidation=include_consolidation,
+    )
+    if not tasks:
+        return WorkflowRunFinalizationReport(requested=requested)
+    memory_service = session.runtime_services.resolve_memory_service()
+    reports: list[WorkflowRunFinalizationTask] = []
+    for kind, task_id in tasks:
+        waited = False
+        result: MemoryTurnResult | None = None
+        error: str | None = None
+        if requested:
+            wait_method = _workflow_run_wait_method(memory_service, kind)
+            if wait_method is not None:
+                waited = True
+                try:
+                    pending = wait_method(task_id)
+                    resolved = await pending if inspect.isawaitable(pending) else pending
+                    if isinstance(resolved, MemoryTurnResult):
+                        result = resolved
+                except Exception as exc:  # pragma: no cover - defensive reporting path
+                    error = str(exc)
+        reports.append(
+            WorkflowRunFinalizationTask(
+                kind=kind,
+                task_id=task_id,
+                waited=waited,
+                result=result,
+                error=error,
+            )
+        )
+    return WorkflowRunFinalizationReport(
+        requested=requested,
+        tasks=tuple(reports),
+    )
+
+
+def _workflow_run_finalization_tasks(
+    session: SessionController,
+    *,
+    include_consolidation: bool,
+) -> tuple[tuple[str, str], ...]:
+    tasks: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    _collect_workflow_run_task_ids(
+        tasks,
+        seen,
+        kind="background_memory_extraction",
+        raw_ids=session.state.metadata.get("background_memory_tasks"),
+    )
+    if include_consolidation:
+        _collect_workflow_run_task_ids(
+            tasks,
+            seen,
+            kind="background_memory_consolidation",
+            raw_ids=session.state.metadata.get("background_memory_consolidation_tasks"),
+        )
+    return tuple(tasks)
+
+
+def _collect_workflow_run_task_ids(
+    tasks: list[tuple[str, str]],
+    seen: set[str],
+    *,
+    kind: str,
+    raw_ids: Any,
+) -> None:
+    if not isinstance(raw_ids, list):
+        return
+    for value in raw_ids:
+        normalized = str(value).strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        tasks.append((kind, normalized))
+
+
+def _workflow_run_wait_method(memory_service: Any, kind: str) -> Any | None:
+    if memory_service is None:
+        return None
+    if kind == "background_memory_extraction":
+        return getattr(memory_service, "wait_for_background_extraction", None)
+    if kind == "background_memory_consolidation":
+        return getattr(memory_service, "wait_for_background_consolidation", None)
+    return None
 
 
 def _register_builtin_tools(

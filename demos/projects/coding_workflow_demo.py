@@ -7,7 +7,6 @@ from typing import Any
 
 from demos._shared.common import (
     AllowAllPermissionService,
-    close_session_and_wait_for_background_memory,
     demo_workspace,
     discovery_source,
     run_async,
@@ -17,8 +16,6 @@ from demos._shared.scripted_model import ScriptedModelClient, text_batch, tool_c
 
 from weavert.contracts import MessageRole, RuntimeMessage, ToolResultBlock, ToolUseBlock
 from weavert.runtime_kernel import RuntimeConfig, RuntimeDistribution, assemble_runtime
-from weavert.session_runtime import InboundEvent, InboundEventType
-from weavert.turn_engine import TurnStreamEventType
 
 FIXTURE_ROOT = demo_workspace("projects", "workspaces", "coding_workflow")
 WORKSPACE_LABEL = "coding-workflow-fixture"
@@ -177,32 +174,17 @@ def _offline_client() -> ScriptedModelClient:
 
 
 async def _run_prompt(*, runtime, workspace: Path) -> PromptOutcome:
-    session = runtime.create_session(
+    report = await runtime.run_prompt_report(
+        DEFAULT_PROMPT,
         session_id=SESSION_ID_LIVE if runtime.kernel.config.model_client is None else SESSION_ID_OFFLINE,
         agent_name="coding-assistant",
         cwd=workspace,
+        wait_for_finalization=True,
     )
-    await session.start()
-    session.enqueue_event(InboundEvent(InboundEventType.USER_PROMPT, DEFAULT_PROMPT))
-    messages: list[RuntimeMessage] = []
-    terminal_stop_reason: str | None = None
-    terminal_metadata: dict[str, Any] = {}
-    async for event in session.stream_until_idle():
-        if event.event_type == TurnStreamEventType.MESSAGE and event.message is not None:
-            messages.append(event.message)
-        elif event.event_type == TurnStreamEventType.TERMINAL and event.terminal is not None:
-            terminal_stop_reason = event.terminal.stop_reason
-            if isinstance(event.terminal.metadata, dict):
-                terminal_metadata = dict(event.terminal.metadata)
-    await session.close(
-        final_status="completed" if terminal_stop_reason_is_success(terminal_stop_reason) else "failed"
-    )
-    await close_session_and_wait_for_background_memory(
-        session,
-        memory_service=getattr(runtime.services, "memory", None),
-    )
+    terminal_stop_reason = report.terminal.stop_reason if report.terminal is not None else None
+    terminal_metadata = dict(report.terminal.metadata) if report.terminal is not None else {}
     return PromptOutcome(
-        messages=tuple(messages),
+        messages=report.messages,
         terminal_stop_reason=terminal_stop_reason,
         terminal_metadata=terminal_metadata,
     )

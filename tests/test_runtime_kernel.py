@@ -36,6 +36,7 @@ from weavert.definitions import (
 )
 from weavert.hosts.base import NullHostAdapter
 from weavert.jobs import FileJobStore, InMemoryJobStore
+from weavert.memory import MemoryTurnResult
 from weavert.runtime_kernel import (
     BuiltinPackConfig,
     DefinitionSourcePaths,
@@ -97,6 +98,43 @@ class InterruptibleModelClient:
         yield ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "partial"})
         while request.abort_signal is not None and not request.abort_signal.aborted:
             await asyncio.sleep(0.01)
+
+
+class RecordingWorkflowRunMemoryService(NoopMemoryService):
+    def __init__(self) -> None:
+        self.scheduled_extractions: list[str] = []
+        self.scheduled_consolidations: list[str] = []
+        self.waited_extractions: list[str] = []
+        self.waited_consolidations: list[str] = []
+
+    async def record_turn(self, **_: object) -> tuple[object, ...]:
+        return ()
+
+    async def schedule_background_extraction(
+        self,
+        *,
+        session_id: str,
+        **_: object,
+    ) -> str:
+        self.scheduled_extractions.append(session_id)
+        return f"extract-{session_id}"
+
+    async def wait_for_background_extraction(self, task_id: str) -> MemoryTurnResult:
+        self.waited_extractions.append(task_id)
+        return MemoryTurnResult()
+
+    async def schedule_background_consolidation(
+        self,
+        *,
+        session_id: str,
+        **_: object,
+    ) -> str:
+        self.scheduled_consolidations.append(session_id)
+        return f"consolidate-{session_id}"
+
+    async def wait_for_background_consolidation(self, task_id: str) -> MemoryTurnResult:
+        self.waited_consolidations.append(task_id)
+        return MemoryTurnResult()
 
 
 def _team_capability(runtime, key: RuntimeCapabilityKey):
@@ -1550,6 +1588,182 @@ def test_runtime_run_prompt_closes_helper_owned_session(tmp_path: Path) -> None:
     produced = asyncio.run(runtime.run_prompt("Hello runtime", session_id="helper-session"))
 
     assert produced[-1].text == "closed"
+    assert closed == ["completed"]
+
+
+def test_runtime_run_prompt_report_returns_helper_owned_report(tmp_path: Path) -> None:
+    model_client = FakeModelClient(
+        [
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-report"}),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "reported"}),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+            ]
+        ]
+    )
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            model_client=model_client,
+        )
+    )
+    closed: list[str] = []
+    runtime.services.hook_bus.register(
+        session_id="helper-report",
+        owner="test",
+        phase=RuntimeHookPhase.SESSION_END,
+        handler=lambda payload: closed.append(payload.final_status),
+    )
+
+    report = asyncio.run(
+        runtime.run_prompt_report(
+            "Hello runtime",
+            session_id="helper-report",
+        )
+    )
+
+    assert report.session_id == "helper-report"
+    assert report.session_owner == "helper"
+    assert report.final_status == "completed"
+    assert report.messages[-1].text == "reported"
+    assert report.terminal is not None
+    assert report.terminal.stop_reason == "end_turn"
+    assert report.finalization.requested is False
+    assert report.finalization.awaited is False
+    assert closed == ["completed"]
+
+
+def test_runtime_run_prompt_report_waits_for_requested_finalization(tmp_path: Path) -> None:
+    model_client = FakeModelClient(
+        [
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-finalize"}),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "finalize"}),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+            ]
+        ]
+    )
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            model_client=model_client,
+        )
+    )
+    memory_service = RecordingWorkflowRunMemoryService()
+    runtime.services.memory = memory_service
+
+    report = asyncio.run(
+        runtime.run_prompt_report(
+            "Hello runtime",
+            session_id="helper-finalization",
+            wait_for_finalization=True,
+        )
+    )
+
+    assert report.finalization.requested is True
+    assert report.finalization.awaited is True
+    assert [task.kind for task in report.finalization.tasks] == [
+        "background_memory_extraction",
+        "background_memory_consolidation",
+    ]
+    assert [task.task_id for task in report.finalization.tasks] == [
+        "extract-helper-finalization",
+        "consolidate-helper-finalization",
+    ]
+    assert all(task.waited for task in report.finalization.tasks)
+    assert all(task.result == MemoryTurnResult() for task in report.finalization.tasks)
+    assert memory_service.scheduled_extractions == ["helper-finalization"]
+    assert memory_service.scheduled_consolidations == ["helper-finalization"]
+    assert memory_service.waited_extractions == ["extract-helper-finalization"]
+    assert memory_service.waited_consolidations == ["consolidate-helper-finalization"]
+
+
+def test_runtime_run_prompt_report_preserves_terminal_failure_details(tmp_path: Path) -> None:
+    model_client = FakeModelClient(
+        [
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-report-error"}),
+                ModelStreamEvent(ModelStreamEventType.ERROR, {"error": "model exploded"}),
+            ]
+        ]
+    )
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            model_client=model_client,
+        )
+    )
+
+    report = asyncio.run(
+        runtime.run_prompt_report(
+            "Hello runtime",
+            session_id="helper-report-error",
+        )
+    )
+
+    assert report.messages == ()
+    assert report.terminal is not None
+    assert report.terminal.stop_reason == "error"
+    assert report.terminal.error == "model exploded"
+    assert report.final_status == "failed"
+    assert report.session_owner == "helper"
+
+
+def test_runtime_run_prompt_report_in_session_keeps_session_open_and_waits_turn_finalization(
+    tmp_path: Path,
+) -> None:
+    model_client = FakeModelClient(
+        [
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-caller-report"}),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "caller"}),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+            ]
+        ]
+    )
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            model_client=model_client,
+        )
+    )
+    memory_service = RecordingWorkflowRunMemoryService()
+    runtime.services.memory = memory_service
+    session = runtime.create_session(session_id="caller-report")
+    closed: list[str] = []
+    runtime.services.hook_bus.register(
+        session_id="caller-report",
+        owner="test",
+        phase=RuntimeHookPhase.SESSION_END,
+        handler=lambda payload: closed.append(payload.final_status),
+    )
+
+    report = asyncio.run(
+        runtime.run_prompt_report_in_session(
+            session,
+            "Hello runtime",
+            wait_for_finalization=True,
+        )
+    )
+
+    assert report.session_id == "caller-report"
+    assert report.session_owner == "caller"
+    assert report.final_status == "completed"
+    assert report.messages[-1].text == "caller"
+    assert report.finalization.requested is True
+    assert report.finalization.awaited is True
+    assert [task.kind for task in report.finalization.tasks] == [
+        "background_memory_extraction",
+    ]
+    assert [task.task_id for task in report.finalization.tasks] == [
+        "extract-caller-report",
+    ]
+    assert closed == []
+    assert session.state.status.value == "ready"
+    assert memory_service.waited_extractions == ["extract-caller-report"]
+    assert memory_service.waited_consolidations == []
+
+    asyncio.run(session.close())
     assert closed == ["completed"]
 
 

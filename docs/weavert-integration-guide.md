@@ -173,9 +173,11 @@ demo suite 负责展示端到端工作流；本文继续保留为装配语义、
 
 - one-shot helper
   - `run_prompt()`
+  - `run_prompt_report()`
   - `stream_prompt()`
 - session surface
   - `create_session()`
+  - `run_prompt_report_in_session()`
 - capability discovery
   - `resolve_invocations()`
 - assembly query surface
@@ -402,6 +404,8 @@ async def main() -> None:
 - `for_project()` 默认接入 `~/.weavert` 和 `<project>/.weavert`
 - builtins 会先加载，再叠加 user / project definitions
 - `run_prompt()` 和 `stream_prompt()` 会负责 helper-owned session close
+- 如果你需要 terminal outcome、resolved final status、background finalization diagnostics，就用 `run_prompt_report()`
+- 如果 session 由你自己持有，但不想手写 `start()` / `stream_until_idle()` / terminal 收集 glue，就用 `run_prompt_report_in_session()`
 
 如果你的需求是“在应用里嵌一个 AI Runtime”，优先选这条路径。
 

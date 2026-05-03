@@ -23,7 +23,16 @@ from .config import (
     ModelRouteBinding,
     RuntimeConfig,
 )
-from .kernel import RuntimeAssembly, RuntimeKernel, assemble_host_runtime, assemble_runtime, build_runtime_kernel
+from .kernel import (
+    RuntimeAssembly,
+    RuntimeKernel,
+    WorkflowRunFinalizationReport,
+    WorkflowRunFinalizationTask,
+    WorkflowRunReport,
+    assemble_host_runtime,
+    assemble_runtime,
+    build_runtime_kernel,
+)
 
 __all__ = [
     "DEFAULT_RUNTIME_DISTRIBUTION",
@@ -42,6 +51,9 @@ __all__ = [
     "RuntimeDistributionSpec",
     "RuntimeAssembly",
     "RuntimeKernel",
+    "WorkflowRunFinalizationReport",
+    "WorkflowRunFinalizationTask",
+    "WorkflowRunReport",
     "assemble_host_runtime",
     "assemble_runtime",
     "build_runtime_kernel",
