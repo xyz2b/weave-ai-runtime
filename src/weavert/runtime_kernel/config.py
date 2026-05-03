@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
+from copy import deepcopy
+from dataclasses import dataclass, field, replace
+from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Mapping
 
@@ -158,6 +160,168 @@ class ResolvedModelRouteBinding:
         object.__setattr__(self, "metadata", dict(self.metadata))
 
 
+class RuntimeAssemblyPresetName(StrEnum):
+    ORDINARY_WORKFLOW = "ordinary-workflow"
+    HEADLESS_LIVE = "headless-live"
+    HOST_BOUND = "host-bound"
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeAssemblyPresetDefinition:
+    name: RuntimeAssemblyPresetName | str
+    summary: str
+    recommended_distribution: RuntimeDistribution | str
+    discovery_posture: str
+    model_route_posture: str
+    host_posture: str
+    recommended_entrypoint: str
+    builder_entrypoint: str
+    notes: tuple[str, ...] = ()
+    source_ref: str = ""
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "name", RuntimeAssemblyPresetName(self.name))
+        object.__setattr__(self, "summary", str(self.summary))
+        object.__setattr__(
+            self,
+            "recommended_distribution",
+            normalize_runtime_distribution(self.recommended_distribution),
+        )
+        object.__setattr__(self, "discovery_posture", str(self.discovery_posture))
+        object.__setattr__(self, "model_route_posture", str(self.model_route_posture))
+        object.__setattr__(self, "host_posture", str(self.host_posture))
+        object.__setattr__(self, "recommended_entrypoint", str(self.recommended_entrypoint))
+        object.__setattr__(self, "builder_entrypoint", str(self.builder_entrypoint))
+        object.__setattr__(self, "notes", tuple(str(note) for note in self.notes))
+        if not self.source_ref:
+            object.__setattr__(
+                self,
+                "source_ref",
+                (
+                    "weavert.runtime_kernel.config:"
+                    f"official_runtime_assembly_preset('{self.name.value}')"
+                ),
+            )
+
+    def to_metadata(self) -> dict[str, Any]:
+        payload = {
+            "name": self.name.value,
+            "summary": self.summary,
+            "source_kind": "official-runtime-assembly-preset",
+            "source_ref": self.source_ref,
+            "builder_entrypoint": self.builder_entrypoint,
+            "recommended_entrypoint": self.recommended_entrypoint,
+            "recommended_distribution": self.recommended_distribution.value,
+            "recommended_packages": list(
+                resolve_first_party_package_names(
+                    distribution=self.recommended_distribution,
+                )
+            ),
+            "discovery_posture": self.discovery_posture,
+            "model_route_posture": self.model_route_posture,
+            "host_posture": self.host_posture,
+            "published_metadata_paths": [
+                "weavert.services.metadata['assembly_preset_provenance']",
+                "weavert.metadata['assembly_preset_provenance']",
+            ],
+        }
+        if self.notes:
+            payload["notes"] = list(self.notes)
+        return payload
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeAssemblyPresetApplication:
+    definition: RuntimeAssemblyPresetDefinition
+    baseline: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "baseline", deepcopy(dict(self.baseline)))
+
+    @property
+    def name(self) -> RuntimeAssemblyPresetName:
+        return self.definition.name
+
+    def to_metadata(
+        self,
+        *,
+        config: RuntimeConfig | None = None,
+    ) -> dict[str, Any]:
+        payload = {
+            **self.definition.to_metadata(),
+            "baseline": deepcopy(self.baseline),
+        }
+        if config is None:
+            return payload
+        current = _runtime_assembly_preset_snapshot(config)
+        overrides: dict[str, dict[str, Any]] = {}
+        for key in sorted(set(self.baseline) | set(current)):
+            baseline_value = self.baseline.get(key)
+            current_value = current.get(key)
+            if baseline_value != current_value:
+                overrides[key] = {
+                    "baseline": deepcopy(baseline_value),
+                    "current": deepcopy(current_value),
+                }
+        payload["overridden"] = bool(overrides)
+        if overrides:
+            payload["overrides"] = overrides
+        return payload
+
+
+_OFFICIAL_RUNTIME_ASSEMBLY_PRESETS: dict[str, RuntimeAssemblyPresetDefinition] = {
+    RuntimeAssemblyPresetName.ORDINARY_WORKFLOW.value: RuntimeAssemblyPresetDefinition(
+        name=RuntimeAssemblyPresetName.ORDINARY_WORKFLOW,
+        summary="Recommended project-local baseline for ordinary workflow assembly.",
+        recommended_distribution=RuntimeDistribution.FULL,
+        discovery_posture="user-and-project",
+        model_route_posture="provider-optional",
+        host_posture="headless-or-bind-later",
+        recommended_entrypoint="assemble_runtime(config)",
+        builder_entrypoint="weavert.runtime_kernel.config:RuntimeConfig.for_ordinary_workflow",
+        notes=(
+            "Starts from the supported full distribution and canonical user/project discovery roots.",
+        ),
+    ),
+    RuntimeAssemblyPresetName.HEADLESS_LIVE.value: RuntimeAssemblyPresetDefinition(
+        name=RuntimeAssemblyPresetName.HEADLESS_LIVE,
+        summary="Recommended headless baseline for provider-backed live workflow execution.",
+        recommended_distribution=RuntimeDistribution.FULL,
+        discovery_posture="user-and-project",
+        model_route_posture="bundled-openai-default",
+        host_posture="headless",
+        recommended_entrypoint="assemble_runtime(config)",
+        builder_entrypoint="weavert.runtime_kernel.config:RuntimeConfig.for_headless_live",
+        notes=(
+            "Makes the bundled OpenAI route explicit before assembly so callers can inspect and override it.",
+        ),
+    ),
+    RuntimeAssemblyPresetName.HOST_BOUND.value: RuntimeAssemblyPresetDefinition(
+        name=RuntimeAssemblyPresetName.HOST_BOUND,
+        summary="Recommended baseline for CLI, SDK, and UI host-owned integration.",
+        recommended_distribution=RuntimeDistribution.FULL,
+        discovery_posture="user-and-project",
+        model_route_posture="provider-optional",
+        host_posture="bind-host",
+        recommended_entrypoint="assemble_host_runtime(config) / RuntimeAssembly.bind_host(host)",
+        builder_entrypoint="weavert.runtime_kernel.config:RuntimeConfig.for_host_bound",
+        notes=(
+            "Keeps the same RuntimeConfig surface while signalling that the runtime should be bound to a host.",
+        ),
+    ),
+}
+
+
+def official_runtime_assembly_presets() -> dict[str, RuntimeAssemblyPresetDefinition]:
+    return dict(_OFFICIAL_RUNTIME_ASSEMBLY_PRESETS)
+
+
+def official_runtime_assembly_preset(
+    name: RuntimeAssemblyPresetName | str,
+) -> RuntimeAssemblyPresetDefinition:
+    return _OFFICIAL_RUNTIME_ASSEMBLY_PRESETS[RuntimeAssemblyPresetName(name).value]
+
+
 def _coerce_optional_string(value: object) -> str | None:
     if isinstance(value, str):
         stripped = value.strip()
@@ -175,6 +339,15 @@ def _resolve_route_default_model(
         if override:
             return override
     return default_model
+
+
+def _project_discovery_sources(project_root: Path) -> tuple[DefinitionSourcePaths, ...]:
+    user_root = ensure_canonical_workspace_root(Path.home())
+    project_runtime_dir = ensure_canonical_workspace_root(project_root)
+    return (
+        DefinitionSourcePaths(DefinitionSource.USER, user_root),
+        DefinitionSourcePaths(DefinitionSource.PROJECT, project_runtime_dir),
+    )
 
 
 def resolve_model_route_binding(
@@ -252,19 +425,49 @@ class RuntimeConfig:
     job_executors: dict[str, JobExecutorBinding] = field(default_factory=dict)
     legacy_compatibility: Any = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    assembly_preset: RuntimeAssemblyPresetApplication | None = None
     _skip_protocol_only_matrix_evaluation: bool = False
 
     @classmethod
     def for_project(cls, project_root: Path) -> "RuntimeConfig":
-        user_root = ensure_canonical_workspace_root(Path.home())
-        project_runtime_dir = ensure_canonical_workspace_root(project_root)
-        return cls(
+        return cls.for_ordinary_workflow(project_root)
+
+    @classmethod
+    def from_preset(
+        cls,
+        preset: RuntimeAssemblyPresetName | str,
+        project_root: Path,
+    ) -> "RuntimeConfig":
+        preset_definition = official_runtime_assembly_preset(preset)
+        config = cls(
             working_directory=project_root,
-            discovery_sources=(
-                DefinitionSourcePaths(DefinitionSource.USER, user_root),
-                DefinitionSourcePaths(DefinitionSource.PROJECT, project_runtime_dir),
-            ),
+            discovery_sources=_project_discovery_sources(project_root),
+            distribution=preset_definition.recommended_distribution,
         )
+        if preset_definition.name == RuntimeAssemblyPresetName.HEADLESS_LIVE:
+            from ..openai_client import (
+                OPENAI_PROVIDER_NAME,
+                OPENAI_ROUTE_NAME,
+                bundled_openai_provider_binding,
+                bundled_openai_route_binding,
+            )
+
+            config.model_providers[OPENAI_PROVIDER_NAME] = bundled_openai_provider_binding()
+            config.model_routes[OPENAI_ROUTE_NAME] = bundled_openai_route_binding()
+            config.default_model_route = OPENAI_ROUTE_NAME
+        return _with_runtime_assembly_preset(config, preset_definition)
+
+    @classmethod
+    def for_ordinary_workflow(cls, project_root: Path) -> "RuntimeConfig":
+        return cls.from_preset(RuntimeAssemblyPresetName.ORDINARY_WORKFLOW, project_root)
+
+    @classmethod
+    def for_headless_live(cls, project_root: Path) -> "RuntimeConfig":
+        return cls.from_preset(RuntimeAssemblyPresetName.HEADLESS_LIVE, project_root)
+
+    @classmethod
+    def for_host_bound(cls, project_root: Path) -> "RuntimeConfig":
+        return cls.from_preset(RuntimeAssemblyPresetName.HOST_BOUND, project_root)
 
     def resolved_distribution(self) -> RuntimeDistribution:
         return normalize_runtime_distribution(self.distribution)
@@ -278,3 +481,109 @@ class RuntimeConfig:
 
     def package_enabled(self, package_name: str) -> bool:
         return package_name in self.selected_first_party_packages()
+
+    def assembly_preset_metadata(self) -> dict[str, Any]:
+        if self.assembly_preset is None:
+            return {}
+        return self.assembly_preset.to_metadata(config=self)
+
+
+def _serialize_definition_source_paths(paths: DefinitionSourcePaths) -> dict[str, Any]:
+    return {
+        "source": paths.source.value,
+        "root": str(paths.root),
+        "tools_subdir": paths.tools_subdir,
+        "agents_subdir": paths.agents_subdir,
+        "skills_subdir": paths.skills_subdir,
+        "enabled": paths.enabled,
+    }
+
+
+def _serialize_builtins_config(config: BuiltinPackConfig) -> dict[str, Any]:
+    return {
+        "tools_enabled": config.tools_enabled,
+        "agents_enabled": config.agents_enabled,
+        "skills_enabled": config.skills_enabled,
+        "disabled_tools": sorted(config.disabled_tools),
+        "disabled_agents": sorted(config.disabled_agents),
+        "disabled_skills": sorted(config.disabled_skills),
+        "tool_replacements": sorted(config.tool_replacements),
+        "agent_replacements": sorted(config.agent_replacements),
+        "skill_replacements": sorted(config.skill_replacements),
+        "extra_tools": sorted(tool.name for tool in config.extra_tools),
+        "extra_agents": sorted(agent.name for agent in config.extra_agents),
+        "extra_skills": sorted(skill.name for skill in config.extra_skills),
+    }
+
+
+def _serialize_model_provider_bindings(
+    bindings: Mapping[str, ModelProviderBinding],
+) -> dict[str, dict[str, Any]]:
+    return {
+        name: {
+            "provider_name": binding.provider_name,
+            "context_window_profiles": len(binding.context_window_profiles),
+            "metadata": deepcopy(dict(binding.metadata)),
+        }
+        for name, binding in sorted(bindings.items())
+    }
+
+
+def _serialize_model_route_bindings(
+    bindings: Mapping[str, ModelRouteBinding],
+) -> dict[str, dict[str, Any]]:
+    return {
+        name: {
+            "default_model": binding.default_model,
+            "provider_name": binding.provider_name,
+            "provider_binding": binding.provider_binding,
+            "context_window_profiles": len(binding.context_window_profiles),
+            "context_window_policy": (
+                None
+                if binding.context_window_policy is None
+                else {
+                    "trigger_buffer_tokens": binding.context_window_policy.trigger_buffer_tokens,
+                    "reserved_output_tokens_override": (
+                        binding.context_window_policy.reserved_output_tokens_override
+                    ),
+                    "policy_tag": binding.context_window_policy.policy_tag,
+                }
+            ),
+            "metadata": deepcopy(dict(binding.metadata)),
+        }
+        for name, binding in sorted(bindings.items())
+    }
+
+
+def _runtime_assembly_preset_snapshot(config: RuntimeConfig) -> dict[str, Any]:
+    return {
+        "working_directory": str(config.working_directory),
+        "distribution": config.resolved_distribution().value,
+        "discovery_sources": [
+            _serialize_definition_source_paths(paths)
+            for paths in config.discovery_sources
+        ],
+        "selected_first_party_packages": list(config.selected_first_party_packages()),
+        "enabled_packages": sorted(config.enabled_packages),
+        "disabled_packages": sorted(config.disabled_packages),
+        "requested_packages": sorted(config.requested_packages),
+        "extra_package_manifest_count": len(tuple(config.extra_package_manifests)),
+        "builtins": _serialize_builtins_config(config.builtins),
+        "host_bindings": sorted(binding.name for binding in config.host_bindings),
+        "model_providers": _serialize_model_provider_bindings(config.model_providers),
+        "model_routes": _serialize_model_route_bindings(config.model_routes),
+        "default_model_route": config.default_model_route,
+    }
+
+
+def _with_runtime_assembly_preset(
+    config: RuntimeConfig,
+    preset: RuntimeAssemblyPresetDefinition,
+) -> RuntimeConfig:
+    return replace(
+        config,
+        assembly_preset=RuntimeAssemblyPresetApplication(
+            definition=preset,
+            baseline=_runtime_assembly_preset_snapshot(config),
+        ),
+    )

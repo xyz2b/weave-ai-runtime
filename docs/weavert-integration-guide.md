@@ -375,6 +375,16 @@ team-specific breaking replacement matrix 则发布在：
 
 ## 4. 三种最常见的接入方式
 
+开始具体接入前，runtime 现在把最常见的 assembly 起点收敛成 3 个 official preset：
+
+- `RuntimeConfig.for_ordinary_workflow(project_root)`：普通 workflow / project-local runtime 的推荐起点
+- `RuntimeConfig.for_headless_live(project_root)`：headless、provider-backed live workflow 的推荐起点
+- `RuntimeConfig.for_host_bound(project_root)`：CLI / SDK / UI 这类 host-owned integration 的推荐起点
+
+这些 preset 仍然只产出普通 `RuntimeConfig`，所以你可以像处理手工配置一样继续 override，然后照常走 `assemble_runtime(...)` 或 `bind_host()`。
+如果你需要检查某个 runtime 是否来自官方 preset，可以看 `weavert.metadata["assembly_preset_provenance"]` 或 `weavert.services.metadata["assembly_preset_provenance"]`。
+旧的 `RuntimeConfig.for_project()` 仍然保留，等价于 ordinary workflow preset alias。
+
 ### 4.1 最短路径：把它当成可嵌入 Agent Runtime
 
 这是最短、最稳的接法。  
@@ -387,7 +397,7 @@ from weavert.runtime_kernel import RuntimeConfig, assemble_runtime
 
 
 async def main() -> None:
-    config = RuntimeConfig.for_project(Path("/your/project"))
+    config = RuntimeConfig.for_ordinary_workflow(Path("/your/project"))
     config.model_client = my_model_client
 
     weavert = assemble_runtime(config)
@@ -401,7 +411,7 @@ async def main() -> None:
 这条路径的特点：
 
 - 只需要提供 `model_client`
-- `for_project()` 默认接入 `~/.weavert` 和 `<project>/.weavert`
+- `for_ordinary_workflow()` 默认接入 `~/.weavert` 和 `<project>/.weavert`
 - builtins 会先加载，再叠加 user / project definitions
 - `run_prompt()` 和 `stream_prompt()` 会负责 helper-owned session close
 - 如果你需要 terminal outcome、resolved final status、background finalization diagnostics，就用 `run_prompt_report()`
@@ -421,7 +431,7 @@ from weavert.runtime_kernel import RuntimeConfig, assemble_runtime
 
 
 async def main() -> None:
-    config = RuntimeConfig.for_project(Path("/your/project"))
+    config = RuntimeConfig.for_host_bound(Path("/your/project"))
     config.model_client = my_model_client
 
     weavert = assemble_runtime(config)

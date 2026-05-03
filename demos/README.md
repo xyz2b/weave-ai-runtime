@@ -100,6 +100,7 @@ Expected behavior:
 
 If you only want the lower-level provider smoke instead of the workflow-level live smoke above, use the bundled live OpenAI path below.
 This validates the Responses transport layer, not the coding-workflow fixture itself.
+The snippet starts from the official `for_headless_live(...)` preset so the live route choice is explicit before assembly.
 
 Minimal live check from the repo root:
 
@@ -112,7 +113,7 @@ from pathlib import Path
 
 from weavert.runtime_kernel import RuntimeConfig, assemble_runtime
 
-runtime = assemble_runtime(RuntimeConfig(working_directory=Path.cwd()))
+runtime = assemble_runtime(RuntimeConfig.for_headless_live(Path.cwd()))
 messages = asyncio.run(runtime.run_prompt("Summarize this repository and use tools when needed."))
 print(messages[-1].text)
 PY

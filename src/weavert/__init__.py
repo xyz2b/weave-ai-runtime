@@ -305,6 +305,9 @@ from .runtime_kernel import (
     RuntimeConfig,
     RuntimeDistribution,
     RuntimeDistributionSpec,
+    RuntimeAssemblyPresetApplication,
+    RuntimeAssemblyPresetDefinition,
+    RuntimeAssemblyPresetName,
     RuntimeAssembly,
     RuntimeKernel,
     WorkflowRunFinalizationReport,
@@ -315,6 +318,8 @@ from .runtime_kernel import (
     build_runtime_kernel,
     distribution_spec,
     normalize_runtime_distribution,
+    official_runtime_assembly_preset,
+    official_runtime_assembly_presets,
     resolve_first_party_package_names,
 )
 from .teammate_orchestration import (
@@ -631,6 +636,8 @@ __all__ = [
     "is_stable_public_hook_source",
     "is_stable_public_phase",
     "normalize_runtime_distribution",
+    "official_runtime_assembly_preset",
+    "official_runtime_assembly_presets",
     "official_runtime_distribution_catalog",
     "official_runtime_package_catalog",
     "official_runtime_package_manifests",
@@ -642,4 +649,7 @@ __all__ = [
     "resolve_runtime_package_graph",
     "resolve_first_party_package_names",
     "selective_auto_approve_permissions",
+    "RuntimeAssemblyPresetApplication",
+    "RuntimeAssemblyPresetDefinition",
+    "RuntimeAssemblyPresetName",
 ]

@@ -26,7 +26,13 @@ from weavert.hooks import (
     HookScopeLifetime,
     RuntimeHookPhase,
 )
-from weavert.openai_client import OPENAI_PROVIDER_NAME, OPENAI_ROUTE_NAME, _http_error_response
+from weavert.openai_client import (
+    OPENAI_PROVIDER_NAME,
+    OPENAI_ROUTE_NAME,
+    _http_error_response,
+    bundled_openai_provider_binding,
+    bundled_openai_route_binding,
+)
 from weavert.definitions import (
     AgentDefinition,
     DefinitionOrigin,
@@ -1114,6 +1120,120 @@ project review body
     assert kernel.skill_registry.get("project-review") is not None
 
 
+def test_runtime_assembly_presets_expose_recommended_baselines(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    user_home = tmp_path / "user-home"
+    project_root = tmp_path / "project"
+    project_root.mkdir(parents=True)
+    monkeypatch.setattr("weavert.runtime_kernel.config.Path.home", lambda: user_home)
+
+    ordinary = RuntimeConfig.for_ordinary_workflow(project_root)
+    headless = RuntimeConfig.for_headless_live(project_root)
+    host_bound = RuntimeConfig.for_host_bound(project_root)
+
+    ordinary_metadata = ordinary.assembly_preset_metadata()
+    headless_metadata = headless.assembly_preset_metadata()
+    host_metadata = host_bound.assembly_preset_metadata()
+
+    assert RuntimeConfig.for_project(project_root).assembly_preset_metadata()["name"] == "ordinary-workflow"
+    assert ordinary_metadata["name"] == "ordinary-workflow"
+    assert ordinary_metadata["baseline"]["distribution"] == RuntimeDistribution.FULL.value
+    assert ordinary_metadata["baseline"]["discovery_sources"] == [
+        {
+            "source": "user",
+            "root": str(user_home / ".weavert"),
+            "tools_subdir": "tools",
+            "agents_subdir": "agents",
+            "skills_subdir": "skills",
+            "enabled": True,
+        },
+        {
+            "source": "project",
+            "root": str(project_root / ".weavert"),
+            "tools_subdir": "tools",
+            "agents_subdir": "agents",
+            "skills_subdir": "skills",
+            "enabled": True,
+        },
+    ]
+    assert ordinary_metadata["recommended_packages"] == list(ordinary.selected_first_party_packages())
+    assert ordinary_metadata["overridden"] is False
+
+    assert headless.default_model_route == OPENAI_ROUTE_NAME
+    assert list(headless.model_providers) == [OPENAI_PROVIDER_NAME]
+    assert list(headless.model_routes) == [OPENAI_ROUTE_NAME]
+    assert headless_metadata["model_route_posture"] == "bundled-openai-default"
+    assert headless_metadata["baseline"]["default_model_route"] == OPENAI_ROUTE_NAME
+
+    assert host_metadata["host_posture"] == "bind-host"
+    assert host_metadata["recommended_entrypoint"] == (
+        "assemble_host_runtime(config) / RuntimeAssembly.bind_host(host)"
+    )
+
+
+def test_runtime_assembly_preset_provenance_is_published_in_runtime_metadata(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    user_home = tmp_path / "user-home"
+    project_root = tmp_path / "project"
+    project_root.mkdir(parents=True)
+    monkeypatch.setattr("weavert.runtime_kernel.config.Path.home", lambda: user_home)
+
+    runtime = assemble_runtime(RuntimeConfig.for_ordinary_workflow(project_root))
+    provenance = runtime.query_assembly_preset_provenance()
+    assembly_view = runtime.query_assembly_view()
+
+    assert provenance["name"] == "ordinary-workflow"
+    assert provenance["overridden"] is False
+    assert provenance == runtime.metadata["assembly_preset_provenance"]
+    assert provenance == runtime.services.metadata["assembly_preset_provenance"]
+    assert provenance["baseline"]["selected_first_party_packages"] == list(runtime.kernel.first_party_packages)
+    assert assembly_view["assembly_preset_provenance"] == provenance
+
+    assembly_view["assembly_preset_provenance"]["name"] = "mutated"
+
+    assert runtime.metadata["assembly_preset_provenance"]["name"] == "ordinary-workflow"
+
+
+def test_runtime_headless_live_preset_remains_overrideable_and_matches_manual_assembly(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    user_home = tmp_path / "user-home"
+    project_root = tmp_path / "project"
+    project_root.mkdir(parents=True)
+    monkeypatch.setattr("weavert.runtime_kernel.config.Path.home", lambda: user_home)
+
+    preset_config = RuntimeConfig.for_headless_live(project_root)
+    preset_config.disabled_packages.add("weavert-planning")
+    preset_runtime = assemble_runtime(preset_config)
+
+    manual_config = RuntimeConfig(
+        working_directory=project_root,
+        distribution=RuntimeDistribution.FULL,
+        discovery_sources=RuntimeConfig.for_ordinary_workflow(project_root).discovery_sources,
+        disabled_packages={"weavert-planning"},
+        model_providers={OPENAI_PROVIDER_NAME: bundled_openai_provider_binding()},
+        model_routes={OPENAI_ROUTE_NAME: bundled_openai_route_binding()},
+        default_model_route=OPENAI_ROUTE_NAME,
+    )
+    manual_runtime = assemble_runtime(manual_config)
+    provenance = preset_runtime.query_assembly_preset_provenance()
+
+    assert provenance["name"] == "headless-live"
+    assert provenance["overridden"] is True
+    assert provenance["overrides"]["disabled_packages"]["current"] == ["weavert-planning"]
+    assert preset_runtime.kernel.first_party_packages == manual_runtime.kernel.first_party_packages
+    assert tuple(sorted(preset_runtime.kernel.config.model_routes)) == tuple(
+        sorted(manual_runtime.kernel.config.model_routes)
+    )
+    assert preset_runtime.kernel.config.default_model_route == manual_runtime.kernel.config.default_model_route
+    assert preset_runtime.kernel.config.default_model_route == OPENAI_ROUTE_NAME
+
+
 def test_runtime_builtin_workflow_pack_remains_runnable_without_devtools_package(tmp_path: Path) -> None:
     model_client = FakeModelClient(
         [
@@ -1361,6 +1481,31 @@ def test_host_assembly_entrypoint_binds_host(tmp_path: Path) -> None:
     assert runtime.kernel.agent_registry.get("main-router") is not None
     assert runtime.runtime is not None
     assert runtime.runtime.kernel is runtime.kernel
+
+
+def test_host_bound_preset_preserves_provenance_when_binding_host(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    user_home = tmp_path / "user-home"
+    project_root = tmp_path / "project"
+    project_root.mkdir(parents=True)
+    monkeypatch.setattr("weavert.runtime_kernel.config.Path.home", lambda: user_home)
+
+    def factory(name: str, config: dict[str, str], kernel: object) -> NullHostAdapter:
+        _ = config, kernel
+        return NullHostAdapter(name=name)
+
+    config = RuntimeConfig.for_host_bound(project_root)
+    config.host_bindings = (HostBinding(name="sdk", factory=factory),)
+
+    bound = assemble_host_runtime(config, host_name="sdk")
+    provenance = bound.runtime.query_assembly_preset_provenance()
+
+    assert bound.host.name == "sdk"
+    assert provenance["name"] == "host-bound"
+    assert provenance["overridden"] is True
+    assert provenance["overrides"]["host_bindings"]["current"] == ["sdk"]
 
 
 def test_runtime_assembly_provides_runnable_session_surface(tmp_path: Path) -> None:

@@ -15,7 +15,7 @@ from demos._shared.common import (
 from demos._shared.scripted_model import ScriptedModelClient, text_batch, tool_call_batch
 
 from weavert.contracts import MessageRole, RuntimeMessage, ToolResultBlock, ToolUseBlock
-from weavert.runtime_kernel import RuntimeConfig, RuntimeDistribution, assemble_runtime
+from weavert.runtime_kernel import RuntimeConfig, assemble_runtime
 
 FIXTURE_ROOT = demo_workspace("projects", "workspaces", "coding_workflow")
 WORKSPACE_LABEL = "coding-workflow-fixture"
@@ -195,14 +195,11 @@ async def run_demo(*, live: bool = False) -> DemoReport:
     model_client = None if live else _offline_client()
 
     with temporary_workspace(FIXTURE_ROOT) as workspace:
-        runtime = assemble_runtime(
-            RuntimeConfig(
-                working_directory=workspace,
-                distribution=RuntimeDistribution.FULL,
-                model_client=model_client,
-                discovery_sources=(discovery_source(workspace),),
-            )
-        )
+        config = RuntimeConfig.for_ordinary_workflow(workspace)
+        config.model_client = model_client
+        # Keep the demo isolated from ambient user definitions while still starting from the preset baseline.
+        config.discovery_sources = (discovery_source(workspace),)
+        runtime = assemble_runtime(config)
         runtime.services.permissions = AllowAllPermissionService()
         outcome = await _run_prompt(runtime=runtime, workspace=workspace)
 

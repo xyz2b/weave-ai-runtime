@@ -19,7 +19,6 @@ from weavert.runtime_kernel import (
     BuiltinPackConfig,
     DefinitionSourcePaths,
     RuntimeConfig,
-    RuntimeDistribution,
     assemble_runtime,
 )
 from weavert.session_runtime import InboundEvent, InboundEventType
@@ -246,17 +245,15 @@ def assemble_demo_runtime(
 ):
     resolved_layout = layout or default_layout()
     workspace_root = ensure_demo_state(layout=resolved_layout)
-    config = RuntimeConfig(
-        working_directory=workspace_root,
-        distribution=RuntimeDistribution.FULL,
-        discovery_sources=(
-            DefinitionSourcePaths(DefinitionSource.PROJECT, workspace_root / ".weavert"),
-        ),
-        builtins=BuiltinPackConfig(
-            tool_replacements={"bash": build_code_assistant_bash_replacement()},
-        ),
-        model_client=model_client,
+    config = RuntimeConfig.for_host_bound(workspace_root)
+    # The app demo intentionally stays workspace-local even when the preset would also include user definitions.
+    config.discovery_sources = (
+        DefinitionSourcePaths(DefinitionSource.PROJECT, workspace_root / ".weavert"),
     )
+    config.builtins = BuiltinPackConfig(
+        tool_replacements={"bash": build_code_assistant_bash_replacement()},
+    )
+    config.model_client = model_client
     runtime = assemble_runtime(config)
     reconcile_background_shell_jobs(runtime.services.job_service)
     return runtime

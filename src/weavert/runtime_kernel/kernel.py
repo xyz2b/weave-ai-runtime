@@ -388,6 +388,7 @@ class RuntimeAssembly:
             "first_party_package_catalog",
             "official_package_catalog_provenance",
             "resolved_active_package_graph_provenance",
+            "assembly_preset_provenance",
             "closure_report",
             "protocol_only_conformance",
             "package_resolution",
@@ -401,6 +402,10 @@ class RuntimeAssembly:
 
     def query_closure_report(self) -> dict[str, Any]:
         return deepcopy(self.metadata.get("closure_report", {}))
+
+    def query_assembly_preset_provenance(self) -> dict[str, Any]:
+        value = self.metadata.get("assembly_preset_provenance")
+        return deepcopy(value) if isinstance(value, Mapping) else {}
 
     def query_compatibility_retirement(self) -> dict[str, Any]:
         report = self.query_closure_report()
@@ -1663,6 +1668,15 @@ def build_runtime_kernel(config: RuntimeConfig) -> RuntimeKernel:
         distribution=resolved_distribution.value,
         working_directory=config.working_directory,
     )
+    preset_provenance = config.assembly_preset_metadata()
+    if preset_provenance:
+        config = replace(
+            config,
+            metadata={
+                **dict(config.metadata),
+                "assembly_preset_provenance": preset_provenance,
+            },
+        )
     config = _with_package_model_binding_baseline(
         config,
         package_service_contributions=package_service_contributions,

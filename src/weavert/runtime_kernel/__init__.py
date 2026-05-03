@@ -21,7 +21,12 @@ from .config import (
     HostBinding,
     ModelProviderBinding,
     ModelRouteBinding,
+    RuntimeAssemblyPresetApplication,
+    RuntimeAssemblyPresetDefinition,
+    RuntimeAssemblyPresetName,
     RuntimeConfig,
+    official_runtime_assembly_preset,
+    official_runtime_assembly_presets,
 )
 from .kernel import (
     RuntimeAssembly,
@@ -45,6 +50,9 @@ __all__ = [
     "JobExecutorBinding",
     "ModelProviderBinding",
     "ModelRouteBinding",
+    "RuntimeAssemblyPresetApplication",
+    "RuntimeAssemblyPresetDefinition",
+    "RuntimeAssemblyPresetName",
     "RUNTIME_DISTRIBUTION_SPECS",
     "RuntimeConfig",
     "RuntimeDistribution",
@@ -60,6 +68,8 @@ __all__ = [
     "distribution_spec",
     "normalize_runtime_distribution",
     "official_runtime_distribution_catalog",
+    "official_runtime_assembly_preset",
+    "official_runtime_assembly_presets",
     "official_runtime_package_catalog",
     "resolve_first_party_package_names",
 ]
