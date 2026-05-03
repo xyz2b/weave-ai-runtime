@@ -140,15 +140,16 @@ class PermissionEngine:
             host_runtime.request_permission(request.with_payload(payload))
         )
         resolved = coerce_permission_outcome(host_outcome)
-        if resolved.updated_input is None:
-            resolved = PermissionOutcome(
-                behavior=resolved.behavior,
-                message=resolved.message,
-                updated_input=payload,
-                details=dict(resolved.details),
-                source=resolved.source,
-            )
-        return resolved
+        resolved_payload = resolved.updated_input
+        if resolved_payload is None:
+            resolved_payload = payload
+        return PermissionOutcome(
+            behavior=resolved.behavior,
+            message=resolved.message,
+            updated_input=resolved_payload,
+            details={**outcome.details, **dict(resolved.details)},
+            source=resolved.source or "host",
+        )
 
     def _resolve_context(self, context: PermissionContext | None) -> PermissionContext:
         if context is not None:

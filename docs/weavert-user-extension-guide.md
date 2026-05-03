@@ -710,9 +710,33 @@ sidecar 可以返回：
 用户视角怎么扩：
 
 1. 规则审批，优先扩 `PermissionContext` + `PermissionRule`。
-2. 人工审批，优先实现 host 的 `request_permission()`。
-3. 表单、下拉框、多选，优先实现 host 的 `request_elicitation()`。
-4. 想替换整套行为，再直接替换 `weavert.services.permissions` 或 `weavert.services.elicitation`。
+2. 常见无交互流程，优先用官方 preset service：
+   `AllowAllPermissionService` 适合 demo smoke / sandbox CI；
+   `DenyAllPermissionService` 适合必须显式白名单的 headless gate；
+   `ReadOnlyPermissionService` 适合 inspect-only / audit / dry-run；
+   `SelectiveAutoApprovePermissionService` 适合 scripted workflow，只放行声明过的 selector 或 risk class。
+3. scripted workflow 想保留未命中请求的确定性回退，可以给 `ReadOnlyPermissionService` 或 `SelectiveAutoApprovePermissionService` 传 `fallback_behavior="deny"`（默认）或 `fallback_behavior="ask"`。
+4. 人工审批，优先实现 host 的 `request_permission()`。
+5. 表单、下拉框、多选，优先实现 host 的 `request_elicitation()`。
+6. 想替换整套行为，再直接替换 `weavert.services.permissions` 或 `weavert.services.elicitation`。
+
+示例：
+
+```python
+from weavert.permissions import (
+    AllowAllPermissionService,
+    ReadOnlyPermissionService,
+    SelectiveAutoApprovePermissionService,
+)
+
+runtime.services.permissions = AllowAllPermissionService()
+runtime.services.permissions = ReadOnlyPermissionService()
+runtime.services.permissions = SelectiveAutoApprovePermissionService(
+    tool_selectors=("read", "glob", "grep"),
+    risk_levels=("read",),
+    fallback_behavior="deny",
+)
+```
 
 ### 3.6 tool_refresh_callback：动态刷新工具池
 

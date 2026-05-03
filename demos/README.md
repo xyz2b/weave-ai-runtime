@@ -67,6 +67,17 @@ These demos stay on the ordinary extension path. They use workspace-local `.weav
 | Release workflow | A composed offline release-readiness review for a small project workspace | `python3 -B -m demos.projects.release_workflow_demo` | Prints the discovered workspace facts, the active release-freeze context, a child-generated release summary, and a final release verdict. |
 | Coding workflow | A bugfix-style inspect -> edit -> verify -> review loop in a tiny workspace, still below host customization and builtin replacement | `python3 -B -m demos.projects.coding_workflow_demo` | Prints `mode: offline`, `host customization: none`, `builtin replacements: none`, `verification: passed`, `review: pass`, and `status: ok`. |
 
+## Headless permission presets
+
+When you move from interactive demos to CI, smoke, or scripted runs, prefer the runtime-owned permission presets instead of handwritten stubs:
+
+- `AllowAllPermissionService`: fast smoke coverage where the fixture is already sandboxed and you want zero host prompts.
+- `DenyAllPermissionService`: strict CI or harness validation where any unexpected tool, skill, or child-agent permission request should fail closed.
+- `ReadOnlyPermissionService`: inspect-only workflows, dry runs, and audits that should allow read-classified tools but block writes, exec, network, and delegation by default.
+- `SelectiveAutoApprovePermissionService`: scripted workflows that should auto-approve only declared selectors or risk classes and deterministically deny or bubble unmatched requests.
+
+The offline demos in this folder now use the official `AllowAllPermissionService` surface instead of a demo-private stub.
+
 ## Workflow-level live smoke
 
 This layer reuses the same `demos.projects.coding_workflow_demo` task, fixture, and success criteria, but switches from the scripted helper to the bundled live provider route.

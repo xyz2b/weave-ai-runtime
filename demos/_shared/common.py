@@ -11,33 +11,11 @@ from typing import Any
 from .bootstrap import PROJECT_ROOT
 
 from weavert.contracts import RuntimeMessage, ToolResultBlock
-from weavert.definitions import DefinitionSource, PermissionBehavior, PermissionDecision
+from weavert.definitions import DefinitionSource
+from weavert.permissions import AllowAllPermissionService
 from weavert.runtime_kernel import DefinitionSourcePaths
 from weavert.session_runtime import InboundEvent, InboundEventType, SessionController
 from weavert.turn_engine import TurnStreamEventType
-
-
-class AllowAllPermissionService:
-    async def evaluate(
-        self,
-        request: Any,
-        *,
-        initial_decision: Any = None,
-        hook_result: Any = None,
-        runtime_context: Any = None,
-    ) -> PermissionDecision:
-        _ = request, initial_decision, hook_result, runtime_context
-        return PermissionDecision(PermissionBehavior.ALLOW)
-
-    async def authorize(
-        self,
-        definition: Any,
-        tool_input: Any,
-        decision: Any,
-        context: Any,
-    ) -> PermissionDecision:
-        _ = definition, tool_input, decision, context
-        return PermissionDecision(PermissionBehavior.ALLOW)
 
 
 def discovery_source(workspace: Path) -> DefinitionSourcePaths:
