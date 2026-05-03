@@ -185,6 +185,33 @@ def test_read_only_preset_covers_read_write_and_delegate_tool_behavior() -> None
     assert delegate_decision.details["preset_path"] == "tool-risk:delegate"
 
 
+def test_read_only_preset_does_not_let_selectors_override_side_effecting_tool_risk() -> None:
+    service = ReadOnlyPermissionService(tool_selectors=("workspace.write",))
+    permission_context = PermissionContext(session_id="session")
+    runtime_services = RuntimeServices(permissions=service)
+    tool_context = ToolPermissionContext(
+        session_id="session",
+        turn_id="turn",
+        permission_context=permission_context,
+        runtime_services=runtime_services,
+    )
+
+    write_decision = asyncio.run(
+        service.authorize(
+            _tool_definition("workspace.write", risk_level=ToolRiskLevel.WRITE),
+            {"path": "README.md"},
+            PermissionDecision(PermissionBehavior.ASK, "approval required"),
+            tool_context,
+        )
+    )
+
+    assert write_decision.behavior == PermissionBehavior.DENY
+    assert write_decision.details["preset"] == "read-only"
+    assert write_decision.details["preset_risk"] == "write"
+    assert write_decision.details["preset_path"] == "tool-risk:write"
+    assert "preset_selector" not in write_decision.details
+
+
 def test_selective_auto_approve_supports_risk_selector_and_unmatched_fallback_metadata() -> None:
     host = ApprovingHost()
     service = SelectiveAutoApprovePermissionService(

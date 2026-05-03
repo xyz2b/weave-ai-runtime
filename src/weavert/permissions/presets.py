@@ -213,6 +213,14 @@ class ReadOnlyPermissionService(_PresetPermissionService):
                 preset_match="read_only_traits",
             )
 
+        if profile is not None and profile.risk_level in _SIDE_EFFECT_RISKS:
+            return self._fallback_outcome(
+                request,
+                path=f"tool-risk:{profile.risk_level.value}",
+                message=f"Read-only preset blocks {profile.risk_level.value} requests",
+                preset_risk=profile.risk_level.value,
+            )
+
         selector_match = _match_request_selector(
             request,
             tool_definition=profile.definition if profile is not None else None,
@@ -226,14 +234,6 @@ class ReadOnlyPermissionService(_PresetPermissionService):
                 PermissionBehavior.ALLOW,
                 path=f"selector:{selector_match}",
                 preset_selector=selector_match,
-            )
-
-        if profile is not None and profile.risk_level in _SIDE_EFFECT_RISKS:
-            return self._fallback_outcome(
-                request,
-                path=f"tool-risk:{profile.risk_level.value}",
-                message=f"Read-only preset blocks {profile.risk_level.value} requests",
-                preset_risk=profile.risk_level.value,
             )
 
         return self._fallback_outcome(request, path=f"fallback:{self.fallback_behavior.value}")
