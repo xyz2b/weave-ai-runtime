@@ -7,8 +7,10 @@ from pathlib import Path
 
 import pytest
 
+import demos.projects.coding_workflow_demo as coding_workflow_demo
 from demos._shared.common import run_async
 from demos.projects.coding_workflow_demo import run_demo as run_coding_workflow_demo
+from weavert.contracts import MessageRole, RuntimeMessage, TextBlock, ToolResultBlock, ToolUseBlock
 
 ROOT = Path(__file__).resolve().parents[1]
 README = ROOT / "demos" / "README.md"
@@ -156,6 +158,105 @@ def test_coding_workflow_demo_live_smoke_reports_auth_failure_without_fallback(m
     assert "OPENAI_API_KEY" in str(report.error_message)
     assert report.verification_result is None
     assert report.review_result is None
+
+
+def test_coding_workflow_demo_live_mode_reuses_the_same_success_criteria(monkeypatch) -> None:
+    async def fake_run_prompt(*, runtime, workspace):
+        _ = runtime
+        (workspace / coding_workflow_demo.TARGET_FILE).write_text(
+            'DEFAULT_NAME = "WeaveRT"\n\n\n'
+            "def format_greeting(name: str | None = None) -> str:\n"
+            "    selected = (name or DEFAULT_NAME).strip()\n"
+            "    if not selected:\n"
+            "        selected = DEFAULT_NAME\n"
+            '    return f"Hello, {selected}."\n',
+            encoding="utf-8",
+        )
+        return coding_workflow_demo.PromptOutcome(
+            messages=(
+                RuntimeMessage(
+                    message_id="live-verify-use",
+                    role=MessageRole.ASSISTANT,
+                    content=(
+                        ToolUseBlock(
+                            tool_use_id="tool-live-verify",
+                            name="bash",
+                            input={"command": coding_workflow_demo.VERIFICATION_COMMAND},
+                        ),
+                    ),
+                ),
+                RuntimeMessage(
+                    message_id="live-verify-result",
+                    role=MessageRole.USER,
+                    content=(
+                        ToolResultBlock(
+                            tool_use_id="tool-live-verify",
+                            content={
+                                "command": coding_workflow_demo.VERIFICATION_COMMAND,
+                                "exit_code": 0,
+                                "stdout": "",
+                                "stderr": "OK\n",
+                                "shell": "bash",
+                            },
+                        ),
+                    ),
+                ),
+                RuntimeMessage(
+                    message_id="live-review-use",
+                    role=MessageRole.ASSISTANT,
+                    content=(
+                        ToolUseBlock(
+                            tool_use_id="tool-live-review",
+                            name="skill",
+                            input={
+                                "skill": "review-change",
+                                "arguments": [
+                                    f"changed file: {coding_workflow_demo.TARGET_FILE}",
+                                    f"verification: {coding_workflow_demo.VERIFICATION_COMMAND}",
+                                ],
+                            },
+                        ),
+                    ),
+                ),
+                RuntimeMessage(
+                    message_id="live-review-result",
+                    role=MessageRole.USER,
+                    content=(
+                        ToolResultBlock(
+                            tool_use_id="tool-live-review",
+                            content={
+                                "skill": "review-change",
+                                "mode": "fork",
+                                "agent_result": {"summary": "review: pass"},
+                            },
+                        ),
+                    ),
+                ),
+                RuntimeMessage(
+                    message_id="live-summary",
+                    role=MessageRole.ASSISTANT,
+                    content=(
+                        TextBlock(
+                            "updated src/demo_service/greeting.py; verification: passed; review: pass"
+                        ),
+                    ),
+                ),
+            ),
+            terminal_stop_reason="completed",
+            terminal_metadata={},
+        )
+
+    monkeypatch.setattr(coding_workflow_demo, "_run_prompt", fake_run_prompt)
+
+    report = run_async(run_coding_workflow_demo(live=True))
+
+    assert report.mode == "live"
+    assert report.ok is True
+    assert report.error_message is None
+    assert report.verification_result is not None
+    assert report.verification_result["exit_code"] == 0
+    assert report.review_result is not None
+    assert report.review_result["agent_result"]["summary"] == "review: pass"
 
 
 def test_coding_workflow_demo_live_cli_documents_the_same_boundary_without_network() -> None:
