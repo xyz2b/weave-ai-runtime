@@ -2,7 +2,19 @@
 
 Run every command from the repository root.
 
-This app is the repository's reactive V2 AI coding shell. It keeps the durable live-runtime path from the earlier demo, but now combines an interactive `bash v2` surface, reactive runtime observability, and an app-owned workflow ledger on top of the same host, agent, tool, and skill composition:
+## Positioning
+
+This app is the repository's advanced integration sample for AI coding, not the default getting-started path for ordinary framework users.
+If you want the layered validation path first, use this order:
+
+1. `demos/README.md` seam-basics and semantic demos
+2. `python3 -B -m demos.projects.coding_workflow_demo`
+3. `python3 -B -m demos.projects.coding_workflow_demo --live`
+4. `python3 -B -m demos.apps.code_assistant shell`
+
+Move to this app when you specifically need host-owned UX, durable runtime state, approvals, or builtin replacement behavior.
+
+This app keeps the durable live-runtime path from the earlier demo, but combines an interactive `bash v2` surface, reactive runtime observability, and an app-owned workflow ledger on top of the same host, agent, tool, and skill composition:
 
 - `host`: shell loop, local commands, approvals, reactive job or task rendering, workflow warnings and advisories
 - `tool`: bundled coding tools plus the app-specific `bash v2` replacement

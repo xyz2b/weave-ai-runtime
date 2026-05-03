@@ -2,89 +2,40 @@
 
 Run every command from the repository root. The demo modules bootstrap `src/` automatically, so they do not require an editable install.
 
-The shared offline model helper lives in [`demos/_shared/scripted_model.py`](./_shared/scripted_model.py). The agent, skill, and project demos use it so they run without external model credentials.
+The shared offline model helper lives in [`demos/_shared/scripted_model.py`](./_shared/scripted_model.py). The seam, skill, and project demos use it so the default validation story stays deterministic and does not require external model credentials.
 
-There are now three distinct demo tracks in this repository:
+## Layered validation path
 
-- the offline seam demos in this README, which use the scripted helper and never hit a live provider
-- the live app demo layer under `demos/apps/`, which uses host-bound runtime workflows against a real model route
-- the lower-level bundled live OpenAI path, which uses the runtime default `openai_default` route backed by Responses API
+This repository now presents the runnable demos as a layered framework-validation path instead of a flat catalog:
 
-These demos intentionally stay on stable public extension surfaces:
+1. `Seam basics` validate one stable extension surface at a time.
+2. `Semantic demos` validate how those surfaces behave when hooks or packages change the runtime contract.
+3. `Project demos` validate realistic workflows that stay on the ordinary extension path through workspace-local definitions and bundled runtime surfaces, without custom host binding or builtin replacement.
+4. `Workflow-level live smoke` validates that the same coding workflow and fixture can be exercised against the bundled live provider route before you add heavier integration code.
+5. `Advanced live app demos` validate product-style integration seams such as `bind_host()`, durable state, approvals, and builtin replacement.
 
-- definition-level hook authoring uses skill frontmatter `hooks`
-- runtime-default and per-session hook registration use `RuntimeConfig(hooks=...)` and `session.register_hook(...)`
-- package demos separate manifest admission from activation with `RuntimeConfig.extra_package_manifests` and `RuntimeConfig.requested_packages`
-- compatibility-only hook surfaces are intentionally left out of this learning path
+Recommended starting path:
 
-Run the seam-basics demos first if you want the minimum runnable extension surfaces. Then run the semantic demos to learn how skill hooks are authored, how default hook registration differs from session-local registration, and how package admission differs from activation.
+- If you are an ordinary framework user, start with `Seam basics`, then run `python3 -B -m demos.projects.coding_workflow_demo`.
+- If that offline coding workflow passes and you want provider-backed evidence for the same workflow, run `python3 -B -m demos.projects.coding_workflow_demo --live`.
+- If you need host-owned UX, durable runtime state, or builtin replacement, move on to the advanced integration sample under `demos/apps/code_assistant/`.
 
-## Offline demos vs live paths
+How to interpret failures across the layers:
 
-Everything in the tables below is intentionally offline and deterministic.
-If you only want to learn extension seams, stay on this path and do not export any provider credentials.
+- offline coding workflow fail -> likely a framework assembly, workspace-definition, or stable-seam composition issue
+- offline pass but workflow-level live smoke fail -> likely a provider credential, prompt, or open-ended model stability issue
+- offline and workflow-level live smoke pass but advanced app fail -> likely a host, builtin replacement, or product-integration issue
 
-If you want to exercise the live paths instead, set:
+## Live validation prerequisites
+
+Everything in the seam, semantic, and default project tables below is intentionally offline and deterministic.
+If you only want to learn the framework surfaces, stay on that path and do not export any provider credentials.
+
+If you want to exercise the live validation layers, set:
 
 - `OPENAI_API_KEY` (required)
 - `OPENAI_BASE_URL` (optional)
 - `OPENAI_MODEL` (optional, defaults to `gpt-4.1-mini`)
-
-If you want the app-shaped live validation surface, start here:
-
-```bash
-python3 -B -m demos.apps.code_assistant reset
-python3 -B -m demos.apps.code_assistant shell
-python3 -B -m demos.apps.code_assistant inspect
-```
-
-That path is intentionally different from the lower-level provider smoke:
-
-- `demos.apps.code_assistant` validates a host-bound reactive AI coding shell with approvals, local runtime commands, `bash v2` shell sessions, child agents, skills, tasks, jobs, blocking-vs-advisory workflow diagnostics, and durable state
-- `scripts/openai_responses_live_smoke.py` validates the bundled OpenAI adapter behavior and tool-calling transport details
-
-If you only want the lower-level provider smoke, use the bundled live OpenAI path below.
-
-Minimal live check from the repo root:
-
-```bash
-export OPENAI_API_KEY=your-key
-export OPENAI_MODEL=gpt-4.1-mini
-python3 - <<'PY'
-import asyncio
-from pathlib import Path
-
-from weavert.runtime_kernel import RuntimeConfig, assemble_runtime
-
-runtime = assemble_runtime(RuntimeConfig(working_directory=Path.cwd()))
-messages = asyncio.run(runtime.run_prompt(\"Summarize this repository and use tools when needed.\"))
-print(messages[-1].text)
-PY
-```
-
-Expected live behavior:
-
-- the default route is still `openai_default`
-- requests go through the bundled Responses adapter
-- runtime tools are exported as strict function tools
-- local tool results are replayed as `function_call_output`
-- bundled `openai_default` requests provider-side `parallel_tool_calls=true`
-- runtime still owns ordered local continuation and can reconcile empty streaming `response.completed.output` payloads from imperfect gateways
-
-If you want a slightly stronger live smoke than the inline snippet above, run:
-
-```bash
-python3 scripts/openai_responses_live_smoke.py
-```
-
-That script verifies the default full toolset path, checks for multi-tool turns, and reports whether the streaming empty-completed-output fallback had to fire for the current gateway.
-
-Basic troubleshooting:
-
-- missing `OPENAI_API_KEY` -> first invocation returns a structured `auth_error`
-- tool schema uses dynamic `additionalProperties` -> invocation returns `tool_schema_error`
-- need a proxy or gateway -> set `OPENAI_BASE_URL`
-- want a different bundled default model -> set `OPENAI_MODEL`
 
 ## Seam basics
 
@@ -105,26 +56,89 @@ Basic troubleshooting:
 | Runtime config hook | `RuntimeConfig(hooks=...)` | `python3 -B -m demos.hooks.runtime_config_hook_demo` | Prints `hook source: runtime_config` plus matching results in two sessions, showing the hook is attached by default instead of registered per session. |
 | Package activation | `RuntimeConfig.extra_package_manifests` vs `RuntimeConfig.requested_packages` | `python3 -B -m demos.packages.package_activation_demo` | Prints an admitted-but-inactive package with no visible invocations, then the same package activated with `package-release-check` visible. |
 
-After you understand the individual seams, run the project demo to see the same surfaces composed into one realistic release workflow.
+After you understand the individual seams, move into the project layer to see the same public surfaces composed into realistic workflows.
 
 ## Project demos
 
-These demos combine multiple stable extension seams into a single project-shaped workflow.
-Run them after the seam-basics and semantic demos if you want to see how the pieces behave when they are composed into a small realistic system.
-
-| Demo | What it simulates | Extension seams | Run command | Expected output |
-| --- | --- | --- | --- | --- |
-| Release workflow | A release-readiness review for a small project workspace | file-backed `tool` + file-backed `agent` + file-backed `skill` + package-contributed context/capability | `python3 -B -m demos.projects.release_workflow_demo` | Prints the discovered workspace facts, the active release-freeze context, a child-generated release summary, and a final release verdict. |
-
-## Live app demos
-
-These demos sit above the offline seam and project layers. They use a real model-backed route, bind a host, and keep durable runtime artifacts in a resettable workspace.
+These demos stay on the ordinary extension path. They use workspace-local `.weavert/` definitions plus bundled runtime surfaces, and they do not require custom host binding or builtin replacements.
 
 | Demo | What it validates | Run command | Expected output |
 | --- | --- | --- | --- |
-| Code assistant | Host-bound reactive AI coding shell V2 with local commands, session-oriented `bash`, planning/review/verification phases, reusable skills, reliable live-smoke validation, advisory planner degradation, and durable state inspection | `python3 -B -m demos.apps.code_assistant shell` | Starts an interactive coding shell, reactively renders assistant, task, job, and workflow activity through the host, supports `/tasks`, `/jobs`, and `/inspect`, and leaves transcripts plus other durable state under `demos/apps/code_assistant/state/mini_repo/.weavert/`. |
+| Release workflow | A composed offline release-readiness review for a small project workspace | `python3 -B -m demos.projects.release_workflow_demo` | Prints the discovered workspace facts, the active release-freeze context, a child-generated release summary, and a final release verdict. |
+| Coding workflow | A bugfix-style inspect -> edit -> verify -> review loop in a tiny workspace, still below host customization and builtin replacement | `python3 -B -m demos.projects.coding_workflow_demo` | Prints `mode: offline`, `host customization: none`, `builtin replacements: none`, `verification: passed`, `review: pass`, and `status: ok`. |
 
-Reset, inspect, and scripted smoke commands for the same app:
+## Workflow-level live smoke
+
+This layer reuses the same `demos.projects.coding_workflow_demo` task, fixture, and success criteria, but switches from the scripted helper to the bundled live provider route.
+It still stays below custom host binding and builtin replacement.
+
+Run the live smoke path with:
+
+```bash
+python3 -B -m demos.projects.coding_workflow_demo --live
+```
+
+Expected behavior:
+
+- success still means the same coding workflow completed against the same fixture
+- `mode: live` makes the escalation step explicit
+- `host customization: none` and `builtin replacements: none` stay visible in the output
+- missing credentials surface a clear auth error and the demo does not silently fall back to offline execution
+
+## Lower-level bundled live OpenAI path
+
+If you only want the lower-level provider smoke instead of the workflow-level live smoke above, use the bundled live OpenAI path below.
+This validates the Responses transport layer, not the coding-workflow fixture itself.
+
+Minimal live check from the repo root:
+
+```bash
+export OPENAI_API_KEY=your-key
+export OPENAI_MODEL=gpt-4.1-mini
+python3 - <<'PY'
+import asyncio
+from pathlib import Path
+
+from weavert.runtime_kernel import RuntimeConfig, assemble_runtime
+
+runtime = assemble_runtime(RuntimeConfig(working_directory=Path.cwd()))
+messages = asyncio.run(runtime.run_prompt("Summarize this repository and use tools when needed."))
+print(messages[-1].text)
+PY
+```
+
+Expected live behavior:
+
+- the default route is still `openai_default`
+- requests go through the bundled Responses adapter
+- runtime tools are exported as strict function tools
+- local tool results are replayed as `function_call_output`
+- bundled `openai_default` requests provider-side `parallel_tool_calls=true`
+- runtime still owns ordered local continuation and can reconcile empty streaming `response.completed.output` payloads from imperfect gateways
+
+If you want a slightly stronger live smoke than the inline snippet above, run:
+
+```bash
+python3 scripts/openai_responses_live_smoke.py
+```
+
+Basic troubleshooting:
+
+- missing `OPENAI_API_KEY` -> first invocation returns a structured `auth_error`
+- tool schema uses dynamic `additionalProperties` -> invocation returns `tool_schema_error`
+- need a proxy or gateway -> set `OPENAI_BASE_URL`
+- want a different bundled default model -> set `OPENAI_MODEL`
+
+## Advanced live app demos
+
+These demos sit above the seam, semantic, project, and workflow-level live-smoke layers.
+They are advanced integration samples, not the baseline getting-started path for ordinary framework users.
+
+| Demo | What it validates | Run command | Expected output |
+| --- | --- | --- | --- |
+| Code assistant | Host-bound reactive AI coding shell V2 with local commands, session-oriented `bash`, reusable child agents and skills, durable state, approvals, and builtin replacement for `bash` | `python3 -B -m demos.apps.code_assistant shell` | Starts an interactive coding shell, reactively renders assistant, task, job, and workflow activity through the host, supports `/tasks`, `/jobs`, and `/inspect`, and leaves transcripts plus other durable state under `demos/apps/code_assistant/state/mini_repo/.weavert/`. |
+
+Reset, inspect, and scripted smoke commands for the same advanced integration sample:
 
 ```bash
 python3 -B -m demos.apps.code_assistant reset
@@ -132,6 +146,6 @@ python3 -B -m demos.apps.code_assistant inspect
 python3 -B -m demos.apps.code_assistant run --auto-approve
 ```
 
-That `run --auto-approve` smoke now treats missing planning, inspection, verification, or review coverage as blocking `workflow gaps`, while surfacing planner degradation that still left a usable shared plan as non-blocking `workflow advisories`.
+That `run --auto-approve` smoke treats missing planning, inspection, verification, or review coverage as blocking `workflow gaps`, while surfacing planner degradation that still left a usable shared plan as non-blocking `workflow advisories`.
 
 If you want an automated check that these commands still work, run `pytest tests/test_runtime_extension_demos.py`.

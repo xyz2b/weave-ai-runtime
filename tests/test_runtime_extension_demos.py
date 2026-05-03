@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
+
+from demos._shared.common import run_async
+from demos.projects.coding_workflow_demo import run_demo as run_coding_workflow_demo
 
 ROOT = Path(__file__).resolve().parents[1]
 README = ROOT / "demos" / "README.md"
@@ -100,6 +104,19 @@ DEMO_CASES = (
             "status: ok",
         ),
     ),
+    (
+        "demos.projects.coding_workflow_demo",
+        (
+            "demo: coding workflow",
+            "workspace: coding-workflow-fixture",
+            "mode: offline",
+            "host customization: none",
+            "builtin replacements: none",
+            "verification: passed",
+            "review: pass",
+            "status: ok",
+        ),
+    ),
 )
 
 
@@ -123,14 +140,55 @@ def test_runtime_extension_demo_runs_from_repo_root(
         assert line in completed.stdout
 
 
-def test_runtime_extension_readme_lists_project_and_live_app_demo_layers() -> None:
+def test_coding_workflow_demo_live_smoke_reports_auth_failure_without_fallback(monkeypatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "ambient-key")
+    monkeypatch.setenv("OPENAI_MODEL", "ambient-model")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://ambient.invalid/v1")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_MODEL", raising=False)
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+
+    report = run_async(run_coding_workflow_demo(live=True))
+
+    assert report.mode == "live"
+    assert report.ok is False
+    assert report.terminal_metadata["failure_class"] == "auth_error"
+    assert "OPENAI_API_KEY" in str(report.error_message)
+    assert report.verification_result is None
+    assert report.review_result is None
+
+
+def test_coding_workflow_demo_live_cli_documents_the_same_boundary_without_network() -> None:
+    env = dict(os.environ)
+    for name in ("OPENAI_API_KEY", "OPENAI_MODEL", "OPENAI_BASE_URL"):
+        env.pop(name, None)
+
+    completed = subprocess.run(
+        [PYTHON, "-B", "-m", "demos.projects.coding_workflow_demo", "--live"],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 2
+    assert "mode: live" in completed.stdout
+    assert "host customization: none" in completed.stdout
+    assert "builtin replacements: none" in completed.stdout
+    assert "OPENAI_API_KEY" in completed.stdout
+    assert "status: error" in completed.stdout
+
+
+def test_runtime_extension_readme_lists_layered_validation_story() -> None:
     readme = README.read_text(encoding="utf-8")
 
-    assert "## Seam basics" in readme
-    assert "## Semantic demos" in readme
+    assert "## Layered validation path" in readme
     assert "## Project demos" in readme
-    assert "## Live app demos" in readme
-    assert "multiple stable extension seams into a single project-shaped workflow" in readme
-    assert "python3 -B -m demos.projects.release_workflow_demo" in readme
+    assert "## Workflow-level live smoke" in readme
+    assert "## Advanced live app demos" in readme
+    assert "ordinary extension path" in readme
+    assert "workflow-level live smoke fail" in readme
+    assert "advanced integration sample" in readme
+    assert "python3 -B -m demos.projects.coding_workflow_demo" in readme
+    assert "python3 -B -m demos.projects.coding_workflow_demo --live" in readme
     assert "python3 -B -m demos.apps.code_assistant shell" in readme
-    assert "host-bound reactive AI coding shell" in readme

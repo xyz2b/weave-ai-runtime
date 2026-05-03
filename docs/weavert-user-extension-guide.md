@@ -18,6 +18,13 @@
 - 做平台化时，再进入 `TranscriptStore`、`ChildRunStore`、`MemoryProvider`、`InvocationProvider`、teammate orchestration 这一层。
 - 不建议把 `TurnEngine`、`SessionController`、tool orchestration 主状态机当作普通扩展点。
 
+推荐学习顺序：
+
+- 先跑 `demos/README.md` 里的 seam-basics demos，理解最小稳定扩展面。
+- 然后跑 `python3 -B -m demos.projects.coding_workflow_demo`，确认普通用户只靠 workspace-local `tool` / `agent` / `skill` 加 bundled coding tools 就能完成一个真实的 coding workflow。
+- 需要 provider-backed 证据时，再跑 `python3 -B -m demos.projects.coding_workflow_demo --live`。
+- 只有当你确实要接 `HostRuntime`、审批、durable state 或 builtin replacement 时，再进入 `demos/apps/code_assistant/` 这类 HostRuntime-heavy advanced sample。
+
 ## 1. 先分清三层扩展面
 
 ### 1.1 第一层：能力定义层
