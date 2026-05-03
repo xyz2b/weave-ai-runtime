@@ -137,6 +137,22 @@ class RecordingWorkflowRunMemoryService(NoopMemoryService):
         return MemoryTurnResult()
 
 
+class UniqueWorkflowRunMemoryService(RecordingWorkflowRunMemoryService):
+    def __init__(self) -> None:
+        super().__init__()
+        self._extraction_counter = 0
+
+    async def schedule_background_extraction(
+        self,
+        *,
+        session_id: str,
+        **_: object,
+    ) -> str:
+        self.scheduled_extractions.append(session_id)
+        self._extraction_counter += 1
+        return f"extract-{session_id}-{self._extraction_counter}"
+
+
 def _team_capability(runtime, key: RuntimeCapabilityKey):
     return runtime.resolve_capability(key.value)
 
@@ -1765,6 +1781,62 @@ def test_runtime_run_prompt_report_in_session_keeps_session_open_and_waits_turn_
 
     asyncio.run(session.close())
     assert closed == ["completed"]
+
+
+def test_runtime_run_prompt_report_in_session_scopes_finalization_to_current_turn(
+    tmp_path: Path,
+) -> None:
+    model_client = FakeModelClient(
+        [
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-caller-report-1"}),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "caller one"}),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+            ],
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-caller-report-2"}),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "caller two"}),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+            ],
+        ]
+    )
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            model_client=model_client,
+        )
+    )
+    memory_service = UniqueWorkflowRunMemoryService()
+    runtime.services.memory = memory_service
+    session = runtime.create_session(session_id="caller-report-reused")
+
+    first = asyncio.run(
+        runtime.run_prompt_report_in_session(
+            session,
+            "First turn",
+            wait_for_finalization=True,
+        )
+    )
+    second = asyncio.run(
+        runtime.run_prompt_report_in_session(
+            session,
+            "Second turn",
+            wait_for_finalization=True,
+        )
+    )
+
+    assert [task.task_id for task in first.finalization.tasks] == [
+        "extract-caller-report-reused-1",
+    ]
+    assert [task.task_id for task in second.finalization.tasks] == [
+        "extract-caller-report-reused-2",
+    ]
+    assert memory_service.waited_extractions == [
+        "extract-caller-report-reused-1",
+        "extract-caller-report-reused-2",
+    ]
+
+    asyncio.run(session.close())
 
 
 def test_runtime_stream_prompt_closes_helper_owned_session_on_interrupt(tmp_path: Path) -> None:

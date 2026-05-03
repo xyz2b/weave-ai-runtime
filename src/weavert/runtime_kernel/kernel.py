@@ -211,6 +211,12 @@ class WorkflowRunReport:
 
 
 @dataclass(frozen=True, slots=True)
+class _WorkflowRunFinalizationCursor:
+    extraction_count: int = 0
+    consolidation_count: int = 0
+
+
+@dataclass(frozen=True, slots=True)
 class _CachedSkillRoot:
     fingerprint: tuple[tuple[str, str], ...] = ()
     skills: tuple[SkillDefinition, ...] = ()
@@ -1184,6 +1190,7 @@ class RuntimeAssembly:
             cwd=cwd,
             system_prompt=system_prompt,
         )
+        finalization_cursor = _workflow_run_finalization_cursor(session)
         report: WorkflowRunReport | None = None
         final_status = "completed"
         try:
@@ -1204,6 +1211,7 @@ class RuntimeAssembly:
             session,
             requested=wait_for_finalization,
             include_consolidation=True,
+            cursor=finalization_cursor,
         )
         return replace(report, finalization=finalization)
 
@@ -1216,6 +1224,7 @@ class RuntimeAssembly:
         wait_for_finalization: bool = False,
     ) -> WorkflowRunReport:
         await self.wait_until_ready()
+        finalization_cursor = _workflow_run_finalization_cursor(session)
         report = await self._run_prompt_report_in_session(
             session,
             prompt,
@@ -1226,6 +1235,7 @@ class RuntimeAssembly:
             session,
             requested=wait_for_finalization,
             include_consolidation=False,
+            cursor=finalization_cursor,
         )
         return replace(report, finalization=finalization)
 
@@ -4613,10 +4623,12 @@ async def _workflow_run_finalization_report(
     *,
     requested: bool,
     include_consolidation: bool,
+    cursor: _WorkflowRunFinalizationCursor | None = None,
 ) -> WorkflowRunFinalizationReport:
     tasks = _workflow_run_finalization_tasks(
         session,
         include_consolidation=include_consolidation,
+        cursor=cursor,
     )
     if not tasks:
         return WorkflowRunFinalizationReport(requested=requested)
@@ -4656,14 +4668,16 @@ def _workflow_run_finalization_tasks(
     session: SessionController,
     *,
     include_consolidation: bool,
+    cursor: _WorkflowRunFinalizationCursor | None = None,
 ) -> tuple[tuple[str, str], ...]:
     tasks: list[tuple[str, str]] = []
-    seen: set[str] = set()
+    seen: set[tuple[str, str]] = set()
     _collect_workflow_run_task_ids(
         tasks,
         seen,
         kind="background_memory_extraction",
         raw_ids=session.state.metadata.get("background_memory_tasks"),
+        start=cursor.extraction_count if cursor is not None else 0,
     )
     if include_consolidation:
         _collect_workflow_run_task_ids(
@@ -4671,25 +4685,47 @@ def _workflow_run_finalization_tasks(
             seen,
             kind="background_memory_consolidation",
             raw_ids=session.state.metadata.get("background_memory_consolidation_tasks"),
+            start=cursor.consolidation_count if cursor is not None else 0,
         )
     return tuple(tasks)
 
 
 def _collect_workflow_run_task_ids(
     tasks: list[tuple[str, str]],
-    seen: set[str],
+    seen: set[tuple[str, str]],
     *,
     kind: str,
     raw_ids: Any,
+    start: int = 0,
 ) -> None:
     if not isinstance(raw_ids, list):
         return
-    for value in raw_ids:
+    for value in raw_ids[max(start, 0) :]:
         normalized = str(value).strip()
-        if not normalized or normalized in seen:
+        key = (kind, normalized)
+        if not normalized or key in seen:
             continue
-        seen.add(normalized)
+        seen.add(key)
         tasks.append((kind, normalized))
+
+
+def _workflow_run_finalization_cursor(
+    session: SessionController,
+) -> _WorkflowRunFinalizationCursor:
+    return _WorkflowRunFinalizationCursor(
+        extraction_count=_workflow_run_task_count(
+            session.state.metadata.get("background_memory_tasks")
+        ),
+        consolidation_count=_workflow_run_task_count(
+            session.state.metadata.get("background_memory_consolidation_tasks")
+        ),
+    )
+
+
+def _workflow_run_task_count(raw_ids: Any) -> int:
+    if not isinstance(raw_ids, list):
+        return 0
+    return len(raw_ids)
 
 
 def _workflow_run_wait_method(memory_service: Any, kind: str) -> Any | None:
