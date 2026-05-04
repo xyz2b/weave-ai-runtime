@@ -7,7 +7,7 @@ import pytest
 
 from weavert.contracts import TurnContext
 from weavert.definitions import AgentDefinition
-from weavert.runtime_kernel import WorkflowRunReport
+from weavert.runtime_kernel import BuiltinPackConfig, ModelRouteBinding, RuntimeConfig, WorkflowRunReport
 from weavert.testing import (
     ScriptedModelClient,
     ScriptedModelExhaustionError,
@@ -157,6 +157,22 @@ def _workflow_client() -> ScriptedModelClient:
 
 
 
+def _minimal_runtime_config(workspace: Path, *, model_client=None) -> RuntimeConfig:
+    return RuntimeConfig(
+        working_directory=workspace,
+        model_client=model_client,
+        builtins=BuiltinPackConfig(
+            extra_agents=[
+                AgentDefinition(
+                    name="main-router",
+                    description="Test router",
+                    prompt="Return the scripted response.",
+                )
+            ]
+        ),
+    )
+
+
 def test_scripted_model_client_records_requests_and_raises_when_batches_are_exhausted() -> None:
     client = ScriptedModelClient([text_batch(request_id="req-scripted-1", text="first reply")])
     request = _fake_request()
@@ -198,6 +214,53 @@ def test_copied_fixture_workspace_copies_tree_and_points_discovery_at_temp_proje
 
     assert not workspace_root.exists()
 
+
+
+def test_run_workflow_test_preserves_explicit_empty_discovery_sources(tmp_path: Path) -> None:
+    client = ScriptedModelClient([text_batch(request_id="req-empty-discovery-1", text="ok")])
+
+    async def _run() -> None:
+        report = await run_workflow_test(
+            "Reply with ok.",
+            workspace=tmp_path,
+            runtime_config=_minimal_runtime_config(tmp_path, model_client=client),
+            discovery_sources=(),
+            session_id="workflow-testing-empty-discovery",
+            agent_name="main-router",
+        )
+
+        assert report.discovery_sources == ()
+        assert report.messages[-1].text == "ok"
+        assert len(report.scripted_requests) == 1
+
+    asyncio.run(_run())
+
+
+def test_run_workflow_test_collects_scripted_diagnostics_from_route_model_client(tmp_path: Path) -> None:
+    client = ScriptedModelClient([text_batch(request_id="req-route-scripted-1", text="route ok")])
+
+    async def _run() -> None:
+        config = _minimal_runtime_config(tmp_path)
+        config.model_routes["scripted"] = ModelRouteBinding(client=client)
+        config.default_model_route = "scripted"
+
+        report = await run_workflow_test(
+            "Reply with route ok.",
+            workspace=tmp_path,
+            runtime_config=config,
+            discovery_sources=(),
+            session_id="workflow-testing-route-model-client",
+            agent_name="main-router",
+        )
+
+        assert report.messages[-1].text == "route ok"
+        assert report.scripted_batch_count_consumed == 1
+        assert report.scripted_batch_count_remaining == 0
+        assert [request.agent.name for request in report.scripted_requests if request.agent is not None] == [
+            "main-router"
+        ]
+
+    asyncio.run(_run())
 
 
 def test_run_workflow_test_returns_canonical_report_plus_test_diagnostics() -> None:

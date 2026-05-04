@@ -103,7 +103,9 @@ async def run_workflow_test(
     permission_service: Any = _DEFAULT_PERMISSION_SERVICE,
 ) -> WorkflowTestReport:
     workspace_root, fixture_source, workspace_discovery_sources = _resolve_workspace(workspace)
-    resolved_discovery_sources = tuple(discovery_sources or workspace_discovery_sources)
+    resolved_discovery_sources = (
+        tuple(workspace_discovery_sources) if discovery_sources is None else tuple(discovery_sources)
+    )
     config = _build_runtime_config(
         workspace_root=workspace_root,
         model_client=model_client,
@@ -125,8 +127,9 @@ async def run_workflow_test(
         wait_for_finalization=wait_for_finalization,
     )
     child_runs = await runtime.agent_runtime.run_store.list_by_session(report.session_id)
-    resolved_model_client = config.model_client
-    scripted_requests = tuple(getattr(resolved_model_client, "requests", ()) or ())
+    scripted_requests, scripted_batch_count_consumed, scripted_batch_count_remaining = (
+        _scripted_diagnostics_from_config(config)
+    )
     return WorkflowTestReport(
         workflow=report,
         workspace_root=workspace_root,
@@ -134,8 +137,8 @@ async def run_workflow_test(
         fixture_source=fixture_source,
         child_runs=tuple(child_runs),
         scripted_requests=scripted_requests,
-        scripted_batch_count_consumed=_optional_int_attr(resolved_model_client, "consumed_batch_count"),
-        scripted_batch_count_remaining=_optional_int_attr(resolved_model_client, "remaining_batch_count"),
+        scripted_batch_count_consumed=scripted_batch_count_consumed,
+        scripted_batch_count_remaining=scripted_batch_count_remaining,
         metadata={
             "wait_for_finalization": wait_for_finalization,
         },
@@ -155,7 +158,7 @@ def _build_runtime_config(
     else:
         config = replace(runtime_config)
     config.working_directory = workspace_root
-    config.discovery_sources = tuple(discovery_sources or config.discovery_sources)
+    config.discovery_sources = tuple(discovery_sources)
     if model_client is not None:
         config.model_client = model_client
     if config.model_client is None and not config.default_model_route and not config.model_routes:
@@ -183,6 +186,88 @@ def _resolve_workspace(
 def _optional_int_attr(source: Any, name: str) -> int | None:
     value = getattr(source, name, None)
     return value if isinstance(value, int) else None
+
+
+def _scripted_diagnostics_from_config(
+    config: RuntimeConfig,
+) -> tuple[tuple[ModelRequest, ...], int | None, int | None]:
+    clients = _scripted_model_clients(config)
+    active_clients = tuple(client for client in clients if _scripted_client_active(client))
+    resolved_clients = active_clients or tuple(client for client in clients if _looks_like_scripted_client(client))
+    if not resolved_clients:
+        return (), None, None
+
+    scripted_requests: list[ModelRequest] = []
+    consumed_values: list[int] = []
+    remaining_values: list[int] = []
+    for client in resolved_clients:
+        for request in getattr(client, "requests", ()) or ():
+            if isinstance(request, ModelRequest):
+                scripted_requests.append(request)
+        consumed = _optional_int_attr(client, "consumed_batch_count")
+        if consumed is not None:
+            consumed_values.append(consumed)
+        remaining = _optional_int_attr(client, "remaining_batch_count")
+        if remaining is not None:
+            remaining_values.append(remaining)
+
+    consumed_total = sum(consumed_values) if consumed_values else None
+    remaining_total = sum(remaining_values) if remaining_values else None
+    return tuple(scripted_requests), consumed_total, remaining_total
+
+
+def _scripted_model_clients(config: RuntimeConfig) -> tuple[Any, ...]:
+    clients: list[Any] = []
+    seen: set[int] = set()
+
+    def _add(client: Any) -> None:
+        if client is None:
+            return
+        identity = id(client)
+        if identity in seen:
+            return
+        seen.add(identity)
+        clients.append(client)
+
+    _add(config.model_client)
+
+    route_names: list[str] = []
+    if config.default_model_route is not None and config.default_model_route in config.model_routes:
+        route_names.append(config.default_model_route)
+    route_names.extend(name for name in sorted(config.model_routes) if name not in route_names)
+    provider_names: list[str] = []
+
+    for route_name in route_names:
+        binding = config.model_routes.get(route_name)
+        if binding is None:
+            continue
+        _add(binding.client)
+        if binding.provider_binding is not None and binding.provider_binding not in provider_names:
+            provider_names.append(binding.provider_binding)
+
+    provider_names.extend(name for name in sorted(config.model_providers) if name not in provider_names)
+    for provider_name in provider_names:
+        binding = config.model_providers.get(provider_name)
+        if binding is None:
+            continue
+        _add(binding.client)
+
+    return tuple(clients)
+
+
+def _scripted_client_active(client: Any) -> bool:
+    requests = getattr(client, "requests", None)
+    if requests:
+        return True
+    consumed = _optional_int_attr(client, "consumed_batch_count")
+    return consumed is not None and consumed > 0
+
+
+def _looks_like_scripted_client(client: Any) -> bool:
+    return any(
+        hasattr(client, attribute)
+        for attribute in ("requests", "consumed_batch_count", "remaining_batch_count")
+    )
 
 
 __all__ = [
