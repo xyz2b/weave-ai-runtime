@@ -26,6 +26,8 @@ weavert-starter generate live-smoke ./my-live-smoke
 weavert-starter generate minimal-project ./my-weavert-app --force
 ```
 
+`--force` 会清理上一次 scaffold 生成写入的文件，再写入新 shape；不相关的现有文件会保留。
+
 ## Official catalog
 
 ### `minimal-project`
@@ -82,6 +84,9 @@ weavert-starter generate minimal-project ./my-weavert-app --force
 - `pyproject.toml`
 - canonical `.weavert/` workspace root
 - 一个对应 shape 的 runnable entrypoint
+
+生成出来的项目要求运行它的那个 Python 环境里已经安装了 `weavert`。
+如果你切到一个全新的 virtualenv，先把 `weavert` source checkout 或发布包装进去，再执行 scaffold 自己的 `pip install -e .`。
 
 推荐顺序：
 

@@ -3,7 +3,9 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 from enum import StrEnum
+import json
 from pathlib import Path
+from pathlib import PurePosixPath
 import re
 from textwrap import dedent
 
@@ -74,6 +76,20 @@ class _TemplateContext:
         return self.definition.assembly_preset.value
 
 
+_STARTER_MANIFEST_PATH = f"{CANONICAL_WORKSPACE_ROOT}/starter-scaffold-manifest.json"
+_LEGACY_GENERATED_FILE_CANDIDATES = (
+    ".weavert/agents/starter-guide.md",
+    ".weavert/agents/release-runner.md",
+    ".weavert/agents/live-smoke-runner.md",
+    ".weavert/tools/project_snapshot.py",
+    ".weavert/tools/workflow_checklist.py",
+    ".weavert/tools/.gitkeep",
+    "app.py",
+    "workflow_runner.py",
+    "live_smoke.py",
+)
+
+
 _OFFICIAL_STARTER_SCAFFOLDS: dict[str, StarterScaffoldDefinition] = {
     StarterScaffoldName.MINIMAL_PROJECT.value: StarterScaffoldDefinition(
         name=StarterScaffoldName.MINIMAL_PROJECT,
@@ -135,8 +151,14 @@ def generate_starter_scaffold(
         project_name=resolved_name,
         project_slug=_normalize_project_slug(resolved_name),
     )
+    files = _render_scaffold_files(context)
+    files[_STARTER_MANIFEST_PATH] = _render_starter_manifest(
+        definition=definition,
+        project_name=resolved_name,
+        generated_files=tuple(sorted((*files.keys(), _STARTER_MANIFEST_PATH))),
+    )
     _prepare_destination(resolved_destination, force=force)
-    written_files = _write_scaffold_files(context)
+    written_files = _write_scaffold_files(context, files)
     return StarterScaffoldGenerationResult(
         definition=definition,
         destination=resolved_destination,
@@ -169,7 +191,7 @@ def main(argv: list[str] | None = None) -> int:
     generate_parser.add_argument(
         "--force",
         action="store_true",
-        help="Allow writing into an existing non-empty directory by overwriting generated files.",
+        help="Allow writing into an existing non-empty directory by replacing files from a previous scaffold generation.",
     )
     generate_parser.set_defaults(handler=_handle_generate)
 
@@ -203,13 +225,17 @@ def _prepare_destination(destination: Path, *, force: bool) -> None:
         raise NotADirectoryError(destination)
     if destination.exists() and any(destination.iterdir()) and not force:
         raise FileExistsError(
-            f"Destination '{destination}' is not empty. Pass force=True or use --force to overwrite generated files."
+            f"Destination '{destination}' is not empty. Pass force=True or use --force to replace scaffold files."
         )
     destination.mkdir(parents=True, exist_ok=True)
+    if force:
+        _remove_previous_generated_files(destination)
 
 
-def _write_scaffold_files(context: _TemplateContext) -> tuple[Path, ...]:
-    files = _render_scaffold_files(context)
+def _write_scaffold_files(
+    context: _TemplateContext,
+    files: dict[str, str],
+) -> tuple[Path, ...]:
     written: list[Path] = []
     for relative_path, contents in sorted(files.items()):
         target = context.destination / relative_path
@@ -226,6 +252,83 @@ def _render_scaffold_files(context: _TemplateContext) -> dict[str, str]:
         StarterScaffoldName.LIVE_SMOKE: _render_live_smoke,
     }[context.definition.name]
     return renderer(context)
+
+
+def _render_starter_manifest(
+    *,
+    definition: StarterScaffoldDefinition,
+    project_name: str,
+    generated_files: tuple[str, ...],
+) -> str:
+    return json.dumps(
+        {
+            "version": 1,
+            "shape": definition.name.value,
+            "project_name": project_name,
+            "generated_files": list(generated_files),
+        },
+        indent=2,
+        sort_keys=True,
+    ) + "\n"
+
+
+def _remove_previous_generated_files(destination: Path) -> None:
+    manifest_path = destination / _STARTER_MANIFEST_PATH
+    if not manifest_path.exists():
+        _remove_legacy_generated_files(destination)
+        return
+    generated_files = _load_generated_file_manifest(manifest_path)
+    for relative_path in sorted(generated_files, key=lambda value: len(PurePosixPath(value).parts), reverse=True):
+        target = _resolved_destination_path(destination, relative_path)
+        if target.is_file():
+            target.unlink()
+        _prune_empty_parent_directories(target.parent, stop_at=destination)
+
+
+def _remove_legacy_generated_files(destination: Path) -> None:
+    for relative_path in sorted(_LEGACY_GENERATED_FILE_CANDIDATES, key=lambda value: len(PurePosixPath(value).parts), reverse=True):
+        target = _resolved_destination_path(destination, relative_path)
+        if target.is_file():
+            target.unlink()
+        _prune_empty_parent_directories(target.parent, stop_at=destination)
+
+
+def _load_generated_file_manifest(manifest_path: Path) -> tuple[str, ...]:
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Starter scaffold manifest at '{manifest_path}' is not valid JSON.") from exc
+    generated_files = payload.get("generated_files")
+    if not isinstance(generated_files, list):
+        raise ValueError(f"Starter scaffold manifest at '{manifest_path}' does not publish a generated_files list.")
+    return tuple(_normalize_manifest_relative_path(value) for value in generated_files)
+
+
+def _normalize_manifest_relative_path(value: object) -> str:
+    candidate = str(value).strip()
+    if not candidate:
+        raise ValueError("starter scaffold manifest paths must not be empty")
+    path = PurePosixPath(candidate)
+    if path.is_absolute() or ".." in path.parts or path.name in {"", ".", ".."}:
+        raise ValueError(f"starter scaffold manifest path must stay within the project root: {candidate!r}")
+    return path.as_posix()
+
+
+def _resolved_destination_path(destination: Path, relative_path: str) -> Path:
+    target = (destination / Path(relative_path)).resolve()
+    if not target.is_relative_to(destination):
+        raise ValueError(f"starter scaffold manifest path escapes destination root: {relative_path!r}")
+    return target
+
+
+def _prune_empty_parent_directories(directory: Path, *, stop_at: Path) -> None:
+    current = directory
+    while current != stop_at and current.is_dir():
+        try:
+            current.rmdir()
+        except OSError:
+            break
+        current = current.parent
 
 
 
@@ -610,10 +713,15 @@ def _minimal_readme(context: _TemplateContext) -> str:
 
         Quick start:
 
-        1. `python -m venv .venv`
+        This scaffold expects `weavert` to be installed in the same environment that runs the entrypoint.
+
+        1. `python3 -m venv .venv`
         2. `source .venv/bin/activate`
-        3. `pip install -e .`
-        4. `python app.py`
+        3. `python -m pip install -e /path/to/weave-ai-runtime`
+        4. `python -m pip install -e .`
+        5. `python app.py`
+
+        If you are using a published `weavert` package instead of a source checkout, install that package in step 3.
 
         Extension points:
 
@@ -642,10 +750,15 @@ def _headless_readme(context: _TemplateContext) -> str:
 
         Quick start:
 
-        1. `python -m venv .venv`
+        This scaffold expects `weavert` to be installed in the same environment that runs the entrypoint.
+
+        1. `python3 -m venv .venv`
         2. `source .venv/bin/activate`
-        3. `pip install -e .`
-        4. `python workflow_runner.py`
+        3. `python -m pip install -e /path/to/weave-ai-runtime`
+        4. `python -m pip install -e .`
+        5. `python workflow_runner.py`
+
+        If you are using a published `weavert` package instead of a source checkout, install that package in step 3.
 
         Extension points:
 
@@ -679,11 +792,16 @@ def _live_readme(context: _TemplateContext) -> str:
 
         Quick start:
 
-        1. `python -m venv .venv`
+        This scaffold expects `weavert` to be installed in the same environment that runs the entrypoint.
+
+        1. `python3 -m venv .venv`
         2. `source .venv/bin/activate`
-        3. `pip install -e .`
-        4. `export OPENAI_API_KEY=your-key`
-        5. `python live_smoke.py`
+        3. `python -m pip install -e /path/to/weave-ai-runtime`
+        4. `python -m pip install -e .`
+        5. `export OPENAI_API_KEY=your-key`
+        6. `python live_smoke.py`
+
+        If you are using a published `weavert` package instead of a source checkout, install that package in step 3.
 
         If preflight fails, fix the reported environment or route issue first. The scaffold does not silently drop back to an offline path.
         '''
