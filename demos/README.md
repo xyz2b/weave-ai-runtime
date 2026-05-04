@@ -4,6 +4,8 @@ Run every command from the repository root. The demo modules bootstrap `src/` au
 
 The public offline workflow testing kit now lives under `weavert.testing`. The seam, skill, and project demos use that shared runtime-owned surface so the default validation story stays deterministic and does not require external model credentials.
 
+If you are starting a brand-new WeaveRT project, begin with the official starter scaffolds in `docs/weavert-starter-scaffolds.md`. The demos in this folder are the validation story, not the primary copy-paste adoption path.
+
 ## Layered validation path
 
 This repository now presents the runnable demos as a layered framework-validation path instead of a flat catalog:
@@ -16,7 +18,8 @@ This repository now presents the runnable demos as a layered framework-validatio
 
 Recommended starting path:
 
-- If you are an ordinary framework user, start with `Seam basics`, then run `python3 -B -m demos.projects.coding_workflow_demo`.
+- If you are an ordinary framework user building a new project, generate a starter scaffold first, then come back here to validate the public seams.
+- If you want repo-owned validation after that, start with `Seam basics`, then run `python3 -B -m demos.projects.coding_workflow_demo`.
 - If that offline coding workflow passes and you want provider-backed evidence for the same workflow, run `python3 -B -m demos.projects.coding_workflow_demo --live`.
 - If you need host-owned UX, durable runtime state, or builtin replacement, move on to the advanced integration sample under `demos/apps/code_assistant/`.
 

@@ -25,8 +25,28 @@ Runtime 核心流转本身由框架收口，用户通常不应该改 `TurnEngine
 
 本文基于截至 `2026-04-27` 的仓库实现、`openspec/changes/archive/` 的演化轨迹，以及 `docs/current-system-architecture.md`、`docs/weavert-control-plane-extension-guide.md`、`docs/layered-memory-weavert-v2.md` 和对应 OpenSpec 规格中已经收敛的契约整理。
 
-如果你想先看 repo-root 可运行的最小接入面，先从 `demos/README.md` 开始。  
-demo suite 负责展示端到端工作流；本文继续保留为装配语义、接入边界和运行时流转的规范说明。
+如果你要新建一个自己的项目，先从 `docs/weavert-starter-scaffolds.md` 里的官方 starter scaffold 开始。  
+如果你想跑仓库自带的 validation path，再看 `demos/README.md`。  
+demo suite 负责验证端到端工作流；starter scaffold 才是普通接入方的推荐起点。  
+本文继续保留为装配语义、接入边界和运行时流转的规范说明。
+
+## 0. Start here: official starter scaffolds
+
+从 `2026-05-04` 起，仓库提供了一组官方 starter scaffold，专门覆盖最常见的 adoption entry path：
+
+- `minimal-project`
+- `headless-workflow`
+- `live-smoke`
+
+这些 scaffold 的约束是：
+
+- 使用 canonical `weavert` public imports
+- 使用 canonical `.weavert/` workspace layout
+- 使用匹配的官方 assembly preset
+- 不把 demo-private helper 当作 primary user-facing path
+
+官方生成入口统一为 `weavert-starter generate ...`。  
+形状、命令和使用建议见 `docs/weavert-starter-scaffolds.md`。
 
 ## 1. 先用一句话理解这套系统
 

@@ -9,6 +9,9 @@ description = "A Python runtime kernel for configurable agents, tools, and skill
 requires-python = ">=3.11"
 dependencies = ["PyYAML>=6.0"]
 
+[project.scripts]
+weavert-starter = "weavert.starter_scaffolds:main"
+
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
 
