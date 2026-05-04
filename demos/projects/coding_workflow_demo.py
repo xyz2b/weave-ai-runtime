@@ -14,7 +14,13 @@ from demos._shared.common import (
 )
 from demos._shared.scripted_model import ScriptedModelClient, text_batch, tool_call_batch
 
-from weavert.contracts import MessageRole, RuntimeMessage, ToolResultBlock, ToolUseBlock
+from weavert.contracts import RuntimeMessage
+from weavert.result_projections import (
+    final_assistant_text,
+    latest_skill_outcome,
+    latest_tool_outcome,
+    terminal_failure,
+)
 from weavert.runtime_kernel import RuntimeConfig, assemble_runtime
 
 FIXTURE_ROOT = demo_workspace("projects", "workspaces", "coding_workflow")
@@ -230,11 +236,29 @@ async def run_demo(*, live: bool = False) -> DemoReport:
                 )
         outcome = await _run_prompt(runtime=runtime, workspace=workspace)
 
-        review_result = _review_result(outcome.messages)
-        verification_result = _verification_result(outcome.messages)
+        review_projection = latest_skill_outcome(outcome.messages, skill_name="review-change")
+        review_result = dict(review_projection.payload) if review_projection is not None else None
+        verification_projection = latest_tool_outcome(
+            outcome.messages,
+            "bash",
+            matcher=lambda projection: (
+                str(
+                    projection.tool_input.get("command")
+                    or (
+                        projection.output.get("command")
+                        if isinstance(projection.output, dict)
+                        else ""
+                    )
+                    or ""
+                ).strip()
+                == VERIFICATION_COMMAND
+            ),
+        )
+        verification_result = verification_projection.output if verification_projection is not None else None
 
-        final_text = _last_assistant_text(outcome.messages)
-        error_message = str(outcome.terminal_metadata.get("error") or "").strip() or None
+        final_text = final_assistant_text(outcome.messages)
+        failure = terminal_failure(outcome)
+        error_message = failure.error if failure is not None else None
         verification_exit_code = (
             int(verification_result.get("exit_code", 1))
             if isinstance(verification_result, dict)
@@ -284,61 +308,6 @@ def _preflight_error_message(report) -> str:
             return diagnostic.message
     return (
         f"Live route preflight failed for '{report.resolved_route or report.requested_route or 'default'}'."
-    )
-
-
-def _last_assistant_text(messages: tuple[RuntimeMessage, ...]) -> str:
-    for message in reversed(messages):
-        if message.role == MessageRole.ASSISTANT and message.text:
-            return message.text
-    return ""
-
-
-def _find_tool_result(
-    messages: tuple[RuntimeMessage, ...],
-    *,
-    tool_name: str,
-    matcher,
-) -> dict[str, Any] | None:
-    tool_uses: dict[str, ToolUseBlock] = {}
-    latest_match: dict[str, Any] | None = None
-    for message in messages:
-        for block in message.content:
-            if isinstance(block, ToolUseBlock):
-                tool_uses[block.tool_use_id] = block
-                continue
-            if not isinstance(block, ToolResultBlock):
-                continue
-            tool_use = tool_uses.get(block.tool_use_id)
-            if tool_use is None or tool_use.name != tool_name:
-                continue
-            tool_input = tool_use.input if isinstance(tool_use.input, dict) else {}
-            tool_result = block.content if isinstance(block.content, dict) else None
-            if tool_result is None:
-                continue
-            if matcher(tool_input, tool_result):
-                latest_match = tool_result
-    return latest_match
-
-
-def _verification_result(messages: tuple[RuntimeMessage, ...]) -> dict[str, Any] | None:
-    expected_command = VERIFICATION_COMMAND.strip()
-    return _find_tool_result(
-        messages,
-        tool_name="bash",
-        matcher=lambda tool_input, tool_result: (
-            str(tool_input.get("command") or tool_result.get("command") or "").strip() == expected_command
-        ),
-    )
-
-
-def _review_result(messages: tuple[RuntimeMessage, ...]) -> dict[str, Any] | None:
-    return _find_tool_result(
-        messages,
-        tool_name="skill",
-        matcher=lambda tool_input, tool_result: (
-            str(tool_input.get("skill") or tool_result.get("skill") or "").strip() == "review-change"
-        ),
     )
 
 

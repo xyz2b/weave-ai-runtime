@@ -187,6 +187,74 @@ demo suite 负责展示端到端工作流；本文继续保留为装配语义、
 
 如果你只是想“把这套 Runtime 嵌到自己的服务里”，绝大多数情况下就停在 `RuntimeAssembly` 即可。
 
+#### 2.2.1 结果投影 helper：优先问 runtime 常见问题，不要自己刮 transcript
+
+从 `2026-05-04` 起，runtime 提供了一层公开的 result-projection helper，用来回答 headless workflow validation 和 post-run inspection 最常见的问题，而不是让每个 caller 再自己遍历 `RuntimeMessage.content`：
+
+- `latest_tool_outcome(...)`
+- `latest_skill_outcome(...)`
+- `final_assistant_text(...)`
+- `terminal_failure(...)`
+- `child_summary(...)`
+
+这些 helper 同时支持两类输入：
+
+- raw `tuple[RuntimeMessage, ...]`
+- higher-level report object，例如 `WorkflowRunReport`
+
+如果你只有 raw messages，也可以按需补充 terminal 或 child-run context；如果你已经有 report object，直接把 report 传进去即可。
+
+```python
+from weavert import (
+    child_summary,
+    final_assistant_text,
+    latest_skill_outcome,
+    latest_tool_outcome,
+    terminal_failure,
+)
+
+report = await runtime.run_prompt_report(
+    "Review the workspace and summarize the result.",
+    agent_name="coding-assistant",
+    cwd=workspace,
+)
+
+verification = latest_tool_outcome(
+    report,
+    "bash",
+    matcher=lambda outcome: str(
+        outcome.tool_input.get("command")
+        or (
+            outcome.output.get("command")
+            if isinstance(outcome.output, dict)
+            else ""
+        )
+        or ""
+    ).strip()
+    == "python3 -m unittest discover -s tests",
+)
+review = latest_skill_outcome(report, skill_name="review-change")
+failure = terminal_failure(report)
+summary_text = final_assistant_text(report)
+reviewer = child_summary(report, agent_name="reviewer")
+```
+
+推荐这样理解这层 surface：
+
+- 它回答“最后一次 bash 验证结果是什么”“最终 assistant summary 是什么”“最近一次 review skill 结果是什么”这类通用问题
+- 它保留 typed projection，而不是只返回松散 dict
+- `child_summary(...)` 优先走 parent-visible child result contract；只有在 caller 显式提供 child run records / child projections 时，才回退到 richer child-run observability surface
+- 这意味着 parent 侧 workflow validation 通常不需要再检查 raw child transcript
+
+如果你发现自己在业务代码、demo、test 或 host layer 里手写下面这些模式，优先考虑改用 projection helper：
+
+- 倒序扫描 assistant message 找最终 summary
+- 自己维护 `tool_use_id -> ToolUseBlock` map 只为了找最后一次工具结果
+- 从 skill tool result 里手工拆最新 skill outcome
+- 为了拿 child summary 再去读 child transcript
+
+raw transcript 和 child-run history 仍然是正式底层契约；projection helper 只是把常见问法收敛成稳定、可复用的上层读接口。
+
 ### 2.3 宿主入口：`BoundHostRuntime`
 
 当你要接入的不只是模型调用，而是一个真正的交互宿主时，应从 `weavert.bind_host(host)` 进入。

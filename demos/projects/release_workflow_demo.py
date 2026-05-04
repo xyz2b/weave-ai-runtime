@@ -13,6 +13,7 @@ from demos._shared.common import (
 from demos._shared.scripted_model import ScriptedModelClient, text_batch, tool_call_batch
 
 from weavert import AgentDefinition
+from weavert.result_projections import final_assistant_text, latest_skill_outcome
 from weavert.runtime_kernel import BuiltinPackConfig, RuntimeConfig, RuntimeDistribution, assemble_runtime
 from weavert.runtime_package_protocols import (
     CapabilityBinding,
@@ -200,9 +201,12 @@ def main() -> None:
         )
 
         readiness = extract_tool_result(messages, "call-collect-release-readiness")
-        summary_result = extract_tool_result(messages, "call-release-summary")
+        summary_projection = latest_skill_outcome(messages, skill_name="release-summary")
+        assert summary_projection is not None
+        summary_result = dict(summary_projection.payload)
         freeze_capability = runtime.services.require_capability("demo.release.freeze")
         release_summary = summary_result["agent_result"]["summary"]
+        final_verdict = final_assistant_text(messages)
 
         assert readiness == EXPECTED_READINESS
         assert freeze_capability == {"active": True, "blocking": False, "owner": PACKAGE_NAME}
@@ -210,7 +214,7 @@ def main() -> None:
         assert summary_result["mode"] == "fork"
         assert summary_result["agent_result"]["agent"] == "skill-writer"
         assert release_summary == EXPECTED_RELEASE_SUMMARY
-        assert messages[-1].text == "release verdict: approve"
+        assert final_verdict == "release verdict: approve"
         assert [request.agent.name for request in client.requests if request.agent is not None] == [
             "release-reviewer",
             "release-reviewer",
@@ -224,7 +228,7 @@ def main() -> None:
         print(f"qa status: {readiness['qa_status']}")
         print(f"freeze status: {'active' if freeze_capability['active'] else 'inactive'}")
         print(f"release summary: {release_summary}")
-        print(messages[-1].text)
+        print(final_verdict)
         print("status: ok")
 
 

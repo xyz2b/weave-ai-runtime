@@ -15,6 +15,7 @@ from weavert.agent_execution import AgentRunRecord
 from weavert.child_result_projection import project_child_run_record
 from weavert.contracts import MessageRole, RuntimeMessage, ToolResultBlock
 from weavert.definitions import DefinitionSource
+from weavert.result_projections import child_summary, final_assistant_text, latest_skill_outcome
 from weavert.runtime_kernel import (
     BuiltinPackConfig,
     DefinitionSourcePaths,
@@ -1522,10 +1523,7 @@ def _final_status(terminal_metadata: dict[str, Any], terminal_stop_reason: str |
 
 
 def _last_assistant_text(messages: list[RuntimeMessage]) -> str:
-    for message in reversed(messages):
-        if message.role == MessageRole.ASSISTANT and message.text:
-            return message.text
-    return ""
+    return final_assistant_text(messages)
 
 
 def _terminal_error_message(terminal_metadata: dict[str, Any]) -> str | None:
@@ -1703,9 +1701,8 @@ def _child_run_records_for_parent_turn(
 
 
 def _latest_child_run_status(records: tuple[AgentRunRecord, ...] | list[AgentRunRecord]) -> str | None:
-    if not records:
-        return None
-    return records[-1].status.value
+    projection = child_summary(records)
+    return projection.status if projection is not None else None
 
 
 def _planning_outcome(
@@ -1877,13 +1874,10 @@ def _has_successful_verification_shell(
 
 
 def _find_skill_result(messages: list[RuntimeMessage], *, skill_name: str) -> dict[str, Any] | None:
-    for message in messages:
-        for block in message.content:
-            if not isinstance(block, ToolResultBlock) or not isinstance(block.content, dict):
-                continue
-            if str(block.content.get("skill") or "").strip() == skill_name:
-                return block.content
-    return None
+    projection = latest_skill_outcome(messages, skill_name=skill_name)
+    if projection is None:
+        return None
+    return dict(projection.payload)
 
 
 def _workflow_error_message(workflow_gaps: tuple[str, ...]) -> str | None:
