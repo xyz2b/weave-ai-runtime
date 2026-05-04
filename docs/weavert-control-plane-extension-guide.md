@@ -258,7 +258,7 @@ class ArchiveExecutor:
         return None
 
 
-config = RuntimeConfig.for_project(project_root)
+config = RuntimeConfig.for_ordinary_workflow(project_root)
 config.job_executors["archive"] = JobExecutorBinding(executor=ArchiveExecutor())
 weavert = assemble_runtime(config)
 ```

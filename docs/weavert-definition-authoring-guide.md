@@ -65,7 +65,7 @@ your-project/
 
 如果你使用：
 
-- `RuntimeConfig.for_project(project_root)`
+- `RuntimeConfig.for_ordinary_workflow(project_root)`
 
 那么 Runtime 默认会接入：
 

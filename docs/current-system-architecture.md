@@ -131,7 +131,8 @@
 helper 语义也已经固定：
 
 - `run_prompt()` 和 `stream_prompt()` 保证 helper-owned session close
-- `run_prompt_report()` 同样是 helper-owned one-shot surface；`run_prompt_report_in_session()` 只包装当前 turn，不接管 caller-owned session close
+- `run_prompt_report()` 和 `stream_prompt_report()` 都是 helper-owned report surface；helper 负责 canonical report completion，以及 helper-owned session close
+- `run_prompt_report_in_session()` 和 `stream_prompt_report_in_session()` 只包装当前 turn，不接管 caller-owned session close
 - outer host shutdown 仍由 `BoundHostRuntime` 负责，不是 helper 的隐式职责
 
 ## 4. 分层架构视图

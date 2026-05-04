@@ -91,7 +91,7 @@ from pathlib import Path
 
 from weavert.runtime_kernel import RuntimeConfig
 
-config = RuntimeConfig.for_project(Path("/your/project"))
+config = RuntimeConfig.for_ordinary_workflow(Path("/your/project"))
 ```
 
 runtime 会自动接入：
@@ -556,7 +556,7 @@ owner、dependency edge 和 retirement 都应走专门的 task lifecycle / orche
 
 用户视角怎么扩：
 
-1. 只是本地使用时，用 `RuntimeConfig.for_project()`。
+1. 只是本地使用时，优先用 `RuntimeConfig.for_ordinary_workflow()`。
 2. 需要多模型、多宿主、多能力源时，手工构造 `RuntimeConfig(...)`。
 3. 需要平台级默认 hook 时，直接写 `config.hooks`。
 
@@ -575,7 +575,7 @@ owner、dependency edge 和 retirement 都应走专门的 task lifecycle / orche
 其中 `delegation` 是 child execution 的正式策略入口：
 
 ```python
-config = RuntimeConfig.for_project(Path("/your/project"))
+config = RuntimeConfig.for_ordinary_workflow(Path("/your/project"))
 config.metadata.setdefault(
     "delegation",
     {
@@ -1135,7 +1135,7 @@ from pathlib import Path
 
 from weavert.runtime_kernel import RuntimeConfig, assemble_runtime
 
-config = RuntimeConfig.for_project(Path("/your/project"))
+config = RuntimeConfig.for_ordinary_workflow(Path("/your/project"))
 config.model_client = my_model_client
 
 weavert = assemble_runtime(config)
@@ -1287,8 +1287,7 @@ class MyHost:
     async def emit_turn_event(self, session_id, event) -> None:
         print(f"[event] {session_id} {event.event_type.value}")
 
-
-config = RuntimeConfig.for_project(Path("/your/project"))
+config = RuntimeConfig.for_host_bound(Path("/your/project"))
 config.model_client = my_model_client
 
 weavert = assemble_runtime(config)
@@ -1320,7 +1319,7 @@ from weavert.session_runtime import FileTranscriptStore
 
 project_root = Path("/your/project")
 
-config = RuntimeConfig.for_project(project_root)
+config = RuntimeConfig.for_ordinary_workflow(project_root)
 config.model_client = my_model_client
 config.transcript_store = FileTranscriptStore(
     project_root / ".weavert" / "transcripts"
@@ -1419,7 +1418,7 @@ class InMemoryMemoryProvider:
 
 project_root = Path("/your/project")
 
-config = RuntimeConfig.for_project(project_root)
+config = RuntimeConfig.for_ordinary_workflow(project_root)
 config.model_client = my_model_client
 
 weavert = assemble_runtime(config)
