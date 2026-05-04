@@ -237,6 +237,182 @@ class WorkflowRunReport:
         return self.turn_id or self.session_id
 
 
+@dataclass(slots=True)
+class _WorkflowRunCollectorState:
+    messages: list[RuntimeMessage] = field(default_factory=list)
+    terminal: TurnTerminal | None = None
+    turn_id: str | None = None
+    final_status: str = "completed"
+    workflow_observability: WorkflowRunObservability | None = None
+
+
+class WorkflowRunReportStream:
+    def __init__(
+        self,
+        *,
+        runtime: "RuntimeAssembly",
+        session: SessionController,
+        prompt: str,
+        metadata: dict[str, object] | None = None,
+        session_owner: Literal["helper", "caller"],
+        wait_for_finalization: bool = False,
+    ) -> None:
+        self._runtime = runtime
+        self._session = session
+        self._prompt = prompt
+        self._metadata = dict(metadata) if metadata is not None else None
+        self._session_owner = session_owner
+        self._wait_for_finalization = wait_for_finalization
+        self._collector = _WorkflowRunCollectorState()
+        self._lock = asyncio.Lock()
+        self._events: AsyncIterator[TurnStreamEvent] | None = None
+        self._finalization_cursor: _WorkflowRunFinalizationCursor | None = None
+        self._report: WorkflowRunReport | None = None
+        self._failure: Exception | None = None
+        self._started = False
+        self._stream_advanced = False
+        self._interrupt_requested = False
+        self._explicit_close_requested = False
+        self._iteration_finished = False
+
+    def __aiter__(self) -> "WorkflowRunReportStream":
+        return self
+
+    async def __anext__(self) -> TurnStreamEvent:
+        async with self._lock:
+            if self._failure is not None:
+                raise self._failure
+            await self._ensure_started_locked()
+            if self._iteration_finished:
+                raise StopAsyncIteration
+            try:
+                return await self._advance_locked()
+            except StopAsyncIteration:
+                await self._finish_locked()
+                raise
+            except Exception as exc:
+                await self._record_failure_locked(exc)
+                raise
+
+    async def report(self) -> WorkflowRunReport:
+        async with self._lock:
+            if self._report is not None:
+                return self._report
+            if self._failure is not None:
+                raise self._failure
+            await self._ensure_started_locked()
+            await self._drain_locked(interrupt=False)
+            assert self._report is not None  # pragma: no cover - set by _drain_locked()
+            return self._report
+
+    async def aclose(self) -> None:
+        async with self._lock:
+            if self._report is not None:
+                return
+            if self._failure is not None:
+                raise self._failure
+            await self._ensure_started_locked()
+            await self._drain_locked(interrupt=True)
+
+    async def __aenter__(self) -> "WorkflowRunReportStream":
+        return self
+
+    async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+        _ = exc_type, tb
+        try:
+            await self.aclose()
+        except Exception:
+            if exc is None:
+                raise
+
+    async def _ensure_started_locked(self) -> None:
+        if self._started:
+            return
+        try:
+            await self._runtime.wait_until_ready()
+            self._finalization_cursor = _workflow_run_finalization_cursor(self._session)
+            await self._runtime._prepare_one_shot_session(
+                self._session,
+                self._prompt,
+                metadata=self._metadata,
+            )
+            self._events = self._session.stream_until_idle().__aiter__()
+            self._started = True
+        except Exception as exc:
+            await self._record_failure_locked(exc)
+            raise
+
+    async def _advance_locked(self) -> TurnStreamEvent:
+        if self._events is None:  # pragma: no cover - guarded by _ensure_started_locked()
+            raise StopAsyncIteration
+        event = await anext(self._events)
+        self._stream_advanced = True
+        _workflow_run_collect_event(self._collector, self._session, event)
+        return event
+
+    async def _drain_locked(self, *, interrupt: bool) -> None:
+        if interrupt:
+            self._explicit_close_requested = True
+            if (
+                self._stream_advanced
+                and self._collector.terminal is None
+                and not self._interrupt_requested
+            ):
+                self._session.interrupt("stream_close")
+                self._interrupt_requested = True
+        while not self._iteration_finished:
+            try:
+                event = await self._advance_locked()
+            except StopAsyncIteration:
+                await self._finish_locked()
+                return
+            except Exception as exc:
+                await self._record_failure_locked(exc)
+                raise
+            if (
+                interrupt
+                and not self._interrupt_requested
+                and event.event_type != TurnStreamEventType.TERMINAL
+            ):
+                self._session.interrupt("stream_close")
+                self._interrupt_requested = True
+
+    async def _finish_locked(self) -> None:
+        if self._report is not None:
+            self._iteration_finished = True
+            return
+        self._iteration_finished = True
+        assert self._finalization_cursor is not None  # pragma: no cover - set on start
+        self._report = await _workflow_run_complete_report(
+            self._session,
+            self._collector,
+            session_owner=self._session_owner,
+            wait_for_finalization=self._wait_for_finalization,
+            include_consolidation=self._session_owner == "helper",
+            finalization_cursor=self._finalization_cursor,
+        )
+        if self._explicit_close_requested and self._session_owner == "caller":
+            _workflow_run_reset_caller_owned_session(self._session)
+
+    async def _record_failure_locked(self, exc: Exception) -> None:
+        if self._failure is not None:
+            return
+        self._failure = exc
+        self._iteration_finished = True
+        self._collector.final_status = _helper_session_close_status(
+            self._session,
+            terminal=self._collector.terminal,
+            default="failed",
+        )
+        if self._session_owner == "helper":
+            try:
+                await self._session.close(final_status=self._collector.final_status)
+            except Exception:
+                pass
+        elif self._explicit_close_requested:
+            _workflow_run_reset_caller_owned_session(self._session)
+
+
 @dataclass(frozen=True, slots=True)
 class _WorkflowRunFinalizationCursor:
     extraction_count: int = 0
@@ -1226,6 +1402,49 @@ class RuntimeAssembly:
             close_callback=close_callback,
         )
 
+    def stream_prompt_report(
+        self,
+        prompt: str,
+        *,
+        session_id: str | None = None,
+        agent_name: str | None = None,
+        cwd: str | Path | None = None,
+        system_prompt: str | None = None,
+        metadata: dict[str, object] | None = None,
+        wait_for_finalization: bool = False,
+    ) -> WorkflowRunReportStream:
+        session = self.create_session(
+            session_id=session_id,
+            agent_name=agent_name,
+            cwd=cwd,
+            system_prompt=system_prompt,
+        )
+        return WorkflowRunReportStream(
+            runtime=self,
+            session=session,
+            prompt=prompt,
+            metadata=metadata,
+            session_owner="helper",
+            wait_for_finalization=wait_for_finalization,
+        )
+
+    def stream_prompt_report_in_session(
+        self,
+        session: SessionController,
+        prompt: str,
+        *,
+        metadata: dict[str, object] | None = None,
+        wait_for_finalization: bool = False,
+    ) -> WorkflowRunReportStream:
+        return WorkflowRunReportStream(
+            runtime=self,
+            session=session,
+            prompt=prompt,
+            metadata=metadata,
+            session_owner="caller",
+            wait_for_finalization=wait_for_finalization,
+        )
+
     async def run_prompt_report(
         self,
         prompt: str,
@@ -1237,37 +1456,15 @@ class RuntimeAssembly:
         metadata: dict[str, object] | None = None,
         wait_for_finalization: bool = False,
     ) -> WorkflowRunReport:
-        await self.wait_until_ready()
-        session = self.create_session(
+        return await self.stream_prompt_report(
+            prompt,
             session_id=session_id,
             agent_name=agent_name,
             cwd=cwd,
             system_prompt=system_prompt,
-        )
-        finalization_cursor = _workflow_run_finalization_cursor(session)
-        report: WorkflowRunReport | None = None
-        final_status = "completed"
-        try:
-            report = await self._run_prompt_report_in_session(
-                session,
-                prompt,
-                metadata=metadata,
-                session_owner="helper",
-            )
-            final_status = report.final_status
-        except Exception:
-            final_status = _helper_session_close_status(session, default="failed")
-            raise
-        finally:
-            await session.close(final_status=final_status)
-        assert report is not None  # pragma: no cover - report only stays unset on raised execution paths
-        finalization = await _workflow_run_finalization_report(
-            session,
-            requested=wait_for_finalization,
-            include_consolidation=True,
-            cursor=finalization_cursor,
-        )
-        return replace(report, finalization=finalization)
+            metadata=metadata,
+            wait_for_finalization=wait_for_finalization,
+        ).report()
 
     async def run_prompt_report_in_session(
         self,
@@ -1277,21 +1474,12 @@ class RuntimeAssembly:
         metadata: dict[str, object] | None = None,
         wait_for_finalization: bool = False,
     ) -> WorkflowRunReport:
-        await self.wait_until_ready()
-        finalization_cursor = _workflow_run_finalization_cursor(session)
-        report = await self._run_prompt_report_in_session(
+        return await self.stream_prompt_report_in_session(
             session,
             prompt,
             metadata=metadata,
-            session_owner="caller",
-        )
-        finalization = await _workflow_run_finalization_report(
-            session,
-            requested=wait_for_finalization,
-            include_consolidation=False,
-            cursor=finalization_cursor,
-        )
-        return replace(report, finalization=finalization)
+            wait_for_finalization=wait_for_finalization,
+        ).report()
 
     async def run_prompt(
         self,
@@ -1323,31 +1511,17 @@ class RuntimeAssembly:
         system_prompt: str | None = None,
         metadata: dict[str, object] | None = None,
     ) -> AsyncIterator[TurnStreamEvent]:
-        await self.wait_until_ready()
-        session = self.create_session(
+        stream = self.stream_prompt_report(
+            prompt,
             session_id=session_id,
             agent_name=agent_name,
             cwd=cwd,
             system_prompt=system_prompt,
+            metadata=metadata,
         )
-        final_status = "completed"
-        try:
-            await self._prepare_one_shot_session(session, prompt, metadata=metadata)
-            async for event in session.stream_until_idle():
-                if event.event_type == TurnStreamEventType.TERMINAL and event.terminal is not None:
-                    final_status = _helper_session_close_status(
-                        session,
-                        terminal=event.terminal,
-                        default=final_status,
-                    )
+        async with stream as report_stream:
+            async for event in report_stream:
                 yield event
-        except Exception:
-            final_status = _helper_session_close_status(session, default="failed")
-            raise
-        finally:
-            await session.close(
-                final_status=_helper_session_close_status(session, default=final_status)
-            )
 
     async def _run_prompt_in_session(
         self,
@@ -1372,45 +1546,14 @@ class RuntimeAssembly:
         metadata: dict[str, object] | None = None,
         session_owner: Literal["helper", "caller"],
     ) -> WorkflowRunReport:
-        await self._prepare_one_shot_session(session, prompt, metadata=metadata)
-        produced: list[RuntimeMessage] = []
-        terminal: TurnTerminal | None = None
-        report_turn_id: str | None = None
-        workflow_observability: WorkflowRunObservability | None = None
-        async for event in session.stream_until_idle():
-            if report_turn_id is None:
-                request = getattr(event, "request", None)
-                turn_context = getattr(request, "turn_context", None)
-                report_turn_id = (
-                    getattr(turn_context, "turn_id", None)
-                    or getattr(getattr(event, "workflow_observation", None), "turn_id", None)
-                    or session.state.active_turn_id
-                )
-            observation = getattr(event, "workflow_observation", None)
-            if (
-                observation is not None
-                and observation.workflow.run_kind == WorkflowRunKind.ROOT
-            ):
-                workflow_observability = observation.workflow
-            if event.event_type == TurnStreamEventType.MESSAGE and event.message is not None:
-                produced.append(event.message)
-            elif event.event_type == TurnStreamEventType.TERMINAL and event.terminal is not None:
-                terminal = event.terminal
-        return WorkflowRunReport(
-            session_id=session.state.session_id,
-            agent_name=session.state.current_agent,
-            cwd=session.cwd,
-            turn_id=report_turn_id,
-            messages=tuple(produced),
-            terminal=terminal,
-            final_status=_helper_session_close_status(
-                session,
-                terminal=terminal,
-                default="completed",
-            ),
+        stream = WorkflowRunReportStream(
+            runtime=self,
+            session=session,
+            prompt=prompt,
+            metadata=metadata,
             session_owner=session_owner,
-            workflow_observability=workflow_observability,
         )
+        return await stream.report()
 
     async def _prepare_one_shot_session(
         self,
@@ -4712,6 +4855,88 @@ def _helper_session_close_status(
     if session.state.status == SessionStatus.STOPPED:
         return "stopped"
     return default
+
+
+def _workflow_run_collect_event(
+    state: _WorkflowRunCollectorState,
+    session: SessionController,
+    event: TurnStreamEvent,
+) -> None:
+    if state.turn_id is None:
+        request = getattr(event, "request", None)
+        turn_context = getattr(request, "turn_context", None)
+        state.turn_id = (
+            getattr(turn_context, "turn_id", None)
+            or getattr(getattr(event, "workflow_observation", None), "turn_id", None)
+            or session.state.active_turn_id
+        )
+    observation = getattr(event, "workflow_observation", None)
+    if observation is not None and observation.workflow.run_kind == WorkflowRunKind.ROOT:
+        state.workflow_observability = observation.workflow
+    if event.event_type == TurnStreamEventType.MESSAGE and event.message is not None:
+        state.messages.append(event.message)
+    elif event.event_type == TurnStreamEventType.TERMINAL and event.terminal is not None:
+        state.terminal = event.terminal
+        state.final_status = _helper_session_close_status(
+            session,
+            terminal=event.terminal,
+            default=state.final_status,
+        )
+
+
+def _workflow_run_report_from_collector(
+    session: SessionController,
+    state: _WorkflowRunCollectorState,
+    *,
+    session_owner: Literal["helper", "caller"],
+    finalization: WorkflowRunFinalizationReport | None = None,
+) -> WorkflowRunReport:
+    return WorkflowRunReport(
+        session_id=session.state.session_id,
+        agent_name=session.state.current_agent,
+        cwd=session.cwd,
+        turn_id=state.turn_id,
+        messages=tuple(state.messages),
+        terminal=state.terminal,
+        final_status=_helper_session_close_status(
+            session,
+            terminal=state.terminal,
+            default=state.final_status,
+        ),
+        session_owner=session_owner,
+        finalization=finalization or WorkflowRunFinalizationReport(),
+        workflow_observability=state.workflow_observability,
+    )
+
+
+async def _workflow_run_complete_report(
+    session: SessionController,
+    state: _WorkflowRunCollectorState,
+    *,
+    session_owner: Literal["helper", "caller"],
+    wait_for_finalization: bool,
+    include_consolidation: bool,
+    finalization_cursor: _WorkflowRunFinalizationCursor,
+) -> WorkflowRunReport:
+    report = _workflow_run_report_from_collector(
+        session,
+        state,
+        session_owner=session_owner,
+    )
+    if session_owner == "helper":
+        await session.close(final_status=report.final_status)
+    finalization = await _workflow_run_finalization_report(
+        session,
+        requested=wait_for_finalization,
+        include_consolidation=include_consolidation,
+        cursor=finalization_cursor,
+    )
+    return replace(report, finalization=finalization)
+
+
+def _workflow_run_reset_caller_owned_session(session: SessionController) -> None:
+    session.state.active_turn_id = None
+    session.state.status = SessionStatus.READY
 
 
 async def _workflow_run_finalization_report(

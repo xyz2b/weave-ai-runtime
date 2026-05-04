@@ -14,6 +14,9 @@
 
 换句话说，本文只看 **runtime 是否已经把底层通用能力做好**，从而让用户把精力更多放在自己的业务能力定义上。
 
+> 2026-05-04 复核更新：
+> 本文最初用于记录 runtime 易用性缺口与演进 roadmap。当前仓库已经完成当时列出的相关 change，因此本文下面的第 3-7 节改为“复核结论”：哪些缺口已经补齐，哪些只剩下小范围收尾，而不再把这些项继续表述为当前未实现能力。
+
 ## 1. 范围边界
 
 ### 1.1 什么算 runtime 层能力
@@ -50,7 +53,7 @@
 | Hook demos | `demos.hooks.session_register_hook_demo`、`demos.hooks.runtime_config_hook_demo`、`demos.skills.inline_skill_hook_demo` | public hook registration、skill hooks、runtime-default hooks | 成立 |
 | Package demos | `demos.packages.provider_only_package_demo`、`demos.packages.general_package_demo`、`demos.packages.package_activation_demo` | manifest admission、requested activation、capability binding、context contributor、invocation provider | 成立 |
 | Project demos | `demos.projects.release_workflow_demo`、`demos.projects.coding_workflow_demo` | 多个 public seams 的组合能力；ordinary extension path 是否足以完成真实 workflow | 成立 |
-| Workflow-level live smoke | `demos.projects.coding_workflow_demo --live` | 同一 workflow 是否能在不引入 host/builtin replacement 的前提下切到真实 provider | 设计与 contract 已成立 |
+| Workflow-level live smoke | `demos.projects.coding_workflow_demo --live` | 同一 workflow 是否能在不引入 host/builtin replacement 的前提下切到真实 provider，并在执行前做正式 preflight | 已成立 |
 | Advanced integration sample | `demos.apps.code_assistant` | host binding、durable state、approvals、builtin replacement、task/job integration | 成立，但属于 advanced path |
 
 ## 2.2 已经被证明成立的 runtime 能力
@@ -131,193 +134,187 @@ package demo 证明了下面这些都不是概念：
 
 这非常符合通用 AI runtime 的定位：host 是正式扩展边界，但不强迫所有用户都先做 host integration。
 
-## 3. 从 runtime 层面看，当前不易用的点
+## 3. 原始不易用点复核
 
-下面这些点，才是更值得算作 **runtime 层易用性问题** 的地方。
+下面逐条复核本文最初列出的 runtime 层不足点。结论不是“当时判断错了”，而是这些缺口现在已经大多被补齐，不应继续当作当前阻塞项。
 
-### 3.1 缺少官方一等 workflow test kit
+### 3.1 官方一等 workflow test kit：已补齐
 
-当前 demo 的 deterministic 验证依赖很多 `demos/_shared/*` 私有 helper，例如：
+原文指出：
 
-- `ScriptedModelClient`
-- temporary workspace helper
-- allow-all permission stub
-- async run / close / background-memory wait helper
+- deterministic workflow validation 依赖 `demos/_shared/*`
+- 用户要自己复制 scripted model、temp workspace、fixture runner
 
-这说明“如何测试一个 runtime workflow”还没有被框架本身产品化成正式能力。
+当前状态：
 
-对用户的影响：
+- runtime 现在已经提供正式的 `weavert.testing` namespace
+- 包含 `ScriptedModelClient`
+- 包含 `copied_fixture_workspace(...)` / `temporary_workspace(...)`
+- 包含 `run_workflow_test(...)`
+- 包含 tool / skill / child-run assertions
+- `WorkflowTestReport` 直接包裹 canonical `WorkflowRunReport`
 
-- 用户虽然能写自己的 tool / agent / skill
-- 但如果想给自己的 workflow 写稳定离线验收测试
-- 仍然要先从 demo 里复制或改造一套测试脚手架
+因此，“如何测试一个 runtime workflow”已经从 demo 私有技巧变成了正式公共能力。  
+`demos/_shared/scripted_model.py` 目前更多只是兼容 re-export，而不是用户必须依赖的主路径。
 
-这不属于业务工作，而是 runtime 侧还缺少正式的测试支撑。
+### 3.2 更高层 session / workflow 生命周期 helper：基本补齐
 
-### 3.2 session / workflow 生命周期 helper 还不够高层
+原文指出：
 
-当前 project demo 里仍有不少通用 glue code 用于处理：
+- headless project demo 仍要自己写 session lifecycle glue
+- 普通用户不应该手工管理 `create_session -> enqueue -> stream -> close`
 
-- create session
-- enqueue prompt
-- stream until idle
-- collect message / terminal
-- close session
-- wait background memory
+当前状态：
 
-这些步骤本身不是用户业务逻辑，而是“如何正确使用 runtime session”的通用样板。
+- runtime 现在提供 `run_prompt_report()`
+- 也提供 `run_prompt_report_in_session()`
+- 现在还提供 `stream_prompt_report()` / `stream_prompt_report_in_session()`
+- `WorkflowRunReport` 已包含 terminal、final status、finalization diagnostics
+- 普通 headless caller 已经不需要再自己做 terminal 收集、helper-owned close 或“边流式边拿 canonical report”的 lifecycle glue
 
-对用户的影响：
+复核结论：
 
-- 普通用户如果想写一个 headless workflow runner
-- 仍然要自己处理不少 session lifecycle 细节
+- 对普通 headless workflow runner 而言，这个缺口现在已经完整补齐
+- 包括 raw stream、one-shot report、helper-owned streaming report、caller-owned streaming report 这几条常见路径
+- 因此它已经不再是 runtime findings 里需要继续保留的 gap
 
-这说明 runtime 还缺少更高层的 workflow/session helper。
+### 3.3 非交互 permission preset：已补齐
 
-### 3.3 headless / non-host 场景下缺少现成的 permission preset
+原文指出：
 
-当前 demo 为了避免引入完整 host，大量直接注入了 allow-all permission service。
+- headless / CI / smoke 场景缺少官方 preset
+- 用户不应反复自写 allow-all stub
 
-这暴露出一个 runtime 层问题：
+当前状态：
 
-- 非交互脚本场景
-- CI / smoke 验证场景
-- headless workflow 场景
+- 已有官方 `AllowAllPermissionService`
+- 已有 `DenyAllPermissionService`
+- 已有 `ReadOnlyPermissionService`
+- 已有 `SelectiveAutoApprovePermissionService`
+- 并且已支持从 preset 升级到 composed policy path
 
-用户常常需要的是几个现成的 permission preset，例如：
+因此，这一项已经从“缺口”变成“正式控制面能力”。
 
-- allow-all
-- deny-all
-- read-only
-- auto-approve selected classes
+### 3.4 typed 结果投影与查询 helper：已补齐
 
-如果这些都要用户自己实现 service stub，门槛就偏高。
+原文指出：
 
-### 3.4 缺少更高层的运行结果投影与查询 helper
+- `coding_workflow_demo` 需要手扫 transcript / block
+- workflow 验收逻辑不应反复重写 message scanning
 
-`coding_workflow_demo` 为了判断 workflow 是否成功，需要自己从 message/tool result 中提取：
+当前状态：
 
-- 最后一次 verification 结果
-- `review-change` skill 结果
-- final assistant summary
-- terminal error
+- 已有 `latest_tool_outcome(...)`
+- 已有 `latest_skill_outcome(...)`
+- 已有 `final_assistant_text(...)`
+- 已有 `terminal_failure(...)`
+- 已有 `child_summary(...)`
+- 这些 helper 同时支持 raw messages 和 `WorkflowRunReport`
 
-这说明 runtime 虽然已经有完整底层 contract，但缺少更高层的结果查询 helper。
+因此，这一项已经补齐，而且已经进入用户指南和集成指南，不再只是内部工具。
 
-对用户的影响：
+### 3.5 hook 轻量 authoring helper：已补齐
 
-- 用户如果想写 workflow 验收逻辑
-- 很容易陷入手工扫描 `RuntimeMessage` / block 结构
+原文指出：
 
-这不是业务逻辑，而是 runtime 还没把常见“结果投影”做成更好用的公共能力。
+- 简单 hook 场景 ceremony 仍重
+- 缺少 matcher shortcut 和常见 effect helper
 
-### 3.5 hook authoring 对简单场景仍然偏重
+当前状态：
 
-现在的 hook registration model 很完整，但简单场景下 ceremony 还是比较多：
+- 已有 callback-oriented hook helper
+- 已有 `match_tool(...)` / `match_tool_pattern(...)`
+- 已有 `rewrite_input(...)` / `block_execution(...)` / `respond_to_elicitation(...)`
+- helper 生成的 request 仍走同一套 validation path，而不是 helper-only bypass
 
-- request
-- scope
-- handler manifest
-- contract
+因此，这一项已经从“底层协议存在但写起来偏重”改进为“简单场景已有官方轻量入口”。
 
-这套对平台化扩展是合理的，但对“只是想拦一下某个 tool 输入”的用户来说偏重。
+### 3.6 package 轻量 builder / helper：已补齐
 
-问题不在于底层能力不够，而在于：
+原文指出：
 
-- 简单 use case 缺少更轻的 authoring helper
-- 常见 matcher / effect 组合还没有足够顺手的封装
+- package protocol 成立，但普通 authoring ceremony 偏重
+- capability-only / context-only / provider-only pattern 应有轻量 builder
 
-### 3.6 package 扩展协议成立，但 authoring ceremony 偏重
+当前状态：
 
-package 这套能力已经成立，但 authoring 成本比 `tool / agent / skill` 明显高很多。
+- 已有 `build_capability_only_package_manifest()`
+- 已有 `build_context_contributor_only_package_manifest()`
+- 已有 `build_provider_only_invocation_package_manifest()`
+- 输出仍然是 ordinary manifest-backed package，不是第二套协议
 
-对平台型用户来说这很正常；但对只想做“少量 runtime-level capability/context 注入”的用户，当前门槛仍然偏高。
+因此，这一项也已经补齐。
 
-真正的问题不是 package 功能缺失，而是：
+### 3.7 assembly ergonomics：已补齐主干
 
-- 常见模式的 authoring helper 还不够多
-- package-level extension 对普通用户而言仍然偏“协议层”，不够“模板化”
+原文指出：
 
-### 3.7 runtime assembly 的心智成本仍然偏高
+- 用户需要同时理解 distribution、builtins、discovery、route、package activation
+- 缺少更清晰的普通用户默认起点
 
-从 demo 看，用户要理解并组合：
+当前状态：
 
-- `RuntimeDistribution`
-- `BuiltinPackConfig`
-- discovery sources
-- model client vs bundled live route
-- package admission vs activation
+- 已有 `RuntimeConfig.for_ordinary_workflow(...)`
+- 已有 `RuntimeConfig.for_headless_live(...)`
+- 已有 `RuntimeConfig.for_host_bound(...)`
+- preset provenance 会发布到 runtime metadata
+- 另外还补了官方 starter scaffold generation path，进一步降低 adoption 成本
 
-这说明 runtime 的装配能力很强，但装配 ergonomics 还不够轻。
+因此，assembly 这条主干已经不再是“没有推荐入口”，而是“已有推荐入口，剩下是文档和示例持续收敛”。
 
-对用户的影响：
+### 3.8 live/provider preflight：已补齐
 
-- 普通用户需要花不少精力区分“什么时候用默认 distribution”
-- “什么时候需要改 builtins”
-- “什么时候只需要写 definitions”
+原文指出：
 
-这类心智负担属于 runtime 使用门槛，不是业务层问题。
+- live path 最好在 full run 前暴露 env / auth / route 问题
+- preflight 应当是一等 runtime 能力
 
-### 3.8 live/provider 侧 preflight 还不够一等
+当前状态：
 
-现在 workflow-level live smoke 已经有清晰的 credential failure contract，这是好的。
+- 已有 `preflight_model_route(...)`
+- 已有 `preflight_default_model_route()`
+- 会返回结构化 readiness report
+- starter scaffold 和 live smoke docs 已经把 preflight 作为主路径
 
-但从用户体验看，runtime 仍然更适合提供更正式的 preflight 能力，例如：
+因此，这个缺口已经补齐。
 
-- route readiness check
-- required env check
-- provider capability summary
-- clear structured failure before a full run starts
+## 4. 从 runtime 层面看，当前仍值得跟踪的点
 
-这样用户切到 live path 时，不用依赖完整 workflow 执行后再理解失败原因。
+经过这轮实现后，原文列出的“缺失能力”已经大多不再成立。现在剩下更适合放在“收尾/持续优化”层面的只有少数点。
 
-## 4. 从 runtime 层面看，当前更像“缺失能力”的点
+### 4.1 report-oriented streaming companion：已补齐
 
-如果把上面的“不易用点”再往前推一步，可以抽象成几类更明确的 runtime 缺失能力。
+当前已有：
 
-### 4.1 官方 workflow test kit
+- `stream_prompt()`：原始流式 surface
+- `run_prompt_report()`：report-oriented one-shot surface
+- `run_prompt_report_in_session()`：caller-owned session 的 report helper
+- `stream_prompt_report()`：helper-owned streaming + canonical report helper
+- `stream_prompt_report_in_session()`：caller-owned streaming + canonical report helper
 
-建议 runtime 层提供正式公共能力，例如：
+这意味着“边流式消费边保留 canonical run report/finalization 语义”的缺口已经关闭。  
+后续如果还要继续打磨，更像是文档和 adoption path 收敛，而不是补一条新的 runtime public surface。
 
-- scripted / fake model route
-- workflow fixture runner
-- temp workspace helper
-- standardized run report
-- assertion helpers for tool / skill / child-run outcomes
+### 4.2 仓库内部 demo/private wrapper 仍有清理空间
 
-### 4.2 更高层的 headless workflow runner
+仓库里仍保留少量 `demos/_shared/*` 包装层，例如：
 
-建议 runtime 层提供比“手工 create_session + stream + close”更高层的 helper，例如：
+- `run_async(...)`
+- `demo_workspace(...)`
+- 部分 demo 的兼容导出
 
-- run-workflow helper
-- prompt + stream + finalize helper
-- session report helper
+这更像仓库内部清理问题，而不是 runtime 用户侧能力缺失。  
+从用户视角看，公开替代 surface 已经存在，后续可以继续减少 demo-private compatibility wrapper 的存在感。
 
-### 4.3 内置 permission presets
+### 4.3 本文档本身不应再继续扮演“当前缺口 backlog”
 
-建议 runtime 层提供正式的非交互 preset，而不是让用户反复写自己的 stub service。
+因为 roadmap 中列出的大项已经基本完成，继续把本文第 3-7 节保留成“待实现清单”会误导读者。  
+后续如果出现新的 runtime gap，更合适的做法是：
 
-### 4.4 typed result projection / query helper
+- 新开一份 fresh findings / review 文档
+- 或直接在新的 change proposal 里记录
 
-建议 runtime 层补强这类能力：
-
-- latest tool result lookup
-- skill outcome lookup
-- child run summary lookup
-- terminal failure projection
-- run report query helper
-
-### 4.5 hook/package 的轻量 authoring helper
-
-建议保留当前底层协议，但为常见模式补一层轻量 helper，降低用户 authoring ceremony。
-
-### 4.6 更明确的 assembly preset / preflight
-
-建议 runtime 层提供更清楚的：
-
-- common assembly presets
-- provider readiness / env preflight
-- ordinary-user recommended defaults
+而不是继续沿用本文的旧 backlog 语义。
 
 ## 5. 哪些点不应继续往 runtime 里放
 
@@ -340,238 +337,35 @@ runtime 更应该承担的是：
 
 ## 6. 综合判断
 
-基于当前 demo，可以得出下面这个更聚焦的 runtime 层结论：
+基于当前 demo、用户文档、公开 surface 和定向回归测试，可以得出更准确的 runtime 层结论：
 
-- **已成立**：WeaveRT 已经证明，用户可以主要通过自己的 `tool / agent / skill` 定义，把精力从底层 runtime 主循环实现中解放出来。
-- **仍偏重**：用户一旦要做 workflow 验证、headless 控制、hook/package authoring、结果抽取、live preflight，仍会碰到不少 runtime 侧的 glue code 与 ceremony。
-- **最值得优先补的不是业务能力，而是 runtime 基础设施易用性**：测试 kit、lifecycle helper、permission preset、结果查询 helper、轻量 authoring helper、assembly/preflight。
+- **已成立**：WeaveRT 不仅证明了 tool / agent / skill / hook / package / host 这些 seam 能跑通，还已经把 workflow testing、headless lifecycle helper、permission preset、result projection、assembly preset、preflight、starter scaffold、workflow observability 这些基础设施易用性缺口补成了正式公共能力。
+- **不再成立的旧判断**：本文最初把 test kit、lifecycle helper、permission preset、result query helper、hook/package helper、assembly preset、preflight 视为当前缺失项；以 2026-05-04 的仓库状态看，这些判断已不再适合作为“当前缺口”保留。
+- **当前更合理的判断**：WeaveRT 在 runtime 层最主要的工作已经从“补基本缺口”转向“持续收敛 adoption path、减少仓库内部兼容包装、按实际需求补局部增强”。
 
-## 7. Runtime 演进 roadmap
+## 7. 已完成的 roadmap 回顾
 
-下面这份 roadmap 只针对 runtime 层通用能力，不包含业务层工作流或产品层交互形态。
+本文原先在 roadmap 里列出的 runtime 基础设施项，现在已经基本都有落地对应物：
 
-优先级判断标准是：
+### 7.1 已完成的基础设施补齐
 
-- 是否能减少用户必须自己写的 runtime glue code
-- 是否是普通框架使用者的高频需求
-- 是否能提升 workflow 验证、装配和 live 切换的体验
-- 是否不会把业务层职责重新塞回 runtime
+- 官方 workflow test kit
+- 高层 headless workflow runner / report helper
+- 非交互 permission presets
+- live provider preflight
+- typed result projection / query helpers
+- hook 轻量 authoring helper
+- package 轻量 builder family
+- runtime assembly presets
+- unified workflow observability model
+- runtime starter scaffolds
+- composable permission policy framework
 
-### 7.1 短期
+### 7.2 下一步更适合关注什么
 
-这些项目最值得优先做，因为它们能最快降低普通用户的使用门槛。
+如果后续还要继续推进 runtime 层工作，更值得关注的是：
 
-#### A. 官方 workflow test kit
+- 是否继续清理仓库里仍保留的 demo-private compatibility wrapper
+- 是否把 adoption 文档、demo、starter scaffold 持续收敛到更少、更稳定的推荐路径
 
-目标：
-
-- 让用户不必再从 `demos/_shared/*` 复制测试脚手架
-
-建议内容：
-
-- scripted / fake model route
-- temp workspace helper
-- standard workflow test runner
-- assertion helpers for tool / skill / child-run outcomes
-
-优先理由：
-
-- 这是当前最明显的 runtime 使用缺口
-- 能直接把“demo 私有能力”变成“框架正式能力”
-
-#### B. 更高层的 headless workflow runner
-
-目标：
-
-- 让用户不必反复手写 `create_session -> enqueue -> stream -> close`
-
-建议内容：
-
-- `run_workflow(...)`
-- `stream_workflow(...)`
-- `run_prompt_with_report(...)`
-
-优先理由：
-
-- 这部分是最常见的 runtime lifecycle glue
-- 做完后，普通用户更容易专注在自己的 tool / agent / skill 上
-
-#### C. 非交互 permission presets
-
-目标：
-
-- 让 headless / CI / smoke 场景不再依赖用户自己写 permission stub
-
-建议内容：
-
-- allow-all preset
-- deny-all preset
-- read-only preset
-- auto-approve selected classes preset
-
-优先理由：
-
-- 这是 runtime 控制面的通用需求
-- 明显属于框架层，而不是业务层
-
-#### D. live provider preflight
-
-目标：
-
-- 让用户在切到 live path 前，更早知道 env / auth / route 是否就绪
-
-建议内容：
-
-- required env check
-- route readiness check
-- structured preflight report
-
-优先理由：
-
-- 用户感知强
-- 实现边界清楚
-- 能直接改善 workflow-level live smoke 体验
-
-### 7.2 中期
-
-这些项目的底层能力已经存在，但 authoring 或使用 ergonomics 仍然偏重。
-
-#### A. typed result projection / query helpers
-
-目标：
-
-- 让用户不必手扫 `RuntimeMessage` / block 结构来提取 workflow 结果
-
-建议内容：
-
-- latest tool result lookup
-- latest skill outcome lookup
-- child run summary lookup
-- terminal failure projection
-- run report query helper
-
-放在中期的原因：
-
-- 很重要，但最好建立在高层 workflow runner 先稳定之后
-
-#### B. hook 轻量 authoring helper
-
-目标：
-
-- 让简单 hook 场景不必写完整 ceremony
-
-建议内容：
-
-- matcher shortcuts
-- common effect helpers
-- callback-oriented helper constructors
-
-放在中期的原因：
-
-- 现有 hook contract 已经完整
-- 当前主要缺的是易用性，而不是功能
-
-#### C. package 轻量 builder / helper
-
-目标：
-
-- 降低 capability-only / context-only / provider-only 这类常见 package pattern 的 authoring 成本
-
-建议内容：
-
-- capability package builder
-- context-contributor package builder
-- provider-only builder 扩展
-
-放在中期的原因：
-
-- package 是偏高级扩展面
-- 先做 helper 比重做协议更划算
-
-#### D. runtime assembly presets
-
-目标：
-
-- 降低用户在 distribution / builtins / route / discovery 上的装配心智负担
-
-建议内容：
-
-- ordinary workflow preset
-- headless live preset
-- host-bound preset
-
-放在中期的原因：
-
-- 需要建立在 workflow runner、permission preset、test kit 等前面能力相对稳定之后
-
-### 7.3 长期
-
-这些项目更偏体系化收敛，适合在前面基础能力打稳后再做。
-
-#### A. 统一的 workflow observability model
-
-目标：
-
-- 统一 headless run、host run、child run、tool run 的状态表达与投影方式
-
-建议内容：
-
-- unified run report
-- unified event projection
-- structured workflow diagnostics
-
-放在长期的原因：
-
-- 会涉及多条现有 query / event / report contract 的收敛
-
-#### B. composable permission policy framework
-
-目标：
-
-- 从简单 preset 进一步演进到可组合、可声明的 permission policy
-
-建议内容：
-
-- scope-based rules
-- tool/risk class policy
-- policy composition
-
-放在长期的原因：
-
-- 比 preset 更强，但也更容易复杂化
-- 应建立在普通 preset 路径先被充分验证之后
-
-#### C. runtime starter scaffold
-
-目标：
-
-- 降低用户起一个“最小 runtime 项目”的 adoption 成本
-
-建议内容：
-
-- minimal project scaffold
-- headless workflow scaffold
-- live smoke scaffold
-
-放在长期的原因：
-
-- 它更像 adoption accelerator
-- 适合等前面的 runtime 基础能力稳定后再固化模板
-
-### 7.4 推荐优先级
-
-如果只选最先做的 5 件事，本文件建议顺序是：
-
-1. workflow test kit
-2. 高层 session/workflow lifecycle helper
-3. headless permission presets
-4. live provider preflight
-5. typed result projection / query helper
-
-这 5 项完成后，普通框架使用者在 runtime 层面会明显更少碰到：
-
-- 测试脚手架重复建设
-- session lifecycle glue code
-- headless permission stub
-- live smoke 前置检查不足
-- 结果提取过于底层
+换句话说，下一阶段更像“收口与打磨”，而不是再去补当时那批显性的基础能力缺口。

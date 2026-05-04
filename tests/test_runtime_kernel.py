@@ -9,6 +9,7 @@ from io import BytesIO
 from pathlib import Path
 from urllib.error import HTTPError
 
+import weavert
 from weavert.builtins import load_builtin_pack
 from weavert.builtins.tools import builtin_tools
 from weavert.devtools.builtins import devtools_builtin_tools
@@ -55,6 +56,7 @@ from weavert.runtime_kernel import (
     ModelRouteBinding,
     RuntimeConfig,
     RuntimeDistribution,
+    WorkflowRunReportStream,
     assemble_host_runtime,
     assemble_runtime,
     build_runtime_kernel,
@@ -108,6 +110,34 @@ class InterruptibleModelClient:
         yield ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "partial"})
         while request.abort_signal is not None and not request.abort_signal.aborted:
             await asyncio.sleep(0.01)
+
+
+class ReusableInterruptibleModelClient:
+    def __init__(self) -> None:
+        self.requests: list[ModelRequest] = []
+        self._call_count = 0
+
+    async def complete(self, request: ModelRequest):  # pragma: no cover - protocol completeness
+        raise NotImplementedError
+
+    async def stream(self, request: ModelRequest):
+        self.requests.append(request)
+        self._call_count += 1
+        if self._call_count == 1:
+            yield ModelStreamEvent(
+                ModelStreamEventType.MESSAGE_START,
+                {"request_id": "req-reusable-interrupt"},
+            )
+            yield ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "partial"})
+            while request.abort_signal is not None and not request.abort_signal.aborted:
+                await asyncio.sleep(0.01)
+            return
+        yield ModelStreamEvent(
+            ModelStreamEventType.MESSAGE_START,
+            {"request_id": "req-reusable-complete"},
+        )
+        yield ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "reused"})
+        yield ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"})
 
 
 class ProbeAwareModelClient:
@@ -2054,6 +2084,503 @@ def test_runtime_run_prompt_report_in_session_scopes_finalization_to_current_tur
     ]
 
     asyncio.run(session.close())
+
+
+def test_runtime_stream_prompt_report_exposes_public_stream_handle_and_report(
+    tmp_path: Path,
+) -> None:
+    model_client = FakeModelClient(
+        [
+            [
+                ModelStreamEvent(
+                    ModelStreamEventType.MESSAGE_START,
+                    {"request_id": "req-stream-report"},
+                ),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "streamed report"}),
+                ModelStreamEvent(
+                    ModelStreamEventType.MESSAGE_STOP,
+                    {"stop_reason": "end_turn"},
+                ),
+            ]
+        ]
+    )
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            model_client=model_client,
+        )
+    )
+
+    async def scenario():
+        stream = runtime.stream_prompt_report(
+            "Hello runtime",
+            session_id="helper-stream-report",
+        )
+        assert isinstance(stream, WorkflowRunReportStream)
+        assert weavert.WorkflowRunReportStream is WorkflowRunReportStream
+        events = [event async for event in stream]
+        report = await stream.report()
+        return events, report
+
+    events, report = asyncio.run(scenario())
+
+    assert any(event.event_type.value == "terminal" for event in events)
+    assert report.session_id == "helper-stream-report"
+    assert report.session_owner == "helper"
+    assert report.final_status == "completed"
+    assert report.messages[-1].text == "streamed report"
+
+
+def test_runtime_stream_prompt_report_report_completes_without_iteration(
+    tmp_path: Path,
+) -> None:
+    model_client = FakeModelClient(
+        [
+            [
+                ModelStreamEvent(
+                    ModelStreamEventType.MESSAGE_START,
+                    {"request_id": "req-stream-report-only"},
+                ),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "report only"}),
+                ModelStreamEvent(
+                    ModelStreamEventType.MESSAGE_STOP,
+                    {"stop_reason": "end_turn"},
+                ),
+            ]
+        ]
+    )
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            model_client=model_client,
+        )
+    )
+
+    async def scenario():
+        stream = runtime.stream_prompt_report(
+            "Hello runtime",
+            session_id="helper-stream-report-only",
+        )
+        report = await stream.report()
+        remaining = [event async for event in stream]
+        return report, remaining
+
+    report, remaining = asyncio.run(scenario())
+
+    assert report.session_id == "helper-stream-report-only"
+    assert report.final_status == "completed"
+    assert report.messages[-1].text == "report only"
+    assert remaining == []
+
+
+def test_runtime_stream_prompt_report_report_is_idempotent(tmp_path: Path) -> None:
+    model_client = FakeModelClient(
+        [
+            [
+                ModelStreamEvent(
+                    ModelStreamEventType.MESSAGE_START,
+                    {"request_id": "req-stream-report-idempotent"},
+                ),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "same report"}),
+                ModelStreamEvent(
+                    ModelStreamEventType.MESSAGE_STOP,
+                    {"stop_reason": "end_turn"},
+                ),
+            ]
+        ]
+    )
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            model_client=model_client,
+        )
+    )
+
+    async def scenario():
+        stream = runtime.stream_prompt_report(
+            "Hello runtime",
+            session_id="helper-stream-report-idempotent",
+        )
+        first = await stream.report()
+        second = await stream.report()
+        return first, second
+
+    first, second = asyncio.run(scenario())
+
+    assert first is second
+    assert first.messages[-1].text == "same report"
+
+
+def test_runtime_stream_prompt_report_helper_owned_aclose_resolves_final_report(
+    tmp_path: Path,
+) -> None:
+    model_client = InterruptibleModelClient()
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            model_client=model_client,
+        )
+    )
+    closed: list[str] = []
+    runtime.services.hook_bus.register(
+        session_id="helper-stream-aclose",
+        owner="test",
+        phase=RuntimeHookPhase.SESSION_END,
+        handler=lambda payload: closed.append(payload.final_status),
+    )
+
+    async def scenario():
+        stream = runtime.stream_prompt_report(
+            "Hello runtime",
+            session_id="helper-stream-aclose",
+        )
+        await anext(stream)
+        await stream.aclose()
+        report = await stream.report()
+        return report
+
+    report = asyncio.run(scenario())
+
+    assert report.session_owner == "helper"
+    assert report.final_status == "interrupted"
+    assert report.terminal is not None
+    assert report.terminal.stop_reason == "interrupted"
+    assert closed == ["interrupted"]
+
+
+def test_runtime_stream_prompt_report_in_session_aclose_keeps_session_reusable(
+    tmp_path: Path,
+) -> None:
+    model_client = ReusableInterruptibleModelClient()
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            model_client=model_client,
+        )
+    )
+    session = runtime.create_session(session_id="caller-stream-reuse")
+
+    async def scenario():
+        stream = runtime.stream_prompt_report_in_session(
+            session,
+            "First turn",
+        )
+        await anext(stream)
+        await stream.aclose()
+        interrupted_report = await stream.report()
+        status_after_close = session.state.status.value
+        follow_up = await runtime.run_prompt_report_in_session(session, "Second turn")
+        status_after_reuse = session.state.status.value
+        await session.close()
+        return interrupted_report, follow_up, status_after_close, status_after_reuse
+
+    interrupted_report, follow_up, status_after_close, status_after_reuse = asyncio.run(
+        scenario()
+    )
+
+    assert interrupted_report.session_owner == "caller"
+    assert interrupted_report.final_status == "interrupted"
+    assert interrupted_report.terminal is not None
+    assert interrupted_report.terminal.stop_reason == "interrupted"
+    assert status_after_close == "ready"
+    assert follow_up.messages[-1].text == "reused"
+    assert follow_up.final_status == "completed"
+    assert status_after_reuse == "ready"
+
+
+def test_runtime_stream_prompt_report_async_context_manager_closes_early_exit(
+    tmp_path: Path,
+) -> None:
+    model_client = InterruptibleModelClient()
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            model_client=model_client,
+        )
+    )
+    closed: list[str] = []
+    runtime.services.hook_bus.register(
+        session_id="helper-stream-context-exit",
+        owner="test",
+        phase=RuntimeHookPhase.SESSION_END,
+        handler=lambda payload: closed.append(payload.final_status),
+    )
+
+    async def scenario():
+        async with runtime.stream_prompt_report(
+            "Hello runtime",
+            session_id="helper-stream-context-exit",
+        ) as stream:
+            async for _event in stream:
+                break
+        return await stream.report()
+
+    report = asyncio.run(scenario())
+
+    assert report.final_status == "interrupted"
+    assert closed == ["interrupted"]
+
+
+def test_runtime_stream_prompt_report_emits_no_additional_events_after_aclose(
+    tmp_path: Path,
+) -> None:
+    model_client = InterruptibleModelClient()
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            model_client=model_client,
+        )
+    )
+
+    async def scenario():
+        stream = runtime.stream_prompt_report(
+            "Hello runtime",
+            session_id="helper-stream-no-post-close-events",
+        )
+        await anext(stream)
+        await stream.aclose()
+        remaining = [event async for event in stream]
+        report = await stream.report()
+        return remaining, report
+
+    remaining, report = asyncio.run(scenario())
+
+    assert remaining == []
+    assert report.final_status == "interrupted"
+
+
+def test_runtime_stream_prompt_report_aclose_after_terminal_keeps_completed_status(
+    tmp_path: Path,
+) -> None:
+    model_client = FakeModelClient(
+        [
+            [
+                ModelStreamEvent(
+                    ModelStreamEventType.MESSAGE_START,
+                    {"request_id": "req-stream-terminal-close"},
+                ),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "done"}),
+                ModelStreamEvent(
+                    ModelStreamEventType.MESSAGE_STOP,
+                    {"stop_reason": "end_turn"},
+                ),
+            ]
+        ]
+    )
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            model_client=model_client,
+        )
+    )
+
+    async def scenario():
+        stream = runtime.stream_prompt_report(
+            "Hello runtime",
+            session_id="helper-stream-terminal-close",
+        )
+        async for event in stream:
+            if event.event_type.value == "terminal":
+                break
+        await stream.aclose()
+        return await stream.report()
+
+    report = asyncio.run(scenario())
+
+    assert report.final_status == "completed"
+    assert report.terminal is not None
+    assert report.terminal.stop_reason == "end_turn"
+
+
+def test_runtime_workflow_run_report_helpers_preserve_failure_terminal_details_after_refactor(
+    tmp_path: Path,
+) -> None:
+    one_shot_runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            model_client=FakeModelClient(
+                [
+                    [
+                        ModelStreamEvent(
+                            ModelStreamEventType.MESSAGE_START,
+                            {"request_id": "req-one-shot-error"},
+                        ),
+                        ModelStreamEvent(ModelStreamEventType.ERROR, {"error": "model exploded"}),
+                    ]
+                ]
+            ),
+        )
+    )
+    stream_runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            model_client=FakeModelClient(
+                [
+                    [
+                        ModelStreamEvent(
+                            ModelStreamEventType.MESSAGE_START,
+                            {"request_id": "req-stream-error"},
+                        ),
+                        ModelStreamEvent(ModelStreamEventType.ERROR, {"error": "model exploded"}),
+                    ]
+                ]
+            ),
+        )
+    )
+
+    one_shot_report = asyncio.run(
+        one_shot_runtime.run_prompt_report(
+            "Hello runtime",
+            session_id="helper-one-shot-error",
+        )
+    )
+    stream_report = asyncio.run(
+        stream_runtime.stream_prompt_report(
+            "Hello runtime",
+            session_id="helper-stream-error-report",
+        ).report()
+    )
+
+    for report in (one_shot_report, stream_report):
+        assert report.messages == ()
+        assert report.terminal is not None
+        assert report.terminal.stop_reason == "error"
+        assert report.terminal.error == "model exploded"
+        assert report.final_status == "failed"
+
+
+def test_runtime_workflow_run_report_helpers_preserve_finalization_waiting_behavior(
+    tmp_path: Path,
+) -> None:
+    model_client = FakeModelClient(
+        [
+            [
+                ModelStreamEvent(
+                    ModelStreamEventType.MESSAGE_START,
+                    {"request_id": "req-stream-finalization"},
+                ),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "stream finalize"}),
+                ModelStreamEvent(
+                    ModelStreamEventType.MESSAGE_STOP,
+                    {"stop_reason": "end_turn"},
+                ),
+            ],
+            [
+                ModelStreamEvent(
+                    ModelStreamEventType.MESSAGE_START,
+                    {"request_id": "req-helper-finalization-shared"},
+                ),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "helper finalize"}),
+                ModelStreamEvent(
+                    ModelStreamEventType.MESSAGE_STOP,
+                    {"stop_reason": "end_turn"},
+                ),
+            ],
+            [
+                ModelStreamEvent(
+                    ModelStreamEventType.MESSAGE_START,
+                    {"request_id": "req-caller-finalization-shared"},
+                ),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "caller finalize"}),
+                ModelStreamEvent(
+                    ModelStreamEventType.MESSAGE_STOP,
+                    {"stop_reason": "end_turn"},
+                ),
+            ],
+        ]
+    )
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            model_client=model_client,
+        )
+    )
+    memory_service = RecordingWorkflowRunMemoryService()
+    runtime.services.memory = memory_service
+    caller_session = runtime.create_session(session_id="caller-finalization-shared")
+
+    async def scenario():
+        stream_report = await runtime.stream_prompt_report(
+            "Hello runtime",
+            session_id="stream-finalization-shared",
+            wait_for_finalization=True,
+        ).report()
+        helper_report = await runtime.run_prompt_report(
+            "Hello runtime",
+            session_id="helper-finalization-shared",
+            wait_for_finalization=True,
+        )
+        caller_report = await runtime.run_prompt_report_in_session(
+            caller_session,
+            "Hello runtime",
+            wait_for_finalization=True,
+        )
+        await caller_session.close()
+        return stream_report, helper_report, caller_report
+
+    stream_report, helper_report, caller_report = asyncio.run(scenario())
+
+    assert stream_report.finalization.requested is True
+    assert stream_report.finalization.awaited is True
+    assert [task.task_id for task in stream_report.finalization.tasks] == [
+        "extract-stream-finalization-shared",
+        "consolidate-stream-finalization-shared",
+    ]
+    assert helper_report.finalization.requested is True
+    assert helper_report.finalization.awaited is True
+    assert [task.task_id for task in helper_report.finalization.tasks] == [
+        "extract-helper-finalization-shared",
+        "consolidate-helper-finalization-shared",
+    ]
+    assert caller_report.finalization.requested is True
+    assert caller_report.finalization.awaited is True
+    assert [task.task_id for task in caller_report.finalization.tasks] == [
+        "extract-caller-finalization-shared",
+    ]
+    assert memory_service.waited_extractions == [
+        "extract-stream-finalization-shared",
+        "extract-helper-finalization-shared",
+        "extract-caller-finalization-shared",
+    ]
+    assert memory_service.waited_consolidations == [
+        "consolidate-stream-finalization-shared",
+        "consolidate-helper-finalization-shared",
+    ]
+
+
+def test_runtime_stream_prompt_stays_raw_and_closes_on_early_loop_exit(
+    tmp_path: Path,
+) -> None:
+    model_client = InterruptibleModelClient()
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            model_client=model_client,
+        )
+    )
+    closed: list[str] = []
+    runtime.services.hook_bus.register(
+        session_id="raw-stream-early-break",
+        owner="test",
+        phase=RuntimeHookPhase.SESSION_END,
+        handler=lambda payload: closed.append(payload.final_status),
+    )
+
+    async def scenario():
+        events = []
+        async for event in runtime.stream_prompt(
+            "Hello runtime",
+            session_id="raw-stream-early-break",
+        ):
+            events.append(event)
+            break
+        return events
+
+    events = asyncio.run(scenario())
+
+    assert events
+    assert all(hasattr(event, "event_type") for event in events)
+    assert closed == ["interrupted"]
 
 
 def test_runtime_stream_prompt_closes_helper_owned_session_on_interrupt(tmp_path: Path) -> None:
