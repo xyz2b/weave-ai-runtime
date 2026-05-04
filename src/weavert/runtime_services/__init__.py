@@ -710,6 +710,8 @@ class RuntimeServices:
             "job_executors": [binding.kind for binding in contribution.job_executors],
             "diagnostics": [getattr(diagnostic, "code", None) for diagnostic in contribution.diagnostics],
         }
+        if contribution.metadata:
+            entry["metadata"] = deepcopy(contribution.metadata)
         self.metadata.setdefault("package_contributions", []).append(entry)
         self._sync_context_contributor_metadata()
 

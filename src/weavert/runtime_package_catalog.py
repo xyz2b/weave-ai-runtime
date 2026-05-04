@@ -392,10 +392,35 @@ def _serialize_manifest_summary(manifest: RuntimePackageManifest) -> dict[str, A
         "dependencies": list(manifest.dependencies),
     }
     metadata = dict(getattr(manifest, "metadata", {}) or {})
-    for key in ("builtin_tools", "builtin_agents", "builtin_skills", "invocation_providers"):
+    for key in (
+        "builtin_tools",
+        "builtin_agents",
+        "builtin_skills",
+        "invocation_providers",
+        "baseline_dependencies",
+        "capabilities",
+        "context_contributors",
+    ):
         values = metadata.get(key, ())
         if values:
             summary[key] = [str(value) for value in values]
+    for key in (
+        "package_pattern",
+        "provider_registration_path",
+        "provider_registration_order",
+        "provider_package_ordering",
+        "capability_registration_path",
+        "context_contributor_registration_path",
+        "context_contributor_stages",
+    ):
+        if key in metadata:
+            value = metadata[key]
+            if isinstance(value, list):
+                summary[key] = list(value)
+            elif isinstance(value, dict):
+                summary[key] = dict(value)
+            else:
+                summary[key] = value
     return summary
 
 

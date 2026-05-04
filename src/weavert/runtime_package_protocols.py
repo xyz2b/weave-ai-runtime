@@ -457,6 +457,146 @@ class PackageContext:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class CapabilityPackageBindingSpec:
+    key: str
+    value: Any
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "key", canonical_public_namespace(_require_non_empty(self.key, "key")))
+        object.__setattr__(self, "metadata", dict(self.metadata))
+
+
+@dataclass(frozen=True, slots=True)
+class ContextContributorPackageBindingSpec:
+    name: str
+    stage: ContextContributorStage | str
+    contributor: Any
+    order: int = 0
+    timeout_seconds: float | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "name", _require_non_empty(self.name, "name"))
+        object.__setattr__(self, "stage", ContextContributorStage(self.stage))
+        object.__setattr__(self, "order", int(self.order))
+        if self.contributor is None:
+            raise ValueError("ContextContributorPackageBindingSpec.contributor must not be None")
+        if self.timeout_seconds is not None:
+            normalized_timeout = float(self.timeout_seconds)
+            if normalized_timeout < 0:
+                raise ValueError("ContextContributorPackageBindingSpec.timeout_seconds must be >= 0")
+            object.__setattr__(self, "timeout_seconds", normalized_timeout)
+        object.__setattr__(self, "metadata", dict(self.metadata))
+
+
+def build_capability_only_package_manifest(
+    *,
+    name: str,
+    capabilities: Sequence[CapabilityPackageBindingSpec],
+    description: str = "Capability-only runtime package.",
+    role: str = "capability",
+    dependencies: Sequence[str] = ("weavert-core",),
+    manifest_metadata: Mapping[str, Any] | None = None,
+) -> RuntimePackageManifest:
+    """Build the minimal ordinary runtime package shape for a capability-only package."""
+    normalized_capabilities = _normalize_capability_builder_specs(capabilities)
+    return _build_manifest_backed_service_package(
+        name=name,
+        role=role,
+        description=description,
+        dependencies=dependencies,
+        manifest_metadata=manifest_metadata,
+        default_manifest_metadata={
+            "package_pattern": "capability-only",
+            "capabilities": [spec.key for spec in normalized_capabilities],
+            "capability_registration_path": "PackageContribution.capabilities",
+        },
+        contribution_builder=lambda context: PackageContribution(
+            capabilities=tuple(
+                CapabilityBinding(
+                    key=spec.key,
+                    value=spec.value,
+                    owner=context.ownership(
+                        "capability",
+                        capability_key=spec.key,
+                        package_pattern="capability-only",
+                    ),
+                    metadata=_builder_binding_metadata(
+                        spec.metadata,
+                        package_pattern="capability-only",
+                    ),
+                )
+                for spec in normalized_capabilities
+            ),
+            metadata=_builder_package_contribution_metadata(
+                package_pattern="capability-only",
+                registration_path="PackageContribution.capabilities",
+            ),
+        ),
+    )
+
+
+def build_context_contributor_only_package_manifest(
+    *,
+    name: str,
+    context_contributors: Sequence[ContextContributorPackageBindingSpec],
+    description: str = "Context-contributor-only runtime package.",
+    role: str = "capability",
+    dependencies: Sequence[str] = ("weavert-core",),
+    manifest_metadata: Mapping[str, Any] | None = None,
+) -> RuntimePackageManifest:
+    """Build the minimal ordinary runtime package shape for a context-contributor-only package."""
+    normalized_contributors = _normalize_context_contributor_builder_specs(context_contributors)
+    return _build_manifest_backed_service_package(
+        name=name,
+        role=role,
+        description=description,
+        dependencies=dependencies,
+        manifest_metadata=manifest_metadata,
+        default_manifest_metadata={
+            "package_pattern": "context-contributor-only",
+            "context_contributors": [spec.name for spec in normalized_contributors],
+            "context_contributor_registration_path": "PackageContribution.context_contributors",
+            "context_contributor_stages": [
+                {
+                    "name": spec.name,
+                    "stage": spec.stage.value,
+                    "order": spec.order,
+                }
+                for spec in normalized_contributors
+            ],
+        },
+        contribution_builder=lambda context: PackageContribution(
+            context_contributors=tuple(
+                ContextContributorBinding(
+                    name=spec.name,
+                    stage=spec.stage,
+                    contributor=spec.contributor,
+                    owner=context.ownership(
+                        "context_contributor",
+                        contributor_name=spec.name,
+                        contributor_stage=spec.stage.value,
+                        package_pattern="context-contributor-only",
+                    ),
+                    order=spec.order,
+                    timeout_seconds=spec.timeout_seconds,
+                    metadata=_builder_binding_metadata(
+                        spec.metadata,
+                        package_pattern="context-contributor-only",
+                    ),
+                )
+                for spec in normalized_contributors
+            ),
+            metadata=_builder_package_contribution_metadata(
+                package_pattern="context-contributor-only",
+                registration_path="PackageContribution.context_contributors",
+            ),
+        ),
+    )
+
+
 def build_provider_only_invocation_package_manifest(
     *,
     name: str,
@@ -471,42 +611,30 @@ def build_provider_only_invocation_package_manifest(
     contribution_metadata: Mapping[str, Any] | None = None,
 ) -> RuntimePackageManifest:
     """Build the minimal ordinary runtime package shape for a provider-only package."""
-    normalized_name = _require_non_empty(name, "name")
     normalized_provider_name = _require_non_empty(provider_name, "provider_name")
-    normalized_role = _require_non_empty(role, "role")
     if (provider is None) == (factory is None):
         raise ValueError("Provider-only package template requires exactly one of provider or factory")
-    normalized_dependencies = tuple(
-        canonical_first_party_name(str(item))
-        for item in (dependencies or ("weavert-core",))
-    )
-    manifest_entry_metadata = dict(manifest_metadata or {})
-    manifest_entry_metadata.setdefault("invocation_providers", [normalized_provider_name])
-    manifest_entry_metadata.setdefault("package_pattern", "provider-only")
-    manifest_entry_metadata.setdefault("provider_registration_path", "PackageContribution.invocation_providers")
-    manifest_entry_metadata.setdefault(
-        "provider_registration_order",
-        [
-            "builtin_skill_baseline",
-            "PackageContribution.invocation_providers",
-        ],
-    )
-    manifest_entry_metadata.setdefault(
-        "provider_package_ordering",
-        [
-            "InvocationProviderContribution.order",
-            "package dependency order",
-            "InvocationProviderContribution.name",
-        ],
-    )
-    manifest_entry_metadata.setdefault("baseline_dependencies", list(normalized_dependencies))
-    contribution_entry_metadata = dict(contribution_metadata or {})
-    contribution_entry_metadata.setdefault("package_pattern", "provider-only")
-
-    def _assemble_provider_only_package(context: PackageContext) -> PackageContribution:
-        if context.stage != PackageAssemblyStage.SERVICES:
-            return PackageContribution()
-        return PackageContribution(
+    return _build_manifest_backed_service_package(
+        name=name,
+        role=role,
+        description=description,
+        dependencies=dependencies,
+        manifest_metadata=manifest_metadata,
+        default_manifest_metadata={
+            "invocation_providers": [normalized_provider_name],
+            "package_pattern": "provider-only",
+            "provider_registration_path": "PackageContribution.invocation_providers",
+            "provider_registration_order": [
+                "builtin_skill_baseline",
+                "PackageContribution.invocation_providers",
+            ],
+            "provider_package_ordering": [
+                "InvocationProviderContribution.order",
+                "package dependency order",
+                "InvocationProviderContribution.name",
+            ],
+        },
+        contribution_builder=lambda context: PackageContribution(
             invocation_providers=(
                 InvocationProviderContribution(
                     name=normalized_provider_name,
@@ -518,23 +646,110 @@ def build_provider_only_invocation_package_manifest(
                     provider=provider,
                     factory=factory,
                     order=order,
-                    metadata=contribution_entry_metadata,
+                    metadata=_builder_binding_metadata(
+                        contribution_metadata,
+                        package_pattern="provider-only",
+                    ),
                 ),
             ),
-            metadata={
-                "package_pattern": "provider-only",
-                "registration_path": "PackageContribution.invocation_providers",
-            },
-        )
+            metadata=_builder_package_contribution_metadata(
+                package_pattern="provider-only",
+                registration_path="PackageContribution.invocation_providers",
+            ),
+        ),
+    )
+
+
+def _build_manifest_backed_service_package(
+    *,
+    name: str,
+    role: str,
+    description: str,
+    dependencies: Sequence[str],
+    manifest_metadata: Mapping[str, Any] | None,
+    default_manifest_metadata: Mapping[str, Any],
+    contribution_builder: Callable[[PackageContext], PackageContribution],
+) -> RuntimePackageManifest:
+    normalized_dependencies = _normalize_package_builder_dependencies(dependencies)
+
+    def _assemble_package(context: PackageContext) -> PackageContribution:
+        if context.stage != PackageAssemblyStage.SERVICES:
+            return PackageContribution()
+        return contribution_builder(context)
 
     return RuntimePackageManifest(
-        name=normalized_name,
-        role=normalized_role,
+        name=_require_non_empty(name, "name"),
+        role=_require_non_empty(role, "role"),
         description=str(description),
         dependencies=normalized_dependencies,
-        assembly_entrypoint=_assemble_provider_only_package,
-        metadata=manifest_entry_metadata,
+        assembly_entrypoint=_assemble_package,
+        metadata=_builder_manifest_metadata(
+            normalized_dependencies,
+            default_metadata=default_manifest_metadata,
+            manifest_metadata=manifest_metadata,
+        ),
     )
+
+
+def _normalize_package_builder_dependencies(dependencies: Sequence[str]) -> tuple[str, ...]:
+    return tuple(
+        canonical_first_party_name(str(item))
+        for item in (dependencies or ("weavert-core",))
+    )
+
+
+def _normalize_capability_builder_specs(
+    capabilities: Sequence[CapabilityPackageBindingSpec],
+) -> tuple[CapabilityPackageBindingSpec, ...]:
+    normalized = tuple(capabilities)
+    if not normalized:
+        raise ValueError("Capability-only package builder requires at least one capability binding")
+    return normalized
+
+
+def _normalize_context_contributor_builder_specs(
+    context_contributors: Sequence[ContextContributorPackageBindingSpec],
+) -> tuple[ContextContributorPackageBindingSpec, ...]:
+    normalized = tuple(context_contributors)
+    if not normalized:
+        raise ValueError(
+            "Context-contributor-only package builder requires at least one context contributor binding"
+        )
+    return normalized
+
+
+def _builder_manifest_metadata(
+    dependencies: Sequence[str],
+    *,
+    default_metadata: Mapping[str, Any],
+    manifest_metadata: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    metadata = dict(manifest_metadata or {})
+    metadata.setdefault("baseline_dependencies", list(dependencies))
+    for key, value in default_metadata.items():
+        metadata.setdefault(key, value)
+    return metadata
+
+
+def _builder_binding_metadata(
+    metadata: Mapping[str, Any] | None,
+    *,
+    package_pattern: str,
+) -> dict[str, Any]:
+    normalized = dict(metadata or {})
+    normalized.setdefault("package_pattern", package_pattern)
+    return normalized
+
+
+def _builder_package_contribution_metadata(
+    *,
+    package_pattern: str,
+    registration_path: str,
+) -> dict[str, Any]:
+    return {
+        "package_pattern": package_pattern,
+        "registration_path": registration_path,
+    }
 
 
 @dataclass(slots=True)
@@ -823,10 +1038,14 @@ def _require_non_empty(value: Any, field_name: str) -> str:
 
 __all__ = [
     "CapabilityBinding",
+    "CapabilityPackageBindingSpec",
     "CapabilityRegistry",
+    "build_capability_only_package_manifest",
+    "build_context_contributor_only_package_manifest",
     "build_provider_only_invocation_package_manifest",
     "ContextContributorBinding",
     "ContextContributorExecutionEntry",
+    "ContextContributorPackageBindingSpec",
     "ContextContributorPromptChannel",
     "ContextContributorRegistry",
     "ContextContributorStage",

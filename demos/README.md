@@ -45,6 +45,8 @@ If you want to exercise the live validation layers, set:
 | File-backed agent | `.weavert/agents/*.md` | `python3 -B -m demos.agents.file_backed_agent_demo` | Prints `agent: release-reviewer` and a short approval reply from the discovered agent. |
 | File-backed skill | `.weavert/skills/**/SKILL.md` | `python3 -B -m demos.skills.file_backed_skill_demo` | Prints `skill: release-summary`, `mode: fork`, and the child-agent reply. |
 | Session hook | `session.register_hook(...)` + `weavert.hooks` helper builders | `python3 -B -m demos.hooks.session_register_hook_demo` | Prints `hook activation: active` and shows the hook-rewritten `echo` tool result. |
+| Capability-only package | `build_capability_only_package_manifest()` | `python3 -B -m demos.packages.capability_only_package_demo` | Prints the resolved capability payload plus package owner and manifest metadata. |
+| Context-contributor-only package | `build_context_contributor_only_package_manifest()` | `python3 -B -m demos.packages.context_contributor_only_package_demo` | Prints the injected hook fragment and the contributor owner metadata. |
 | Provider-only package | `build_provider_only_invocation_package_manifest()` | `python3 -B -m demos.packages.provider_only_package_demo` | Prints `visible invocations: package-release-check` and the provider registration metadata. |
 | General package contribution | `RuntimePackageManifest` + `PackageContribution` | `python3 -B -m demos.packages.general_package_demo` | Prints the resolved capability payload and the hook-stage context fragment injected by the package. |
 

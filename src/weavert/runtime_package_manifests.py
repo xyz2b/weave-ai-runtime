@@ -1067,13 +1067,38 @@ def _rejected_registration(
 
 
 def _serialize_manifest_summary(manifest: RuntimePackageManifest) -> dict[str, Any]:
-    return {
+    summary = {
         "name": manifest.name,
         "role": manifest.role,
         "description": manifest.description,
         "dependencies": list(manifest.dependencies),
         "invocation_providers": list(manifest.metadata.get("invocation_providers", ())),
     }
+    metadata = dict(manifest.metadata)
+    for key in (
+        "package_pattern",
+        "baseline_dependencies",
+        "invocation_providers",
+        "provider_registration_path",
+        "provider_registration_order",
+        "provider_package_ordering",
+        "capabilities",
+        "capability_registration_path",
+        "context_contributors",
+        "context_contributor_registration_path",
+        "context_contributor_stages",
+    ):
+        if key in metadata:
+            value = metadata[key]
+            if isinstance(value, tuple):
+                summary[key] = list(value)
+            elif isinstance(value, list):
+                summary[key] = list(value)
+            elif isinstance(value, dict):
+                summary[key] = dict(value)
+            else:
+                summary[key] = value
+    return summary
 
 
 def _normalize_optional_string(value: Any) -> str | None:

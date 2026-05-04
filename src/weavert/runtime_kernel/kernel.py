@@ -2294,6 +2294,29 @@ def _package_manifest_catalog(
             "description": manifest.description,
             "dependencies": list(manifest.dependencies),
             "invocation_providers": list(manifest.metadata.get("invocation_providers", ())),
+            **{
+                key: (
+                    list(manifest.metadata[key])
+                    if isinstance(manifest.metadata[key], (tuple, list))
+                    else dict(manifest.metadata[key])
+                    if isinstance(manifest.metadata[key], dict)
+                    else manifest.metadata[key]
+                )
+                for key in (
+                    "package_pattern",
+                    "baseline_dependencies",
+                    "invocation_providers",
+                    "provider_registration_path",
+                    "provider_registration_order",
+                    "provider_package_ordering",
+                    "capabilities",
+                    "capability_registration_path",
+                    "context_contributors",
+                    "context_contributor_registration_path",
+                    "context_contributor_stages",
+                )
+                if key in manifest.metadata
+            },
         }
         for manifest in manifests
     }

@@ -45,7 +45,9 @@ from weavert.runtime_package_resolution import (
 )
 from weavert.runtime_package_protocols import (
     CapabilityBinding,
+    CapabilityPackageBindingSpec,
     ContextContributorBinding,
+    ContextContributorPackageBindingSpec,
     HostFacetBinding,
     HostFacetResolution,
     IngressReceiptHandlerBinding,
@@ -59,6 +61,8 @@ from weavert.runtime_package_protocols import (
     RuntimeCapabilityKey,
     RuntimeHostFacetKey,
     RuntimePackageManifest,
+    build_capability_only_package_manifest,
+    build_context_contributor_only_package_manifest,
     build_provider_only_invocation_package_manifest,
 )
 from weavert.runtime_services import RuntimeServices
@@ -2509,6 +2513,230 @@ def test_builtin_replacements_preserve_manifest_owned_builtin_metadata(tmp_path:
     assert kernel.agent_registry.get("verification").metadata["builtin_owner_role"] == "profile_workflow"
 
 
+def test_package_builder_family_preserves_manifest_backed_registration_and_metadata(
+    tmp_path: Path,
+) -> None:
+    class ReleaseFreezeContributor:
+        async def collect(self, **_kwargs):
+            return ("package context: release-freeze is active",)
+
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            distribution=RuntimeDistribution.CORE,
+            extra_package_manifests=(
+                build_capability_only_package_manifest(
+                    name="weavert-capability-only",
+                    capabilities=(
+                        CapabilityPackageBindingSpec(
+                            key="demo.release.freeze",
+                            value={"active": True, "owner": "weavert-capability-only"},
+                        ),
+                    ),
+                ),
+                build_context_contributor_only_package_manifest(
+                    name="weavert-context-only",
+                    dependencies=("weavert-core", "weavert-capability-only"),
+                    context_contributors=(
+                        ContextContributorPackageBindingSpec(
+                            name="demo.release.freeze.notice",
+                            stage=ContextContributorStage.HOOKS,
+                            contributor=ReleaseFreezeContributor(),
+                            order=5,
+                        ),
+                    ),
+                ),
+                build_provider_only_invocation_package_manifest(
+                    name="weavert-provider-only",
+                    dependencies=("weavert-core", "weavert-context-only"),
+                    provider_name="package-commands",
+                    provider=StaticInvocationProvider(
+                        "package-commands",
+                        (
+                            _invocation_definition(
+                                "package-release-check",
+                                target_name="package.release_check",
+                                origin_path=str(tmp_path / "package-release-check.py"),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+            requested_packages={
+                "weavert-capability-only",
+                "weavert-context-only",
+                "weavert-provider-only",
+            },
+        )
+    )
+
+    assert tuple(manifest.name for manifest in runtime.kernel.package_manifests) == (
+        "weavert-core",
+        "weavert-capability-only",
+        "weavert-context-only",
+        "weavert-provider-only",
+    )
+    assert runtime.services.metadata["resolved_active_package_graph_provenance"]["resolved_order"] == [
+        "weavert-core",
+        "weavert-capability-only",
+        "weavert-context-only",
+        "weavert-provider-only",
+    ]
+    assert runtime.services.require_capability("demo.release.freeze") == {
+        "active": True,
+        "owner": "weavert-capability-only",
+    }
+    capability_owner = runtime.services.capability_registry.owner("demo.release.freeze")
+    assert capability_owner is not None
+    assert capability_owner.package_name == "weavert-capability-only"
+    assert capability_owner.metadata["capability_key"] == "demo.release.freeze"
+    assert capability_owner.metadata["package_pattern"] == "capability-only"
+
+    hook_plan = runtime.services.context_contributor_execution_plan()
+    release_notice = next(
+        entry.binding
+        for entry in hook_plan
+        if entry.binding.name == "demo.release.freeze.notice"
+        and entry.stage.name == ContextContributorStage.HOOKS
+    )
+    assert release_notice.owner.package_name == "weavert-context-only"
+    assert release_notice.owner.metadata["contributor_name"] == "demo.release.freeze.notice"
+    assert release_notice.owner.metadata["contributor_stage"] == ContextContributorStage.HOOKS.value
+    assert release_notice.owner.metadata["package_pattern"] == "context-contributor-only"
+
+    session = runtime.create_session(session_id="builder-family", cwd=tmp_path)
+    assert {entry.name for entry in session.visible_invocations()} == {"package-release-check"}
+
+    accepted = {
+        entry["package_name"]: entry["manifest"]
+        for entry in runtime.services.metadata["package_registration"]["accepted"]
+    }
+    assert accepted["weavert-capability-only"] == {
+        "name": "weavert-capability-only",
+        "role": "capability",
+        "description": "Capability-only runtime package.",
+        "dependencies": ["weavert-core"],
+        "invocation_providers": [],
+        "package_pattern": "capability-only",
+        "baseline_dependencies": ["weavert-core"],
+        "capabilities": ["demo.release.freeze"],
+        "capability_registration_path": "PackageContribution.capabilities",
+    }
+    assert accepted["weavert-context-only"] == {
+        "name": "weavert-context-only",
+        "role": "capability",
+        "description": "Context-contributor-only runtime package.",
+        "dependencies": ["weavert-core", "weavert-capability-only"],
+        "invocation_providers": [],
+        "package_pattern": "context-contributor-only",
+        "baseline_dependencies": ["weavert-core", "weavert-capability-only"],
+        "context_contributors": ["demo.release.freeze.notice"],
+        "context_contributor_registration_path": "PackageContribution.context_contributors",
+        "context_contributor_stages": [
+            {
+                "name": "demo.release.freeze.notice",
+                "stage": ContextContributorStage.HOOKS.value,
+                "order": 5,
+            }
+        ],
+    }
+    assert accepted["weavert-provider-only"] == {
+        "name": "weavert-provider-only",
+        "role": "provider",
+        "description": "Provider-only runtime package.",
+        "dependencies": ["weavert-core", "weavert-context-only"],
+        "invocation_providers": ["package-commands"],
+        "package_pattern": "provider-only",
+        "baseline_dependencies": ["weavert-core", "weavert-context-only"],
+        "provider_registration_path": "PackageContribution.invocation_providers",
+        "provider_registration_order": [
+            "builtin_skill_baseline",
+            "PackageContribution.invocation_providers",
+        ],
+        "provider_package_ordering": [
+            "InvocationProviderContribution.order",
+            "package dependency order",
+            "InvocationProviderContribution.name",
+        ],
+    }
+
+    manifests = runtime.services.metadata["package_manifests"]
+    assert manifests["weavert-capability-only"] == {
+        "role": "capability",
+        "description": "Capability-only runtime package.",
+        "dependencies": ["weavert-core"],
+        "invocation_providers": [],
+        "package_pattern": "capability-only",
+        "baseline_dependencies": ["weavert-core"],
+        "capabilities": ["demo.release.freeze"],
+        "capability_registration_path": "PackageContribution.capabilities",
+    }
+    assert manifests["weavert-context-only"] == {
+        "role": "capability",
+        "description": "Context-contributor-only runtime package.",
+        "dependencies": ["weavert-core", "weavert-capability-only"],
+        "invocation_providers": [],
+        "package_pattern": "context-contributor-only",
+        "baseline_dependencies": ["weavert-core", "weavert-capability-only"],
+        "context_contributors": ["demo.release.freeze.notice"],
+        "context_contributor_registration_path": "PackageContribution.context_contributors",
+        "context_contributor_stages": [
+            {
+                "name": "demo.release.freeze.notice",
+                "stage": ContextContributorStage.HOOKS.value,
+                "order": 5,
+            }
+        ],
+    }
+    assert manifests["weavert-provider-only"] == {
+        "role": "provider",
+        "description": "Provider-only runtime package.",
+        "dependencies": ["weavert-core", "weavert-context-only"],
+        "invocation_providers": ["package-commands"],
+        "package_pattern": "provider-only",
+        "baseline_dependencies": ["weavert-core", "weavert-context-only"],
+        "provider_registration_path": "PackageContribution.invocation_providers",
+        "provider_registration_order": [
+            "builtin_skill_baseline",
+            "PackageContribution.invocation_providers",
+        ],
+        "provider_package_ordering": [
+            "InvocationProviderContribution.order",
+            "package dependency order",
+            "InvocationProviderContribution.name",
+        ],
+    }
+
+    contributions = {
+        entry["package_name"]: entry
+        for entry in runtime.services.metadata["package_contributions"]
+        if entry["package_name"]
+        in {
+            "weavert-capability-only",
+            "weavert-context-only",
+            "weavert-provider-only",
+        }
+        and entry["stage"] == PackageAssemblyStage.SERVICES.value
+    }
+    assert contributions["weavert-capability-only"]["capabilities"] == ["demo.release.freeze"]
+    assert contributions["weavert-capability-only"]["metadata"] == {
+        "package_pattern": "capability-only",
+        "registration_path": "PackageContribution.capabilities",
+    }
+    assert contributions["weavert-context-only"]["context_contributors"] == [
+        "demo.release.freeze.notice"
+    ]
+    assert contributions["weavert-context-only"]["metadata"] == {
+        "package_pattern": "context-contributor-only",
+        "registration_path": "PackageContribution.context_contributors",
+    }
+    assert contributions["weavert-provider-only"]["invocation_providers"] == ["package-commands"]
+    assert contributions["weavert-provider-only"]["metadata"] == {
+        "package_pattern": "provider-only",
+        "registration_path": "PackageContribution.invocation_providers",
+    }
+
+
 def test_provider_only_runtime_packages_publish_pre_session_catalogs_and_metadata(
     tmp_path: Path,
 ) -> None:
@@ -2589,7 +2817,19 @@ def test_provider_only_runtime_packages_publish_pre_session_catalogs_and_metadat
                 "role": "provider",
                 "description": "Provider-only runtime package.",
                 "dependencies": ["weavert-core"],
+                "package_pattern": "provider-only",
+                "baseline_dependencies": ["weavert-core"],
                 "invocation_providers": ["package-commands"],
+                "provider_registration_path": "PackageContribution.invocation_providers",
+                "provider_registration_order": [
+                    "builtin_skill_baseline",
+                    "PackageContribution.invocation_providers",
+                ],
+                "provider_package_ordering": [
+                    "InvocationProviderContribution.order",
+                    "package dependency order",
+                    "InvocationProviderContribution.name",
+                ],
             },
             "provenance": {
                 "origin": "external",
@@ -2728,7 +2968,19 @@ def test_provider_only_runtime_packages_assemble_consistently_across_distributio
         "role": "provider",
         "description": "Provider-only runtime package.",
         "dependencies": ["weavert-core"],
+        "package_pattern": "provider-only",
+        "baseline_dependencies": ["weavert-core"],
         "invocation_providers": ["distribution-provider"],
+        "provider_registration_path": "PackageContribution.invocation_providers",
+        "provider_registration_order": [
+            "builtin_skill_baseline",
+            "PackageContribution.invocation_providers",
+        ],
+        "provider_package_ordering": [
+            "InvocationProviderContribution.order",
+            "package dependency order",
+            "InvocationProviderContribution.name",
+        ],
     }
     session = runtime.create_session(session_id=f"provider-only-{distribution.value}", cwd=tmp_path)
     assert "distribution-command" in {entry.name for entry in session.visible_invocations()}

@@ -788,7 +788,77 @@ receipt = context.refresh_capabilities.request("tool_pool", "reason")
 
 如果你是在用户侧 author tool，又希望它能稳定跑在默认 live OpenAI route 上，最好同时看 `docs/weavert-definition-authoring-guide.md` 和 `docs/weavert-openai-responses-adapter.md`。
 
-### 3.8 InvocationProvider：额外能力源
+### 3.8 Ordinary Runtime Package Builders
+
+如果你只是在 author 一个单 surface 的 ordinary runtime package，
+不必每次都手写 `RuntimePackageManifest` + `PackageContribution` +
+ownership boilerplate。
+
+当前官方提供一组轻量 builder，输出仍然是普通 manifest-backed package：
+
+- capability-only：`build_capability_only_package_manifest()`
+- context-contributor-only：`build_context_contributor_only_package_manifest()`
+- provider-only：`build_provider_only_invocation_package_manifest()`
+
+它们只减少样板，不改变底层 package protocol：
+
+- 仍然通过 `RuntimeConfig.extra_package_manifests` 接入
+- 仍然通过 `RuntimeConfig.requested_packages` 激活
+- 仍然走 canonical `PackageContribution.*` 注册路径
+
+Capability-only 示例：
+
+```python
+from weavert.runtime_kernel import RuntimeConfig, assemble_runtime
+from weavert.runtime_package_protocols import (
+    CapabilityPackageBindingSpec,
+    build_capability_only_package_manifest,
+)
+
+capability_manifest = build_capability_only_package_manifest(
+    name="weavert-capability-only",
+    capabilities=(
+        CapabilityPackageBindingSpec(
+            key="demo.release.freeze",
+            value={"active": True},
+        ),
+    ),
+)
+
+weavert = assemble_runtime(
+    RuntimeConfig(
+        extra_package_manifests=(capability_manifest,),
+        requested_packages={"weavert-capability-only"},
+    )
+)
+```
+
+Context-contributor-only 示例：
+
+```python
+from weavert.runtime_package_protocols import (
+    ContextContributorPackageBindingSpec,
+    ContextContributorStage,
+    build_context_contributor_only_package_manifest,
+)
+
+context_manifest = build_context_contributor_only_package_manifest(
+    name="weavert-context-only",
+    context_contributors=(
+        ContextContributorPackageBindingSpec(
+            name="demo.release.freeze.notice",
+            stage=ContextContributorStage.HOOKS,
+            contributor=ReleaseFreezeContributor(),
+            order=5,
+        ),
+    ),
+)
+```
+
+如果一个 package 同时要发布多个 surface，或者要做更复杂的 assembly orchestration，
+就回到直接 author `RuntimePackageManifest` + `PackageContribution`。
+
+### 3.9 InvocationProvider：额外能力源
 
 Invocation catalog 不只接 skill。
 
@@ -802,7 +872,7 @@ Invocation catalog 不只接 skill。
 用户视角怎么扩：
 
 1. 把自定义 provider 包装成 ordinary provider-only runtime package，并通过 `PackageContribution.invocation_providers` 注册。
-2. 最小 manifest shape 可以直接复用 `weavert.runtime_package_protocols.build_provider_only_invocation_package_manifest()`；默认 role 是 `provider`，普通 baseline dependency 是 `weavert-core`。
+2. 最小 manifest shape 可以直接复用 `weavert.runtime_package_protocols.build_provider_only_invocation_package_manifest()`；它现在是同一组 ordinary package builders 的 provider-only 成员。默认 role 是 `provider`，普通 baseline dependency 是 `weavert-core`。
 3. 用 `RuntimeConfig.extra_package_manifests` + `RuntimeConfig.requested_packages` 把这个 manifest 接入当前 runtime。
 4. 用 `resolve_invocations()` / `visible_invocations()` / `invocation_diagnostics()` 给 UI 提供统一能力图。
 
