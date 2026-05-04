@@ -59,6 +59,7 @@ from ..execution_policy import (
     policy_state_from_metadata,
     resolve_skill_pool,
     serialize_runtime_metadata,
+    with_effective_permission_policies,
 )
 from ..hooks import (
     PostCompactPayload,
@@ -1222,6 +1223,10 @@ class TurnEngine:
                 permission_context=private_context.permission_context,
                 memory_scope=self._resolve_memory_scope(session_id=session_id, agent=agent, cwd=cwd),
                 isolation_mode=agent.isolation,
+            )
+            root_policy = with_effective_permission_policies(
+                root_policy,
+                self._runtime_services.permissions,
             )
             policy_state = ExecutionPolicyState(root_policy)
         private_context = replace(

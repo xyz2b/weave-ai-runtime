@@ -31,6 +31,7 @@ from .execution_policy import (
     policy_allows_skill,
     resolve_skill_execution_policy,
     serialize_policy,
+    with_effective_permission_policies,
 )
 from .hosts.base import CallbackHostAdapter, NullHostAdapter
 from .permissions import PermissionContext, PermissionRequest, PermissionTarget
@@ -108,11 +109,17 @@ class SkillExecutor:
             base_skill_pool=available_skills,
             permission_context=resolved_permission_context,
         )
+        resolved_policy = with_effective_permission_policies(
+            resolved_policy,
+            self._runtime_services.permissions,
+        )
         await self._authorize_skill(
             skill,
             arguments=arguments,
             session_id=session_id,
             permission_context=resolved_policy.permission_context,
+            turn_id=turn_id,
+            runtime_metadata=runtime_metadata,
         )
         expanded = await self._expand_skill_content(
             skill,
@@ -199,6 +206,8 @@ class SkillExecutor:
         arguments: Sequence[str],
         session_id: str,
         permission_context: PermissionContext | None,
+        turn_id: str | None = None,
+        runtime_metadata: Mapping[str, Any] | None = None,
     ) -> None:
         initial = PermissionDecision(
             PermissionBehavior.ASK
@@ -208,7 +217,7 @@ class SkillExecutor:
         )
         request = PermissionRequest(
             session_id=session_id,
-            turn_id=None,
+            turn_id=turn_id,
             target=PermissionTarget.SKILL,
             name=skill.name,
             payload={"arguments": list(arguments)},
@@ -218,6 +227,10 @@ class SkillExecutor:
         runtime_context = RuntimeControlPlaneContext(
             runtime_services=self._runtime_services,
             permission_context=permission_context,
+            metadata={
+                **dict(runtime_metadata or {}),
+                **({"turn_id": turn_id} if turn_id is not None else {}),
+            },
         )
         outcome = await self._runtime_services.permissions.evaluate(  # type: ignore[attr-defined]
             request,

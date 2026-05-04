@@ -2,6 +2,7 @@ import asyncio
 from dataclasses import dataclass
 from typing import Any
 
+from weavert.control_plane import RuntimeControlPlaneContext
 from weavert.definitions import (
     PermissionBehavior,
     PermissionDecision,
@@ -190,6 +191,95 @@ def test_composed_policy_explanations_preserve_preset_layers_and_winner_path() -
     assert explanation["layers"][0]["source"] == "preset"
     assert explanation["layers"][0]["metadata"]["preset"] == "allow-all"
     assert explanation["winner"]["winning_rule"]["selector"] == "worker-*"
+
+
+def test_runtime_control_plane_metadata_contributes_delegated_agent_scopes() -> None:
+    engine = PermissionEngine()
+    permission_context = PermissionContext(
+        session_id="session",
+        policies=(
+            PermissionPolicy(
+                name="deny-delegated-agents",
+                rules=(
+                    PermissionRule(
+                        selector="worker",
+                        target=PermissionTarget.AGENT,
+                        scopes=("delegated",),
+                        behavior=PermissionBehavior.DENY,
+                        message="delegated agents require approval",
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    outcome = asyncio.run(
+        engine.evaluate(
+            PermissionRequest(
+                session_id="session",
+                turn_id="turn",
+                target=PermissionTarget.AGENT,
+                name="worker",
+                payload={"prompt": "review"},
+                context=permission_context,
+            ),
+            initial_decision=PermissionDecision(PermissionBehavior.ALLOW),
+            runtime_context=RuntimeControlPlaneContext(
+                runtime_services=RuntimeServices(),
+                permission_context=permission_context,
+                metadata={
+                    "agent_name": "planner",
+                    "query_source": "skill_fork",
+                    "spawn_mode": "fork",
+                    "delegation_depth": 1,
+                },
+            ),
+        )
+    )
+
+    assert outcome.behavior == PermissionBehavior.DENY
+    scopes = outcome.details["policy_explanation"]["request"]["scopes"]
+    assert "agent:planner" in scopes
+    assert "delegated" in scopes
+    assert "query:skill_fork" in scopes
+    assert "spawn:fork" in scopes
+
+
+def test_policy_override_does_not_keep_stale_message_when_behavior_changes() -> None:
+    engine = PermissionEngine()
+    permission_context = PermissionContext(
+        session_id="session",
+        policies=(
+            PermissionPolicy(
+                name="allow-worker",
+                rules=(
+                    PermissionRule(
+                        selector="worker",
+                        target=PermissionTarget.AGENT,
+                        behavior=PermissionBehavior.ALLOW,
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    outcome = asyncio.run(
+        engine.evaluate(
+            PermissionRequest(
+                session_id="session",
+                turn_id="turn",
+                target=PermissionTarget.AGENT,
+                name="worker",
+                payload={"prompt": "review"},
+                context=permission_context,
+            ),
+            initial_decision=PermissionDecision(PermissionBehavior.ASK, "needs approval"),
+        )
+    )
+
+    assert outcome.behavior == PermissionBehavior.ALLOW
+    assert outcome.message is None
+    assert outcome.details["policy_explanation"]["winner"]["policy_name"] == "allow-worker"
 
 
 def _tool_definition(

@@ -70,6 +70,23 @@ class PermissionEngine:
         )
         return outcome.to_decision()
 
+    def resolve_context(
+        self,
+        context: PermissionContext | None,
+        *,
+        session_id: str,
+    ) -> PermissionContext:
+        return self._resolve_context(context, session_id=session_id)
+
+    def resolve_policies(
+        self,
+        context: PermissionContext | None,
+        *,
+        session_id: str,
+    ) -> tuple[PermissionPolicy, ...]:
+        resolved_context = self.resolve_context(context, session_id=session_id)
+        return self._resolved_policies(resolved_context)
+
     async def evaluate(
         self,
         request: PermissionRequest,
@@ -227,9 +244,12 @@ class PermissionEngine:
             )
 
         details.update(winner.details)
+        message = winner.outcome.message
+        if message is None and winner.outcome.behavior == base_outcome.behavior:
+            message = base_outcome.message
         return PermissionOutcome(
             behavior=winner.outcome.behavior,
-            message=winner.outcome.message or base_outcome.message,
+            message=message,
             updated_input=payload,
             details=details,
             source=winner.outcome.source or base_outcome.source,

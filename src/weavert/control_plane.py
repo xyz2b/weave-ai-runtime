@@ -15,6 +15,10 @@ class RuntimeControlPlaneContext:
     permission_context: Any = None
     prompt_context: PromptContextEnvelope = field(default_factory=PromptContextEnvelope)
     private_context: RuntimePrivateContext = field(default_factory=RuntimePrivateContext)
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "metadata", dict(self.metadata))
 
     @property
     def host_runtime(self) -> Any:

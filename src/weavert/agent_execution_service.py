@@ -27,6 +27,7 @@ from .execution_policy import (
     policy_state_from_metadata,
     resolve_agent_execution_policy,
     serialize_runtime_metadata,
+    with_effective_permission_policies,
 )
 from .hooks import SubagentStopPayload
 from .hosts.base import CallbackHostAdapter, NullHostAdapter
@@ -124,13 +125,14 @@ class AgentExecutionService:
                 if parent_policy is not None
                 else PermissionContext(session_id=invocation.session_id)
             )
-        return resolve_agent_execution_policy(
+        policy = resolve_agent_execution_policy(
             policy_agent,
             parent_policy=parent_policy,
             base_tool_pool=base_tool_pool,
             base_skill_pool=base_skill_pool,
             permission_context=permission_context,
         )
+        return with_effective_permission_policies(policy, self._runtime_services.permissions)
 
     async def run(
         self,
@@ -388,7 +390,7 @@ class AgentExecutionService:
         )
         request = PermissionRequest(
             session_id=execution_spec.session_id,
-            turn_id=None,
+            turn_id=execution_spec.turn_id,
             target=PermissionTarget.AGENT,
             name=agent.name,
             payload={"prompt": invocation.prompt, "background": execution_spec.background},
@@ -398,6 +400,17 @@ class AgentExecutionService:
         runtime_context = RuntimeControlPlaneContext(
             runtime_services=self._runtime_services,
             permission_context=policy.permission_context,
+            metadata={
+                "agent_name": agent.name,
+                "background": execution_spec.background,
+                "run_id": execution_spec.run_id,
+                "parent_run_id": execution_spec.parent_run_id,
+                "turn_id": execution_spec.turn_id,
+                "parent_turn_id": execution_spec.parent_turn_id,
+                "spawn_mode": execution_spec.spawn_mode,
+                "query_source": execution_spec.query_source,
+                DELEGATION_DEPTH_METADATA_KEY: execution_spec.delegation_depth,
+            },
         )
         outcome = await self._runtime_services.permissions.evaluate(  # type: ignore[attr-defined]
             request,

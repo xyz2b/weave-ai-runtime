@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum, StrEnum
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -13,7 +13,7 @@ from .definitions import (
     SkillDefinition,
     ToolDefinition,
 )
-from .permissions import PermissionContext
+from .permissions import PermissionContext, PermissionEngine, PermissionPolicy
 
 EXECUTION_POLICY_STATE_KEY = "execution_policy_state"
 DELEGATION_POLICY_METADATA_KEY = "delegation"
@@ -45,6 +45,7 @@ class ExecutionPolicy:
     tool_pool: tuple[ToolDefinition, ...]
     skill_pool: tuple[SkillDefinition, ...]
     permission_context: PermissionContext
+    effective_permission_policies: tuple[PermissionPolicy, ...] = ()
     memory_scope: MemoryScope | None = None
     isolation_mode: IsolationMode = IsolationMode.NONE
     trace: dict[str, Any] = field(default_factory=dict)
@@ -353,17 +354,31 @@ def policy_allows_skill(
 
 
 def serialize_policy(policy: ExecutionPolicy) -> dict[str, Any]:
+    permission_policies = policy.effective_permission_policies or policy.permission_context.policies
     return {
         "tools": [tool.name for tool in policy.tool_pool],
         "skills": [skill.name for skill in policy.skill_pool],
         "permission_mode": policy.permission_context.mode.value,
         "permission_rules": [rule.to_dict() for rule in policy.permission_context.rules],
-        "permission_policies": [layer.to_dict() for layer in policy.permission_context.policies],
+        "permission_policies": [layer.to_dict() for layer in permission_policies],
         "permission_scopes": list(policy.permission_context.policy_scopes),
         "memory_scope": policy.memory_scope.value if policy.memory_scope is not None else None,
         "isolation_mode": policy.isolation_mode.value,
         "trace": dict(policy.trace),
     }
+
+
+def with_effective_permission_policies(
+    policy: ExecutionPolicy,
+    permission_service: Any | None,
+) -> ExecutionPolicy:
+    if not isinstance(permission_service, PermissionEngine):
+        return policy
+    effective_policies = permission_service.resolve_policies(
+        policy.permission_context,
+        session_id=policy.permission_context.session_id,
+    )
+    return replace(policy, effective_permission_policies=effective_policies)
 
 
 def narrow_memory_scope(
