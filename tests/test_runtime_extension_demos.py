@@ -15,6 +15,7 @@ from weavert.contracts import MessageRole, RuntimeMessage, TextBlock, ToolResult
 ROOT = Path(__file__).resolve().parents[1]
 README = ROOT / "demos" / "README.md"
 GUIDE = ROOT / "docs" / "weavert-user-extension-guide.md"
+FINDINGS_LEDGER = ROOT / "docs" / "weavert-demo-validation-findings.md"
 PYTHON = sys.executable
 
 DEMO_CASES = (
@@ -295,6 +296,17 @@ README_USER_CENTRIC_SNIPPETS = (
     ),
 )
 
+USER_CENTRIC_FINDINGS_ENTRIES = (
+    "guarded_tool_demo",
+    "scoped_agent_delegation_demo",
+    "inline_vs_fork_skill_demo",
+    "host_registered_hook_demo",
+    "minimal_host_bound_demo",
+    "stream_report_session_demo",
+    "assembly_diagnostics_demo",
+    "durable_resume_demo",
+)
+
 
 @pytest.mark.parametrize(("module_name", "expected_lines"), DEMO_CASES)
 def test_runtime_extension_demo_runs_from_repo_root(
@@ -334,6 +346,15 @@ def test_user_extension_guide_links_the_demo_findings_ledger() -> None:
 
     assert "user-centric validation layer" in contents
     assert "docs/weavert-demo-validation-findings.md" in contents
+
+
+def test_demo_findings_ledger_tracks_each_user_centric_demo() -> None:
+    contents = FINDINGS_LEDGER.read_text(encoding="utf-8")
+
+    assert "## Current entries" in contents
+    for entry_name in USER_CENTRIC_FINDINGS_ENTRIES:
+        assert f"### {entry_name}" in contents
+        assert f"- demo: `{entry_name}`" in contents
 
 
 def test_coding_workflow_demo_live_smoke_reports_auth_failure_without_fallback(monkeypatch) -> None:

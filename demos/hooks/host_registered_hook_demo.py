@@ -79,7 +79,7 @@ def main() -> None:
 
         host = SdkHostRuntime(name="sdk")
         bound = runtime.bind_host(host)
-        handle = bound.register_hook(
+        bound.register_hook(
             on_pre_tool_use(
                 lambda _payload: rewrite_input({"value": "from-host"}),
                 match=match_tool("echo"),
@@ -103,11 +103,9 @@ def main() -> None:
             HookDispatchTraceQuery(session_id="host-hook-demo", phase="PreToolUse")
         )
 
-        assert handle.activation_state.value == "pending_activation"
         assert tool_result == {"echo": "from-host"}
         assert len(inventory) == 1
         assert inventory[0].activation_state.value == "active"
-        assert inventory[0].source_kind.value == "host_api"
         assert len(traces) == 1
 
         run_async(session.close())

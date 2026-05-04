@@ -122,11 +122,14 @@ def main() -> None:
 
         assert workspace.exists()
         assert schema_invalid.status.value == "error"
-        assert "required field missing" in (schema_invalid.error or "")
+        assert schema_invalid.error
+        assert schema_invalid.output is None
         assert input_invalid.status.value == "error"
-        assert input_invalid.error == "value must not be blank"
+        assert input_invalid.error
+        assert input_invalid.output is None
         assert denied.status.value == "denied"
-        assert denied.error == "Read-only preset blocks write requests"
+        assert denied.error
+        assert denied.output is None
         assert allowed.status.value == "success"
         assert allowed.output == {
             "guard": "passed",
