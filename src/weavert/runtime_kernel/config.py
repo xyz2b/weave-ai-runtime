@@ -334,7 +334,10 @@ def _resolve_route_default_model(
     default_model: str | None,
     metadata: Mapping[str, Any] | None = None,
 ) -> str | None:
-    env_name = _coerce_optional_string((metadata or {}).get("default_model_env"))
+    merged_metadata = metadata or {}
+    env_name = _coerce_optional_string(merged_metadata.get("default_model_env"))
+    if env_name is None:
+        env_name = _coerce_optional_string(merged_metadata.get("model_env"))
     if env_name is not None:
         override = os.environ.get(env_name, "").strip()
         if override:

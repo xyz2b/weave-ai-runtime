@@ -2306,6 +2306,41 @@ def test_runtime_preflight_reports_bundled_openai_missing_credentials_before_inv
     assert report.probe.attempted is False
 
 
+def test_runtime_preflight_resolves_default_model_from_provider_model_env(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("PROVIDER_MODEL", "env-model")
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            model_providers={
+                "provider-a": ModelProviderBinding(
+                    client=FakeModelClient([]),
+                    provider_name="provider-a",
+                    metadata={"model_env": "PROVIDER_MODEL"},
+                )
+            },
+            model_routes={
+                "route-a": ModelRouteBinding(
+                    provider_binding="provider-a",
+                    provider_name="provider-a",
+                    default_model="fallback-model",
+                )
+            },
+            default_model_route="route-a",
+        )
+    )
+
+    report = asyncio.run(runtime.preflight_default_model_route())
+
+    assert report.ready is True
+    assert report.failure_class is ModelRoutePreflightFailureClass.NONE
+    assert report.resolved_default_model == "env-model"
+    environment = {entry.name: entry for entry in report.environment}
+    assert environment["PROVIDER_MODEL"].present is True
+
+
 def test_runtime_preflight_supports_optional_provider_specific_probe(
     tmp_path: Path,
     monkeypatch,
@@ -2404,6 +2439,56 @@ def test_runtime_bundled_openai_route_honors_openai_model_override(
     assert produced[-1].text == "ok"
     assert captured["api_key"] == "test-key"
     assert captured["payload"]["model"] == "gpt-env-override"
+
+
+def test_runtime_route_resolution_honors_provider_model_env_override(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    model_client = FakeModelClient(
+        [
+            [
+                ModelStreamEvent(
+                    ModelStreamEventType.MESSAGE_START,
+                    {"request_id": "req-provider-model-env"},
+                ),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "provider env reply"}),
+                ModelStreamEvent(
+                    ModelStreamEventType.MESSAGE_STOP,
+                    {"stop_reason": "end_turn"},
+                ),
+            ]
+        ]
+    )
+    monkeypatch.setenv("PROVIDER_MODEL", "env-model")
+
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            model_providers={
+                "provider-a": ModelProviderBinding(
+                    client=model_client,
+                    provider_name="provider-a",
+                    metadata={"model_env": "PROVIDER_MODEL"},
+                )
+            },
+            model_routes={
+                "route-a": ModelRouteBinding(
+                    provider_binding="provider-a",
+                    provider_name="provider-a",
+                    default_model="fallback-model",
+                )
+            },
+            default_model_route="route-a",
+        )
+    )
+
+    produced = asyncio.run(runtime.run_prompt("Hello provider env", session_id="provider-model-env"))
+
+    assert produced[-1].text == "provider env reply"
+    assert len(model_client.requests) == 1
+    assert model_client.requests[0].model == "env-model"
+    assert model_client.requests[0].resolved_model_route == "route-a"
 
 
 def test_openai_http_error_response_preserves_retryable_context_and_output_limits() -> None:
