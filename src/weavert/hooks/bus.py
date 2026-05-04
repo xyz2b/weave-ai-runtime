@@ -185,6 +185,7 @@ class HookBus:
             normalized_request.scope,
             session_id=session_id,
             turn_id=turn_id,
+            default_lifetime=default_scope_lifetime,
         )
         creation_index = self._next_creation_index()
         handle = HookRegistrationHandle(
@@ -982,6 +983,9 @@ def _sanitize_effect(
     allowed_fields = set(phase_contract.effect_fields)
     if declared_contract.effect_fields:
         allowed_fields &= set(declared_contract.effect_fields)
+    runtime_contract = _coerce_effect_contract(getattr(effect, "contract", None))
+    if runtime_contract.effect_fields:
+        allowed_fields &= set(runtime_contract.effect_fields)
     ignored: list[HookIgnoredEffect] = []
     values = {
         "additional_context": effect.additional_context if effect.additional_context else None,
@@ -1164,6 +1168,8 @@ def _validate_request(
         return "phase_not_public"
     if scope.lifetime == HookScopeLifetime.TURN and scope.turn_id is None:
         return "invalid_turn_scope"
+    if scope.lifetime == HookScopeLifetime.SESSION and scope.session_id is None:
+        return "invalid_session_scope"
     if request.handler.kind.external and not phase_contract.external_handler_allowed:
         return "external_handler_not_allowed_for_phase"
     callback_rejection = _callback_handler_rejection_reason(
@@ -1210,6 +1216,7 @@ def _resolve_scope(
     *,
     session_id: str | None,
     turn_id: str | None,
+    default_lifetime: HookScopeLifetime,
 ) -> HookRegistrationScope:
     resolved_turn_id = scope.turn_id or turn_id
     resolved_session_id = scope.session_id or session_id
@@ -1222,6 +1229,14 @@ def _resolve_scope(
             cleanup_boundary=scope.cleanup_boundary,
         )
     if scope.lifetime == HookScopeLifetime.SESSION:
+        if resolved_session_id is None and default_lifetime == HookScopeLifetime.SESSION_TEMPLATE:
+            return HookRegistrationScope(
+                lifetime=HookScopeLifetime.SESSION_TEMPLATE,
+                inherit_to_children=scope.inherit_to_children,
+                turn_id=None,
+                session_id=None,
+                cleanup_boundary=scope.cleanup_boundary,
+            )
         return HookRegistrationScope(
             lifetime=scope.lifetime,
             inherit_to_children=scope.inherit_to_children,

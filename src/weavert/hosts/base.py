@@ -8,7 +8,13 @@ from typing import TYPE_CHECKING, Any, Callable, Mapping, Protocol, Sequence
 from ..contracts import utc_now
 from ..definitions import PermissionBehavior
 from ..elicitation import ElicitationRequest, ElicitationResponse
-from ..hooks import HookDispatchTraceQuery, HookInventoryQuery, HookRegistrationRequest, HookSourceKind
+from ..hooks import (
+    HookDispatchTraceQuery,
+    HookInventoryQuery,
+    HookRegistrationRequest,
+    HookScopeLifetime,
+    HookSourceKind,
+)
 from ..permissions import PermissionOutcome, PermissionRequest, coerce_permission_outcome
 if TYPE_CHECKING:
     from ..contracts import RuntimeMessage
@@ -357,6 +363,7 @@ class BoundHostRuntime:
             source_kind=HookSourceKind.HOST_API,
             owner=f"host:{self.host.name}",
             source_ref=self.host.name,
+            default_scope_lifetime=HookScopeLifetime.SESSION_TEMPLATE,
         )
 
     def list_hooks(

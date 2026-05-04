@@ -622,7 +622,10 @@ def _contract_from_declaration(value: object) -> HookEffectContract:
     if isinstance(value, Mapping):
         return _coerce_effect_contract(value)
     if callable(value):
-        return _coerce_effect_contract(getattr(value, _EFFECT_FACTORY_CONTRACT_ATTR, None))
+        contract = _coerce_effect_contract(getattr(value, _EFFECT_FACTORY_CONTRACT_ATTR, None))
+        if contract.effect_classes and contract.effect_fields:
+            return HookEffectContract(effect_classes=contract.effect_classes)
+        return contract
     if isinstance(value, Iterable) and not isinstance(value, (str, bytes, HookEffect)):
         return _merge_effect_contracts(*(_contract_from_declaration(item) for item in value))
     return HookEffectContract()
