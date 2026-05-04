@@ -9,7 +9,7 @@ from demos._shared.common import (
     run_session_prompt,
     temporary_workspace,
 )
-from demos._shared.scripted_model import ScriptedModelClient, text_batch, tool_call_batch
+from weavert.testing import ScriptedModelClient, text_batch, tool_call_batch
 
 from weavert import AgentDefinition, ToolDefinition, ToolTraits
 from weavert.hooks import (

@@ -9,8 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from demos._shared.common import extract_tool_result
-from demos._shared.scripted_model import ScriptedModelClient, text_batch, tool_call_batch
+from weavert.testing import ScriptedModelClient, extract_tool_result, text_batch, tool_call_batch
 import demos.apps.code_assistant.__main__ as code_assistant_main
 from demos.apps.code_assistant.app import (
     CODE_ASSISTANT_STATE_ROOT_ENV,

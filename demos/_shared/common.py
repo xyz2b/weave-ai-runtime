@@ -2,45 +2,21 @@ from __future__ import annotations
 
 import asyncio
 import json
-import shutil
-import tempfile
-from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
 from .bootstrap import PROJECT_ROOT
 
-from weavert.contracts import RuntimeMessage, ToolResultBlock
-from weavert.definitions import DefinitionSource
+from weavert.contracts import RuntimeMessage
 from weavert.permissions import AllowAllPermissionService
-from weavert.runtime_kernel import DefinitionSourcePaths
 from weavert.session_runtime import InboundEvent, InboundEventType, SessionController
+from weavert.testing import discovery_source, extract_tool_result, temporary_workspace
 from weavert.turn_engine import TurnStreamEventType
-
-
-def discovery_source(workspace: Path) -> DefinitionSourcePaths:
-    return DefinitionSourcePaths(DefinitionSource.PROJECT, workspace / ".weavert")
 
 
 def demo_workspace(*parts: str) -> Path:
     return PROJECT_ROOT.joinpath("demos", *parts)
 
-
-@contextmanager
-def temporary_workspace(template: Path | None = None):
-    with tempfile.TemporaryDirectory(prefix="weavert-demo-") as tmpdir:
-        workspace = Path(tmpdir)
-        if template is not None:
-            shutil.copytree(template, workspace, dirs_exist_ok=True)
-        yield workspace
-
-
-def extract_tool_result(messages: tuple[RuntimeMessage, ...], tool_use_id: str) -> Any:
-    for message in messages:
-        for block in message.content:
-            if isinstance(block, ToolResultBlock) and block.tool_use_id == tool_use_id:
-                return block.content
-    raise AssertionError(f"Missing tool result for {tool_use_id}")
 
 
 def print_json(label: str, payload: Any) -> None:
@@ -80,5 +56,19 @@ async def close_session_and_wait_for_background_memory(
         await memory_service.wait_for_background_consolidation(normalized)
 
 
+
 def run_async(coro: Any) -> Any:
     return asyncio.run(coro)
+
+
+__all__ = [
+    "AllowAllPermissionService",
+    "close_session_and_wait_for_background_memory",
+    "demo_workspace",
+    "discovery_source",
+    "extract_tool_result",
+    "print_json",
+    "run_async",
+    "run_session_prompt",
+    "temporary_workspace",
+]

@@ -6,13 +6,17 @@ from pathlib import Path
 from typing import Any
 
 from demos._shared.common import (
-    AllowAllPermissionService,
     demo_workspace,
-    discovery_source,
     run_async,
-    temporary_workspace,
 )
-from demos._shared.scripted_model import ScriptedModelClient, text_batch, tool_call_batch
+from weavert import AllowAllPermissionService
+from weavert.testing import (
+    ScriptedModelClient,
+    copied_fixture_workspace,
+    run_workflow_test,
+    text_batch,
+    tool_call_batch,
+)
 
 from weavert.contracts import RuntimeMessage
 from weavert.result_projections import (
@@ -200,18 +204,13 @@ async def run_demo(*, live: bool = False) -> DemoReport:
     mode = "live" if live else "offline"
     model_client = None if live else _offline_client()
 
-    with temporary_workspace(FIXTURE_ROOT) as workspace:
-        config = (
-            RuntimeConfig.for_headless_live(workspace)
-            if live
-            else RuntimeConfig.for_ordinary_workflow(workspace)
-        )
-        config.model_client = model_client
-        # Keep the demo isolated from ambient user definitions while still starting from the preset baseline.
-        config.discovery_sources = (discovery_source(workspace),)
-        runtime = assemble_runtime(config)
-        runtime.services.permissions = AllowAllPermissionService()
+    with copied_fixture_workspace(FIXTURE_ROOT) as fixture:
+        workspace = fixture.workspace_root
         if live:
+            config = RuntimeConfig.for_headless_live(workspace)
+            config.discovery_sources = fixture.discovery_sources
+            runtime = assemble_runtime(config)
+            runtime.services.permissions = AllowAllPermissionService()
             preflight = await runtime.preflight_default_model_route()
             if not preflight.ready:
                 return DemoReport(
@@ -234,7 +233,20 @@ async def run_demo(*, live: bool = False) -> DemoReport:
                     ok=False,
                     error_message=_preflight_error_message(preflight),
                 )
-        outcome = await _run_prompt(runtime=runtime, workspace=workspace)
+            outcome = await _run_prompt(runtime=runtime, workspace=workspace)
+        else:
+            report = await run_workflow_test(
+                DEFAULT_PROMPT,
+                workspace=fixture,
+                model_client=model_client,
+                session_id=SESSION_ID_OFFLINE,
+                agent_name="coding-assistant",
+            )
+            outcome = PromptOutcome(
+                messages=report.messages,
+                terminal_stop_reason=report.terminal_stop_reason,
+                terminal_metadata=report.terminal_metadata,
+            )
 
         review_projection = latest_skill_outcome(outcome.messages, skill_name="review-change")
         review_result = dict(review_projection.payload) if review_projection is not None else None

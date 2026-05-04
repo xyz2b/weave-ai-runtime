@@ -3,16 +3,17 @@ from __future__ import annotations
 import json
 
 from demos._shared.common import (
-    AllowAllPermissionService,
     demo_workspace,
-    discovery_source,
-    extract_tool_result,
     run_async,
-    temporary_workspace,
 )
-from demos._shared.scripted_model import ScriptedModelClient, text_batch, tool_call_batch
-
-from weavert import AgentDefinition
+from weavert import AgentDefinition, AllowAllPermissionService
+from weavert.testing import (
+    ScriptedModelClient,
+    copied_fixture_workspace,
+    extract_tool_result,
+    text_batch,
+    tool_call_batch,
+)
 from weavert.result_projections import final_assistant_text, latest_skill_outcome
 from weavert.runtime_kernel import BuiltinPackConfig, RuntimeConfig, RuntimeDistribution, assemble_runtime
 from weavert.runtime_package_protocols import (
@@ -160,7 +161,8 @@ def _verdict_batch(request):
 
 
 def main() -> None:
-    with temporary_workspace(FIXTURE_ROOT) as workspace:
+    with copied_fixture_workspace(FIXTURE_ROOT) as fixture:
+        workspace = fixture.workspace_root
         client = ScriptedModelClient(
             [
                 _collect_batch,
@@ -169,27 +171,26 @@ def main() -> None:
                 _verdict_batch,
             ]
         )
-        runtime = assemble_runtime(
-            RuntimeConfig(
-                working_directory=workspace,
-                distribution=RuntimeDistribution.CORE,
-                model_client=client,
-                discovery_sources=(discovery_source(workspace),),
-                extra_package_manifests=(_release_package_manifest(),),
-                requested_packages={PACKAGE_NAME},
-                builtins=BuiltinPackConfig(
-                    agents_enabled=False,
-                    skills_enabled=False,
-                    extra_agents=[
-                        AgentDefinition(
-                            name="skill-writer",
-                            description="Draft short release summaries.",
-                            prompt="Write one-sentence release summaries for the release workflow demo.",
-                        )
-                    ],
-                ),
-            )
+        config = RuntimeConfig(
+            working_directory=workspace,
+            distribution=RuntimeDistribution.CORE,
+            model_client=client,
+            discovery_sources=fixture.discovery_sources,
+            extra_package_manifests=(_release_package_manifest(),),
+            requested_packages={PACKAGE_NAME},
+            builtins=BuiltinPackConfig(
+                agents_enabled=False,
+                skills_enabled=False,
+                extra_agents=[
+                    AgentDefinition(
+                        name="skill-writer",
+                        description="Draft short release summaries.",
+                        prompt="Write one-sentence release summaries for the release workflow demo.",
+                    )
+                ],
+            ),
         )
+        runtime = assemble_runtime(config)
         runtime.services.permissions = AllowAllPermissionService()
 
         messages = run_async(

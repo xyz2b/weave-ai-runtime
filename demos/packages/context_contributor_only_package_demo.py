@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from demos._shared.common import AllowAllPermissionService, print_json, run_async, temporary_workspace
-from demos._shared.scripted_model import ScriptedModelClient, text_batch
+from weavert.testing import ScriptedModelClient, text_batch
 
 from weavert import AgentDefinition
 from weavert.runtime_kernel import BuiltinPackConfig, RuntimeConfig, RuntimeDistribution, assemble_runtime

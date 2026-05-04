@@ -255,6 +255,71 @@ reviewer = child_summary(report, agent_name="reviewer")
 
 raw transcript 和 child-run history 仍然是正式底层契约；projection helper 只是把常见问法收敛成稳定、可复用的上层读接口。
 
+#### 2.2.2 Workflow testing kit：优先用 `weavert.testing` 走 deterministic offline validation
+
+从 `2026-05-04` 起，runtime 还提供了一个正式的 `weavert.testing` namespace，把之前散落在 demo-private helper 里的离线 workflow 验证路径产品化成了公共 surface：
+
+- scripted model helper：`ScriptedModelClient`
+- fixture workspace helper：`copied_fixture_workspace(...)`、`temporary_workspace(...)`
+- project discovery helper：`discovery_source(...)`
+- headless workflow harness：`run_workflow_test(...)`
+- common assertions：`assert_tool_outcome(...)`、`assert_skill_outcome(...)`、`assert_child_summary(...)`
+
+推荐用法是：让 fixture helper 复制一个可写 workspace，再把 scripted model 和 public harness 接到同一个 ordinary-workflow path 上。
+
+```python
+import asyncio
+from pathlib import Path
+
+from weavert.testing import (
+    ScriptedModelClient,
+    assert_tool_outcome,
+    copied_fixture_workspace,
+    run_workflow_test,
+    text_batch,
+    tool_call_batch,
+)
+
+FIXTURE_ROOT = Path("demos/projects/workspaces/coding_workflow")
+
+client = ScriptedModelClient(
+    [
+        tool_call_batch(
+            request_id="req-1",
+            tool_name="skill",
+            tool_input={"skill": "coding-loop"},
+            call_id="call-coding-loop",
+        ),
+        text_batch(request_id="req-2", text="done"),
+    ]
+)
+
+async def main() -> None:
+    with copied_fixture_workspace(FIXTURE_ROOT) as fixture:
+        report = await run_workflow_test(
+            "Apply the coding-loop skill and finish with a short summary.",
+            workspace=fixture,
+            model_client=client,
+            session_id="coding-workflow-test",
+            agent_name="coding-assistant",
+        )
+
+        assert report.fixture_source == FIXTURE_ROOT.resolve()
+        assert report.workspace_root != FIXTURE_ROOT.resolve()
+        assert_tool_outcome(report, "skill")
+
+asyncio.run(main())
+```
+
+这层 surface 的目标不是替代 `pytest`，而是把 runtime 自己最常见的 workflow-level test glue 收敛成正式 API：
+
+- 不再要求用户复制 `demos/_shared/*`
+- 不再要求用户自己拼 temporary workspace + `.weavert/` discovery
+- 不再要求用户自己写 `assemble_runtime(...) + run_prompt_report(...) + transcript scraping` glue
+- harness 返回的 `WorkflowTestReport` 直接包裹 canonical `WorkflowRunReport`，所以 shared lifecycle 语义不会和普通 headless run 漂移
+
+如果你只想做 deterministic offline validation，优先从这套 testing namespace 开始；只有在你需要 host binding、interactive approval、或更复杂的 runtime assembly 介入时，再往更低层的 `RuntimeAssembly` surface 走。
+
 ### 2.3 宿主入口：`BoundHostRuntime`
 
 当你要接入的不只是模型调用，而是一个真正的交互宿主时，应从 `weavert.bind_host(host)` 进入。

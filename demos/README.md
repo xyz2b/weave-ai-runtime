@@ -2,7 +2,7 @@
 
 Run every command from the repository root. The demo modules bootstrap `src/` automatically, so they do not require an editable install.
 
-The shared offline model helper lives in [`demos/_shared/scripted_model.py`](./_shared/scripted_model.py). The seam, skill, and project demos use it so the default validation story stays deterministic and does not require external model credentials.
+The public offline workflow testing kit now lives under `weavert.testing`. The seam, skill, and project demos use that shared runtime-owned surface so the default validation story stays deterministic and does not require external model credentials.
 
 ## Layered validation path
 
