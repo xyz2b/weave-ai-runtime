@@ -138,6 +138,7 @@ from ..tool_runtime import ToolContext
 from ..turn_engine.composer import ContextAssembler
 from ..turn_engine.engine import TurnEngine, TurnStreamEvent, TurnStreamEventType, TurnTerminal
 from ..turn_engine.models import ModelRequest, TranscriptStore
+from ..workflow_observability import WorkflowRunObservability, workflow_run_observability_from_report
 from .config import (
     DefinitionSourcePaths,
     RuntimeConfig,
@@ -206,6 +207,7 @@ class WorkflowRunReport:
     session_id: str
     agent_name: str
     cwd: str
+    turn_id: str | None = None
     messages: tuple[RuntimeMessage, ...] = ()
     terminal: TurnTerminal | None = None
     final_status: str = "completed"
@@ -213,9 +215,20 @@ class WorkflowRunReport:
     finalization: WorkflowRunFinalizationReport = field(
         default_factory=WorkflowRunFinalizationReport
     )
+    workflow_observability: WorkflowRunObservability | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "messages", tuple(self.messages))
+        if self.workflow_observability is None:
+            object.__setattr__(
+                self,
+                "workflow_observability",
+                workflow_run_observability_from_report(self),
+            )
+
+    @property
+    def run_id(self) -> str:
+        return self.turn_id or self.session_id
 
 
 @dataclass(frozen=True, slots=True)
@@ -1356,7 +1369,16 @@ class RuntimeAssembly:
         await self._prepare_one_shot_session(session, prompt, metadata=metadata)
         produced: list[RuntimeMessage] = []
         terminal: TurnTerminal | None = None
+        report_turn_id: str | None = None
         async for event in session.stream_until_idle():
+            if report_turn_id is None:
+                request = getattr(event, "request", None)
+                turn_context = getattr(request, "turn_context", None)
+                report_turn_id = (
+                    getattr(turn_context, "turn_id", None)
+                    or getattr(getattr(event, "workflow_observation", None), "turn_id", None)
+                    or session.state.active_turn_id
+                )
             if event.event_type == TurnStreamEventType.MESSAGE and event.message is not None:
                 produced.append(event.message)
             elif event.event_type == TurnStreamEventType.TERMINAL and event.terminal is not None:
@@ -1365,6 +1387,7 @@ class RuntimeAssembly:
             session_id=session.state.session_id,
             agent_name=session.state.current_agent,
             cwd=session.cwd,
+            turn_id=report_turn_id,
             messages=tuple(produced),
             terminal=terminal,
             final_status=_helper_session_close_status(

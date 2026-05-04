@@ -42,6 +42,7 @@ from ..runtime_services import DefaultTranscriptService, RuntimeServices
 from ..tool_runtime import SessionScope
 from ..turn_engine.engine import TurnEngine, TurnStreamEvent, TurnStreamEventType
 from ..turn_engine.models import TranscriptEntry, TranscriptSession, TranscriptStore
+from ..workflow_observability import workflow_host_extension_event_from_turn_event
 from .ingress import SessionIngressProcessor
 from .models import IngressCompletionReceipt, IngressReplayOutput, SessionIngressSnapshot
 
@@ -473,6 +474,9 @@ class SessionController:
                         turn_retrieval_trace = retrieval_trace
                         self.state.metadata["last_memory_retrieval"] = retrieval_trace
                 await self._runtime_services.host.emit_turn_event(self.state.session_id, event)
+                workflow_host_event = workflow_host_extension_event_from_turn_event(event)
+                if workflow_host_event is not None:
+                    await self._runtime_services.host.emit_extension_event(workflow_host_event)
                 if event.event_type == TurnStreamEventType.TERMINAL and event.terminal is not None:
                     last_terminal = event.terminal
                     self._sync_terminal_control_plane_metadata(event.terminal)

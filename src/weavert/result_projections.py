@@ -10,6 +10,11 @@ from .child_result_projection import (
     project_child_run_record,
 )
 from .contracts import MessageRole, RuntimeMessage, ToolResultBlock, ToolUseBlock
+from .workflow_observability import (
+    WorkflowRunObservability,
+    resolve_workflow_run_observability,
+    workflow_run_observability_from_mapping,
+)
 
 _SUCCESS_STOP_REASONS = {"", "completed", "end_turn", "message_stop"}
 
@@ -55,6 +60,7 @@ class ChildSummaryProjection:
     resolved_model_route: str | None = None
     provider_name: str | None = None
     invocation_mode: Any = None
+    workflow_observability: WorkflowRunObservability | None = None
     source_kind: str = "parent_result"
     payload: Mapping[str, Any] = field(default_factory=dict)
 
@@ -100,6 +106,7 @@ class TerminalFailureProjection:
     failure_class: str | None = None
     request_id: str | None = None
     provider_stop_reason: str | None = None
+    workflow_observability: WorkflowRunObservability | None = None
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -228,6 +235,7 @@ def terminal_failure(
         failure_class=failure_class,
         request_id=_coerce_optional_string(normalized.request_id),
         provider_stop_reason=_coerce_optional_string(normalized.provider_stop_reason),
+        workflow_observability=resolve_workflow_run_observability(source),
         metadata=metadata,
     )
 
@@ -477,6 +485,7 @@ def _child_summary_from_mapping(
     if not agent_name and summary is None and status is None:
         return None
     delegation_depth = copied.get("delegation_depth")
+    workflow_observability = workflow_run_observability_from_mapping(copied.get("workflow_observability"))
     return ChildSummaryProjection(
         agent_name=agent_name,
         summary=summary or "",
@@ -496,6 +505,7 @@ def _child_summary_from_mapping(
         resolved_model_route=_coerce_optional_string(copied.get("resolved_model_route")),
         provider_name=_coerce_optional_string(copied.get("provider_name")),
         invocation_mode=copied.get("invocation_mode"),
+        workflow_observability=workflow_observability,
         source_kind=source_kind,
         payload=copied,
     )

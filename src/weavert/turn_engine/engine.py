@@ -39,6 +39,7 @@ from ..contracts import (
     ToolUseBlock,
     compatibility_runtime_context_snapshot,
     coerce_request_override_state,
+    coerce_runtime_private_context,
     coerce_skill_request_override_state,
     deserialize_content_blocks,
     merge_runtime_private_context,
@@ -98,6 +99,11 @@ from ..tool_runtime import (
     ToolScheduler,
     assemble_main_thread_tool_pool,
     maybe_await,
+)
+from ..workflow_observability import (
+    WorkflowObservationEvent,
+    workflow_host_extension_event_from_turn_event,
+    workflow_observation_from_turn_event,
 )
 from .composer import ContextAssembler, PromptComposer
 from .control_plane import (
@@ -276,6 +282,7 @@ class TurnStreamEvent:
     compacted_messages: tuple[RuntimeMessage, ...] = ()
     terminal: TurnTerminal | None = None
     discarded_content: tuple[ContentBlock, ...] = ()
+    workflow_observation: WorkflowObservationEvent | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
@@ -956,16 +963,48 @@ class TurnEngine:
             if queue is not None:
                 queue.append(record)
                 return
+        event = self._annotate_workflow_event(
+            TurnStreamEvent(
+                event_type=TurnStreamEventType.CHILD_RUN,
+                iteration=0,
+                child_run=record,
+            ),
+            session_id=record.session_id,
+            turn_id=record.parent_turn_id or record.turn_id or record.run_id,
+        )
         await maybe_await(
             self._runtime_services.host.emit_turn_event(
                 record.session_id,
-                TurnStreamEvent(
-                    event_type=TurnStreamEventType.CHILD_RUN,
-                    iteration=0,
-                    child_run=record,
-                ),
+                event,
             )
         )
+        workflow_host_event = workflow_host_extension_event_from_turn_event(event)
+        if workflow_host_event is not None:
+            await maybe_await(
+                self._runtime_services.host.emit_extension_event(workflow_host_event)
+            )
+
+    def _annotate_workflow_event(
+        self,
+        event: TurnStreamEvent,
+        *,
+        session_id: str,
+        turn_id: str | None,
+        private_context: RuntimePrivateContext | Mapping[str, object] | None = None,
+        runtime_context: Mapping[str, object] | None = None,
+    ) -> TurnStreamEvent:
+        observation = workflow_observation_from_turn_event(
+            event,
+            session_id=session_id,
+            turn_id=turn_id,
+            private_context=private_context,
+            runtime_context=runtime_context,
+        )
+        if observation is None:
+            return event
+        metadata = dict(event.metadata)
+        metadata["workflow_observation"] = observation.to_dict()
+        return replace(event, workflow_observation=observation, metadata=metadata)
 
     def interrupt(self, reason: str = "interrupt") -> None:
         if self._active_abort_signal is not None:
@@ -1078,6 +1117,7 @@ class TurnEngine:
         model_client_override: ModelClient | None = None,
         session_scope: SessionScope | None = None,
     ) -> AsyncIterator[TurnStreamEvent]:
+        resolved_private_context = coerce_runtime_private_context(private_context)
         async for event in self._run_turn_stream_impl(
             session_id=session_id,
             turn_id=turn_id,
@@ -1090,12 +1130,18 @@ class TurnEngine:
             compaction_fragments=compaction_fragments,
             attachments=attachments,
             prompt_context=prompt_context,
-            private_context=private_context,
+            private_context=resolved_private_context,
             runtime_context=runtime_context,
             model_client_override=model_client_override,
             session_scope=session_scope,
         ):
-            yield event
+            yield self._annotate_workflow_event(
+                event,
+                session_id=session_id,
+                turn_id=turn_id,
+                private_context=resolved_private_context,
+                runtime_context=runtime_context,
+            )
 
     async def run_turn(
         self,

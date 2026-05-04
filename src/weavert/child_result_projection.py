@@ -7,6 +7,11 @@ from .agent_execution import AgentRunRecord
 from .contracts import MessageRole, RuntimeMessage, serialize_content_blocks
 from .definitions import IsolationMode
 from .execution_policy import DelegationPolicy, resolve_delegation_policy
+from .workflow_observability import (
+    serialize_workflow_run_observability,
+    workflow_run_observability_from_agent_result,
+    workflow_run_observability_from_child_run,
+)
 
 
 def project_agent_run_result(
@@ -20,6 +25,9 @@ def project_agent_run_result(
     if isinstance(run_record, AgentRunRecord):
         messages = tuple(run_record.messages or messages)
     projection = _base_projection_from_result(result, run_record, policy=policy, messages=messages)
+    workflow_observability = workflow_run_observability_from_agent_result(result)
+    if workflow_observability is not None:
+        projection["workflow_observability"] = serialize_workflow_run_observability(workflow_observability)
     if policy.include_child_messages:
         projection["messages"] = [_serialize_message(message) for message in messages]
     return projection
@@ -34,6 +42,7 @@ def project_child_run_record(
     projection: dict[str, Any] = {
         "agent": record.agent_name,
         "agent_name": record.agent_name,
+        "session_id": record.session_id,
         "status": record.status.value,
         "background": record.background if hasattr(record, "background") else record.spawn_mode.value == "background",
         "run_id": record.run_id,
@@ -52,6 +61,9 @@ def project_child_run_record(
         "provider_name": record.provider_name,
         "invocation_mode": record.invocation_mode,
     }
+    projection["workflow_observability"] = serialize_workflow_run_observability(
+        workflow_run_observability_from_child_run(record)
+    )
     if policy.include_child_messages:
         projection["messages"] = [_serialize_message(message) for message in record.messages]
     return projection
@@ -110,6 +122,7 @@ def _base_projection_from_result(
     )
     return {
         "agent": getattr(result, "agent_name", None),
+        "session_id": getattr(execution_spec, "session_id", None),
         "status": getattr(result, "status", None),
         "background": bool(getattr(result, "background", False)),
         "run_id": getattr(result, "run_id", None),
