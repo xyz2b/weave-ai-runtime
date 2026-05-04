@@ -11,27 +11,33 @@ If you are starting a brand-new WeaveRT project, begin with the official starter
 This repository now presents the runnable demos as a layered framework-validation path instead of a flat catalog:
 
 1. `Seam basics` validate one stable extension surface at a time.
-2. `Semantic demos` validate how those surfaces behave when hooks or packages change the runtime contract.
-3. `Project demos` validate realistic workflows that stay on the ordinary extension path through workspace-local definitions and bundled runtime surfaces, without custom host binding or builtin replacement.
-4. `Workflow-level live smoke` validates that the same coding workflow and fixture can be exercised against the bundled live provider route before you add heavier integration code.
-5. `Advanced live app demos` validate product-style integration seams such as `bind_host()`, durable state, approvals, and builtin replacement.
+2. `User-centric validation` answers the adopter questions that usually come next: guarded tools, scoped delegation, host binding, report ownership, diagnostics, and durable resume.
+3. `Semantic demos` validate how those surfaces behave when hooks or packages change the runtime contract.
+4. `Project demos` validate realistic workflows that stay on the ordinary extension path through workspace-local definitions and bundled runtime surfaces, without custom host binding or builtin replacement.
+5. `Workflow-level live smoke` validates that the same coding workflow and fixture can be exercised against the bundled live provider route before you add heavier integration code.
+6. `Advanced live app demos` validate product-style integration seams such as `bind_host()`, durable state, approvals, and builtin replacement.
 
 Recommended starting path:
 
 - If you are an ordinary framework user building a new project, generate a starter scaffold first, then come back here to validate the public seams.
-- If you want repo-owned validation after that, start with `Seam basics`, then run `python3 -B -m demos.projects.coding_workflow_demo`.
+- If you want repo-owned validation after that, start with `Seam basics`, then move into `User-centric validation` so you can answer one adopter question at a time before composing a broader workflow.
+- If you want hook- or package-shaped contract changes after that, run the `Semantic demos`.
+- Then run `python3 -B -m demos.projects.coding_workflow_demo`.
 - If that offline coding workflow passes and you want provider-backed evidence for the same workflow, run `python3 -B -m demos.projects.coding_workflow_demo --live`.
 - If you need host-owned UX, durable runtime state, or builtin replacement, move on to the advanced integration sample under `demos/apps/code_assistant/`.
 
 How to interpret failures across the layers:
 
+- seam basics fail -> likely a discovery or stable-seam contract issue
+- user-centric validation fail -> likely a tool-authoring, delegation, host-binding, or runtime-helper contract issue that is still isolated to one named seam
+- semantic demo fail -> likely a hook or package composition issue that changes the baseline seam contract
 - offline coding workflow fail -> likely a framework assembly, workspace-definition, or stable-seam composition issue
 - offline pass but workflow-level live smoke fail -> likely a provider credential, prompt, or open-ended model stability issue
 - offline and workflow-level live smoke pass but advanced app fail -> likely a host, builtin replacement, or product-integration issue
 
 ## Live validation prerequisites
 
-Everything in the seam, semantic, and default project tables below is intentionally offline and deterministic.
+Everything in the seam, user-centric, semantic, and default project tables below is intentionally offline and deterministic.
 If you only want to learn the framework surfaces, stay on that path and do not export any provider credentials.
 
 If you want to exercise the live validation layers, set:
@@ -53,6 +59,33 @@ If you want to exercise the live validation layers, set:
 | Provider-only package | `build_provider_only_invocation_package_manifest()` | `python3 -B -m demos.packages.provider_only_package_demo` | Prints `visible invocations: package-release-check` and the provider registration metadata. |
 | General package contribution | `RuntimePackageManifest` + `PackageContribution` | `python3 -B -m demos.packages.general_package_demo` | Prints the resolved capability payload and the hook-stage context fragment injected by the package. |
 
+## User-centric validation
+
+These demos sit between seam basics and broader workflow samples. They answer focused adopter questions, keep each validation boundary narrow, and pair cleanly with the repo-owned findings ledger at `docs/weavert-demo-validation-findings.md`.
+
+### Focused seam questions
+
+| Demo | Adopter question | Run command | Stable anchors | Why before project demos |
+| --- | --- | --- | --- | --- |
+| Guarded tool | How do I validate schema errors, permission denial, and a successful guarded tool path before I wire the tool into a larger workflow? | `python3 -B -m demos.tools.guarded_tool_demo` | `demo: guarded tool`, `schema validation: rejected invalid input`, `permission path: denied`, `permission path: allowed`, `status: ok` | It isolates the tool contract before the same behavior is hidden inside a multi-step agent loop. |
+| Scoped agent delegation | What actually changes when I delegate to a child agent with a narrower tool pool? | `python3 -B -m demos.agents.scoped_agent_delegation_demo` | `demo: scoped agent delegation`, `visible tools:`, `delegated agent:`, `child summary:`, `status: ok` | It proves tool scoping and child summaries before delegation is mixed into a project workflow. |
+| Inline vs fork skill | When should I keep a skill inline versus forking it to a child agent? | `python3 -B -m demos.skills.inline_vs_fork_skill_demo` | `demo: inline vs fork skill`, `inline result:`, `fork child summary:`, `status: ok` | It makes the execution-mode tradeoff visible before skills become one step in a larger composition. |
+| Host-registered hook | How do I attach a hook from host-owned integration code and confirm that it actually fired? | `python3 -B -m demos.hooks.host_registered_hook_demo` | `demo: host.register_hook`, `hook source: host`, `dispatch traces:`, `status: ok` | It keeps host-owned hook attachment smaller than a full product shell. |
+
+### Minimal host integration
+
+| Demo | Adopter question | Run command | Stable anchors | Why before advanced app samples |
+| --- | --- | --- | --- | --- |
+| Minimal host-bound | What is the smallest stable `RuntimeAssembly.bind_host()` path that still shows lifecycle and turn events? | `python3 -B -m demos.hosts.minimal_host_bound_demo` | `demo: minimal host-bound`, `host lifecycle: startup, ready, shutdown`, `turn terminal observed: true`, `status: ok` | It proves the host seam without immediately pulling in approvals, durable state, or builtin replacement. |
+
+### Runtime helper and diagnostics
+
+| Demo | Adopter question | Run command | Stable anchors | Why before project demos or advanced apps |
+| --- | --- | --- | --- | --- |
+| Stream/report session | Which helper owns the session, and how do I prove a caller-owned session remains reusable? | `python3 -B -m demos.runtime.stream_report_session_demo` | `demo: stream/report session`, `helper-owned report: completed`, `session reusable: true`, `status: ok` | It answers helper-lifecycle questions directly instead of burying them in workflow orchestration. |
+| Assembly diagnostics | How do I inspect assembly posture, visible invocations, and a predictable model-route failure without product UX? | `python3 -B -m demos.runtime.assembly_diagnostics_demo` | `demo: assembly diagnostics`, `assembly preset:`, `visible invocations:`, `failure class:`, `status: ok` | It keeps assembly and route diagnostics below host binding and app-specific presentation. |
+| Durable resume | What does the minimum durable transcript and resume proof look like before I build custom product UX around it? | `python3 -B -m demos.runtime.durable_resume_demo` | `demo: durable resume`, `turn one persisted: true`, `session resumed: true`, `status: ok` | It validates persistence expectations directly, without requiring the advanced app shell. |
+
 ## Semantic demos
 
 | Demo | Extension seam | Run command | Expected output |
@@ -61,7 +94,7 @@ If you want to exercise the live validation layers, set:
 | Runtime config hook | `RuntimeConfig(hooks=...)` | `python3 -B -m demos.hooks.runtime_config_hook_demo` | Prints `hook source: runtime_config` plus matching results in two sessions, showing the hook is attached by default instead of registered per session. |
 | Package activation | `RuntimeConfig.extra_package_manifests` vs `RuntimeConfig.requested_packages` | `python3 -B -m demos.packages.package_activation_demo` | Prints an admitted-but-inactive package with no visible invocations, then the same package activated with `package-release-check` visible. |
 
-After you understand the individual seams, move into the project layer to see the same public surfaces composed into realistic workflows.
+After you validate the focused user-centric layer and any semantic variations you care about, move into the project layer to see the same public surfaces composed into realistic workflows.
 
 ## Project demos
 
@@ -153,7 +186,7 @@ Basic troubleshooting:
 
 ## Advanced live app demos
 
-These demos sit above the seam, semantic, project, and workflow-level live-smoke layers.
+These demos sit above the seam, user-centric, semantic, project, and workflow-level live-smoke layers.
 They are advanced integration samples, not the baseline getting-started path for ordinary framework users.
 
 | Demo | What it validates | Run command | Expected output |

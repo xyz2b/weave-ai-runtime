@@ -9,7 +9,8 @@
 3. 哪些字段虽然会被解析，但当前不应该当作稳定扩展面依赖。
 
 如果你想先跑一遍再回来读 contract，先看 `demos/README.md`。  
-那里把 file-backed `tool` / `agent` / `skill`、`session.register_hook(...)`、provider-only package 和 general `RuntimePackageManifest` demo 放在同一个可运行入口里；本文继续保留为稳定字段、边界和推荐路径的说明文档。
+那里先给出 seam-basics demos，再给出一个按 adopter question 组织的 user-centric validation layer：guarded tool、scoped agent delegation、inline-vs-fork skill、host-side hook registration、minimal host binding，以及 runtime helper / diagnostics / durable resume demo。  
+这些 demo 仍然是 validation story，不替代 `docs/weavert-starter-scaffolds.md` 里的 starter scaffold 路径；本文继续保留为稳定字段、边界和推荐路径的说明文档。
 
 结论先说：
 
@@ -21,11 +22,14 @@
 推荐学习顺序：
 
 - 先跑 `demos/README.md` 里的 seam-basics demos，理解最小稳定扩展面。
-- 然后跑 `python3 -B -m demos.projects.coding_workflow_demo`，确认普通用户只靠 workspace-local `tool` / `agent` / `skill` 加 bundled coding tools 就能完成一个真实的 coding workflow。
+- 然后跑 `demos/README.md` 里的 user-centric validation layer，把 guarded tool、delegation、skill mode、minimal host、runtime helper / diagnostics 这些常见 adopter question 单独验证掉。
+- 如果你还想看 hook / package 这类“改运行时语义”的路径，再补跑 README 里的 semantic demos。
+- 再跑 `python3 -B -m demos.projects.coding_workflow_demo`，确认普通用户只靠 workspace-local `tool` / `agent` / `skill` 加 bundled coding tools 就能完成一个真实的 coding workflow。
 - 需要 provider-backed 证据时，再跑 `python3 -B -m demos.projects.coding_workflow_demo --live`。
 - 只有当你确实要接 `HostRuntime`、审批、durable state 或 builtin replacement 时，再进入 `demos/apps/code_assistant/` 这类 HostRuntime-heavy advanced sample。
 
-如果你想看一份基于当前 demo 的 runtime 层验证总结，了解“哪些能力已经被验证成立、哪些仍然是 runtime 易用性缺口”，可以继续看 `docs/weavert-runtime-validation-findings.md`。
+如果你想看当前 demo authoring 暴露出来的 follow-up ledger，先看 `docs/weavert-demo-validation-findings.md`。  
+如果你想看一份更偏历史总结的 runtime 层验证回顾，了解“哪些能力已经被验证成立、哪些仍然是 runtime 易用性缺口”，再看 `docs/weavert-runtime-validation-findings.md`。
 
 ## 1. 先分清三层扩展面
 

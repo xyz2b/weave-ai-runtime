@@ -14,6 +14,7 @@ from weavert.contracts import MessageRole, RuntimeMessage, TextBlock, ToolResult
 
 ROOT = Path(__file__).resolve().parents[1]
 README = ROOT / "demos" / "README.md"
+GUIDE = ROOT / "docs" / "weavert-user-extension-guide.md"
 PYTHON = sys.executable
 
 DEMO_CASES = (
@@ -42,6 +43,35 @@ DEMO_CASES = (
         ),
     ),
     (
+        "demos.tools.guarded_tool_demo",
+        (
+            "demo: guarded tool",
+            "schema validation: rejected invalid input",
+            "permission path: denied",
+            "permission path: allowed",
+            "status: ok",
+        ),
+    ),
+    (
+        "demos.agents.scoped_agent_delegation_demo",
+        (
+            "demo: scoped agent delegation",
+            "visible tools: collect_scope",
+            "delegated agent: scoped-worker",
+            "child summary: worker summary: scoped tools only",
+            "status: ok",
+        ),
+    ),
+    (
+        "demos.skills.inline_vs_fork_skill_demo",
+        (
+            "demo: inline vs fork skill",
+            "inline result: inline note for demo-user",
+            "fork child summary: forked child wrote a scoped summary",
+            "status: ok",
+        ),
+    ),
+    (
         "demos.skills.inline_skill_hook_demo",
         (
             "demo: inline skill hooks",
@@ -65,6 +95,15 @@ DEMO_CASES = (
             "hook source: runtime_config",
             "session one result: runtime-default",
             "session two result: runtime-default",
+            "status: ok",
+        ),
+    ),
+    (
+        "demos.hooks.host_registered_hook_demo",
+        (
+            "demo: host.register_hook",
+            "hook source: host",
+            "dispatch traces: 1",
             "status: ok",
         ),
     ),
@@ -119,6 +158,43 @@ DEMO_CASES = (
             "status: ok",
         ),
     ),
+    (
+        "demos.hosts.minimal_host_bound_demo",
+        (
+            "demo: minimal host-bound",
+            "host lifecycle: startup, ready, shutdown",
+            "turn terminal observed: true",
+            "status: ok",
+        ),
+    ),
+    (
+        "demos.runtime.stream_report_session_demo",
+        (
+            "demo: stream/report session",
+            "helper-owned report: completed",
+            "session reusable: true",
+            "status: ok",
+        ),
+    ),
+    (
+        "demos.runtime.assembly_diagnostics_demo",
+        (
+            "demo: assembly diagnostics",
+            "assembly preset: headless-live",
+            "visible invocations: diagnostic-note",
+            "failure class: missing_env",
+            "status: ok",
+        ),
+    ),
+    (
+        "demos.runtime.durable_resume_demo",
+        (
+            "demo: durable resume",
+            "turn one persisted: true",
+            "session resumed: true",
+            "status: ok",
+        ),
+    ),
 )
 
 
@@ -140,6 +216,31 @@ def test_runtime_extension_demo_runs_from_repo_root(
 
     for line in expected_lines:
         assert line in completed.stdout
+
+
+def test_demo_docs_expose_user_centric_validation_and_findings_ledger() -> None:
+    contents = README.read_text(encoding="utf-8")
+
+    assert "## User-centric validation" in contents
+    assert "docs/weavert-demo-validation-findings.md" in contents
+    for module_name in (
+        "demos.tools.guarded_tool_demo",
+        "demos.agents.scoped_agent_delegation_demo",
+        "demos.skills.inline_vs_fork_skill_demo",
+        "demos.hooks.host_registered_hook_demo",
+        "demos.hosts.minimal_host_bound_demo",
+        "demos.runtime.stream_report_session_demo",
+        "demos.runtime.assembly_diagnostics_demo",
+        "demos.runtime.durable_resume_demo",
+    ):
+        assert f"python3 -B -m {module_name}" in contents
+
+
+def test_user_extension_guide_links_the_demo_findings_ledger() -> None:
+    contents = GUIDE.read_text(encoding="utf-8")
+
+    assert "user-centric validation layer" in contents
+    assert "docs/weavert-demo-validation-findings.md" in contents
 
 
 def test_coding_workflow_demo_live_smoke_reports_auth_failure_without_fallback(monkeypatch) -> None:
