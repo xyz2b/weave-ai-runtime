@@ -100,7 +100,13 @@ async def _run_case(permission_service, payload):
 
 def main() -> None:
     with temporary_workspace() as workspace:
-        invalid = run_async(_run_case(ReadOnlyPermissionService(), {"mode": "write"}))
+        schema_invalid = run_async(_run_case(ReadOnlyPermissionService(), {"mode": "write"}))
+        input_invalid = run_async(
+            _run_case(
+                AllowAllPermissionService(),
+                {"value": "   ", "mode": "read"},
+            )
+        )
         denied = run_async(
             _run_case(
                 ReadOnlyPermissionService(),
@@ -115,8 +121,10 @@ def main() -> None:
         )
 
         assert workspace.exists()
-        assert invalid.status.value == "error"
-        assert "required field missing" in (invalid.error or "")
+        assert schema_invalid.status.value == "error"
+        assert "required field missing" in (schema_invalid.error or "")
+        assert input_invalid.status.value == "error"
+        assert input_invalid.error == "value must not be blank"
         assert denied.status.value == "denied"
         assert denied.error == "Read-only preset blocks write requests"
         assert allowed.status.value == "success"
@@ -128,6 +136,7 @@ def main() -> None:
 
         print("demo: guarded tool")
         print("schema validation: rejected invalid input")
+        print("input validation: rejected blank value")
         print("permission path: denied")
         print("permission path: allowed")
         print("status: ok")

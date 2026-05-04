@@ -47,6 +47,7 @@ DEMO_CASES = (
         (
             "demo: guarded tool",
             "schema validation: rejected invalid input",
+            "input validation: rejected blank value",
             "permission path: denied",
             "permission path: allowed",
             "status: ok",
@@ -103,6 +104,7 @@ DEMO_CASES = (
         (
             "demo: host.register_hook",
             "hook source: host",
+            "hook activation: active",
             "dispatch traces: 1",
             "status: ok",
         ),
@@ -197,6 +199,102 @@ DEMO_CASES = (
     ),
 )
 
+README_USER_CENTRIC_SNIPPETS = (
+    (
+        "demos.tools.guarded_tool_demo",
+        "How do I validate custom input guards, schema errors, permission denial, and a successful guarded tool path before I wire the tool into a larger workflow?",
+        (
+            "demo: guarded tool",
+            "schema validation: rejected invalid input",
+            "input validation: rejected blank value",
+            "permission path: denied",
+            "permission path: allowed",
+            "status: ok",
+        ),
+        "It isolates the tool contract before the same behavior is hidden inside a multi-step agent loop.",
+    ),
+    (
+        "demos.agents.scoped_agent_delegation_demo",
+        "What actually changes when I delegate to a child agent with a narrower tool pool?",
+        (
+            "demo: scoped agent delegation",
+            "visible tools:",
+            "delegated agent:",
+            "child summary:",
+            "status: ok",
+        ),
+        "It proves tool scoping and child summaries before delegation is mixed into a project workflow.",
+    ),
+    (
+        "demos.skills.inline_vs_fork_skill_demo",
+        "When should I keep a skill inline versus forking it to a child agent?",
+        (
+            "demo: inline vs fork skill",
+            "inline result:",
+            "fork child summary:",
+            "status: ok",
+        ),
+        "It makes the execution-mode tradeoff visible before skills become one step in a larger composition.",
+    ),
+    (
+        "demos.hooks.host_registered_hook_demo",
+        "How do I attach a hook from host-owned integration code, confirm that it materialized as an active session hook, and prove that it actually fired?",
+        (
+            "demo: host.register_hook",
+            "hook source: host",
+            "hook activation: active",
+            "dispatch traces:",
+            "status: ok",
+        ),
+        "It keeps host-owned hook attachment smaller than a full product shell.",
+    ),
+    (
+        "demos.hosts.minimal_host_bound_demo",
+        "What is the smallest stable `RuntimeAssembly.bind_host()` path that still shows lifecycle and turn events?",
+        (
+            "demo: minimal host-bound",
+            "host lifecycle: startup, ready, shutdown",
+            "turn terminal observed: true",
+            "status: ok",
+        ),
+        "It proves the host seam without immediately pulling in approvals, durable state, or builtin replacement.",
+    ),
+    (
+        "demos.runtime.stream_report_session_demo",
+        "Which helper owns the session, and how do I prove a caller-owned session remains reusable?",
+        (
+            "demo: stream/report session",
+            "helper-owned report: completed",
+            "session reusable: true",
+            "status: ok",
+        ),
+        "It answers helper-lifecycle questions directly instead of burying them in workflow orchestration.",
+    ),
+    (
+        "demos.runtime.assembly_diagnostics_demo",
+        "How do I inspect assembly posture, visible invocations, and a predictable model-route failure without product UX?",
+        (
+            "demo: assembly diagnostics",
+            "assembly preset:",
+            "visible invocations:",
+            "failure class:",
+            "status: ok",
+        ),
+        "It keeps assembly and route diagnostics below host binding and app-specific presentation.",
+    ),
+    (
+        "demos.runtime.durable_resume_demo",
+        "What does the minimum durable transcript and resume proof look like before I build custom product UX around it?",
+        (
+            "demo: durable resume",
+            "turn one persisted: true",
+            "session resumed: true",
+            "status: ok",
+        ),
+        "It validates persistence expectations directly, without requiring the advanced app shell.",
+    ),
+)
+
 
 @pytest.mark.parametrize(("module_name", "expected_lines"), DEMO_CASES)
 def test_runtime_extension_demo_runs_from_repo_root(
@@ -223,17 +321,12 @@ def test_demo_docs_expose_user_centric_validation_and_findings_ledger() -> None:
 
     assert "## User-centric validation" in contents
     assert "docs/weavert-demo-validation-findings.md" in contents
-    for module_name in (
-        "demos.tools.guarded_tool_demo",
-        "demos.agents.scoped_agent_delegation_demo",
-        "demos.skills.inline_vs_fork_skill_demo",
-        "demos.hooks.host_registered_hook_demo",
-        "demos.hosts.minimal_host_bound_demo",
-        "demos.runtime.stream_report_session_demo",
-        "demos.runtime.assembly_diagnostics_demo",
-        "demos.runtime.durable_resume_demo",
-    ):
+    for module_name, question, anchors, why in README_USER_CENTRIC_SNIPPETS:
         assert f"python3 -B -m {module_name}" in contents
+        assert question in contents
+        for anchor in anchors:
+            assert anchor in contents
+        assert why in contents
 
 
 def test_user_extension_guide_links_the_demo_findings_ledger() -> None:

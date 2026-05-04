@@ -106,6 +106,7 @@ def main() -> None:
         assert handle.activation_state.value == "pending_activation"
         assert tool_result == {"echo": "from-host"}
         assert len(inventory) == 1
+        assert inventory[0].activation_state.value == "active"
         assert inventory[0].source_kind.value == "host_api"
         assert len(traces) == 1
 
@@ -114,6 +115,7 @@ def main() -> None:
 
         print("demo: host.register_hook")
         print("hook source: host")
+        print(f"hook activation: {inventory[0].activation_state.value}")
         print(f"dispatch traces: {len(traces)}")
         print("status: ok")
 
