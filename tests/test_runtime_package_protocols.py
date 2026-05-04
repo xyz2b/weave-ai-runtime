@@ -9,6 +9,7 @@ from typing import Any
 
 import pytest
 
+import weavert
 import weavert.runtime_kernel.kernel as runtime_kernel_module
 from weavert.contracts import MessageRole, RuntimeMessage
 from weavert.devtools.builtins import devtools_builtin_tools
@@ -2735,6 +2736,127 @@ def test_package_builder_family_preserves_manifest_backed_registration_and_metad
         "package_pattern": "provider-only",
         "registration_path": "PackageContribution.invocation_providers",
     }
+
+
+def test_package_builder_family_preserves_explicit_empty_dependencies() -> None:
+    capability_manifest = build_capability_only_package_manifest(
+        name="weavert-capability-only",
+        dependencies=(),
+        capabilities=(CapabilityPackageBindingSpec(key="demo.release.freeze", value=True),),
+    )
+    assert capability_manifest.dependencies == ()
+    assert capability_manifest.metadata["baseline_dependencies"] == []
+
+    context_manifest = build_context_contributor_only_package_manifest(
+        name="weavert-context-only",
+        dependencies=(),
+        context_contributors=(
+            ContextContributorPackageBindingSpec(
+                name="demo.release.freeze.notice",
+                stage=ContextContributorStage.HOOKS,
+                contributor=object(),
+            ),
+        ),
+    )
+    assert context_manifest.dependencies == ()
+    assert context_manifest.metadata["baseline_dependencies"] == []
+
+    provider_manifest = build_provider_only_invocation_package_manifest(
+        name="weavert-provider-only",
+        dependencies=(),
+        provider_name="package-commands",
+        provider=StaticInvocationProvider(
+            "package-commands",
+            (
+                _invocation_definition(
+                    "package-release-check",
+                    target_name="package.release_check",
+                    origin_path="package-release-check.py",
+                ),
+            ),
+        ),
+    )
+    assert provider_manifest.dependencies == ()
+    assert provider_manifest.metadata["baseline_dependencies"] == []
+
+
+def test_package_builder_family_rejects_conflicting_builder_owned_manifest_metadata() -> None:
+    with pytest.raises(ValueError, match="baseline_dependencies, package_pattern"):
+        build_capability_only_package_manifest(
+            name="weavert-capability-only",
+            capabilities=(CapabilityPackageBindingSpec(key="demo.release.freeze", value=True),),
+            manifest_metadata={
+                "baseline_dependencies": ["custom"],
+                "package_pattern": "custom",
+            },
+        )
+
+    with pytest.raises(ValueError, match="context_contributor_registration_path, package_pattern"):
+        build_context_contributor_only_package_manifest(
+            name="weavert-context-only",
+            context_contributors=(
+                ContextContributorPackageBindingSpec(
+                    name="demo.release.freeze.notice",
+                    stage=ContextContributorStage.HOOKS,
+                    contributor=object(),
+                ),
+            ),
+            manifest_metadata={
+                "package_pattern": "custom",
+                "context_contributor_registration_path": "custom.path",
+            },
+        )
+
+    with pytest.raises(ValueError, match="package_pattern, provider_registration_path"):
+        build_provider_only_invocation_package_manifest(
+            name="weavert-provider-only",
+            provider_name="package-commands",
+            provider=StaticInvocationProvider(
+                "package-commands",
+                (
+                    _invocation_definition(
+                        "package-release-check",
+                        target_name="package.release_check",
+                        origin_path="package-release-check.py",
+                    ),
+                ),
+            ),
+            manifest_metadata={
+                "package_pattern": "custom",
+                "provider_registration_path": "custom.path",
+            },
+        )
+
+
+def test_package_builder_family_allows_matching_builder_owned_manifest_metadata() -> None:
+    manifest = build_capability_only_package_manifest(
+        name="weavert-capability-only",
+        dependencies=(),
+        capabilities=(CapabilityPackageBindingSpec(key="demo.release.freeze", value=True),),
+        manifest_metadata={
+            "baseline_dependencies": [],
+            "package_pattern": "capability-only",
+            "custom_metadata": "kept",
+        },
+    )
+
+    assert manifest.metadata["baseline_dependencies"] == []
+    assert manifest.metadata["package_pattern"] == "capability-only"
+    assert manifest.metadata["custom_metadata"] == "kept"
+
+
+def test_package_builder_family_is_exported_on_root_public_api() -> None:
+    assert weavert.CapabilityPackageBindingSpec is CapabilityPackageBindingSpec
+    assert weavert.ContextContributorPackageBindingSpec is ContextContributorPackageBindingSpec
+    assert weavert.build_capability_only_package_manifest is build_capability_only_package_manifest
+    assert (
+        weavert.build_context_contributor_only_package_manifest
+        is build_context_contributor_only_package_manifest
+    )
+    assert (
+        weavert.build_provider_only_invocation_package_manifest
+        is build_provider_only_invocation_package_manifest
+    )
 
 
 def test_provider_only_runtime_packages_publish_pre_session_catalogs_and_metadata(

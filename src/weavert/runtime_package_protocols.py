@@ -692,9 +692,11 @@ def _build_manifest_backed_service_package(
 
 
 def _normalize_package_builder_dependencies(dependencies: Sequence[str]) -> tuple[str, ...]:
+    if dependencies is None:
+        dependencies = ("weavert-core",)
     return tuple(
         canonical_first_party_name(str(item))
-        for item in (dependencies or ("weavert-core",))
+        for item in dependencies
     )
 
 
@@ -725,9 +727,21 @@ def _builder_manifest_metadata(
     manifest_metadata: Mapping[str, Any] | None,
 ) -> dict[str, Any]:
     metadata = dict(manifest_metadata or {})
-    metadata.setdefault("baseline_dependencies", list(dependencies))
-    for key, value in default_metadata.items():
-        metadata.setdefault(key, value)
+    builder_owned_metadata = {
+        "baseline_dependencies": list(dependencies),
+        **dict(default_metadata),
+    }
+    conflicting_keys = sorted(
+        key
+        for key, value in builder_owned_metadata.items()
+        if key in metadata and metadata[key] != value
+    )
+    if conflicting_keys:
+        raise ValueError(
+            "manifest_metadata must not override builder-owned keys: "
+            + ", ".join(conflicting_keys)
+        )
+    metadata.update(builder_owned_metadata)
     return metadata
 
 
