@@ -2321,6 +2321,108 @@ def test_runtime_stream_prompt_report_async_context_manager_closes_early_exit(
     assert closed == ["interrupted"]
 
 
+def test_runtime_stream_prompt_report_async_context_manager_skips_unused_run(
+    tmp_path: Path,
+) -> None:
+    model_client = InterruptibleModelClient()
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            model_client=model_client,
+        )
+    )
+    closed: list[str] = []
+    runtime.services.hook_bus.register(
+        session_id="helper-stream-unused-context",
+        owner="test",
+        phase=RuntimeHookPhase.SESSION_END,
+        handler=lambda payload: closed.append(payload.final_status),
+    )
+
+    async def scenario():
+        async with runtime.stream_prompt_report(
+            "Hello runtime",
+            session_id="helper-stream-unused-context",
+        ) as stream:
+            pass
+        report = await stream.report()
+        registered = runtime.services.session_registry.get("helper-stream-unused-context")
+        return report, registered
+
+    report, registered = asyncio.run(scenario())
+
+    assert model_client.requests == []
+    assert report.final_status == "interrupted"
+    assert report.terminal is None
+    assert report.messages == ()
+    assert registered is None
+    assert closed == []
+
+
+def test_runtime_stream_prompt_report_in_session_async_context_manager_skips_unused_run(
+    tmp_path: Path,
+) -> None:
+    model_client = FakeModelClient(
+        [
+            [
+                ModelStreamEvent(
+                    ModelStreamEventType.MESSAGE_START,
+                    {"request_id": "req-caller-unused-context-follow-up"},
+                ),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "follow up"}),
+                ModelStreamEvent(
+                    ModelStreamEventType.MESSAGE_STOP,
+                    {"stop_reason": "end_turn"},
+                ),
+            ]
+        ]
+    )
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            model_client=model_client,
+        )
+    )
+    session = runtime.create_session(session_id="caller-stream-unused-context")
+
+    async def scenario():
+        async with runtime.stream_prompt_report_in_session(
+            session,
+            "Hello runtime",
+        ) as stream:
+            pass
+        report = await stream.report()
+        request_count_after_context = len(model_client.requests)
+        status_after_context = session.state.status.value
+        follow_up = await runtime.run_prompt_report_in_session(session, "Second turn")
+        status_after_follow_up = session.state.status.value
+        await session.close()
+        return (
+            report,
+            follow_up,
+            request_count_after_context,
+            status_after_context,
+            status_after_follow_up,
+        )
+
+    (
+        report,
+        follow_up,
+        request_count_after_context,
+        status_after_context,
+        status_after_follow_up,
+    ) = asyncio.run(scenario())
+
+    assert request_count_after_context == 0
+    assert status_after_context == "idle"
+    assert report.final_status == "interrupted"
+    assert report.terminal is None
+    assert report.messages == ()
+    assert follow_up.final_status == "completed"
+    assert follow_up.messages[-1].text == "follow up"
+    assert status_after_follow_up == "ready"
+
+
 def test_runtime_stream_prompt_report_emits_no_additional_events_after_aclose(
     tmp_path: Path,
 ) -> None:
@@ -2390,6 +2492,56 @@ def test_runtime_stream_prompt_report_aclose_after_terminal_keeps_completed_stat
     assert report.final_status == "completed"
     assert report.terminal is not None
     assert report.terminal.stop_reason == "end_turn"
+
+
+def test_runtime_stream_prompt_report_rejects_multiple_iteration_consumers(
+    tmp_path: Path,
+) -> None:
+    model_client = FakeModelClient(
+        [
+            [
+                ModelStreamEvent(
+                    ModelStreamEventType.MESSAGE_START,
+                    {"request_id": "req-stream-single-consumer"},
+                ),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "single consumer"}),
+                ModelStreamEvent(
+                    ModelStreamEventType.MESSAGE_STOP,
+                    {"stop_reason": "end_turn"},
+                ),
+            ]
+        ]
+    )
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            model_client=model_client,
+        )
+    )
+
+    async def scenario():
+        stream = runtime.stream_prompt_report(
+            "Hello runtime",
+            session_id="helper-stream-single-consumer",
+        )
+        results = await asyncio.gather(
+            anext(stream),
+            anext(stream),
+            return_exceptions=True,
+        )
+        report = await stream.report()
+        return results, report
+
+    results, report = asyncio.run(scenario())
+
+    events = [item for item in results if not isinstance(item, Exception)]
+    errors = [item for item in results if isinstance(item, Exception)]
+    assert len(events) == 1
+    assert len(errors) == 1
+    assert isinstance(errors[0], RuntimeError)
+    assert "one iteration consumer task" in str(errors[0])
+    assert report.final_status == "completed"
+    assert report.messages[-1].text == "single consumer"
 
 
 def test_runtime_workflow_run_report_helpers_preserve_failure_terminal_details_after_refactor(

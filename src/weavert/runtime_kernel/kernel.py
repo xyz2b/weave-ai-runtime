@@ -28,6 +28,7 @@ from ..contracts import (
     PromptContextEnvelope,
     RuntimeMessage,
     RuntimePrivateContext,
+    SessionStatus,
     merge_runtime_private_context,
     serialize_content_blocks,
 )
@@ -274,11 +275,24 @@ class WorkflowRunReportStream:
         self._interrupt_requested = False
         self._explicit_close_requested = False
         self._iteration_finished = False
+        self._iteration_owner: asyncio.Task[Any] | None = None
 
     def __aiter__(self) -> "WorkflowRunReportStream":
         return self
 
     async def __anext__(self) -> TurnStreamEvent:
+        current_task = asyncio.current_task()
+        if (
+            self._iteration_owner is not None
+            and current_task is not None
+            and self._iteration_owner is not current_task
+            and not self._iteration_finished
+        ):
+            raise RuntimeError(
+                "WorkflowRunReportStream supports only one iteration consumer task"
+            )
+        if self._iteration_owner is None and current_task is not None:
+            self._iteration_owner = current_task
         async with self._lock:
             if self._failure is not None:
                 raise self._failure
@@ -320,10 +334,31 @@ class WorkflowRunReportStream:
     async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
         _ = exc_type, tb
         try:
+            async with self._lock:
+                if (
+                    self._report is None
+                    and self._failure is None
+                    and not self._started
+                ):
+                    self._close_without_start_locked()
+                    return
             await self.aclose()
         except Exception:
             if exc is None:
                 raise
+
+    def _close_without_start_locked(self) -> None:
+        self._explicit_close_requested = True
+        self._iteration_finished = True
+        self._collector.final_status = "interrupted"
+        self._report = _workflow_run_report_from_collector(
+            self._session,
+            self._collector,
+            session_owner=self._session_owner,
+            finalization=WorkflowRunFinalizationReport(),
+        )
+        if self._session_owner == "helper":
+            _workflow_run_discard_unused_helper_owned_session(self._session)
 
     async def _ensure_started_locked(self) -> None:
         if self._started:
@@ -4937,6 +4972,28 @@ async def _workflow_run_complete_report(
 def _workflow_run_reset_caller_owned_session(session: SessionController) -> None:
     session.state.active_turn_id = None
     session.state.status = SessionStatus.READY
+
+
+def _workflow_run_discard_unused_helper_owned_session(session: SessionController) -> None:
+    session.state.active_turn_id = None
+    session.state.status = SessionStatus.INTERRUPTED
+    session.state.queued_commands.clear()
+    if hasattr(session, "_started"):
+        session._started = False
+    if hasattr(session, "_session_open_dispatched"):
+        session._session_open_dispatched = False
+    if hasattr(session, "_closed"):
+        session._closed = True
+    if hasattr(session.runtime_services, "session_registry"):
+        session.runtime_services.session_registry.unregister(
+            session.state.session_id,
+            session=session,
+        )
+    try:
+        if session.runtime_services.hook_bus is not None:
+            session.runtime_services.hook_bus.clear_session(session.state.session_id)
+    except Exception:
+        pass
 
 
 async def _workflow_run_finalization_report(
