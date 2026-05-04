@@ -107,13 +107,27 @@ Responses function tools 使用 strict schema；因此 bundled adapter 会对 ru
 
 如果你要把 runtime 接到 live OpenAI route，优先检查：
 
-1. `OPENAI_API_KEY` 是否存在
-2. tool `input_schema` 是否是显式 object schema
-3. 是否误用了 schema-valued `additionalProperties`
-4. 是否期望 provider 自己并行执行写工具
-5. 是否把 provider response id 误当成 runtime state authority
+1. 先跑一次 `await runtime.preflight_default_model_route()`，看结构化 report 里的 `ready`、`failure_class`、`diagnostics`
+2. `OPENAI_API_KEY` 是否存在
+3. tool `input_schema` 是否是显式 object schema
+4. 是否误用了 schema-valued `additionalProperties`
+5. 是否期望 provider 自己并行执行写工具
+6. 是否把 provider response id 误当成 runtime state authority
 
 如果这些条件都满足，`openai_default` 就应当能作为默认 bundled live adapter 直接参与完整 query stack。
+
+一个最小 preflight 例子：
+
+```python
+import asyncio
+from pathlib import Path
+
+from weavert.runtime_kernel import RuntimeConfig, assemble_runtime
+
+runtime = assemble_runtime(RuntimeConfig.for_headless_live(Path.cwd()))
+report = asyncio.run(runtime.preflight_default_model_route())
+print(report.to_dict())
+```
 
 ## 8. Live smoke script
 
@@ -136,4 +150,5 @@ python3 scripts/openai_responses_live_smoke.py
 - runtime 是否把这些 tool call 继续承接成后续 `function_call_output` continuation
 - 如果某个网关仍然返回空的 `response.completed.output`，adapter-local fallback 是否命中
 
+脚本现在会先跑 runtime-owned preflight；如果 preflight 没过，会直接打印结构化 `preflight` report 并退出。
 如果脚本返回 `ok: true`，通常就说明默认 bundled live OpenAI path 在当前环境里是通的；如果失败，输出里的 `checks`、`attempts` 和 `requests` 字段会帮助定位是凭证、网关兼容性还是 runtime continuation 问题。

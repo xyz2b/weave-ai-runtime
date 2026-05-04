@@ -38,6 +38,16 @@ from .kernel import (
     assemble_runtime,
     build_runtime_kernel,
 )
+from .preflight import (
+    ModelRouteEnvironmentRequirement,
+    ModelRoutePreflightDiagnostic,
+    ModelRoutePreflightFailureClass,
+    ModelRoutePreflightProbeProvider,
+    ModelRoutePreflightProbeReport,
+    ModelRoutePreflightProbeRequest,
+    ModelRoutePreflightProbeResult,
+    ModelRoutePreflightReport,
+)
 
 __all__ = [
     "DEFAULT_RUNTIME_DISTRIBUTION",
@@ -50,6 +60,14 @@ __all__ = [
     "JobExecutorBinding",
     "ModelProviderBinding",
     "ModelRouteBinding",
+    "ModelRouteEnvironmentRequirement",
+    "ModelRoutePreflightDiagnostic",
+    "ModelRoutePreflightFailureClass",
+    "ModelRoutePreflightProbeProvider",
+    "ModelRoutePreflightProbeReport",
+    "ModelRoutePreflightProbeRequest",
+    "ModelRoutePreflightProbeResult",
+    "ModelRoutePreflightReport",
     "RuntimeAssemblyPresetApplication",
     "RuntimeAssemblyPresetDefinition",
     "RuntimeAssemblyPresetName",

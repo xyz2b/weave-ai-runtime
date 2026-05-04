@@ -114,6 +114,9 @@ from pathlib import Path
 from weavert.runtime_kernel import RuntimeConfig, assemble_runtime
 
 runtime = assemble_runtime(RuntimeConfig.for_headless_live(Path.cwd()))
+preflight = asyncio.run(runtime.preflight_default_model_route())
+if not preflight.ready:
+    raise SystemExit(preflight.to_dict())
 messages = asyncio.run(runtime.run_prompt("Summarize this repository and use tools when needed."))
 print(messages[-1].text)
 PY
@@ -136,7 +139,7 @@ python3 scripts/openai_responses_live_smoke.py
 
 Basic troubleshooting:
 
-- missing `OPENAI_API_KEY` -> first invocation returns a structured `auth_error`
+- missing `OPENAI_API_KEY` -> preflight returns `missing_env`; if you skip preflight, the first invocation still returns `auth_error`
 - tool schema uses dynamic `additionalProperties` -> invocation returns `tool_schema_error`
 - need a proxy or gateway -> set `OPENAI_BASE_URL`
 - want a different bundled default model -> set `OPENAI_MODEL`

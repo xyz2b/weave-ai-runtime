@@ -143,6 +143,10 @@ from .config import (
     RuntimeConfig,
     _publish_runtime_assembly_preset_metadata,
 )
+from .preflight import (
+    ModelRoutePreflightReport,
+    preflight_model_route as _preflight_model_route,
+)
 from ..execution_policy import DelegationPolicyError, default_delegation_policy_metadata, policy_state_from_metadata
 
 SKILL_DYNAMIC_ROOTS_KEY = "skill_dynamic_roots"
@@ -456,6 +460,28 @@ class RuntimeAssembly:
         if self.services is None or not hasattr(self.services, "wait_until_runtime_ready"):
             return ()
         return await self.services.wait_until_runtime_ready()
+
+    async def preflight_model_route(
+        self,
+        route_name: str | None = None,
+        *,
+        deeper_probe: bool = False,
+    ) -> ModelRoutePreflightReport:
+        return await _preflight_model_route(
+            self.kernel.config,
+            route_name=route_name,
+            deeper_probe=deeper_probe,
+        )
+
+    async def preflight_default_model_route(
+        self,
+        *,
+        deeper_probe: bool = False,
+    ) -> ModelRoutePreflightReport:
+        return await self.preflight_model_route(
+            route_name=None,
+            deeper_probe=deeper_probe,
+        )
 
     def bind_hook_callback(self, name: str, handler: Any) -> None:
         self.services.hook_bus.bind_callback(name, handler)

@@ -195,12 +195,39 @@ async def run_demo(*, live: bool = False) -> DemoReport:
     model_client = None if live else _offline_client()
 
     with temporary_workspace(FIXTURE_ROOT) as workspace:
-        config = RuntimeConfig.for_ordinary_workflow(workspace)
+        config = (
+            RuntimeConfig.for_headless_live(workspace)
+            if live
+            else RuntimeConfig.for_ordinary_workflow(workspace)
+        )
         config.model_client = model_client
         # Keep the demo isolated from ambient user definitions while still starting from the preset baseline.
         config.discovery_sources = (discovery_source(workspace),)
         runtime = assemble_runtime(config)
         runtime.services.permissions = AllowAllPermissionService()
+        if live:
+            preflight = await runtime.preflight_default_model_route()
+            if not preflight.ready:
+                return DemoReport(
+                    mode=mode,
+                    workspace_root=workspace,
+                    workspace_label=WORKSPACE_LABEL,
+                    prompt=DEFAULT_PROMPT,
+                    verification_command=VERIFICATION_COMMAND,
+                    messages=(),
+                    terminal_stop_reason="preflight_blocked",
+                    terminal_metadata={
+                        "failure_class": preflight.failure_class.value,
+                        "preflight": preflight.to_dict(),
+                    },
+                    final_text="",
+                    review_result=None,
+                    verification_result=None,
+                    host_customization="none",
+                    builtin_replacements="none",
+                    ok=False,
+                    error_message=_preflight_error_message(preflight),
+                )
         outcome = await _run_prompt(runtime=runtime, workspace=workspace)
 
         review_result = _review_result(outcome.messages)
@@ -249,6 +276,15 @@ async def run_demo(*, live: bool = False) -> DemoReport:
 
 def terminal_stop_reason_is_success(stop_reason: str | None) -> bool:
     return stop_reason in {None, "completed", "end_turn"}
+
+
+def _preflight_error_message(report) -> str:
+    for diagnostic in report.diagnostics:
+        if diagnostic.severity == "error":
+            return diagnostic.message
+    return (
+        f"Live route preflight failed for '{report.resolved_route or report.requested_route or 'default'}'."
+    )
 
 
 def _last_assistant_text(messages: tuple[RuntimeMessage, ...]) -> str:

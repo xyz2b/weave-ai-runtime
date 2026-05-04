@@ -154,13 +154,16 @@ def test_coding_workflow_demo_live_smoke_reports_auth_failure_without_fallback(m
 
     assert report.mode == "live"
     assert report.ok is False
-    assert report.terminal_metadata["failure_class"] == "auth_error"
+    assert report.terminal_metadata["failure_class"] == "missing_env"
+    assert report.terminal_stop_reason == "preflight_blocked"
     assert "OPENAI_API_KEY" in str(report.error_message)
     assert report.verification_result is None
     assert report.review_result is None
 
 
 def test_coding_workflow_demo_live_mode_reuses_the_same_success_criteria(monkeypatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+
     async def fake_run_prompt(*, runtime, workspace):
         _ = runtime
         (workspace / coding_workflow_demo.TARGET_FILE).write_text(

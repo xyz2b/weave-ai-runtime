@@ -47,6 +47,10 @@ from weavert.runtime_kernel import (
     BuiltinPackConfig,
     DefinitionSourcePaths,
     HostBinding,
+    ModelRoutePreflightDiagnostic,
+    ModelRoutePreflightFailureClass,
+    ModelRoutePreflightProbeRequest,
+    ModelRoutePreflightProbeResult,
     ModelProviderBinding,
     ModelRouteBinding,
     RuntimeConfig,
@@ -104,6 +108,41 @@ class InterruptibleModelClient:
         yield ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "partial"})
         while request.abort_signal is not None and not request.abort_signal.aborted:
             await asyncio.sleep(0.01)
+
+
+class ProbeAwareModelClient:
+    def __init__(self, *, probe_ready: bool) -> None:
+        self.probe_ready = probe_ready
+        self.probe_requests: list[ModelRoutePreflightProbeRequest] = []
+
+    async def complete(self, request: ModelRequest):  # pragma: no cover - protocol completeness
+        raise NotImplementedError
+
+    async def stream(self, request: ModelRequest):
+        _ = request
+        if False:  # pragma: no cover - marks this as an async generator
+            yield None
+
+    async def preflight_model_route_probe(
+        self,
+        request: ModelRoutePreflightProbeRequest,
+    ) -> ModelRoutePreflightProbeResult:
+        self.probe_requests.append(request)
+        if self.probe_ready:
+            return ModelRoutePreflightProbeResult(ready=True, metadata={"probe": "ok"})
+        return ModelRoutePreflightProbeResult(
+            ready=False,
+            failure_class=ModelRoutePreflightFailureClass.PROVIDER_PROBE_FAILED,
+            diagnostics=(
+                ModelRoutePreflightDiagnostic(
+                    code="provider_probe_failed",
+                    message="Probe handshake failed.",
+                    severity="error",
+                    failure_class=ModelRoutePreflightFailureClass.PROVIDER_PROBE_FAILED,
+                ),
+            ),
+            metadata={"probe": "failed"},
+        )
 
 
 class RecordingWorkflowRunMemoryService(NoopMemoryService):
@@ -2206,6 +2245,115 @@ def test_runtime_bundles_openai_route_and_surfaces_missing_credentials_at_invoca
     assert terminal.terminal is not None
     assert terminal.terminal.metadata["failure_class"] == "auth_error"
     assert "OPENAI_API_KEY" in terminal.terminal.metadata["error"]
+
+
+def test_runtime_preflight_reports_unknown_route_without_workflow_execution(tmp_path: Path) -> None:
+    runtime = assemble_runtime(RuntimeConfig.for_ordinary_workflow(tmp_path))
+
+    report = asyncio.run(runtime.preflight_model_route("missing-route"))
+
+    assert report.ready is False
+    assert report.failure_class is ModelRoutePreflightFailureClass.UNKNOWN_ROUTE
+    assert report.requested_route == "missing-route"
+    assert report.resolved_route == "missing-route"
+    assert report.probe.requested is False
+    assert report.probe.attempted is False
+    assert report.diagnostics[0].code == "unknown_route"
+
+
+def test_runtime_preflight_reports_missing_provider_binding(tmp_path: Path) -> None:
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            model_routes={
+                "orphan": ModelRouteBinding(
+                    default_model="demo-model",
+                    provider_binding="missing-provider",
+                )
+            },
+            default_model_route="orphan",
+        )
+    )
+
+    report = asyncio.run(runtime.preflight_default_model_route())
+
+    assert report.ready is False
+    assert report.failure_class is ModelRoutePreflightFailureClass.MISSING_PROVIDER_BINDING
+    assert report.resolved_route == "orphan"
+    assert report.provider_binding == "missing-provider"
+    assert report.diagnostics[0].code == "missing_provider_binding"
+
+
+def test_runtime_preflight_reports_bundled_openai_missing_credentials_before_invocation(
+    tmp_path: Path,
+) -> None:
+    runtime = assemble_runtime(RuntimeConfig.for_headless_live(tmp_path))
+
+    report = asyncio.run(runtime.preflight_default_model_route())
+
+    assert report.ready is False
+    assert report.failure_class is ModelRoutePreflightFailureClass.MISSING_ENV
+    assert report.requested_route is None
+    assert report.resolved_route == OPENAI_ROUTE_NAME
+    assert report.provider_name == OPENAI_PROVIDER_NAME
+    assert report.provider_binding == OPENAI_PROVIDER_NAME
+    assert report.resolved_default_model == runtime.kernel.config.model_routes[OPENAI_ROUTE_NAME].default_model
+    assert report.route_metadata == runtime.kernel.config.model_routes[OPENAI_ROUTE_NAME].metadata
+    assert report.provider_metadata == runtime.kernel.config.model_providers[OPENAI_PROVIDER_NAME].metadata
+    environment = {entry.name: entry for entry in report.environment}
+    assert environment["OPENAI_API_KEY"].required is True
+    assert environment["OPENAI_API_KEY"].present is False
+    assert report.probe.attempted is False
+
+
+def test_runtime_preflight_supports_optional_provider_specific_probe(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("PROBE_API_KEY", "test-key")
+    client = ProbeAwareModelClient(probe_ready=False)
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            model_providers={
+                "provider-a": ModelProviderBinding(
+                    client=client,
+                    provider_name="provider-a",
+                    metadata={"credential_env": "PROBE_API_KEY"},
+                )
+            },
+            model_routes={
+                "route-a": ModelRouteBinding(
+                    provider_binding="provider-a",
+                    provider_name="provider-a",
+                    default_model="probe-model",
+                    metadata={"default_model_env": "PROBE_MODEL"},
+                )
+            },
+            default_model_route="route-a",
+        )
+    )
+
+    baseline = asyncio.run(runtime.preflight_default_model_route())
+    assert baseline.ready is True
+    assert baseline.failure_class is ModelRoutePreflightFailureClass.NONE
+    assert baseline.probe.supported is True
+    assert baseline.probe.attempted is False
+    assert baseline.probe.result is None
+
+    probed = asyncio.run(runtime.preflight_default_model_route(deeper_probe=True))
+
+    assert probed.ready is False
+    assert probed.failure_class is ModelRoutePreflightFailureClass.PROVIDER_PROBE_FAILED
+    assert probed.probe.requested is True
+    assert probed.probe.attempted is True
+    assert probed.probe.supported is True
+    assert probed.probe.result is not None
+    assert probed.probe.result.ready is False
+    assert client.probe_requests[0].route_name == "route-a"
+    assert client.probe_requests[0].provider_binding == "provider-a"
+    assert client.probe_requests[0].environment[0].name == "PROBE_API_KEY"
+    assert probed.diagnostics[-1].code == "provider_probe_failed"
 
 
 def test_runtime_bundled_openai_route_honors_openai_model_override(

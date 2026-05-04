@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -23,13 +22,6 @@ import weavert.openai_client as openai_client
 
 
 PROMPT = "Summarize this repository and use tools when needed."
-
-
-def _required_env_missing() -> list[str]:
-    missing: list[str] = []
-    if not os.environ.get("OPENAI_API_KEY", "").strip():
-        missing.append("OPENAI_API_KEY")
-    return missing
 
 
 def _capture_stream_requests() -> tuple[list[dict[str, Any]], Any]:
@@ -77,9 +69,8 @@ def _capture_stream_requests() -> tuple[list[dict[str, Any]], Any]:
     return captured, original
 
 
-async def _run_smoke() -> dict[str, Any]:
+async def _run_smoke(runtime) -> dict[str, Any]:
     captured, original = _capture_stream_requests()
-    runtime = assemble_runtime(RuntimeConfig(working_directory=PROJECT_ROOT))
     attempts: list[dict[str, Any]] = []
     assistant_tool_turns: list[dict[str, Any]] = []
     user_tool_result_turns: list[dict[str, Any]] = []
@@ -202,14 +193,15 @@ async def _run_smoke() -> dict[str, Any]:
 
 
 def main() -> int:
-    missing = _required_env_missing()
-    if missing:
+    runtime = assemble_runtime(RuntimeConfig.for_headless_live(PROJECT_ROOT))
+    preflight = asyncio.run(runtime.preflight_default_model_route())
+    if not preflight.ready:
         print(
             json.dumps(
                 {
                     "ok": False,
-                    "error": "missing_environment",
-                    "missing": missing,
+                    "error": "preflight_not_ready",
+                    "preflight": preflight.to_dict(),
                 },
                 ensure_ascii=False,
                 indent=2,
@@ -217,7 +209,7 @@ def main() -> int:
         )
         return 2
 
-    result = asyncio.run(_run_smoke())
+    result = asyncio.run(_run_smoke(runtime))
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0 if result["ok"] else 1
 
