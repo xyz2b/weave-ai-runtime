@@ -435,7 +435,7 @@ class SessionController:
             turn_message_ids: list[str] = [message.message_id for message in ingress_result.normalized_messages]
             runtime_context = {
                 "command_type": command.command_type.value,
-                "query_source": command.command_type.value,
+                "query_source": _command_query_source(command),
             }
             prompt_context = self._turn_prompt_context(ingress_result.prompt_updates)
             private_context = self._turn_private_context(ingress_result.private_updates)
@@ -1228,6 +1228,19 @@ def _event_ingress_priority(metadata: object, *, fallback: int) -> int:
         return int(value)
     except (TypeError, ValueError):
         return fallback
+
+
+def _command_query_source(command: SessionCommand) -> str:
+    payload = command.payload
+    if isinstance(payload, Mapping):
+        metadata = payload.get("metadata")
+        if isinstance(metadata, Mapping):
+            value = metadata.get("query_source")
+            if value is not None:
+                normalized = str(value).strip()
+                if normalized:
+                    return normalized
+    return command.command_type.value
 
 
 def _sync_skill_runtime_metadata(

@@ -138,7 +138,11 @@ from ..tool_runtime import ToolContext
 from ..turn_engine.composer import ContextAssembler
 from ..turn_engine.engine import TurnEngine, TurnStreamEvent, TurnStreamEventType, TurnTerminal
 from ..turn_engine.models import ModelRequest, TranscriptStore
-from ..workflow_observability import WorkflowRunObservability, workflow_run_observability_from_report
+from ..workflow_observability import (
+    WorkflowRunKind,
+    WorkflowRunObservability,
+    workflow_run_observability_from_report,
+)
 from .config import (
     DefinitionSourcePaths,
     RuntimeConfig,
@@ -228,6 +232,8 @@ class WorkflowRunReport:
 
     @property
     def run_id(self) -> str:
+        if self.workflow_observability is not None:
+            return self.workflow_observability.run_id
         return self.turn_id or self.session_id
 
 
@@ -1370,6 +1376,7 @@ class RuntimeAssembly:
         produced: list[RuntimeMessage] = []
         terminal: TurnTerminal | None = None
         report_turn_id: str | None = None
+        workflow_observability: WorkflowRunObservability | None = None
         async for event in session.stream_until_idle():
             if report_turn_id is None:
                 request = getattr(event, "request", None)
@@ -1379,6 +1386,12 @@ class RuntimeAssembly:
                     or getattr(getattr(event, "workflow_observation", None), "turn_id", None)
                     or session.state.active_turn_id
                 )
+            observation = getattr(event, "workflow_observation", None)
+            if (
+                observation is not None
+                and observation.workflow.run_kind == WorkflowRunKind.ROOT
+            ):
+                workflow_observability = observation.workflow
             if event.event_type == TurnStreamEventType.MESSAGE and event.message is not None:
                 produced.append(event.message)
             elif event.event_type == TurnStreamEventType.TERMINAL and event.terminal is not None:
@@ -1396,6 +1409,7 @@ class RuntimeAssembly:
                 default="completed",
             ),
             session_owner=session_owner,
+            workflow_observability=workflow_observability,
         )
 
     async def _prepare_one_shot_session(

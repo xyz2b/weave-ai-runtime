@@ -219,6 +219,44 @@ def test_host_bridge_emits_unified_workflow_extension_events_for_root_and_child_
     assert child_events[0].payload["workflow"]["diagnostics"][0]["code"] == "workflow_permission_denied"
 
 
+def test_runtime_stream_prompt_preserves_explicit_query_source_across_root_events(tmp_path: Path) -> None:
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            model_client=FakeModelClient(
+                [
+                    [
+                        ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-stream"}),
+                        ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "streamed"}),
+                        ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+                    ]
+                ]
+            ),
+        )
+    )
+
+    async def _collect() -> list[object]:
+        return [
+            event
+            async for event in runtime.stream_prompt(
+                "Hello stream",
+                session_id="workflow-stream-session",
+                metadata={"query_source": "workflow_stream_test", "run_id": "workflow-stream-root"},
+            )
+        ]
+
+    events = asyncio.run(_collect())
+    request_event = next(event for event in events if event.event_type == TurnStreamEventType.REQUEST_START)
+    terminal_event = next(event for event in events if event.event_type == TurnStreamEventType.TERMINAL)
+
+    assert request_event.workflow_observation is not None
+    assert request_event.workflow_observation.workflow.run_id == "workflow-stream-root"
+    assert request_event.workflow_observation.workflow.query_source == "workflow_stream_test"
+    assert terminal_event.workflow_observation is not None
+    assert terminal_event.workflow_observation.workflow.run_id == "workflow-stream-root"
+    assert terminal_event.workflow_observation.workflow.query_source == "workflow_stream_test"
+
+
 def test_workflow_run_reports_and_failure_helpers_share_the_unified_model(tmp_path: Path) -> None:
     runtime = assemble_runtime(
         RuntimeConfig(
@@ -234,12 +272,25 @@ def test_workflow_run_reports_and_failure_helpers_share_the_unified_model(tmp_pa
         )
     )
 
-    report = asyncio.run(runtime.run_prompt_report("Hello runtime", session_id="workflow-report-session"))
+    report = asyncio.run(
+        runtime.run_prompt_report(
+            "Hello runtime",
+            session_id="workflow-report-session",
+            metadata={
+                "query_source": "workflow_report_test",
+                "run_id": "workflow-report-root",
+                "parent_run_id": "workflow-report-parent",
+            },
+        )
+    )
     failure = terminal_failure(report)
 
     assert report.turn_id is not None
-    assert report.run_id == report.turn_id
+    assert report.run_id == "workflow-report-root"
     assert report.workflow_observability is not None
+    assert report.workflow_observability.identity.turn_id == report.turn_id
+    assert report.workflow_observability.linkage.parent_run_id == "workflow-report-parent"
+    assert report.workflow_observability.query_source == "workflow_report_test"
     assert report.workflow_observability.lifecycle_status == WorkflowLifecycleStatus.FAILED
     assert report.workflow_observability.diagnostics[0].message == "report exploded"
     assert failure is not None
