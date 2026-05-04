@@ -1,9 +1,14 @@
 from .engine import PermissionEngine
 from .models import (
     PermissionContext,
+    PermissionEvaluationExplanation,
     PermissionOutcome,
+    PermissionPolicy,
+    PermissionPolicyEvaluation,
     PermissionRequest,
+    PermissionRequestMatchSnapshot,
     PermissionRule,
+    PermissionRuleEvaluation,
     PermissionTarget,
     coerce_permission_outcome,
 )
@@ -13,9 +18,13 @@ from .presets import (
     ReadOnlyPermissionService,
     SelectiveAutoApprovePermissionService,
     allow_all_permissions,
+    allow_all_policy,
     deny_all_permissions,
+    deny_all_policy,
     read_only_permissions,
+    read_only_policy,
     selective_auto_approve_permissions,
+    selective_auto_approve_policy,
 )
 
 __all__ = [
@@ -23,15 +32,24 @@ __all__ = [
     "DenyAllPermissionService",
     "PermissionContext",
     "PermissionEngine",
+    "PermissionEvaluationExplanation",
     "PermissionOutcome",
+    "PermissionPolicy",
+    "PermissionPolicyEvaluation",
     "PermissionRequest",
+    "PermissionRequestMatchSnapshot",
     "PermissionRule",
+    "PermissionRuleEvaluation",
     "PermissionTarget",
     "ReadOnlyPermissionService",
     "SelectiveAutoApprovePermissionService",
     "allow_all_permissions",
+    "allow_all_policy",
     "coerce_permission_outcome",
     "deny_all_permissions",
+    "deny_all_policy",
     "read_only_permissions",
+    "read_only_policy",
     "selective_auto_approve_permissions",
+    "selective_auto_approve_policy",
 ]

@@ -1410,12 +1410,28 @@ def _coerce_permission_context_view(
 ) -> PermissionContextView:
     permission_context = context or PermissionContext(session_id="")
     mode = permission_context.mode
-    return PermissionContextView(
-        effective_mode=mode,
-        interactive_prompts_allowed=mode not in {PermissionMode.DONT_ASK, PermissionMode.BUBBLE},
-        bubbles_to_caller=mode == PermissionMode.BUBBLE,
-        requires_host_mediation=mode != PermissionMode.BYPASS_PERMISSIONS,
-        rules=tuple(
+    flattened_rules: list[PermissionRuleView] = []
+    for policy in permission_context.policies:
+        for rule in policy.rules:
+            flattened_rules.append(
+                PermissionRuleView(
+                    target_type=(
+                        rule.target.value if getattr(rule, "target", None) is not None else "tool"
+                    ),
+                    selector=rule.selector,
+                    behavior=rule.behavior,
+                    message=rule.message,
+                    source=policy.source
+                    or (str(rule.metadata.get("source")) if rule.metadata.get("source") else None),
+                    scopes=tuple(rule.scopes),
+                    risk_levels=tuple(risk.value for risk in rule.risk_levels),
+                    operations=tuple(rule.operations),
+                    tags=tuple(rule.tags),
+                    read_only=rule.read_only,
+                )
+            )
+    for rule in permission_context.rules:
+        flattened_rules.append(
             PermissionRuleView(
                 target_type=(
                     rule.target.value if getattr(rule, "target", None) is not None else "tool"
@@ -1424,9 +1440,21 @@ def _coerce_permission_context_view(
                 behavior=rule.behavior,
                 message=rule.message,
                 source=str(rule.metadata.get("source")) if rule.metadata.get("source") else None,
+                scopes=tuple(rule.scopes),
+                risk_levels=tuple(risk.value for risk in rule.risk_levels),
+                operations=tuple(rule.operations),
+                tags=tuple(rule.tags),
+                read_only=rule.read_only,
             )
-            for rule in permission_context.rules
-        ),
+        )
+    return PermissionContextView(
+        effective_mode=mode,
+        interactive_prompts_allowed=mode not in {PermissionMode.DONT_ASK, PermissionMode.BUBBLE},
+        bubbles_to_caller=mode == PermissionMode.BUBBLE,
+        requires_host_mediation=mode != PermissionMode.BYPASS_PERMISSIONS,
+        rules=tuple(flattened_rules),
+        policy_layers=tuple(policy.name for policy in permission_context.policies),
+        scopes=permission_context.policy_scopes,
     )
 
 

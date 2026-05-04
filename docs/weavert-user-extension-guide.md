@@ -709,24 +709,35 @@ sidecar 可以返回：
 
 用户视角怎么扩：
 
-1. 规则审批，优先扩 `PermissionContext` + `PermissionRule`。
-2. 常见无交互流程，优先用官方 preset service：
+1. 最简单、最稳定的 headless 路径，先用官方 preset service：
    `AllowAllPermissionService` 适合 demo smoke / sandbox CI；
    `DenyAllPermissionService` 适合必须显式白名单的 headless gate；
    `ReadOnlyPermissionService` 适合 inspect-only / audit / dry-run；
    `SelectiveAutoApprovePermissionService` 适合 scripted workflow，只放行声明过的 selector 或 risk class。
-3. scripted workflow 想保留未命中请求的确定性回退，可以给 `ReadOnlyPermissionService` 或 `SelectiveAutoApprovePermissionService` 传 `fallback_behavior="deny"`（默认）或 `fallback_behavior="ask"`。
-4. 人工审批，优先实现 host 的 `request_permission()`。
-5. 表单、下拉框、多选，优先实现 host 的 `request_elicitation()`。
-6. 想替换整套行为，再直接替换 `weavert.services.permissions` 或 `weavert.services.elicitation`。
+2. preset 够用，但你需要“allow-all except ...”或“read-only but ask inside one scope”时，再升级到 `PermissionContext.policies`：
+   - 用 `allow_all_policy()` / `read_only_policy()` / `selective_auto_approve_policy()` 先起一个 runtime-owned baseline
+   - 再 append 自己的 `PermissionPolicy(...)` 做更窄的 override
+   - 运行时会保留结构化 explanation，tool / skill / delegated agent 都走同一条 composed-policy control-plane path
+3. 需要显式 scope、risk、operation 维度时，用 `PermissionRule(scopes=..., risk_levels=..., operations=...)`。
+4. scripted workflow 想保留未命中请求的确定性回退，可以给 `ReadOnlyPermissionService` / `SelectiveAutoApprovePermissionService`，或者对应的 `*_policy(...)` constructor，传 `fallback_behavior="deny"`（默认）或 `fallback_behavior="ask"`。
+5. 人工审批，优先实现 host 的 `request_permission()`。
+6. 表单、下拉框、多选，优先实现 host 的 `request_elicitation()`。
+7. 想替换整套行为，再直接替换 `weavert.services.permissions` 或 `weavert.services.elicitation`。
 
 示例：
 
 ```python
 from weavert.permissions import (
     AllowAllPermissionService,
+    PermissionBehavior,
+    PermissionContext,
+    PermissionPolicy,
+    PermissionRule,
+    PermissionTarget,
     ReadOnlyPermissionService,
     SelectiveAutoApprovePermissionService,
+    allow_all_policy,
+    selective_auto_approve_policy,
 )
 
 runtime.services.permissions = AllowAllPermissionService()
@@ -736,7 +747,49 @@ runtime.services.permissions = SelectiveAutoApprovePermissionService(
     risk_levels=("read",),
     fallback_behavior="deny",
 )
+
+runtime_permission_context = PermissionContext(
+    session_id="session-1",
+    metadata={"policy_scopes": ("workspace:docs",)},
+    policies=(
+        allow_all_policy(),
+        PermissionPolicy(
+            name="docs-write-guard",
+            rules=(
+                PermissionRule(
+                    selector="workspace.write",
+                    target=PermissionTarget.TOOL,
+                    scopes=("workspace:docs",),
+                    behavior=PermissionBehavior.ASK,
+                    message="docs writes need explicit approval",
+                ),
+            ),
+        ),
+    ),
+)
+
+read_first_then_ask_unknown = PermissionContext(
+    session_id="session-2",
+    policies=(
+        selective_auto_approve_policy(
+            risk_levels=("read",),
+            fallback_behavior="ask",
+        ),
+    ),
+)
 ```
+
+什么时候从 preset 升级到 composed policy：
+
+- 只是“整段 workflow 都是只读 / 全拒绝 / 全放行” -> 直接用 preset service。
+- 需要“默认放行，但某个 scope / risk class 变严格” -> 用 preset-derived policy constructor + `PermissionPolicy(...)`。
+- 需要把同一套策略跨 tool / skill / child agent 传播，而且还想在结果里看到 matched rule / winning layer -> 用 `PermissionContext.policies`。
+- 只有 host 才知道最终决策 -> 仍然保留 `request_permission()`，让 composed policy 先做 deterministic narrowing，再把 `ask` bubble 给 host。
+
+上面的两个 composed 示例分别覆盖：
+
+- `policy_scopes=("workspace:docs",)` + `PermissionRule(scopes=("workspace:docs",))`：scope-based policy composition
+- `selective_auto_approve_policy(risk_levels=("read",), fallback_behavior="ask")`：risk-based policy composition
 
 ### 3.6 tool_refresh_callback：动态刷新工具池
 

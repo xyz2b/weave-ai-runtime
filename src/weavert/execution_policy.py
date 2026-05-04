@@ -252,6 +252,7 @@ def resolve_agent_execution_policy(
         session_id=permission_context.session_id,
         mode=resolved_mode,
         rules=permission_context.rules,
+        policies=permission_context.policies,
         metadata=dict(permission_context.metadata),
     )
     effective_memory = narrow_memory_scope(
@@ -303,6 +304,7 @@ def resolve_skill_execution_policy(
         session_id=permission_context.session_id,
         mode=permission_context.mode,
         rules=permission_context.rules,
+        policies=permission_context.policies,
         metadata=dict(permission_context.metadata),
     )
     effective_memory = parent_policy.memory_scope if parent_policy is not None else None
@@ -355,6 +357,9 @@ def serialize_policy(policy: ExecutionPolicy) -> dict[str, Any]:
         "tools": [tool.name for tool in policy.tool_pool],
         "skills": [skill.name for skill in policy.skill_pool],
         "permission_mode": policy.permission_context.mode.value,
+        "permission_rules": [rule.to_dict() for rule in policy.permission_context.rules],
+        "permission_policies": [layer.to_dict() for layer in policy.permission_context.policies],
+        "permission_scopes": list(policy.permission_context.policy_scopes),
         "memory_scope": policy.memory_scope.value if policy.memory_scope is not None else None,
         "isolation_mode": policy.isolation_mode.value,
         "trace": dict(policy.trace),
@@ -513,11 +518,7 @@ def _serialize_value(value: Any) -> Any:
     if isinstance(value, Path):
         return str(value)
     if isinstance(value, PermissionContext):
-        return {
-            "session_id": value.session_id,
-            "mode": value.mode.value,
-            "rules": [rule.selector for rule in value.rules],
-        }
+        return value.to_dict()
     if isinstance(value, Mapping):
         return {str(key): _serialize_value(inner) for key, inner in value.items()}
     if isinstance(value, (list, tuple)):

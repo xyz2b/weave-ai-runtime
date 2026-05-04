@@ -78,6 +78,8 @@ When you move from interactive demos to CI, smoke, or scripted runs, prefer the 
 - `ReadOnlyPermissionService`: inspect-only workflows, dry runs, and audits that should allow read-classified tools but block writes, exec, network, and delegation by default.
 - `SelectiveAutoApprovePermissionService`: scripted workflows that should auto-approve only declared selectors or risk classes and deterministically deny or bubble unmatched requests.
 
+When a preset becomes too coarse, keep the same runtime-owned path and move one step up to composed policies: build a `PermissionContext(policies=(allow_all_policy(), PermissionPolicy(...)))` stack instead of swapping to a demo-private permission service. That preserves the same shared control-plane behavior for tools, skills, and delegated agents while giving you scope-aware or risk-aware overrides.
+
 The offline demos in this folder now use the official `AllowAllPermissionService` surface instead of a demo-private stub.
 
 ## Workflow-level live smoke

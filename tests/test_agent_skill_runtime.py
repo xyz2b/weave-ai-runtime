@@ -21,7 +21,13 @@ from weavert.definitions import (
 )
 from weavert.hooks import RuntimeHookPhase
 from weavert.isolation import BaseIsolationAdapter, IsolationManager, IsolationRequest
-from weavert.permissions import PermissionTarget
+from weavert.permissions import (
+    PermissionContext,
+    PermissionPolicy,
+    PermissionRule,
+    PermissionTarget,
+    allow_all_policy,
+)
 from weavert.registries import AgentRegistry, SkillRegistry, ToolRegistry
 from weavert.runtime_kernel import (
     BuiltinPackConfig,
@@ -2005,6 +2011,153 @@ def test_forked_skill_and_subagent_preserve_policy_and_isolation_ceilings(
     )
     assert worker_tool_result.is_error is True
     assert "approval required" in worker_tool_result.content
+
+
+def test_composed_permission_policies_propagate_to_forked_skill_tool_requests(
+    tmp_path: Path,
+) -> None:
+    model_client = FakeModelClient(
+        [
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-parent-policy-1"}),
+                ModelStreamEvent(
+                    ModelStreamEventType.TOOL_CALL,
+                    {
+                        "tool_name": "skill",
+                        "tool_input": {"skill": "delegated-check"},
+                        "call_id": "call-skill-policy",
+                    },
+                ),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "tool_use"}),
+            ],
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-worker-policy-1"}),
+                ModelStreamEvent(
+                    ModelStreamEventType.TOOL_CALL,
+                    {
+                        "tool_name": "restricted",
+                        "tool_input": {"value": "secret"},
+                        "call_id": "call-restricted-policy",
+                    },
+                ),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "tool_use"}),
+            ],
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-worker-policy-2"}),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "worker done"}),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+            ],
+            [
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-parent-policy-2"}),
+                ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "parent done"}),
+                ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+            ],
+        ]
+    )
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            model_client=model_client,
+            builtins=BuiltinPackConfig(
+                agent_replacements={
+                    "main-router": AgentDefinition(
+                        name="main-router",
+                        description="router",
+                        prompt="route",
+                        tools=("*",),
+                    )
+                },
+                extra_tools=[
+                    ToolDefinition(
+                        name="restricted",
+                        description="restricted",
+                        input_schema={
+                            "type": "object",
+                            "properties": {"value": {"type": "string"}},
+                            "required": ["value"],
+                            "additionalProperties": False,
+                        },
+                        check_permissions=lambda _tool_input, _context: PermissionDecision(
+                            PermissionBehavior.ALLOW
+                        ),
+                        execute=lambda tool_input, _: {"value": tool_input["value"]},
+                    )
+                ],
+                extra_agents=[
+                    AgentDefinition(
+                        name="worker",
+                        description="worker",
+                        prompt="work",
+                        tools=("restricted",),
+                    )
+                ],
+                extra_skills=[
+                    SkillDefinition(
+                        name="delegated-check",
+                        description="delegate to a worker",
+                        content="Run the delegated check.",
+                        execution_context=SkillExecutionContext.FORK,
+                        agent="worker",
+                        allowed_tools=("restricted",),
+                    )
+                ],
+            ),
+        )
+    )
+    permission_context = PermissionContext(
+        session_id="session-policy-stack",
+        policies=(
+            allow_all_policy(),
+            PermissionPolicy(
+                name="delegated-tool-guard",
+                rules=(
+                    PermissionRule(
+                        selector="restricted",
+                        target=PermissionTarget.TOOL,
+                        scopes=("delegated",),
+                        behavior=PermissionBehavior.DENY,
+                        message="delegated restricted tool blocked",
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    messages = asyncio.run(
+        runtime.run_prompt(
+            "Run the delegated check",
+            session_id="session-policy-stack",
+            metadata={"permission_context": permission_context},
+        )
+    )
+
+    worker_request = model_client.requests[1]
+    assert [layer["name"] for layer in worker_request.metadata["policy"]["effective"]["permission_policies"]] == [
+        "preset:allow-all",
+        "delegated-tool-guard",
+    ]
+
+    worker_record = asyncio.run(runtime.agent_runtime.run_store.list_by_session("session-policy-stack"))[0]
+    worker_tool_result_message = next(
+        message
+        for message in worker_record.messages
+        if any(isinstance(block, ToolResultBlock) for block in message.content)
+    )
+    worker_tool_result = next(
+        block for block in worker_tool_result_message.content if isinstance(block, ToolResultBlock)
+    )
+    assert worker_tool_result.is_error is True
+    assert "delegated restricted tool blocked" in worker_tool_result.content
+
+    skill_tool_result_message = next(
+        message
+        for message in messages
+        if message.role == MessageRole.USER and any(isinstance(block, ToolResultBlock) for block in message.content)
+    )
+    skill_tool_result = next(
+        block for block in skill_tool_result_message.content if isinstance(block, ToolResultBlock)
+    )
+    assert skill_tool_result.content["agent_result"]["summary"] == "worker done"
 
 
 def test_remote_isolation_uses_adapter_contract_and_emits_trace(tmp_path: Path) -> None:

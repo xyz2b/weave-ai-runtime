@@ -110,6 +110,11 @@ class PermissionRuleView:
     behavior: PermissionBehavior
     message: str | None = None
     source: str | None = None
+    scopes: tuple[str, ...] = ()
+    risk_levels: tuple[str, ...] = ()
+    operations: tuple[str, ...] = ()
+    tags: tuple[str, ...] = ()
+    read_only: bool | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,6 +124,8 @@ class PermissionContextView:
     bubbles_to_caller: bool
     requires_host_mediation: bool
     rules: tuple[PermissionRuleView, ...] = ()
+    policy_layers: tuple[str, ...] = ()
+    scopes: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
