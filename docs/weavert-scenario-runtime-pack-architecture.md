@@ -40,7 +40,7 @@ Host + permission control plane
 
 - scenario pack 可以推荐 baseline posture
 - scenario pack 可以依赖 shared package
-- scenario pack 可以通过普通 package metadata 公开 profile guidance
+- scenario pack 可以通过普通 package metadata、package-owned context contributor 和 profile-specific diagnostics 公开 profile guidance
 - scenario pack 不应冒充 host bridge
 - scenario pack 不应成为 final permission engine
 - scenario pack 不应吞掉 provider / store / deployment wiring authority
@@ -162,6 +162,7 @@ default boundaries:
 - workspace-oriented by default
 - shell and file mutation are expected surfaces
 - verification / review loops stay visible
+- package-owned profile guidance 通过 hook-stage context contributor 注入
 
 ### 5.2 Chat pack
 
@@ -190,6 +191,7 @@ default boundaries:
 - no implicit workspace writes
 - no implicit shell execution
 - grounding / retrieval remain shared-package concerns
+- package-owned profile guidance 通过 hook-stage context contributor 注入
 
 ### 5.3 Local assistant pack
 
@@ -225,6 +227,7 @@ default boundaries:
 - host-centric by default
 - stronger permission and audit expectations than chat
 - bridge-heavy composition without implicit coding surfaces
+- package-owned profile guidance 通过 hook-stage context contributor 注入
 
 staged scope boundaries:
 
@@ -270,6 +273,8 @@ chat 与 local assistant 只需要把：
 
 - scenario-pack capability metadata
 - shared-package dependency graph
+- package-owned profile guidance context contributor
+- scenario-pack-specific warning diagnostics
 
 而不会自动 materialize shape 里列出的 expected agents / skills。
 

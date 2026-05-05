@@ -2,9 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from .diagnostics import Diagnostic, DiagnosticSeverity
 from .runtime_package_protocols import (
     CapabilityBinding,
     CapabilityPackageBindingSpec,
+    ContextContributorBinding,
+    ContextContributorStage,
     PackageAssemblyStage,
     PackageContribution,
     RuntimePackageManifest,
@@ -37,12 +40,21 @@ class ReferenceScenarioPackShape:
     app_owned_wiring: tuple[str, ...]
     host_assumptions: tuple[str, ...]
     permission_policy_posture: tuple[str, ...]
+    profile_prompt_fragments: tuple[str, ...]
     staged_scope_boundaries: tuple[str, ...] = ()
     notes: tuple[str, ...] = ()
 
     @property
     def capability_key(self) -> str:
         return f"weavert.reference.scenario.{self.profile}"
+
+
+@dataclass(frozen=True, slots=True)
+class _ScenarioPackProfileContributor:
+    prompt_fragments: tuple[str, ...]
+
+    async def collect(self, **_kwargs):
+        return self.prompt_fragments
 
 
 REFERENCE_SHARED_PACKAGE_SHAPES: tuple[ReferenceSharedPackageShape, ...] = (
@@ -137,6 +149,10 @@ REFERENCE_SCENARIO_PACK_SHAPES: tuple[ReferenceScenarioPackShape, ...] = (
             "start from coding-grade read/write or approval-mediated execution policies",
             "keep deployment-specific allowlists in app-owned policy layers",
         ),
+        profile_prompt_fragments=(
+            "Scenario profile: AI coding.",
+            "Keep workspace-oriented planning, verification, and review posture visible.",
+        ),
         notes=(
             "The scenario pack proves profile selection without inventing a new package protocol.",
         ),
@@ -171,6 +187,10 @@ REFERENCE_SCENARIO_PACK_SHAPES: tuple[ReferenceScenarioPackShape, ...] = (
         permission_policy_posture=(
             "default to read-only or approval-first policies",
             "treat any write-capable bridge as an app-owned escalation decision",
+        ),
+        profile_prompt_fragments=(
+            "Scenario profile: AI chat.",
+            "Preserve read-mostly defaults and avoid implicit workspace mutation or shell execution.",
         ),
         notes=(
             "Chat inherits memory and retrieval posture without inheriting coding defaults.",
@@ -209,6 +229,10 @@ REFERENCE_SCENARIO_PACK_SHAPES: tuple[ReferenceScenarioPackShape, ...] = (
         permission_policy_posture=(
             "compose staged approval layers for browser, OS, and PIM actions",
             "keep final high-risk allowlists outside the scenario pack",
+        ),
+        profile_prompt_fragments=(
+            "Scenario profile: local assistant.",
+            "Preserve host-centric defaults and require explicit approval posture for bridge-heavy actions.",
         ),
         staged_scope_boundaries=(
             "start with retrieval and approval-mediated bridge composition before full automation",
@@ -284,7 +308,79 @@ def build_reference_scenario_pack_manifest(name: str) -> RuntimePackageManifest:
     def _assemble(context) -> PackageContribution:
         if context.stage != PackageAssemblyStage.SERVICES:
             return PackageContribution()
+        missing_recommended_packages = tuple(
+            package_name
+            for package_name in shape.recommended_first_party_packages
+            if package_name not in context.selected_packages
+        )
+        diagnostics: list[Diagnostic] = []
+        if missing_recommended_packages:
+            diagnostics.append(
+                Diagnostic(
+                    severity=DiagnosticSeverity.WARNING,
+                    code="scenario_pack_recommended_first_party_packages_missing",
+                    message=(
+                        f"Scenario pack '{shape.package_name}' expects app-owned wiring to also "
+                        f"select recommended first-party package(s): "
+                        f"{', '.join(missing_recommended_packages)}"
+                    ),
+                    definition_type="runtime_package_manifest",
+                    source="package",
+                    location=shape.package_name,
+                    details={
+                        "scenario_profile": shape.profile,
+                        "recommended_first_party_packages": list(shape.recommended_first_party_packages),
+                        "missing_first_party_packages": list(missing_recommended_packages),
+                        "selected_packages": list(context.selected_packages),
+                    },
+                )
+            )
+        elif (
+            shape.profile != "coding"
+            and "weavert-devtools" not in context.selected_packages
+            and "weavert-planning" not in context.selected_packages
+        ):
+            diagnostics.append(
+                Diagnostic(
+                    severity=DiagnosticSeverity.WARNING,
+                    code="scenario_pack_default_profile_omits_coding_surfaces",
+                    message=(
+                        f"Scenario pack '{shape.package_name}' intentionally omits coding-oriented "
+                        "devtools and planning surfaces from its default profile; enable them "
+                        "explicitly in app-owned wiring only when that escalation is intended."
+                    ),
+                    definition_type="runtime_package_manifest",
+                    source="package",
+                    location=shape.package_name,
+                    details={
+                        "scenario_profile": shape.profile,
+                        "omitted_first_party_packages": ["weavert-devtools", "weavert-planning"],
+                        "selected_packages": list(context.selected_packages),
+                    },
+                )
+            )
+        contributor_name = f"{shape.package_name}.profile_guidance"
         return PackageContribution(
+            context_contributors=(
+                ContextContributorBinding(
+                    name=contributor_name,
+                    stage=ContextContributorStage.HOOKS,
+                    contributor=_ScenarioPackProfileContributor(shape.profile_prompt_fragments),
+                    owner=context.ownership(
+                        "context_contributor",
+                        contributor_name=contributor_name,
+                        contributor_stage=ContextContributorStage.HOOKS.value,
+                        package_pattern="scenario-pack",
+                        scenario_profile=shape.profile,
+                    ),
+                    order=50,
+                    metadata={
+                        "package_pattern": "scenario-pack",
+                        "scenario_profile": shape.profile,
+                        "profile_prompt_fragments": list(shape.profile_prompt_fragments),
+                    },
+                ),
+            ),
             capabilities=(
                 CapabilityBinding(
                     key=shape.capability_key,
@@ -304,6 +400,7 @@ def build_reference_scenario_pack_manifest(name: str) -> RuntimePackageManifest:
                         "app_owned_wiring": list(shape.app_owned_wiring),
                         "host_assumptions": list(shape.host_assumptions),
                         "permission_policy_posture": list(shape.permission_policy_posture),
+                        "profile_prompt_fragments": list(shape.profile_prompt_fragments),
                         "staged_scope_boundaries": list(shape.staged_scope_boundaries),
                         "notes": list(shape.notes),
                     },
@@ -323,7 +420,9 @@ def build_reference_scenario_pack_manifest(name: str) -> RuntimePackageManifest:
                 "package_pattern": "scenario-pack",
                 "registration_path": "PackageContribution.capabilities",
                 "scenario_profile": shape.profile,
+                "context_contributors": [contributor_name],
             },
+            diagnostics=tuple(diagnostics),
         )
 
     return RuntimePackageManifest(
@@ -348,6 +447,7 @@ def build_reference_scenario_pack_manifest(name: str) -> RuntimePackageManifest:
             "app_owned_wiring": list(shape.app_owned_wiring),
             "host_assumptions": list(shape.host_assumptions),
             "permission_policy_posture": list(shape.permission_policy_posture),
+            "profile_prompt_fragments": list(shape.profile_prompt_fragments),
             "staged_scope_boundaries": list(shape.staged_scope_boundaries),
             "notes": list(shape.notes),
         },

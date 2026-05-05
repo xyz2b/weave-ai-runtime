@@ -236,6 +236,7 @@ product-profile layer，而不是新的 kernel mode。
 - scenario pack 可以推荐 provider、store、host、permission posture
 - scenario pack capability 里列出的 expected agents / skills，表示“把推荐 first-party package 也一起打开后，这个 profile 期望出现什么”
 - 单独 request scenario pack 本身，不会自动 materialize 这些 agents / skills
+- 但 scenario pack 仍然可以通过 package-owned context contributor 注入 profile guidance，并在缺少推荐 first-party package 时发出 profile-specific diagnostics
 - 但 final provider selection、store selection、`bind_host()`、以及最终 permission-policy composition 仍然是 app-owned wiring
 
 参考 shape、shared package 示例和验证路径，见 `docs/weavert-scenario-runtime-pack-architecture.md`。

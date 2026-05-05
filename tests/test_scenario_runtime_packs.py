@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -10,6 +11,7 @@ from weavert.scenario_runtime_packs import (
     reference_scenario_runtime_pack_manifests,
     reference_shared_package_shape,
 )
+from weavert.testing import ScriptedModelClient, text_batch
 
 
 REFERENCE_MANIFESTS = reference_scenario_runtime_pack_manifests()
@@ -23,6 +25,7 @@ def _assemble_reference_runtime(
     package_name: str,
     *,
     include_recommended_packages: bool = True,
+    model_client=None,
 ):
     shape = reference_scenario_pack_shape(package_name)
     runtime_root = tmp_path / shape.profile
@@ -39,6 +42,7 @@ def _assemble_reference_runtime(
             enabled_packages=enabled_packages,
             extra_package_manifests=REFERENCE_MANIFESTS,
             requested_packages={shape.package_name},
+            model_client=model_client,
         )
     )
     return runtime, shape, runtime_root
@@ -54,6 +58,10 @@ def _agent_names(runtime) -> set[str]:
 
 def _skill_names(runtime) -> set[str]:
     return {name for name, _definition in runtime.kernel.skill_registry.items()}
+
+
+def _diagnostic_codes(runtime) -> set[str]:
+    return {diagnostic.code for diagnostic in runtime.kernel.diagnostics}
 
 
 @pytest.mark.parametrize(
@@ -123,12 +131,25 @@ def test_reference_scenario_pack_shapes_activate_through_existing_runtime_packag
     assert scenario_capability["shared_package_dependencies"] == list(
         shape.shared_package_dependencies
     )
+    assert scenario_capability["profile_prompt_fragments"] == list(shape.profile_prompt_fragments)
 
     for dependency_name in shape.shared_package_dependencies:
         shared_shape = reference_shared_package_shape(dependency_name)
         shared_capability = runtime.services.require_capability(shared_shape.capability_key)
         assert shared_capability["package_name"] == dependency_name
         assert shared_capability["intended_profiles"]
+
+    execution_plan = runtime.services.context_contributor_execution_plan()
+    profile_entry = next(
+        entry
+        for entry in execution_plan
+        if entry.binding.owner.package_name == shape.package_name
+        and entry.binding.name == f"{shape.package_name}.profile_guidance"
+    )
+    assert profile_entry.binding.stage.value == "hooks"
+    assert profile_entry.binding.metadata["profile_prompt_fragments"] == list(
+        shape.profile_prompt_fragments
+    )
 
     tool_names = _tool_names(runtime)
     agent_names = _agent_names(runtime)
@@ -140,6 +161,7 @@ def test_reference_scenario_pack_shapes_activate_through_existing_runtime_packag
     assert tool_names.isdisjoint(forbidden_tools)
     assert agent_names.isdisjoint(forbidden_agents)
     assert skill_names.isdisjoint(forbidden_skills)
+    assert "scenario_pack_recommended_first_party_packages_missing" not in _diagnostic_codes(runtime)
 
 
 @pytest.mark.parametrize(
@@ -150,7 +172,7 @@ def test_reference_scenario_pack_shapes_activate_through_existing_runtime_packag
         "weavert-scenario-local-assistant",
     ),
 )
-def test_reference_scenario_pack_capabilities_publish_expected_profile_surfaces_without_claiming_package_local_contributions(
+def test_reference_scenario_pack_capabilities_publish_expected_profile_surfaces_and_warn_on_missing_recommended_packages(
     tmp_path: Path,
     package_name: str,
 ) -> None:
@@ -167,8 +189,70 @@ def test_reference_scenario_pack_capabilities_publish_expected_profile_surfaces_
     assert scenario_capability["expected_agents"] == list(shape.expected_agents)
     assert scenario_capability["expected_skills"] == list(shape.expected_skills)
 
+    execution_plan = runtime.services.context_contributor_execution_plan()
+    assert any(
+        entry.binding.owner.package_name == shape.package_name
+        and entry.binding.name == f"{shape.package_name}.profile_guidance"
+        for entry in execution_plan
+    )
     assert _agent_names(runtime).isdisjoint(shape.expected_agents)
     assert _skill_names(runtime).isdisjoint(shape.expected_skills)
+    assert "scenario_pack_recommended_first_party_packages_missing" in _diagnostic_codes(runtime)
+
+
+@pytest.mark.parametrize(
+    "package_name",
+    (
+        "weavert-scenario-coding",
+        "weavert-scenario-chat",
+        "weavert-scenario-local-assistant",
+    ),
+)
+def test_reference_scenario_pack_context_contributors_publish_profile_guidance_in_model_requests(
+    tmp_path: Path,
+    package_name: str,
+) -> None:
+    shape = reference_scenario_pack_shape(package_name)
+
+    def _batch(request):
+        for fragment in shape.profile_prompt_fragments:
+            assert fragment in request.turn_context.hook_context
+        return text_batch(
+            request_id=f"req-{shape.profile}-1",
+            text=f"{shape.profile} profile guidance observed",
+        )
+
+    client = ScriptedModelClient([_batch])
+    runtime, _shape, _runtime_root = _assemble_reference_runtime(
+        tmp_path,
+        package_name,
+        model_client=client,
+    )
+
+    messages = asyncio.run(
+        runtime.run_prompt(
+            f"Confirm the {shape.profile} scenario-pack guidance.",
+            session_id=f"{shape.profile}-scenario-pack-guidance",
+        )
+    )
+
+    assert messages[-1].text == f"{shape.profile} profile guidance observed"
+
+
+@pytest.mark.parametrize(
+    "package_name",
+    (
+        "weavert-scenario-chat",
+        "weavert-scenario-local-assistant",
+    ),
+)
+def test_non_coding_reference_scenario_packs_publish_contextual_boundary_diagnostics(
+    tmp_path: Path,
+    package_name: str,
+) -> None:
+    runtime, _shape, _runtime_root = _assemble_reference_runtime(tmp_path, package_name)
+
+    assert "scenario_pack_default_profile_omits_coding_surfaces" in _diagnostic_codes(runtime)
 
 
 def test_reference_scenario_pack_capabilities_preserve_distinct_default_boundaries(
