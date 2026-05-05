@@ -55,6 +55,32 @@ class RuntimeHostFacetKey(StrEnum):
     TEAM_WORKFLOWS = "weavert.team.workflows"
 
 
+RUNTIME_PACKAGE_SURFACE_CONTRACT_METADATA_KEYS = (
+    "package_candidate",
+    "reference_kind",
+    "shared_surface_family",
+    "intended_profiles",
+    "shared_surfaces",
+    "tool_ids",
+    "agent_ids",
+    "skill_ids",
+    "scenario_profile",
+    "recommended_distribution",
+    "recommended_first_party_packages",
+    "shared_package_dependencies",
+    "expected_tools",
+    "expected_agents",
+    "expected_skills",
+    "default_boundaries",
+    "app_owned_wiring",
+    "host_assumptions",
+    "permission_policy_posture",
+    "profile_prompt_fragments",
+    "staged_scope_boundaries",
+    "notes",
+)
+
+
 @dataclass(frozen=True, slots=True)
 class PackageOwnership:
     package_name: str
@@ -1043,6 +1069,42 @@ def preserve_builtin_owner(
     return replace(replacement_definition, metadata=metadata)
 
 
+def snapshot_runtime_value(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {key: snapshot_runtime_value(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [snapshot_runtime_value(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(snapshot_runtime_value(item) for item in value)
+    if isinstance(value, set):
+        return {snapshot_runtime_value(item) for item in value}
+    if isinstance(value, frozenset):
+        return frozenset(snapshot_runtime_value(item) for item in value)
+    return value
+
+
+def project_runtime_package_surface_contract_metadata(
+    metadata: Mapping[str, Any],
+) -> dict[str, Any]:
+    projected: dict[str, Any] = {}
+    for key in RUNTIME_PACKAGE_SURFACE_CONTRACT_METADATA_KEYS:
+        if key not in metadata:
+            continue
+        value = metadata[key]
+        if isinstance(value, tuple):
+            projected[key] = [snapshot_runtime_value(item) for item in value]
+        elif isinstance(value, list):
+            projected[key] = [snapshot_runtime_value(item) for item in value]
+        elif isinstance(value, Mapping):
+            projected[key] = {
+                item_key: snapshot_runtime_value(item_value)
+                for item_key, item_value in value.items()
+            }
+        else:
+            projected[key] = value
+    return projected
+
+
 def _require_non_empty(value: Any, field_name: str) -> str:
     normalized = str(value).strip()
     if not normalized:
@@ -1083,11 +1145,14 @@ __all__ = [
     "PackageLifecyclePhase",
     "PackageLifecycleRegistry",
     "PackageOwnership",
+    "project_runtime_package_surface_contract_metadata",
     "RuntimeCapabilityKey",
     "RuntimeHostFacetKey",
     "RuntimePackageManifest",
+    "RUNTIME_PACKAGE_SURFACE_CONTRACT_METADATA_KEYS",
     "StoreBinding",
     "annotate_builtin_owner",
     "order_package_manifests",
     "preserve_builtin_owner",
+    "snapshot_runtime_value",
 ]

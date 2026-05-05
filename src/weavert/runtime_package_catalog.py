@@ -3,7 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from .runtime_package_protocols import RuntimePackageManifest
+from .runtime_package_protocols import (
+    RuntimePackageManifest,
+    project_runtime_package_surface_contract_metadata,
+)
 
 OFFICIAL_RUNTIME_PACKAGE_CATALOG_SCHEMA_VERSION = "1.0"
 
@@ -412,28 +415,6 @@ def _serialize_manifest_summary(manifest: RuntimePackageManifest) -> dict[str, A
         "capability_registration_path",
         "context_contributor_registration_path",
         "context_contributor_stages",
-        "package_candidate",
-        "reference_kind",
-        "shared_surface_family",
-        "intended_profiles",
-        "shared_surfaces",
-        "tool_ids",
-        "agent_ids",
-        "skill_ids",
-        "scenario_profile",
-        "recommended_distribution",
-        "recommended_first_party_packages",
-        "shared_package_dependencies",
-        "expected_tools",
-        "expected_agents",
-        "expected_skills",
-        "default_boundaries",
-        "app_owned_wiring",
-        "host_assumptions",
-        "permission_policy_posture",
-        "profile_prompt_fragments",
-        "staged_scope_boundaries",
-        "notes",
     ):
         if key in metadata:
             value = metadata[key]
@@ -443,6 +424,7 @@ def _serialize_manifest_summary(manifest: RuntimePackageManifest) -> dict[str, A
                 summary[key] = dict(value)
             else:
                 summary[key] = value
+    summary.update(project_runtime_package_surface_contract_metadata(metadata))
     return summary
 
 

@@ -397,6 +397,14 @@ def test_runtime_metadata_projects_reference_package_surface_contracts_for_safe_
     coding_shape = reference_scenario_pack_shape("weavert-scenario-coding")
     coding_manifest = manifests[coding_shape.package_name]
     coding_capability = runtime.services.require_capability(coding_shape.capability_key)
+    registration_manifest = next(
+        entry["manifest"]
+        for entry in runtime.services.metadata["package_registration"]["accepted"]
+        if entry["package_name"] == coding_shape.package_name
+    )
+    resolved_manifest = runtime.services.metadata["package_resolution"]["resolved_graph"]["packages"][
+        coding_shape.package_name
+    ]["manifest"]
     assert coding_manifest["package_candidate"] == {
         "candidate_id": f"reference::{coding_shape.package_name}",
         "version": REFERENCE_PACKAGE_VERSION,
@@ -416,3 +424,39 @@ def test_runtime_metadata_projects_reference_package_surface_contracts_for_safe_
     assert coding_capability["expected_tools"] == coding_manifest["expected_tools"]
     assert coding_capability["expected_agents"] == coding_manifest["expected_agents"]
     assert coding_capability["expected_skills"] == coding_manifest["expected_skills"]
+    assert registration_manifest["package_candidate"] == coding_manifest["package_candidate"]
+    assert registration_manifest["scenario_profile"] == coding_manifest["scenario_profile"]
+    assert registration_manifest["expected_tools"] == coding_manifest["expected_tools"]
+    assert registration_manifest["expected_agents"] == coding_manifest["expected_agents"]
+    assert registration_manifest["expected_skills"] == coding_manifest["expected_skills"]
+    assert resolved_manifest["package_candidate"] == coding_manifest["package_candidate"]
+    assert resolved_manifest["scenario_profile"] == coding_manifest["scenario_profile"]
+    assert resolved_manifest["expected_tools"] == coding_manifest["expected_tools"]
+    assert resolved_manifest["expected_agents"] == coding_manifest["expected_agents"]
+    assert resolved_manifest["expected_skills"] == coding_manifest["expected_skills"]
+
+
+def test_reference_scenario_pack_capabilities_return_defensive_snapshots(
+    tmp_path: Path,
+) -> None:
+    runtime, shape, _runtime_root = _assemble_reference_runtime(tmp_path, "weavert-scenario-coding")
+
+    capability = runtime.services.require_capability(shape.capability_key)
+    capability["expected_tools"].append("mutated-tool")
+    capability["package_candidate"]["version"] = "9.9.9"
+
+    fresh_capability = runtime.services.require_capability(shape.capability_key)
+    projected_manifest = runtime.services.metadata["package_manifests"][shape.package_name]
+    raw_manifest = next(
+        manifest for manifest in runtime.kernel.package_manifests if manifest.name == shape.package_name
+    )
+
+    assert fresh_capability["expected_tools"] == list(shape.expected_tools)
+    assert fresh_capability["package_candidate"] == {
+        "candidate_id": f"reference::{shape.package_name}",
+        "version": REFERENCE_PACKAGE_VERSION,
+    }
+    assert projected_manifest["expected_tools"] == list(shape.expected_tools)
+    assert projected_manifest["package_candidate"] == fresh_capability["package_candidate"]
+    assert raw_manifest.metadata["expected_tools"] == list(shape.expected_tools)
+    assert raw_manifest.metadata["package_candidate"] == fresh_capability["package_candidate"]

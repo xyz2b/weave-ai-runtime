@@ -12,6 +12,7 @@ from .runtime_package_protocols import (
     PackageContribution,
     RuntimePackageManifest,
     build_capability_only_package_manifest,
+    snapshot_runtime_value,
 )
 
 
@@ -333,6 +334,8 @@ def reference_scenario_pack_shape(name: str) -> ReferenceScenarioPackShape:
 def build_reference_shared_package_manifest(name: str) -> RuntimePackageManifest:
     shape = reference_shared_package_shape(name)
     surface_contract = _shared_package_surface_contract(shape)
+    capability_surface_contract = snapshot_runtime_value(surface_contract)
+    manifest_surface_contract = snapshot_runtime_value(surface_contract)
     return build_capability_only_package_manifest(
         name=shape.package_name,
         role="shared_capability",
@@ -346,7 +349,7 @@ def build_reference_shared_package_manifest(name: str) -> RuntimePackageManifest
                     "capability_key": shape.capability_key,
                     "description": shape.description,
                     "surfaces": list(shape.surfaces),
-                    **surface_contract,
+                    **capability_surface_contract,
                 },
                 metadata={
                     "reference_kind": "shared-package",
@@ -358,7 +361,7 @@ def build_reference_shared_package_manifest(name: str) -> RuntimePackageManifest
                 },
             ),
         ),
-        manifest_metadata=surface_contract,
+        manifest_metadata=manifest_surface_contract,
     )
 
 
@@ -366,6 +369,8 @@ def build_reference_scenario_pack_manifest(name: str) -> RuntimePackageManifest:
     shape = reference_scenario_pack_shape(name)
     dependencies = _stable_unique_names(("weavert-core", *shape.shared_package_dependencies))
     surface_contract = _scenario_pack_surface_contract(shape)
+    capability_surface_contract = snapshot_runtime_value(surface_contract)
+    manifest_surface_contract = snapshot_runtime_value(surface_contract)
 
     def _assemble(context) -> PackageContribution:
         if context.stage != PackageAssemblyStage.SERVICES:
@@ -453,7 +458,7 @@ def build_reference_scenario_pack_manifest(name: str) -> RuntimePackageManifest:
                         "scenario_profile": shape.profile,
                         "display_name": shape.display_name,
                         "description": shape.description,
-                        **surface_contract,
+                        **capability_surface_contract,
                     },
                     owner=context.ownership(
                         "capability",
@@ -487,7 +492,7 @@ def build_reference_scenario_pack_manifest(name: str) -> RuntimePackageManifest:
             "baseline_dependencies": list(dependencies),
             "capabilities": [shape.capability_key],
             "capability_registration_path": "PackageContribution.capabilities",
-            **surface_contract,
+            **manifest_surface_contract,
         },
     )
 

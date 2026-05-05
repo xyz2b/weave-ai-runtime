@@ -34,6 +34,7 @@ from ..runtime_package_protocols import (
     RuntimeCapabilityKey,
     RuntimeHostFacetKey,
     RuntimePackageManifest,
+    snapshot_runtime_value,
 )
 from ..tasking import TaskManager
 from ..task_lists import DefaultTaskListService
@@ -512,10 +513,14 @@ class RuntimeServices:
         )
 
     def resolve_capability(self, key: str, default: Any = None) -> Any:
-        return self.capability_registry.resolve(key, default)
+        binding = self.capability_registry.binding(key)
+        return default if binding is None else snapshot_runtime_value(binding.value)
 
     def require_capability(self, key: str) -> Any:
-        return self.capability_registry.require(key)
+        binding = self.capability_registry.binding(key)
+        if binding is None:
+            raise KeyError(f"Capability '{key}' is not registered")
+        return snapshot_runtime_value(binding.value)
 
     def resolve_teammates(self) -> Any:
         return self.resolve_capability(RuntimeCapabilityKey.TEAMMATES.value)

@@ -855,6 +855,9 @@ def test_runtime_services_apply_package_contribution_registers_protocol_surfaces
     services.apply_package_contribution(manifest, contribution, stage="runtime")
 
     assert services.require_capability("runtime.example.service") == {"service": "example"}
+    capability = services.require_capability("runtime.example.service")
+    capability["service"] = "mutated"
+    assert services.require_capability("runtime.example.service") == {"service": "example"}
     assert services.capability_registry.owner("runtime.example.service").package_name == "runtime-example"
     plan = services.context_contributor_execution_plan()
     assert [(entry.binding.name, entry.stage.name.value) for entry in plan] == [

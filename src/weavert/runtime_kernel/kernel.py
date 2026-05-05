@@ -103,6 +103,7 @@ from ..runtime_package_protocols import (
     RuntimeCapabilityKey,
     RuntimeHostFacetKey,
     RuntimePackageManifest,
+    project_runtime_package_surface_contract_metadata,
     preserve_builtin_owner,
 )
 from ..registries import (
@@ -2668,31 +2669,10 @@ def _package_manifest_catalog(
                     "context_contributors",
                     "context_contributor_registration_path",
                     "context_contributor_stages",
-                    "package_candidate",
-                    "reference_kind",
-                    "shared_surface_family",
-                    "intended_profiles",
-                    "shared_surfaces",
-                    "tool_ids",
-                    "agent_ids",
-                    "skill_ids",
-                    "scenario_profile",
-                    "recommended_distribution",
-                    "recommended_first_party_packages",
-                    "shared_package_dependencies",
-                    "expected_tools",
-                    "expected_agents",
-                    "expected_skills",
-                    "default_boundaries",
-                    "app_owned_wiring",
-                    "host_assumptions",
-                    "permission_policy_posture",
-                    "profile_prompt_fragments",
-                    "staged_scope_boundaries",
-                    "notes",
                 )
                 if key in manifest.metadata
             },
+            **project_runtime_package_surface_contract_metadata(manifest.metadata),
         }
         for manifest in manifests
     }

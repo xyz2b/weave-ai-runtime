@@ -9,7 +9,11 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 from .diagnostics import Diagnostic, DiagnosticSeverity
 from .public_contract import canonical_distribution_name, canonical_first_party_name
 from .runtime_package_manifests import RuntimePackageRegistrationReport
-from .runtime_package_protocols import RuntimePackageManifest, order_package_manifests
+from .runtime_package_protocols import (
+    RuntimePackageManifest,
+    order_package_manifests,
+    project_runtime_package_surface_contract_metadata,
+)
 
 PACKAGE_CANDIDATE_METADATA_KEY = "package_candidate"
 REQUESTED_PACKAGES_PATH = "RuntimeConfig.requested_packages"
@@ -973,28 +977,6 @@ def _serialize_manifest_summary(manifest: RuntimePackageManifest) -> dict[str, A
         "context_contributors",
         "context_contributor_registration_path",
         "context_contributor_stages",
-        "package_candidate",
-        "reference_kind",
-        "shared_surface_family",
-        "intended_profiles",
-        "shared_surfaces",
-        "tool_ids",
-        "agent_ids",
-        "skill_ids",
-        "scenario_profile",
-        "recommended_distribution",
-        "recommended_first_party_packages",
-        "shared_package_dependencies",
-        "expected_tools",
-        "expected_agents",
-        "expected_skills",
-        "default_boundaries",
-        "app_owned_wiring",
-        "host_assumptions",
-        "permission_policy_posture",
-        "profile_prompt_fragments",
-        "staged_scope_boundaries",
-        "notes",
     ):
         if key in metadata:
             value = metadata[key]
@@ -1006,6 +988,7 @@ def _serialize_manifest_summary(manifest: RuntimePackageManifest) -> dict[str, A
                 summary[key] = dict(value)
             else:
                 summary[key] = value
+    summary.update(project_runtime_package_surface_contract_metadata(metadata))
     return summary
 
 
