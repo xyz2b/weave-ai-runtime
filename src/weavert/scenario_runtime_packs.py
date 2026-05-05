@@ -20,8 +20,12 @@ class ReferenceSharedPackageShape:
     package_name: str
     capability_key: str
     description: str
+    shared_surface_family: str
     intended_profiles: tuple[str, ...]
     surfaces: tuple[str, ...]
+    tool_ids: tuple[str, ...] = ()
+    agent_ids: tuple[str, ...] = ()
+    skill_ids: tuple[str, ...] = ()
     notes: tuple[str, ...] = ()
 
 
@@ -34,6 +38,7 @@ class ReferenceScenarioPackShape:
     recommended_distribution: str
     recommended_first_party_packages: tuple[str, ...]
     shared_package_dependencies: tuple[str, ...]
+    expected_tools: tuple[str, ...]
     expected_agents: tuple[str, ...]
     expected_skills: tuple[str, ...]
     default_boundaries: tuple[str, ...]
@@ -57,11 +62,60 @@ class _ScenarioPackProfileContributor:
         return self.prompt_fragments
 
 
+def _reference_package_candidate_metadata(package_name: str) -> dict[str, dict[str, str]]:
+    return {
+        "package_candidate": {
+            "candidate_id": f"reference::{package_name}",
+            "version": "1.0.0",
+        }
+    }
+
+
+def _surface_inventory(values: tuple[str, ...]) -> list[str]:
+    return list(_stable_unique_names(values))
+
+
+def _shared_package_surface_contract(shape: ReferenceSharedPackageShape) -> dict[str, object]:
+    return {
+        **_reference_package_candidate_metadata(shape.package_name),
+        "reference_kind": "shared-package",
+        "shared_surface_family": shape.shared_surface_family,
+        "intended_profiles": list(shape.intended_profiles),
+        "shared_surfaces": list(shape.surfaces),
+        "tool_ids": _surface_inventory(shape.tool_ids),
+        "agent_ids": _surface_inventory(shape.agent_ids),
+        "skill_ids": _surface_inventory(shape.skill_ids),
+        "notes": list(shape.notes),
+    }
+
+
+def _scenario_pack_surface_contract(shape: ReferenceScenarioPackShape) -> dict[str, object]:
+    return {
+        **_reference_package_candidate_metadata(shape.package_name),
+        "reference_kind": "scenario-pack",
+        "scenario_profile": shape.profile,
+        "recommended_distribution": shape.recommended_distribution,
+        "recommended_first_party_packages": list(shape.recommended_first_party_packages),
+        "shared_package_dependencies": list(shape.shared_package_dependencies),
+        "expected_tools": _surface_inventory(shape.expected_tools),
+        "expected_agents": _surface_inventory(shape.expected_agents),
+        "expected_skills": _surface_inventory(shape.expected_skills),
+        "default_boundaries": list(shape.default_boundaries),
+        "app_owned_wiring": list(shape.app_owned_wiring),
+        "host_assumptions": list(shape.host_assumptions),
+        "permission_policy_posture": list(shape.permission_policy_posture),
+        "profile_prompt_fragments": list(shape.profile_prompt_fragments),
+        "staged_scope_boundaries": list(shape.staged_scope_boundaries),
+        "notes": list(shape.notes),
+    }
+
+
 REFERENCE_SHARED_PACKAGE_SHAPES: tuple[ReferenceSharedPackageShape, ...] = (
     ReferenceSharedPackageShape(
         package_name="weavert-shared-retrieval",
         capability_key="weavert.reference.shared.retrieval",
         description="Reference retrieval-oriented shared package for chat and assistant scenario packs.",
+        shared_surface_family="retrieval",
         intended_profiles=("chat", "local_assistant"),
         surfaces=(
             "retrieval context contributors",
@@ -77,6 +131,7 @@ REFERENCE_SHARED_PACKAGE_SHAPES: tuple[ReferenceSharedPackageShape, ...] = (
         package_name="weavert-bridge-web",
         capability_key="weavert.reference.bridge.web",
         description="Reference shared package shape for web and HTTP capability surfaces.",
+        shared_surface_family="web-bridge",
         intended_profiles=("chat", "local_assistant"),
         surfaces=("web fetch bridge", "remote content access", "HTTP-aware grounding helpers"),
         notes=(
@@ -87,6 +142,7 @@ REFERENCE_SHARED_PACKAGE_SHAPES: tuple[ReferenceSharedPackageShape, ...] = (
         package_name="weavert-bridge-browser",
         capability_key="weavert.reference.bridge.browser",
         description="Reference shared package shape for browser automation capability surfaces.",
+        shared_surface_family="browser-bridge",
         intended_profiles=("local_assistant",),
         surfaces=("browser bridge", "tab/session mediation", "navigation helpers"),
         notes=(
@@ -97,6 +153,7 @@ REFERENCE_SHARED_PACKAGE_SHAPES: tuple[ReferenceSharedPackageShape, ...] = (
         package_name="weavert-bridge-local-os",
         capability_key="weavert.reference.bridge.local_os",
         description="Reference shared package shape for local OS capability surfaces.",
+        shared_surface_family="local-os-bridge",
         intended_profiles=("local_assistant",),
         surfaces=("filesystem adapter", "process launch mediation", "desktop integration hooks"),
         notes=(
@@ -107,6 +164,7 @@ REFERENCE_SHARED_PACKAGE_SHAPES: tuple[ReferenceSharedPackageShape, ...] = (
         package_name="weavert-bridge-pim",
         capability_key="weavert.reference.bridge.pim",
         description="Reference shared package shape for personal information manager capability surfaces.",
+        shared_surface_family="pim-bridge",
         intended_profiles=("local_assistant",),
         surfaces=("calendar adapter", "contacts/tasks adapter", "notification handoff hooks"),
         notes=(
@@ -129,6 +187,7 @@ REFERENCE_SCENARIO_PACK_SHAPES: tuple[ReferenceScenarioPackShape, ...] = (
             "weavert-builtin-workflows",
         ),
         shared_package_dependencies=(),
+        expected_tools=("read", "glob", "grep", "edit", "write", "bash"),
         expected_agents=("plan", "verification", "planner", "coordinator", "worker"),
         expected_skills=("verify", "debug", "stuck", "batch", "simplify"),
         default_boundaries=(
@@ -168,6 +227,7 @@ REFERENCE_SCENARIO_PACK_SHAPES: tuple[ReferenceScenarioPackShape, ...] = (
             "weavert-shared-retrieval",
             "weavert-bridge-web",
         ),
+        expected_tools=(),
         expected_agents=(),
         expected_skills=("remember",),
         default_boundaries=(
@@ -209,6 +269,7 @@ REFERENCE_SCENARIO_PACK_SHAPES: tuple[ReferenceScenarioPackShape, ...] = (
             "weavert-bridge-local-os",
             "weavert-bridge-pim",
         ),
+        expected_tools=(),
         expected_agents=(),
         expected_skills=("remember",),
         default_boundaries=(
@@ -271,6 +332,7 @@ def reference_scenario_pack_shape(name: str) -> ReferenceScenarioPackShape:
 
 def build_reference_shared_package_manifest(name: str) -> RuntimePackageManifest:
     shape = reference_shared_package_shape(name)
+    surface_contract = _shared_package_surface_contract(shape)
     return build_capability_only_package_manifest(
         name=shape.package_name,
         role="shared_capability",
@@ -283,27 +345,27 @@ def build_reference_shared_package_manifest(name: str) -> RuntimePackageManifest
                     "package_name": shape.package_name,
                     "capability_key": shape.capability_key,
                     "description": shape.description,
-                    "intended_profiles": list(shape.intended_profiles),
                     "surfaces": list(shape.surfaces),
-                    "notes": list(shape.notes),
+                    **surface_contract,
                 },
                 metadata={
                     "reference_kind": "shared-package",
+                    "shared_surface_family": shape.shared_surface_family,
                     "intended_profiles": list(shape.intended_profiles),
+                    "tool_ids": _surface_inventory(shape.tool_ids),
+                    "agent_ids": _surface_inventory(shape.agent_ids),
+                    "skill_ids": _surface_inventory(shape.skill_ids),
                 },
             ),
         ),
-        manifest_metadata={
-            "reference_kind": "shared-package",
-            "intended_profiles": list(shape.intended_profiles),
-            "shared_surfaces": list(shape.surfaces),
-        },
+        manifest_metadata=surface_contract,
     )
 
 
 def build_reference_scenario_pack_manifest(name: str) -> RuntimePackageManifest:
     shape = reference_scenario_pack_shape(name)
     dependencies = _stable_unique_names(("weavert-core", *shape.shared_package_dependencies))
+    surface_contract = _scenario_pack_surface_contract(shape)
 
     def _assemble(context) -> PackageContribution:
         if context.stage != PackageAssemblyStage.SERVICES:
@@ -388,21 +450,10 @@ def build_reference_scenario_pack_manifest(name: str) -> RuntimePackageManifest:
                         "kind": "scenario-pack",
                         "package_name": shape.package_name,
                         "profile": shape.profile,
+                        "scenario_profile": shape.profile,
                         "display_name": shape.display_name,
-                        "recommended_distribution": shape.recommended_distribution,
-                        "recommended_first_party_packages": list(
-                            shape.recommended_first_party_packages
-                        ),
-                        "shared_package_dependencies": list(shape.shared_package_dependencies),
-                        "expected_agents": list(shape.expected_agents),
-                        "expected_skills": list(shape.expected_skills),
-                        "default_boundaries": list(shape.default_boundaries),
-                        "app_owned_wiring": list(shape.app_owned_wiring),
-                        "host_assumptions": list(shape.host_assumptions),
-                        "permission_policy_posture": list(shape.permission_policy_posture),
-                        "profile_prompt_fragments": list(shape.profile_prompt_fragments),
-                        "staged_scope_boundaries": list(shape.staged_scope_boundaries),
-                        "notes": list(shape.notes),
+                        "description": shape.description,
+                        **surface_contract,
                     },
                     owner=context.ownership(
                         "capability",
@@ -436,20 +487,7 @@ def build_reference_scenario_pack_manifest(name: str) -> RuntimePackageManifest:
             "baseline_dependencies": list(dependencies),
             "capabilities": [shape.capability_key],
             "capability_registration_path": "PackageContribution.capabilities",
-            "reference_kind": "scenario-pack",
-            "scenario_profile": shape.profile,
-            "recommended_distribution": shape.recommended_distribution,
-            "recommended_first_party_packages": list(shape.recommended_first_party_packages),
-            "shared_package_dependencies": list(shape.shared_package_dependencies),
-            "expected_agents": list(shape.expected_agents),
-            "expected_skills": list(shape.expected_skills),
-            "default_boundaries": list(shape.default_boundaries),
-            "app_owned_wiring": list(shape.app_owned_wiring),
-            "host_assumptions": list(shape.host_assumptions),
-            "permission_policy_posture": list(shape.permission_policy_posture),
-            "profile_prompt_fragments": list(shape.profile_prompt_fragments),
-            "staged_scope_boundaries": list(shape.staged_scope_boundaries),
-            "notes": list(shape.notes),
+            **surface_contract,
         },
     )
 

@@ -234,12 +234,158 @@ product-profile layer，而不是新的 kernel mode。
 特别要注意：
 
 - scenario pack 可以推荐 provider、store、host、permission posture
-- scenario pack capability 里列出的 expected agents / skills，表示“把推荐 first-party package 也一起打开后，这个 profile 期望出现什么”
-- 单独 request scenario pack 本身，不会自动 materialize 这些 agents / skills
+- scenario pack capability 里列出的 `expected_tools` / `expected_agents` / `expected_skills`，表示“把推荐 first-party package 也一起打开后，这个 profile 期望出现什么”
+- 单独 request scenario pack 本身，不会自动 materialize 这些 tools / agents / skills
 - 但 scenario pack 仍然可以通过 package-owned context contributor 注入 profile guidance，并在缺少推荐 first-party package 时发出 profile-specific diagnostics
 - 但 final provider selection、store selection、`bind_host()`、以及最终 permission-policy composition 仍然是 app-owned wiring
 
 参考 shape、shared package 示例和验证路径，见 `docs/weavert-scenario-runtime-pack-architecture.md`。
+
+### 2.4.2 Package-surface contract：runtime-resolved、runtime-projected、convention-only
+
+如果你要 author shared package 或 scenario pack，当前仓库推荐把 metadata contract 拆成三层看：
+
+- runtime-resolved
+  - runtime 今天真正会读取并参与 external package resolution 的 namespace
+  - 当前 canonical key 是 `metadata["package_candidate"]`
+- runtime-projected
+  - runtime 会把一部分 manifest metadata 复制到 `weavert.services.metadata["package_manifests"]` /
+    `weavert.metadata["package_manifests"]`
+  - 这层适合做安全 inspection、diagnostics、UI 展示与 contract test
+- convention-only
+  - 仓库把这些字段标准化了，但它们默认不会单靠“字段存在”就改变 assembly 行为
+  - projected 不等于 runtime-enforced；很多字段只是 stable product guidance
+
+最容易混淆的一点是：
+
+- `package_candidate`
+  - 既是 runtime-resolved，也是 projected
+- `shared_surface_family`、`tool_ids`、`scenario_profile`、`expected_tools`、`app_owned_wiring`
+  - 可以被 projected 供 caller inspect
+  - 但默认仍属于 convention-only guidance，而不是新的 kernel switch
+
+shared package 当前推荐发布下面这组 family-specific metadata：
+
+| Key | 类型 | 归类 | 说明 |
+| --- | --- | --- | --- |
+| `package_candidate` | mapping | runtime-resolved | candidate ID、version、structured dependency/compatibility 的 canonical namespace |
+| `shared_surface_family` | string | convention-only + projected | shared capability surface 的 family 名称，例如 retrieval / web-bridge |
+| `intended_profiles` | list[str] | convention-only + projected | 哪些 scenario profile 适合组合这个 shared package |
+| `tool_ids` / `agent_ids` / `skill_ids` | list[str] | convention-only + projected | package 自己声明的 surface inventory；没有就显式空列表 |
+| `shared_surfaces` | list[str] | convention-only + projected | 作者给 caller 的高层 surface 说明 |
+
+scenario pack 当前推荐发布下面这组 family-specific metadata：
+
+| Key | 类型 | 归类 | 说明 |
+| --- | --- | --- | --- |
+| `package_candidate` | mapping | runtime-resolved | external package resolution 的 canonical candidate namespace |
+| `scenario_profile` | string | convention-only + projected | coding / chat / local_assistant 这类 profile identity |
+| `recommended_distribution` | string | convention-only + projected | 推荐的 coarse first-party baseline |
+| `recommended_first_party_packages` | list[str] | convention-only + projected | app-owned wiring 应额外启用的 first-party packages |
+| `shared_package_dependencies` | list[str] | convention-only + projected | scenario pack 组合的 shared package 依赖 |
+| `expected_tools` / `expected_agents` / `expected_skills` | list[str] | convention-only + projected | profile contract 期望看到的 flat surface inventory |
+| `default_boundaries` | list[str] | convention-only + projected | profile 默认边界 |
+| `app_owned_wiring` / `host_assumptions` / `permission_policy_posture` | list[str] | convention-only + projected | 明确哪些 wiring 仍然归 app / host |
+
+shared package 示例：
+
+```python
+manifest_metadata = {
+    "package_candidate": {
+        "candidate_id": "reference::weavert-bridge-web",
+        "version": "1.0.0",
+    },
+    "reference_kind": "shared-package",
+    "shared_surface_family": "web-bridge",
+    "intended_profiles": ["chat", "local_assistant"],
+    "tool_ids": [],
+    "agent_ids": [],
+    "skill_ids": [],
+    "shared_surfaces": [
+        "web fetch bridge",
+        "remote content access",
+        "HTTP-aware grounding helpers",
+    ],
+}
+```
+
+scenario pack 示例：
+
+```python
+manifest_metadata = {
+    "package_candidate": {
+        "candidate_id": "reference::weavert-scenario-coding",
+        "version": "1.0.0",
+    },
+    "reference_kind": "scenario-pack",
+    "scenario_profile": "coding",
+    "recommended_distribution": "weavert-core",
+    "recommended_first_party_packages": [
+        "weavert-devtools",
+        "weavert-planning",
+        "weavert-builtin-workflows",
+    ],
+    "shared_package_dependencies": [],
+    "expected_tools": ["read", "glob", "grep", "edit", "write", "bash"],
+    "expected_agents": ["plan", "verification", "planner", "coordinator", "worker"],
+    "expected_skills": ["verify", "debug", "stuck", "batch", "simplify"],
+    "default_boundaries": [
+        "workspace-oriented by default",
+        "shell and file mutation surfaces are expected",
+    ],
+    "app_owned_wiring": [
+        "model provider selection",
+        "host binding for terminal or IDE shells",
+        "final permission policy composition",
+    ],
+}
+```
+
+如果你要记录 deployable app shell 的装配约定，推荐把它留在 app-owned config / docs / code
+里，而不是把它再包装成第三种 manifest-owned package family。一个健康的 app-owned shell
+convention 例子大概长这样：
+
+```python
+coding_shell_guidance = {
+    "app_kind": "cli-coding-shell",
+    "scenario_package": "weavert-scenario-coding",
+    "selected_first_party_packages": [
+        "weavert-devtools",
+        "weavert-planning",
+        "weavert-builtin-workflows",
+    ],
+    "host_expectations": ["terminal-or-IDE host"],
+    "permission_policy_notes": ["coding-grade read/write posture"],
+}
+```
+
+也就是说：
+
+- `app_kind`、host expectations、final permission notes 可以标准化
+- 但它们仍然是 app-owned shell conventions，不是第三种 manifest-owned package family
+
+caller 想安全 inspect package-surface metadata 时，推荐同时看 manifest projection 与
+scenario-pack capability payload：
+
+```python
+manifests = runtime.services.metadata["package_manifests"]
+
+coding_manifest = manifests["weavert-scenario-coding"]
+candidate = coding_manifest["package_candidate"]
+expected_tools = coding_manifest["expected_tools"]
+
+coding_capability = runtime.services.require_capability(
+    "weavert.reference.scenario.coding"
+)
+app_owned_wiring = coding_capability["app_owned_wiring"]
+```
+
+这条 inspect path 的判断原则是：
+
+- 要看 runtime selection / candidate truth -> 先看 `package_candidate`
+- 要看 package graph 里当前投影出来的 surface contract -> 看 `package_manifests`
+- 要看 scenario profile 直接对 caller 承诺的 expected surface / wiring guidance -> 看 capability payload
+  里的 `expected_tools` / `expected_agents` / `expected_skills` / `app_owned_wiring`
 
 同时要把 stable core protocol catalog 和 package capability 分开看。当前 runtime 会把 stable core protocol 单独发布到：
 

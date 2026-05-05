@@ -6,15 +6,21 @@ from pathlib import Path
 import pytest
 
 from weavert.runtime_kernel import RuntimeConfig, assemble_runtime
+from weavert.runtime_package_resolution import PACKAGE_CANDIDATE_METADATA_KEY
 from weavert.scenario_runtime_packs import (
+    reference_scenario_pack_manifests,
     reference_scenario_pack_shape,
+    reference_scenario_pack_shapes,
     reference_scenario_runtime_pack_manifests,
+    reference_shared_package_manifests,
     reference_shared_package_shape,
+    reference_shared_package_shapes,
 )
 from weavert.testing import ScriptedModelClient, text_batch
 
 
 REFERENCE_MANIFESTS = reference_scenario_runtime_pack_manifests()
+REFERENCE_PACKAGE_VERSION = "1.0.0"
 CODING_WORKSPACE_TOOLS = {"read", "glob", "grep", "edit", "write", "bash"}
 CODING_PROFILE_AGENTS = {"plan", "verification", "planner", "coordinator", "worker"}
 CODING_PROFILE_SKILLS = {"verify", "debug", "stuck", "batch", "simplify"}
@@ -123,9 +129,11 @@ def test_reference_scenario_pack_shapes_activate_through_existing_runtime_packag
 
     scenario_capability = runtime.services.require_capability(shape.capability_key)
     assert scenario_capability["profile"] == shape.profile
+    assert scenario_capability["scenario_profile"] == shape.profile
     assert scenario_capability["recommended_first_party_packages"] == list(
         shape.recommended_first_party_packages
     )
+    assert scenario_capability["expected_tools"] == list(shape.expected_tools)
     assert scenario_capability["expected_agents"] == list(shape.expected_agents)
     assert scenario_capability["expected_skills"] == list(shape.expected_skills)
     assert scenario_capability["shared_package_dependencies"] == list(
@@ -138,6 +146,7 @@ def test_reference_scenario_pack_shapes_activate_through_existing_runtime_packag
         shared_capability = runtime.services.require_capability(shared_shape.capability_key)
         assert shared_capability["package_name"] == dependency_name
         assert shared_capability["intended_profiles"]
+        assert shared_capability["shared_surface_family"] == shared_shape.shared_surface_family
 
     execution_plan = runtime.services.context_contributor_execution_plan()
     profile_entry = next(
@@ -158,6 +167,7 @@ def test_reference_scenario_pack_shapes_activate_through_existing_runtime_packag
     assert expected_tools <= tool_names
     assert expected_agents <= agent_names
     assert expected_skills <= skill_names
+    assert all(isinstance(tool_name, str) for tool_name in scenario_capability["expected_tools"])
     assert tool_names.isdisjoint(forbidden_tools)
     assert agent_names.isdisjoint(forbidden_agents)
     assert skill_names.isdisjoint(forbidden_skills)
@@ -186,8 +196,10 @@ def test_reference_scenario_pack_capabilities_publish_expected_profile_surfaces_
     assert manifest_names.isdisjoint(shape.recommended_first_party_packages)
 
     scenario_capability = runtime.services.require_capability(shape.capability_key)
+    assert scenario_capability["expected_tools"] == list(shape.expected_tools)
     assert scenario_capability["expected_agents"] == list(shape.expected_agents)
     assert scenario_capability["expected_skills"] == list(shape.expected_skills)
+    assert all(isinstance(tool_name, str) for tool_name in scenario_capability["expected_tools"])
 
     execution_plan = runtime.services.context_contributor_execution_plan()
     assert any(
@@ -278,3 +290,99 @@ def test_reference_scenario_pack_capabilities_preserve_distinct_default_boundari
     assert any("host-centric" in entry for entry in assistant["default_boundaries"])
     assert any("audit" in entry or "approval" in entry for entry in assistant["permission_policy_posture"])
     assert assistant["app_owned_wiring"][-1] == "final permission policy composition and audit sinks"
+
+
+def test_reference_package_manifest_metadata_follows_family_specific_surface_contracts() -> None:
+    for manifest, shape in zip(reference_shared_package_manifests(), reference_shared_package_shapes()):
+        metadata = manifest.metadata
+        candidate = metadata[PACKAGE_CANDIDATE_METADATA_KEY]
+        assert manifest.name == shape.package_name
+        assert metadata["package_pattern"] == "capability-only"
+        assert metadata["reference_kind"] == "shared-package"
+        assert candidate["candidate_id"] == f"reference::{shape.package_name}"
+        assert candidate["version"] == REFERENCE_PACKAGE_VERSION
+        assert metadata["shared_surface_family"] == shape.shared_surface_family
+        assert metadata["intended_profiles"] == list(shape.intended_profiles)
+        assert metadata["shared_surfaces"] == list(shape.surfaces)
+        assert metadata["tool_ids"] == list(shape.tool_ids)
+        assert metadata["agent_ids"] == list(shape.agent_ids)
+        assert metadata["skill_ids"] == list(shape.skill_ids)
+        assert "scenario_profile" not in metadata
+
+    for manifest, shape in zip(reference_scenario_pack_manifests(), reference_scenario_pack_shapes()):
+        metadata = manifest.metadata
+        candidate = metadata[PACKAGE_CANDIDATE_METADATA_KEY]
+        assert manifest.name == shape.package_name
+        assert metadata["package_pattern"] == "scenario-pack"
+        assert metadata["reference_kind"] == "scenario-pack"
+        assert candidate["candidate_id"] == f"reference::{shape.package_name}"
+        assert candidate["version"] == REFERENCE_PACKAGE_VERSION
+        assert metadata["scenario_profile"] == shape.profile
+        assert metadata["recommended_distribution"] == shape.recommended_distribution
+        assert metadata["recommended_first_party_packages"] == list(
+            shape.recommended_first_party_packages
+        )
+        assert metadata["shared_package_dependencies"] == list(shape.shared_package_dependencies)
+        assert metadata["expected_tools"] == list(shape.expected_tools)
+        assert metadata["expected_agents"] == list(shape.expected_agents)
+        assert metadata["expected_skills"] == list(shape.expected_skills)
+        assert "shared_surface_family" not in metadata
+
+
+def test_runtime_metadata_projects_reference_package_surface_contracts_for_safe_inspection(
+    tmp_path: Path,
+) -> None:
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            distribution="weavert-core",
+            enabled_packages={
+                "weavert-devtools",
+                "weavert-planning",
+                "weavert-builtin-workflows",
+                "weavert-memory",
+            },
+            extra_package_manifests=REFERENCE_MANIFESTS,
+            requested_packages={
+                "weavert-scenario-coding",
+                "weavert-scenario-chat",
+                "weavert-scenario-local-assistant",
+            },
+        )
+    )
+
+    manifests = runtime.services.metadata["package_manifests"]
+
+    shared_shape = reference_shared_package_shape("weavert-shared-retrieval")
+    shared_manifest = manifests[shared_shape.package_name]
+    assert shared_manifest["package_candidate"] == {
+        "candidate_id": f"reference::{shared_shape.package_name}",
+        "version": REFERENCE_PACKAGE_VERSION,
+    }
+    assert shared_manifest["shared_surface_family"] == shared_shape.shared_surface_family
+    assert shared_manifest["intended_profiles"] == list(shared_shape.intended_profiles)
+    assert shared_manifest["tool_ids"] == list(shared_shape.tool_ids)
+    assert shared_manifest["skill_ids"] == list(shared_shape.skill_ids)
+
+    coding_shape = reference_scenario_pack_shape("weavert-scenario-coding")
+    coding_manifest = manifests[coding_shape.package_name]
+    coding_capability = runtime.services.require_capability(coding_shape.capability_key)
+    assert coding_manifest["package_candidate"] == {
+        "candidate_id": f"reference::{coding_shape.package_name}",
+        "version": REFERENCE_PACKAGE_VERSION,
+    }
+    assert coding_manifest["scenario_profile"] == coding_shape.profile
+    assert coding_manifest["recommended_first_party_packages"] == list(
+        coding_shape.recommended_first_party_packages
+    )
+    assert coding_manifest["shared_package_dependencies"] == list(
+        coding_shape.shared_package_dependencies
+    )
+    assert coding_manifest["expected_tools"] == list(coding_shape.expected_tools)
+    assert coding_manifest["expected_agents"] == list(coding_shape.expected_agents)
+    assert coding_manifest["expected_skills"] == list(coding_shape.expected_skills)
+    assert coding_capability["package_candidate"] == coding_manifest["package_candidate"]
+    assert coding_capability["scenario_profile"] == coding_manifest["scenario_profile"]
+    assert coding_capability["expected_tools"] == coding_manifest["expected_tools"]
+    assert coding_capability["expected_agents"] == coding_manifest["expected_agents"]
+    assert coding_capability["expected_skills"] == coding_manifest["expected_skills"]

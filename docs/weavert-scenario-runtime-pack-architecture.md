@@ -51,7 +51,7 @@ Host + permission control plane
 | --- | --- | --- |
 | distribution | `weavert-core/default/full` 这种 coarse baseline | product-specific host policy |
 | shared package | retrieval, web, browser, local-OS, PIM 之类复用 capability | 某一个产品形态的全部 workflow 语义 |
-| scenario pack | product-profile defaults, shared-package composition, expected agent/skill posture | final host binding, mandatory provider selection, final permission composition |
+| scenario pack | product-profile defaults, shared-package composition, expected tool/agent/skill posture | final host binding, mandatory provider selection, final permission composition |
 | app-owned wiring | selected first-party packages, `extra_package_manifests`, `requested_packages`, provider routes, stores, host binding | reusable low-level bridge implementation |
 | host / permission plane | approval UX, audit, deployment policy, live host mediation | repo-level reusable package catalog |
 
@@ -133,6 +133,20 @@ scenario pack 继续回答：
 - browser / local OS / PIM bridge 不应该在每个 assistant profile 里重复实现
 - scenario pack 应该组合它们，而不是吸收它们的所有权
 
+同时这组 reference shared package 现在也演示 canonical shared-package surface contract：
+
+- runtime-resolved
+  - `package_candidate`
+- projected + convention-only
+  - `shared_surface_family`
+  - `intended_profiles`
+  - `tool_ids` / `agent_ids` / `skill_ids`
+  - `shared_surfaces`
+
+也就是说，shared package 仍然走 ordinary capability-only package pattern，但会额外发布一层
+family-specific metadata vocabulary，供 caller 安全 inspect，而不是逼应用再发明自己的字段名。
+更完整的 authoring 约定见 `docs/weavert-user-extension-guide.md`。
+
 ## 5. Reference scenario pack shapes
 
 ### 5.1 Coding pack
@@ -151,9 +165,10 @@ shared-package dependencies:
 
 - none in the first reference path
 
-expected profile agents / skills
+expected profile tools / agents / skills
 (after recommended first-party packages are enabled):
 
+- tools: `read`, `glob`, `grep`, `edit`, `write`, `bash`
 - agents: `plan`, `verification`, `planner`, `coordinator`, `worker`
 - skills: `verify`, `debug`, `stuck`, `batch`, `simplify`
 
@@ -179,9 +194,10 @@ shared-package dependencies:
 - `weavert-shared-retrieval`
 - `weavert-bridge-web`
 
-expected profile agents / skills
+expected profile tools / agents / skills
 (after recommended first-party packages are enabled):
 
+- tools: none by default
 - agents: none by default
 - skills: `remember`
 
@@ -210,9 +226,10 @@ shared-package dependencies:
 - `weavert-bridge-local-os`
 - `weavert-bridge-pim`
 
-expected profile agents / skills
+expected profile tools / agents / skills
 (after recommended first-party packages are enabled):
 
+- tools: none by default
 - agents: none by default
 - skills: `remember`
 
@@ -237,6 +254,14 @@ staged scope boundaries:
 ## 6. Reference activation path
 
 这些 reference shape 不引入新 API，而是继续走现有 config surface。
+同时它们现在有两条官方 inspect path：
+
+- `weavert.services.metadata["package_manifests"]`
+  - 看 projected package-surface metadata，例如 `package_candidate`、`scenario_profile`、
+    `expected_tools`
+- `RuntimeServices.require_capability(...)`
+  - 看 scenario-pack capability payload 里镜像出来的 profile contract，例如
+    `expected_tools` / `expected_agents` / `expected_skills` / `app_owned_wiring`
 
 最直接的 reference activation 写法如下：
 
@@ -276,7 +301,7 @@ chat 与 local assistant 只需要把：
 - package-owned profile guidance context contributor
 - scenario-pack-specific warning diagnostics
 
-而不会自动 materialize shape 里列出的 expected agents / skills。
+而不会自动 materialize shape 里列出的 expected tools / agents / skills。
 
 注意这里的 ownership split：
 
@@ -287,6 +312,9 @@ chat 与 local assistant 只需要把：
 ## 7. App-owned wiring examples
 
 下面三种 wiring example 都故意把 provider、store、host、permission 放在 scenario pack 外面。
+如果应用还想记录 deployable shell 的组装约定，推荐把 `app_kind`、scenario package、
+host expectation、final permission notes 保留在 app-owned config / docs / code 里，而不是把
+它们升级成第三种 manifest-owned package family。
 
 ### 7.1 Coding app wiring
 
