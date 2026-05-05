@@ -207,6 +207,37 @@ Python module 也必须导出 concrete `ToolDefinition`，而不是 `dict` / map
 - “能力通过什么 contract 接上 runtime”
 - 而不是“代码物理上放在什么目录里”
 
+### 2.4.1 Scenario pack 是 product-profile package，不是 `.weavert/` 替代品
+
+当你开始做 coding / chat / local-assistant 这类产品形态时，推荐把 scenario pack 理解成
+product-profile layer，而不是新的 kernel mode。
+
+边界上要分清三件事：
+
+- distribution
+  - 仍然负责 coarse first-party baseline，例如 `weavert-core` / `weavert-default` / `weavert-full`
+- scenario pack
+  - 仍然是 ordinary runtime package
+  - 通过 `RuntimeConfig.extra_package_manifests` + `RuntimeConfig.requested_packages` 接入
+  - 可以推荐 `enabled_packages` / `disabled_packages`、shared package 依赖、默认边界与 profile posture
+- workspace-local `.weavert/`
+  - 仍然负责当前项目自己的 tool / agent / skill authoring
+  - 不是 scenario pack 的替代物，也不会自动变成 package graph 的 owner
+
+一个健康的组合通常是：
+
+1. 用 distribution 选 coarse baseline。
+2. 用 `enabled_packages` / `disabled_packages` 调整 first-party package selection。
+3. 用 external manifest 激活 shared package 与 scenario pack。
+4. 再用 `.weavert/` 叠加 workspace-local definition。
+
+特别要注意：
+
+- scenario pack 可以推荐 provider、store、host、permission posture
+- 但 final provider selection、store selection、`bind_host()`、以及最终 permission-policy composition 仍然是 app-owned wiring
+
+参考 shape、shared package 示例和验证路径，见 `docs/weavert-scenario-runtime-pack-architecture.md`。
+
 同时要把 stable core protocol catalog 和 package capability 分开看。当前 runtime 会把 stable core protocol 单独发布到：
 
 - `weavert.services.metadata["core_protocol_catalog"]`
