@@ -292,6 +292,36 @@ def test_reference_scenario_pack_capabilities_preserve_distinct_default_boundari
     assert assistant["app_owned_wiring"][-1] == "final permission policy composition and audit sinks"
 
 
+@pytest.mark.parametrize("distribution", (None, "weavert-core", "weavert-default", "weavert-full"))
+def test_reference_scenario_runtime_packs_are_not_part_of_default_distribution_baselines(
+    tmp_path: Path,
+    distribution: str | None,
+) -> None:
+    runtime_root = tmp_path / (distribution or "runtime-default")
+    runtime_root.mkdir(parents=True)
+    config_kwargs = {"working_directory": runtime_root}
+    if distribution is not None:
+        config_kwargs["distribution"] = distribution
+    runtime = assemble_runtime(RuntimeConfig(**config_kwargs))
+
+    reference_package_names = {
+        *(shape.package_name for shape in reference_shared_package_shapes()),
+        *(shape.package_name for shape in reference_scenario_pack_shapes()),
+    }
+    projected_manifest_names = set(runtime.services.metadata["package_manifests"])
+    active_manifest_names = {manifest.name for manifest in runtime.kernel.package_manifests}
+
+    assert active_manifest_names.isdisjoint(reference_package_names)
+    assert projected_manifest_names.isdisjoint(reference_package_names)
+
+    for shape in reference_shared_package_shapes():
+        with pytest.raises(KeyError):
+            runtime.services.require_capability(shape.capability_key)
+    for shape in reference_scenario_pack_shapes():
+        with pytest.raises(KeyError):
+            runtime.services.require_capability(shape.capability_key)
+
+
 def test_reference_package_manifest_metadata_follows_family_specific_surface_contracts() -> None:
     for manifest, shape in zip(reference_shared_package_manifests(), reference_shared_package_shapes()):
         metadata = manifest.metadata

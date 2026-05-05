@@ -219,6 +219,7 @@ product-profile layer，而不是新的 kernel mode。
 - scenario pack
   - 仍然是 ordinary runtime package
   - 通过 `RuntimeConfig.extra_package_manifests` + `RuntimeConfig.requested_packages` 接入
+  - 不属于任何默认 distribution baseline；不显式接入时，默认 runtime 不会自动装入这些 shared/scenario packs
   - 可以推荐 `enabled_packages` / `disabled_packages`、shared package 依赖、默认边界与 profile posture
 - workspace-local `.weavert/`
   - 仍然负责当前项目自己的 tool / agent / skill authoring

@@ -88,6 +88,9 @@ scenario pack 继续回答：
 - `RuntimeConfig.extra_package_manifests`
 - `RuntimeConfig.requested_packages`
 
+它们不属于任何默认 distribution baseline；如果不显式通过 external/optional package path 接入，
+默认 runtime 不会自动装入这些 shared package 或 scenario pack。
+
 它不是一套新的 kernel API。
 
 ### 3.3 Workspace-local `.weavert/`
@@ -254,6 +257,8 @@ staged scope boundaries:
 ## 6. Reference activation path
 
 这些 reference shape 不引入新 API，而是继续走现有 config surface。
+默认 distribution baseline 也不会自动带入它们；reference path 仍然要求调用方显式 admission +
+request 这些 external/optional packages。
 同时它们现在有两条官方 inspect path：
 
 - `weavert.services.metadata["package_manifests"]`
