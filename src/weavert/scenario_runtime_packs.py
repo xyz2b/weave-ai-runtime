@@ -31,8 +31,8 @@ class ReferenceScenarioPackShape:
     recommended_distribution: str
     recommended_first_party_packages: tuple[str, ...]
     shared_package_dependencies: tuple[str, ...]
-    contributed_agents: tuple[str, ...]
-    contributed_skills: tuple[str, ...]
+    expected_agents: tuple[str, ...]
+    expected_skills: tuple[str, ...]
     default_boundaries: tuple[str, ...]
     app_owned_wiring: tuple[str, ...]
     host_assumptions: tuple[str, ...]
@@ -117,8 +117,8 @@ REFERENCE_SCENARIO_PACK_SHAPES: tuple[ReferenceScenarioPackShape, ...] = (
             "weavert-builtin-workflows",
         ),
         shared_package_dependencies=(),
-        contributed_agents=("plan", "verification", "planner", "coordinator", "worker"),
-        contributed_skills=("verify", "debug", "stuck", "batch", "simplify"),
+        expected_agents=("plan", "verification", "planner", "coordinator", "worker"),
+        expected_skills=("verify", "debug", "stuck", "batch", "simplify"),
         default_boundaries=(
             "workspace-oriented by default",
             "shell and file mutation surfaces are expected",
@@ -152,8 +152,8 @@ REFERENCE_SCENARIO_PACK_SHAPES: tuple[ReferenceScenarioPackShape, ...] = (
             "weavert-shared-retrieval",
             "weavert-bridge-web",
         ),
-        contributed_agents=(),
-        contributed_skills=("remember",),
+        expected_agents=(),
+        expected_skills=("remember",),
         default_boundaries=(
             "read-mostly by default",
             "no implicit workspace mutation or shell execution surfaces",
@@ -189,8 +189,8 @@ REFERENCE_SCENARIO_PACK_SHAPES: tuple[ReferenceScenarioPackShape, ...] = (
             "weavert-bridge-local-os",
             "weavert-bridge-pim",
         ),
-        contributed_agents=(),
-        contributed_skills=("remember",),
+        expected_agents=(),
+        expected_skills=("remember",),
         default_boundaries=(
             "host-centric by default",
             "stronger permission, audit, and approval expectations than chat",
@@ -298,8 +298,8 @@ def build_reference_scenario_pack_manifest(name: str) -> RuntimePackageManifest:
                             shape.recommended_first_party_packages
                         ),
                         "shared_package_dependencies": list(shape.shared_package_dependencies),
-                        "contributed_agents": list(shape.contributed_agents),
-                        "contributed_skills": list(shape.contributed_skills),
+                        "expected_agents": list(shape.expected_agents),
+                        "expected_skills": list(shape.expected_skills),
                         "default_boundaries": list(shape.default_boundaries),
                         "app_owned_wiring": list(shape.app_owned_wiring),
                         "host_assumptions": list(shape.host_assumptions),
@@ -342,8 +342,8 @@ def build_reference_scenario_pack_manifest(name: str) -> RuntimePackageManifest:
             "recommended_distribution": shape.recommended_distribution,
             "recommended_first_party_packages": list(shape.recommended_first_party_packages),
             "shared_package_dependencies": list(shape.shared_package_dependencies),
-            "contributed_agents": list(shape.contributed_agents),
-            "contributed_skills": list(shape.contributed_skills),
+            "expected_agents": list(shape.expected_agents),
+            "expected_skills": list(shape.expected_skills),
             "default_boundaries": list(shape.default_boundaries),
             "app_owned_wiring": list(shape.app_owned_wiring),
             "host_assumptions": list(shape.host_assumptions),

@@ -151,7 +151,8 @@ shared-package dependencies:
 
 - none in the first reference path
 
-expected contributed agents / skills:
+expected profile agents / skills
+(after recommended first-party packages are enabled):
 
 - agents: `plan`, `verification`, `planner`, `coordinator`, `worker`
 - skills: `verify`, `debug`, `stuck`, `batch`, `simplify`
@@ -177,7 +178,8 @@ shared-package dependencies:
 - `weavert-shared-retrieval`
 - `weavert-bridge-web`
 
-expected contributed agents / skills:
+expected profile agents / skills
+(after recommended first-party packages are enabled):
 
 - agents: none by default
 - skills: `remember`
@@ -206,7 +208,8 @@ shared-package dependencies:
 - `weavert-bridge-local-os`
 - `weavert-bridge-pim`
 
-expected contributed agents / skills:
+expected profile agents / skills
+(after recommended first-party packages are enabled):
 
 - agents: none by default
 - skills: `remember`
@@ -261,6 +264,14 @@ chat 与 local assistant 只需要把：
 - `requested_packages`
 
 换成各自 profile 推荐值即可。
+
+如果你只 request scenario pack，但没有同时启用它推荐的 first-party package，
+那么 runtime 只会装出：
+
+- scenario-pack capability metadata
+- shared-package dependency graph
+
+而不会自动 materialize shape 里列出的 expected agents / skills。
 
 注意这里的 ownership split：
 
@@ -328,7 +339,7 @@ selected first-party packages
 当前 reference path 的可执行验证在 `tests/test_scenario_runtime_packs.py`，覆盖了三件事：
 
 1. coding / chat / local-assistant reference shape 都能通过现有 runtime package contract 装配
-2. chat 与 local assistant 不会因为 reference shape 而隐式继承 coding-oriented `read` / `write` / `bash` / `plan` / `verification` surface
+2. chat 与 local assistant 不会因为 reference shape 而隐式继承 coding-oriented workspace / shell / planning / workflow surface，例如 `read` / `glob` / `grep` / `edit` / `write` / `bash`、`plan` / `verification` / `planner` / `coordinator` / `worker`、以及 `verify` / `debug` / `stuck` / `batch` / `simplify`
 3. shared retrieval / bridge package 会按 scenario-pack dependency 被组合进 active graph
 
 这条验证路径的目的，是把 scenario pack 证明成 ordinary runtime package composition，而不是文档里的抽象说法。
