@@ -86,7 +86,7 @@ DEMO_CASES = (
     (
         "demos.hooks.session_register_hook_demo",
         (
-            "demo: session.register_hook",
+            "demo: session.hooks.on_pre_tool_use",
             "hook activation: active",
             "status: ok",
         ),
@@ -104,7 +104,7 @@ DEMO_CASES = (
     (
         "demos.hooks.host_registered_hook_demo",
         (
-            "demo: host.register_hook",
+            "demo: host.hooks.on_pre_tool_use",
             "hook source: host",
             "hook activation: active",
             "dispatch traces: 1",
@@ -228,7 +228,7 @@ README_USER_CENTRIC_SNIPPETS = (
             "child summary:",
             "status: ok",
         ),
-        "It proves both the request-time tool narrowing and the parent-visible `scope_summary` before delegation is mixed into a project workflow.",
+        "It proves the request-time tool narrowing and the parent-visible `scope_summary` for tool/skill/permission/memory/isolation posture before delegation is mixed into a project workflow.",
     ),
     (
         "demos.skills.inline_vs_fork_skill_demo",
@@ -243,15 +243,15 @@ README_USER_CENTRIC_SNIPPETS = (
     ),
     (
         "demos.hooks.host_registered_hook_demo",
-        "How do I attach a hook from host-owned integration code, confirm that it materialized as an active session hook, and prove that it actually fired?",
+        "How do I attach a hook from host-owned integration code through the layered registrar, confirm that it materialized as an active session hook, and prove that it actually fired?",
         (
-            "demo: host.register_hook",
+            "demo: host.hooks.on_pre_tool_use",
             "hook source: host",
             "hook activation: active",
             "dispatch traces:",
             "status: ok",
         ),
-        "It keeps host-owned hook attachment smaller than a full product shell.",
+        "It keeps host-owned hook attachment smaller than a full product shell, while showing the canonical bound-host in-session report path.",
     ),
     (
         "demos.hosts.minimal_host_bound_demo",

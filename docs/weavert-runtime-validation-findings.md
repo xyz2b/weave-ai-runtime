@@ -95,7 +95,7 @@
 
 从 demo 看，下面三条路径都已经真实成立：
 
-- `session.register_hook(...)`
+- `session.hooks.on_pre_tool_use(...)`
 - `RuntimeConfig(hooks=...)`
 - skill frontmatter `hooks`
 

@@ -1,4 +1,12 @@
 from .bus import HookBus, HookDispatchResult, HookRegistration
+from .authoring import (
+    ConfiguredHookRegistrar,
+    HookAdvancedRegistrar,
+    HookRawRegistrar,
+    HookTurnRegistrar,
+    HookTypedRegistrar,
+    build_configured_hook_registrar,
+)
 from .helpers import (
     HookAuthoringEffect,
     HookScopeShortcut,
@@ -96,9 +104,11 @@ __all__ = [
     "ADVANCED_HOOK_SOURCE_KINDS",
     "ADVANCED_PUBLIC_PHASE_CONTRACTS",
     "COMPATIBILITY_HOOK_SOURCE_KINDS",
+    "ConfiguredHookRegistrar",
     "ElicitationPayload",
     "ElicitationResultPayload",
     "HookAuthoringEffect",
+    "HookAdvancedRegistrar",
     "HookActivationState",
     "HookBus",
     "HookScopeShortcut",
@@ -116,6 +126,7 @@ __all__ = [
     "HookInventoryQuery",
     "HookMatch",
     "HookMatcherDefinition",
+    "HookRawRegistrar",
     "HookPhaseContract",
     "HookSupportLevel",
     "HookPhaseTier",
@@ -127,6 +138,8 @@ __all__ = [
     "HookStopDisposition",
     "HookSourceKind",
     "HookTraceRegistration",
+    "HookTurnRegistrar",
+    "HookTypedRegistrar",
     "HostLifecyclePayload",
     "HostLifecyclePhase",
     "NotificationPayload",
@@ -180,4 +193,5 @@ __all__ = [
     "session_scope",
     "template_scope",
     "turn_scope",
+    "build_configured_hook_registrar",
 ]

@@ -9,7 +9,6 @@ from weavert.hooks import (
     HookDispatchTraceQuery,
     HookInventoryQuery,
     match_tool,
-    on_pre_tool_use,
     rewrite_input,
 )
 from weavert.hosts import SdkHostRuntime
@@ -79,12 +78,10 @@ def main() -> None:
 
         host = SdkHostRuntime(name="sdk")
         bound = runtime.bind_host(host)
-        bound.register_hook(
-            on_pre_tool_use(
-                lambda _payload: rewrite_input({"value": "from-host"}),
-                match=match_tool("echo"),
-                effects=(rewrite_input,),
-            )
+        bound.hooks.on_pre_tool_use(
+            lambda _payload: rewrite_input({"value": "from-host"}),
+            match=match_tool("echo"),
+            effects=(rewrite_input,),
         )
         run_async(bound.startup())
         run_async(bound.ready())
@@ -111,7 +108,7 @@ def main() -> None:
         run_async(session.close())
         run_async(bound.shutdown())
 
-        print("demo: host.register_hook")
+        print("demo: host.hooks.on_pre_tool_use")
         print("hook source: host")
         print(f"hook activation: {inventory[0].activation_state.value}")
         print(f"dispatch traces: {len(traces)}")

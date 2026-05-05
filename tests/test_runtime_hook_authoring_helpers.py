@@ -26,6 +26,7 @@ from weavert.hooks import (
     respond_to_elicitation,
     rewrite_input,
 )
+from weavert.hosts import SdkHostRuntime
 from weavert.runtime_kernel import RuntimeConfig, assemble_runtime
 
 
@@ -251,3 +252,179 @@ def test_runtime_register_hook_accepts_helper_default_scope_for_template_surface
     assert inventory[0].activation_state == HookActivationState.ACTIVE
     assert inventory[0].scope.lifetime == HookScopeLifetime.SESSION
     assert inventory[0].parent_registration_id == handle.registration_id
+
+
+def test_layered_session_hook_surfaces_preserve_handle_model_and_trace_semantics(
+    tmp_path: Path,
+) -> None:
+    runtime = assemble_runtime(RuntimeConfig(working_directory=tmp_path))
+    session = runtime.create_session(session_id="layered-session", cwd=tmp_path)
+
+    simple_handle = session.hooks.on_pre_tool_use(
+        rewrite_input({"value": "simple"}),
+        match=match_tool("simple"),
+    )
+    typed_handle = session.hooks.typed.on_pre_tool_use(
+        lambda payload: rewrite_input({"value": payload.tool_input["value"].upper()}),
+        match=match_tool("typed"),
+        effects=(rewrite_input,),
+    )
+    raw_handle = session.hooks.raw.register(
+        HookRegistrationRequest(
+            phase="PreToolUse",
+            match=HookMatch(target="raw"),
+            scope=HookRegistrationScope(lifetime=HookScopeLifetime.SESSION),
+            handler=HookHandlerManifest(
+                kind=HookHandlerKind.CALLBACK,
+                static_effect=rewrite_input({"value": "raw"}),
+            ),
+            contract=HookEffectContract(
+                effect_classes=(HookEffectClass.TRANSFORM,),
+                effect_fields=("updated_input",),
+            ),
+        )
+    )
+
+    assert simple_handle.source_kind == HookSourceKind.SESSION_API
+    assert typed_handle.source_kind == HookSourceKind.SESSION_API
+    assert raw_handle.source_kind == HookSourceKind.SESSION_API
+    assert simple_handle.owner == typed_handle.owner == raw_handle.owner == "session:layered-session"
+    assert simple_handle.scope == typed_handle.scope == raw_handle.scope == HookRegistrationScope(
+        lifetime=HookScopeLifetime.SESSION,
+        session_id="layered-session",
+    )
+
+    simple_result = asyncio.run(
+        runtime.services.hook_bus.dispatch(
+            "layered-session",
+            PreToolUsePayload(
+                session_id="layered-session",
+                turn_id="turn-simple",
+                tool_name="simple",
+                tool_input={"value": "one"},
+            ),
+        )
+    )
+    typed_result = asyncio.run(
+        runtime.services.hook_bus.dispatch(
+            "layered-session",
+            PreToolUsePayload(
+                session_id="layered-session",
+                turn_id="turn-typed",
+                tool_name="typed",
+                tool_input={"value": "two"},
+            ),
+        )
+    )
+    raw_result = asyncio.run(
+        runtime.services.hook_bus.dispatch(
+            "layered-session",
+            PreToolUsePayload(
+                session_id="layered-session",
+                turn_id="turn-raw",
+                tool_name="raw",
+                tool_input={"value": "three"},
+            ),
+        )
+    )
+
+    traces = session.list_hook_dispatch_traces(HookDispatchTraceQuery(phase="PreToolUse"))
+
+    assert simple_result.updated_input == {"value": "simple"}
+    assert typed_result.updated_input == {"value": "TWO"}
+    assert raw_result.updated_input == {"value": "raw"}
+    assert [trace.winner_summary["updated_input"]["winner_registration_id"] for trace in traces] == [
+        simple_handle.registration_id,
+        typed_handle.registration_id,
+        raw_handle.registration_id,
+    ]
+
+
+def test_layered_and_raw_hook_registrations_share_rejection_diagnostics(tmp_path: Path) -> None:
+    runtime = assemble_runtime(RuntimeConfig(working_directory=tmp_path))
+    session = runtime.create_session(session_id="layered-invalid", cwd=tmp_path)
+    invalid_effect = respond_to_elicitation({"response": "approved"})
+
+    layered_handle = session.hooks.on_pre_tool_use(
+        invalid_effect,
+        match=match_tool("layered"),
+    )
+    raw_handle = session.hooks.raw.register(
+        HookRegistrationRequest(
+            phase="PreToolUse",
+            match=HookMatch(target="raw"),
+            scope=HookRegistrationScope(lifetime=HookScopeLifetime.SESSION),
+            handler=HookHandlerManifest(
+                kind=HookHandlerKind.CALLBACK,
+                static_effect=invalid_effect,
+            ),
+            contract=invalid_effect.contract,
+        )
+    )
+
+    records = runtime.services.hook_bus._records
+
+    assert layered_handle.activation_state == HookActivationState.REJECTED
+    assert raw_handle.activation_state == HookActivationState.REJECTED
+    assert records[layered_handle.registration_id].rejection_reason == records[raw_handle.registration_id].rejection_reason
+    assert records[layered_handle.registration_id].rejection_reason == "unsupported_effect_fields:elicitation_result"
+
+
+def test_runtime_and_host_layered_registrars_default_to_template_scope(tmp_path: Path) -> None:
+    runtime = assemble_runtime(RuntimeConfig(working_directory=tmp_path))
+    runtime_handle = runtime.hooks.on_pre_tool_use(
+        rewrite_input({"value": "runtime-default"}),
+        match=match_tool("deploy"),
+    )
+
+    bound = runtime.bind_host(SdkHostRuntime(name="sdk"))
+    host_handle = bound.hooks.on_pre_tool_use(
+        rewrite_input({"value": "host-default"}),
+        match=match_tool("deploy"),
+    )
+
+    assert runtime_handle.activation_state == HookActivationState.PENDING_ACTIVATION
+    assert host_handle.activation_state == HookActivationState.PENDING_ACTIVATION
+    assert runtime_handle.scope == HookRegistrationScope(lifetime=HookScopeLifetime.SESSION_TEMPLATE)
+    assert host_handle.scope == HookRegistrationScope(lifetime=HookScopeLifetime.SESSION_TEMPLATE)
+
+    session = runtime.create_session(session_id="template-layered", cwd=tmp_path)
+    runtime.services.hook_bus.materialize_session("template-layered")
+    inventory = session.list_hooks(HookInventoryQuery(phase="PreToolUse"))
+
+    assert [entry.source_kind for entry in inventory] == [
+        HookSourceKind.RUNTIME_CONFIG,
+        HookSourceKind.HOST_API,
+    ]
+
+
+def test_session_advanced_turn_registrar_uses_turn_api_source_kind(tmp_path: Path) -> None:
+    runtime = assemble_runtime(RuntimeConfig(working_directory=tmp_path))
+    session = runtime.create_session(session_id="turn-layered", cwd=tmp_path)
+    session.state.active_turn_id = "turn-layered-a"
+
+    handle = session.hooks.advanced.turn.on_pre_tool_use(
+        block_execution("blocked"),
+        match=match_tool("deploy"),
+    )
+    result = asyncio.run(
+        runtime.services.hook_bus.dispatch(
+            "turn-layered",
+            PreToolUsePayload(
+                session_id="turn-layered",
+                turn_id="turn-layered-a",
+                tool_name="deploy",
+                tool_input={"value": "ship"},
+            ),
+        )
+    )
+    trace = session.list_hook_dispatch_traces(HookDispatchTraceQuery(phase="PreToolUse"))[0]
+
+    assert handle.source_kind == HookSourceKind.TURN_API
+    assert handle.scope == HookRegistrationScope(
+        lifetime=HookScopeLifetime.TURN,
+        turn_id="turn-layered-a",
+        session_id="turn-layered",
+    )
+    assert result.continue_execution is False
+    assert trace.matched_registrations[0].source_kind == HookSourceKind.TURN_API

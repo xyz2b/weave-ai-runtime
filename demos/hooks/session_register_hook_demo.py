@@ -15,7 +15,6 @@ from weavert import AgentDefinition, ToolDefinition, ToolTraits
 from weavert.hooks import (
     HookInventoryQuery,
     match_tool,
-    on_pre_tool_use,
     rewrite_input,
 )
 from weavert.runtime_kernel import BuiltinPackConfig, RuntimeConfig, assemble_runtime
@@ -78,12 +77,10 @@ def main() -> None:
 
         session = runtime.create_session(session_id="demo-hook")
         try:
-            handle = session.register_hook(
-                on_pre_tool_use(
-                    lambda _payload: rewrite_input({"value": "hook-updated"}),
-                    match=match_tool("echo"),
-                    effects=(rewrite_input,),
-                )
+            handle = session.hooks.on_pre_tool_use(
+                lambda _payload: rewrite_input({"value": "hook-updated"}),
+                match=match_tool("echo"),
+                effects=(rewrite_input,),
             )
             messages = run_async(run_session_prompt(session, "Rewrite the next echo tool call."))
             tool_result = extract_tool_result(messages, "call-echo")
@@ -93,7 +90,7 @@ def main() -> None:
             assert messages[-1].text == "session hook demo complete"
             assert len(inventory) == 1
 
-            print("demo: session.register_hook")
+            print("demo: session.hooks.on_pre_tool_use")
             print(f"hook activation: {handle.activation_state.value}")
             print(f"registered hooks: {len(inventory)}")
             print_json("tool result", tool_result)

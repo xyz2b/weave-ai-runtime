@@ -8,6 +8,7 @@ from typing import Any, Callable, Iterable, Mapping
 from .models import HookEffect, HookStopDisposition, RuntimeHookPhase
 from .platform import (
     HOOK_EFFECT_FIELDS,
+    PUBLIC_PHASE_CONTRACTS,
     HookEffectClass,
     HookEffectContract,
     HookHandlerKind,
@@ -259,7 +260,7 @@ def on_session_start(
     owner_hint: str | None = None,
     source_ref: str | None = None,
 ) -> HookRegistrationRequest:
-    return _build_hook_request(
+    return build_callback_hook_request(
         RuntimeHookPhase.SESSION_START.value,
         handler,
         match=match,
@@ -283,7 +284,7 @@ def on_session_end(
     owner_hint: str | None = None,
     source_ref: str | None = None,
 ) -> HookRegistrationRequest:
-    return _build_hook_request(
+    return build_callback_hook_request(
         RuntimeHookPhase.SESSION_END.value,
         handler,
         match=match,
@@ -307,7 +308,7 @@ def on_pre_tool_use(
     owner_hint: str | None = None,
     source_ref: str | None = None,
 ) -> HookRegistrationRequest:
-    return _build_hook_request(
+    return build_callback_hook_request(
         RuntimeHookPhase.PRE_TOOL_USE.value,
         handler,
         match=match,
@@ -331,7 +332,7 @@ def on_post_tool_use(
     owner_hint: str | None = None,
     source_ref: str | None = None,
 ) -> HookRegistrationRequest:
-    return _build_hook_request(
+    return build_callback_hook_request(
         RuntimeHookPhase.POST_TOOL_USE.value,
         handler,
         match=match,
@@ -355,7 +356,7 @@ def on_post_tool_use_failure(
     owner_hint: str | None = None,
     source_ref: str | None = None,
 ) -> HookRegistrationRequest:
-    return _build_hook_request(
+    return build_callback_hook_request(
         RuntimeHookPhase.POST_TOOL_USE_FAILURE.value,
         handler,
         match=match,
@@ -379,7 +380,7 @@ def on_stop(
     owner_hint: str | None = None,
     source_ref: str | None = None,
 ) -> HookRegistrationRequest:
-    return _build_hook_request(
+    return build_callback_hook_request(
         RuntimeHookPhase.STOP.value,
         handler,
         match=match,
@@ -403,7 +404,7 @@ def on_notification(
     owner_hint: str | None = None,
     source_ref: str | None = None,
 ) -> HookRegistrationRequest:
-    return _build_hook_request(
+    return build_callback_hook_request(
         RuntimeHookPhase.NOTIFICATION.value,
         handler,
         match=match,
@@ -427,7 +428,7 @@ def on_elicitation(
     owner_hint: str | None = None,
     source_ref: str | None = None,
 ) -> HookRegistrationRequest:
-    return _build_hook_request(
+    return build_callback_hook_request(
         RuntimeHookPhase.ELICITATION.value,
         handler,
         match=match,
@@ -451,7 +452,7 @@ def on_elicitation_result(
     owner_hint: str | None = None,
     source_ref: str | None = None,
 ) -> HookRegistrationRequest:
-    return _build_hook_request(
+    return build_callback_hook_request(
         RuntimeHookPhase.ELICITATION_RESULT.value,
         handler,
         match=match,
@@ -475,7 +476,7 @@ def on_pre_model_request(
     owner_hint: str | None = None,
     source_ref: str | None = None,
 ) -> HookRegistrationRequest:
-    return _build_hook_request(
+    return build_callback_hook_request(
         RuntimeHookPhase.PRE_MODEL_REQUEST.value,
         handler,
         match=match,
@@ -499,7 +500,7 @@ def on_post_model_response(
     owner_hint: str | None = None,
     source_ref: str | None = None,
 ) -> HookRegistrationRequest:
-    return _build_hook_request(
+    return build_callback_hook_request(
         RuntimeHookPhase.POST_MODEL_RESPONSE.value,
         handler,
         match=match,
@@ -512,7 +513,7 @@ def on_post_model_response(
     )
 
 
-def _build_hook_request(
+def build_callback_hook_request(
     phase: str,
     handler: object,
     *,
@@ -523,10 +524,17 @@ def _build_hook_request(
     metadata: Mapping[str, Any] | None,
     owner_hint: str | None,
     source_ref: str | None,
+    allowed_phases: Mapping[str, Any] | None = STABLE_PUBLIC_PHASE_CONTRACTS,
+    unsupported_phase_message: str | None = None,
 ) -> HookRegistrationRequest:
-    if phase not in STABLE_PUBLIC_PHASE_CONTRACTS:
+    allowed_phase_catalog = PUBLIC_PHASE_CONTRACTS if allowed_phases is None else allowed_phases
+    if phase not in allowed_phase_catalog:
+        message = unsupported_phase_message or (
+            "Hook callback authoring only supports the configured public phases; "
+            "use HookRegistrationRequest for {phase!r}"
+        )
         raise ValueError(
-            f"Hook authoring helpers only support stable public phases; use HookRegistrationRequest for {phase!r}"
+            message.format(phase=phase)
         )
     return HookRegistrationRequest(
         phase=phase,

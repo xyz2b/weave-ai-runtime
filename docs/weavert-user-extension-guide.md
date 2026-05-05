@@ -669,9 +669,9 @@ advanced public phase 包括：
 
 用户视角怎么扩：
 
-1. 想给所有 session 默认挂一个 hook，用 `weavert.register_hook(...)` 或 `RuntimeConfig(hooks=...)`。
-2. 想给宿主统一挂策略，用 `bound.register_hook(...)`；它默认走 `session-template` materialization，再落到 concrete session。
-3. 想只影响当前会话，用 `session.register_hook(...)`。
+1. 想给所有 session 默认挂一个 hook，用 `weavert.hooks...` 或 `RuntimeConfig(hooks=...)`。
+2. 想给宿主统一挂策略，用 `bound.hooks...`；它默认走 `session-template` materialization，再落到 concrete session。
+3. 想只影响当前会话，用 `session.hooks...`。
 4. 想只影响当前 turn，用 `session.register_turn_hook(...)`，但把它视为 advanced surface。
 5. 想把 hook 随 skill 一起打包，用 skill frontmatter 的 `hooks`。
 

@@ -26,6 +26,7 @@ from ..contracts import (
 )
 from ..definitions import AgentDefinition, PermissionMode
 from ..hooks import (
+    ConfiguredHookRegistrar,
     HookDispatchTraceQuery,
     HookInventoryQuery,
     HookRegistrationRequest,
@@ -34,6 +35,7 @@ from ..hooks import (
     HookSourceKind,
     SessionEndPayload,
     SessionStartPayload,
+    build_configured_hook_registrar,
 )
 from ..permissions import PermissionContext
 from ..public_contract import workspace_skill_root_candidates
@@ -68,6 +70,17 @@ class IngressCompletionReceiptExecutionError(RuntimeError):
         )
         self.receipt = receipt
         self.error = error
+
+
+def _request_targets_turn_scope(request: HookRegistrationRequest | Mapping[str, Any]) -> bool:
+    if isinstance(request, HookRegistrationRequest):
+        return request.scope.lifetime == HookScopeLifetime.TURN
+    raw_scope = request.get("scope")
+    if isinstance(raw_scope, HookRegistrationScope):
+        return raw_scope.lifetime == HookScopeLifetime.TURN
+    if not isinstance(raw_scope, Mapping):
+        return False
+    return str(raw_scope.get("lifetime", "")).strip() == HookScopeLifetime.TURN.value
 
 
 class SessionController:
@@ -174,27 +187,32 @@ class SessionController:
     def bind_hook_callback(self, name: str, handler: Any) -> None:
         self._runtime_services.hook_bus.bind_callback(name, handler)
 
+    @property
+    def hooks(self) -> ConfiguredHookRegistrar:
+        return build_configured_hook_registrar(
+            bus=self._runtime_services.hook_bus,
+            source_kind=HookSourceKind.SESSION_API,
+            owner=lambda: f"session:{self.state.session_id}",
+            source_ref=lambda: self.state.session_id,
+            session_id=lambda: self.state.session_id,
+            turn_id=lambda: self.state.active_turn_id,
+            default_scope_lifetime=HookScopeLifetime.SESSION,
+            list_hooks=self.list_hooks,
+            list_hook_dispatch_traces=self.list_hook_dispatch_traces,
+            turn_source_kind=HookSourceKind.TURN_API,
+            turn_owner=lambda: f"session:{self.state.session_id}",
+            turn_source_ref=lambda: self.state.session_id,
+            turn_session_id=lambda: self.state.session_id,
+            turn_turn_id=lambda: self.state.active_turn_id,
+        )
+
     def register_hook(
         self,
         request: HookRegistrationRequest | Mapping[str, Any],
     ) -> Any:
-        source_kind = HookSourceKind.SESSION_API
-        if isinstance(request, HookRegistrationRequest):
-            if request.scope.lifetime == HookScopeLifetime.TURN:
-                source_kind = HookSourceKind.TURN_API
-        elif isinstance(request, Mapping):
-            raw_scope = request.get("scope")
-            if isinstance(raw_scope, Mapping) and str(raw_scope.get("lifetime", "")).strip() == HookScopeLifetime.TURN.value:
-                source_kind = HookSourceKind.TURN_API
-        return self._runtime_services.hook_bus.register_request(
-            request,
-            source_kind=source_kind,
-            owner=f"session:{self.state.session_id}",
-            source_ref=self.state.session_id,
-            session_id=self.state.session_id,
-            turn_id=self.state.active_turn_id,
-            default_scope_lifetime=HookScopeLifetime.SESSION,
-        )
+        if _request_targets_turn_scope(request):
+            return self.hooks.advanced.turn.raw.register(request)
+        return self.hooks.raw.register(request)
 
     def list_hooks(
         self,
@@ -273,7 +291,7 @@ class SessionController:
                     "session_id": self.state.session_id,
                 },
             }
-        return self.register_hook(request)
+        return self.hooks.advanced.turn.raw.register(request)
 
     async def start(self) -> None:
         if hasattr(self._runtime_services, "wait_until_runtime_ready"):

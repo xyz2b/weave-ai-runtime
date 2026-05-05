@@ -53,6 +53,7 @@ from ..hosts.base import BoundHostRuntime, HostAdapter, NullHostAdapter
 from ..hooks import (
     ADVANCED_HOOK_HANDLER_KINDS,
     ADVANCED_PUBLIC_PHASE_CONTRACTS,
+    ConfiguredHookRegistrar,
     HookDispatchTraceQuery,
     HookInventoryQuery,
     HookRegistrationRequest,
@@ -60,6 +61,7 @@ from ..hooks import (
     HookSourceKind,
     STABLE_PUBLIC_HOOK_HANDLER_KINDS,
     STABLE_PUBLIC_PHASE_CONTRACTS,
+    build_configured_hook_registrar,
 )
 from ..invocation_catalog import SkillInvocationProvider
 from ..jobs import DefaultJobService, FileJobStore, InMemoryJobStore, JobScopeFilter, job_record_to_payload
@@ -836,17 +838,25 @@ class RuntimeAssembly:
     def bind_hook_callback(self, name: str, handler: Any) -> None:
         self.services.hook_bus.bind_callback(name, handler)
 
+    @property
+    def hooks(self) -> ConfiguredHookRegistrar:
+        return build_configured_hook_registrar(
+            bus=self.services.hook_bus,
+            source_kind=HookSourceKind.RUNTIME_CONFIG,
+            owner=lambda: f"weavert:{self.kernel.config.runtime_id}",
+            source_ref=lambda: self.kernel.config.runtime_id,
+            session_id=None,
+            turn_id=None,
+            default_scope_lifetime=HookScopeLifetime.SESSION_TEMPLATE,
+            list_hooks=self.list_hooks,
+            list_hook_dispatch_traces=self.list_hook_dispatch_traces,
+        )
+
     def register_hook(
         self,
         request: HookRegistrationRequest | dict[str, Any],
     ) -> Any:
-        return self.services.hook_bus.register_request(
-            request,
-            source_kind=HookSourceKind.RUNTIME_CONFIG,
-            owner=f"weavert:{self.kernel.config.runtime_id}",
-            source_ref=self.kernel.config.runtime_id,
-            default_scope_lifetime=HookScopeLifetime.SESSION_TEMPLATE,
-        )
+        return self.hooks.raw.register(request)
 
     def list_hooks(
         self,

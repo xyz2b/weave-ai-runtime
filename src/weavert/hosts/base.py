@@ -9,11 +9,13 @@ from ..contracts import utc_now
 from ..definitions import PermissionBehavior
 from ..elicitation import ElicitationRequest, ElicitationResponse
 from ..hooks import (
+    ConfiguredHookRegistrar,
     HookDispatchTraceQuery,
     HookInventoryQuery,
     HookRegistrationRequest,
     HookScopeLifetime,
     HookSourceKind,
+    build_configured_hook_registrar,
 )
 from ..permissions import PermissionOutcome, PermissionRequest, coerce_permission_outcome
 if TYPE_CHECKING:
@@ -353,18 +355,26 @@ class BoundHostRuntime:
         self._bind_host()
         self.services.hook_bus.bind_callback(name, handler)
 
+    @property
+    def hooks(self) -> ConfiguredHookRegistrar:
+        self._bind_host()
+        return build_configured_hook_registrar(
+            bus=self.services.hook_bus,
+            source_kind=HookSourceKind.HOST_API,
+            owner=lambda: f"host:{self.host.name}",
+            source_ref=lambda: self.host.name,
+            session_id=None,
+            turn_id=None,
+            default_scope_lifetime=HookScopeLifetime.SESSION_TEMPLATE,
+            list_hooks=self.list_hooks,
+            list_hook_dispatch_traces=self.list_hook_dispatch_traces,
+        )
+
     def register_hook(
         self,
         request: HookRegistrationRequest | Mapping[str, Any],
     ) -> Any:
-        self._bind_host()
-        return self.services.hook_bus.register_request(
-            request,
-            source_kind=HookSourceKind.HOST_API,
-            owner=f"host:{self.host.name}",
-            source_ref=self.host.name,
-            default_scope_lifetime=HookScopeLifetime.SESSION_TEMPLATE,
-        )
+        return self.hooks.raw.register(request)
 
     def list_hooks(
         self,
