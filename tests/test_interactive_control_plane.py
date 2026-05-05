@@ -458,6 +458,98 @@ def test_bound_host_runtime_reuses_host_across_multiple_sessions(tmp_path: Path)
     ]
 
 
+def test_bound_host_runtime_run_prompt_report_closes_helper_owned_session(tmp_path: Path) -> None:
+    host = SdkHostRuntime(name="sdk")
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            model_client=BatchedModelClient(
+                [
+                    [
+                        ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-bound-report"}),
+                        ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "bound report reply"}),
+                        ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+                    ]
+                ]
+            ),
+        )
+    )
+    bound = runtime.bind_host(host)
+
+    report = asyncio.run(
+        bound.run_prompt_report(
+            "hello host",
+            session_id="bound-helper-report",
+        )
+    )
+    asyncio.run(bound.shutdown())
+
+    assert report.session_id == "bound-helper-report"
+    assert report.session_owner == "helper"
+    assert report.final_status == "completed"
+    assert report.messages[-1].text == "bound report reply"
+    assert host.lifecycle == ["startup", "ready", "shutdown"]
+    assert bound.metadata["closed_sessions"][-1] == {
+        "session_id": "bound-helper-report",
+        "owner": "helper",
+        "final_status": "completed",
+    }
+
+
+def test_bound_host_runtime_run_prompt_report_in_session_keeps_session_reusable(tmp_path: Path) -> None:
+    host = SdkHostRuntime(name="sdk")
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            model_client=BatchedModelClient(
+                [
+                    [
+                        ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-bound-caller-1"}),
+                        ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "first bound report"}),
+                        ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+                    ],
+                    [
+                        ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-bound-caller-2"}),
+                        ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "second bound report"}),
+                        ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+                    ],
+                ]
+            ),
+        )
+    )
+    bound = runtime.bind_host(host)
+
+    async def scenario():
+        await bound.startup()
+        await bound.ready()
+        session = bound.create_session(session_id="bound-caller-report")
+        first = await bound.run_prompt_report_in_session(session, "first turn")
+        status_after_first = session.state.status.value
+        second = await bound.run_prompt_report_in_session(session, "second turn")
+        status_after_second = session.state.status.value
+        closed_before_manual_close = list(bound.metadata.get("closed_sessions", []))
+        await session.close()
+        await bound.shutdown()
+        return first, second, status_after_first, status_after_second, closed_before_manual_close
+
+    (
+        first,
+        second,
+        status_after_first,
+        status_after_second,
+        closed_before_manual_close,
+    ) = asyncio.run(scenario())
+
+    assert first.session_owner == "caller"
+    assert first.final_status == "completed"
+    assert first.messages[-1].text == "first bound report"
+    assert second.messages[-1].text == "second bound report"
+    assert status_after_first == "ready"
+    assert status_after_second == "ready"
+    assert closed_before_manual_close == []
+    assert host.lifecycle == ["startup", "ready", "shutdown"]
+
+
 def test_bound_host_runtime_rejects_duplicate_active_session_ids(tmp_path: Path) -> None:
     host = SdkHostRuntime(name="sdk")
     runtime = assemble_runtime(

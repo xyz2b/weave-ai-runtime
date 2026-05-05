@@ -169,8 +169,10 @@ package demo 证明了下面这些都不是概念：
 - runtime 现在提供 `run_prompt_report()`
 - 也提供 `run_prompt_report_in_session()`
 - 现在还提供 `stream_prompt_report()` / `stream_prompt_report_in_session()`
+- host-bound path 现在也提供 `bound.run_prompt_report()` / `bound.run_prompt_report_in_session()`
 - `WorkflowRunReport` 已包含 terminal、final status、finalization diagnostics
 - 普通 headless caller 已经不需要再自己做 terminal 收集、helper-owned close 或“边流式边拿 canonical report”的 lifecycle glue
+- host adopter 也不再需要混用 `bound.*` 和 `RuntimeAssembly` 才能拿 canonical report
 
 复核结论：
 

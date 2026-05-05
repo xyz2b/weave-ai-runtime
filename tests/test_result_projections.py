@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from weavert.builtins.tools import builtin_tools
 from weavert.agent_execution import AgentExecutionSpec, AgentRunRecord, AgentRunStatus, SpawnMode
 from weavert.agent_runtime import AgentRunResult
 from weavert.child_result_projection import project_agent_run_result, project_child_run_record
@@ -33,19 +34,35 @@ def _delegated_scope_summary() -> dict[str, object]:
         "visible_tools": ["collect_scope"],
         "visible_skills": ["scoped-skill"],
         "permission_mode": "dontAsk",
+        "memory_scope": "project",
         "isolation_mode": "worktree",
     }
 
 
-def _delegated_request_metadata() -> dict[str, object]:
+def _delegated_request_metadata(
+    *,
+    memory_scope: str | None = "project",
+    trace_memory_scope: str | None = "project",
+) -> dict[str, object]:
     summary = _delegated_scope_summary()
+    summary["memory_scope"] = memory_scope
+    trace: dict[str, object] = {
+        "effective_tools": list(summary["visible_tools"]),
+        "effective_skills": list(summary["visible_skills"]),
+        "effective_permission_mode": summary["permission_mode"],
+        "effective_isolation_mode": summary["isolation_mode"],
+    }
+    if trace_memory_scope is not None:
+        trace["effective_memory_scope"] = trace_memory_scope
     return {
         "policy": {
             "effective": {
                 "tools": list(summary["visible_tools"]),
                 "skills": list(summary["visible_skills"]),
                 "permission_mode": summary["permission_mode"],
+                "memory_scope": memory_scope,
                 "isolation_mode": summary["isolation_mode"],
+                "trace": trace,
             }
         }
     }
@@ -286,6 +303,7 @@ def test_child_summary_prefers_parent_visible_results_and_falls_back_to_child_ru
     assert preferred.scope_summary.visible_tools == ("collect_scope",)
     assert preferred.scope_summary.visible_skills == ("scoped-skill",)
     assert preferred.scope_summary.permission_mode == "dontAsk"
+    assert preferred.scope_summary.memory_scope == "project"
     assert preferred.scope_summary.isolation_mode == "worktree"
 
     fallback = child_summary((child_record,), agent_name="reviewer")
@@ -297,6 +315,7 @@ def test_child_summary_prefers_parent_visible_results_and_falls_back_to_child_ru
     assert fallback.scope_summary.visible_tools == ("collect_scope",)
     assert fallback.scope_summary.visible_skills == ("scoped-skill",)
     assert fallback.scope_summary.permission_mode == "dontAsk"
+    assert fallback.scope_summary.memory_scope == "project"
     assert fallback.scope_summary.isolation_mode == "worktree"
 
 
@@ -353,3 +372,153 @@ def test_child_projection_builders_publish_scope_summary_on_parent_and_child_sur
     assert parent_projection["summary"] == "review: projected"
     assert parent_projection["scope_summary"] == _delegated_scope_summary()
     assert child_projection["scope_summary"] == _delegated_scope_summary()
+
+
+def test_child_projection_builders_fallback_to_trace_memory_scope_and_preserve_unknown_memory_scope() -> None:
+    trace_only_metadata = _delegated_request_metadata(
+        memory_scope=None,
+        trace_memory_scope="local",
+    )
+    child_record = AgentRunRecord(
+        run_id="review-run-trace-fallback",
+        parent_run_id="parent-run",
+        session_id="session-trace-fallback",
+        parent_turn_id="turn-parent",
+        turn_id="turn-child",
+        agent_name="reviewer",
+        spawn_mode=SpawnMode.SYNC,
+        status=AgentRunStatus.COMPLETED,
+        query_source="agent_tool",
+        request_metadata=trace_only_metadata,
+        messages=(
+            RuntimeMessage(
+                message_id="review-trace-summary",
+                role=MessageRole.ASSISTANT,
+                content="review: trace fallback",
+            ),
+        ),
+    )
+    trace_execution_spec = AgentExecutionSpec(
+        run_id="review-run-trace-fallback",
+        parent_run_id="parent-run",
+        session_id="session-trace-fallback",
+        parent_turn_id="turn-parent",
+        turn_id="turn-child",
+        agent_name="reviewer",
+        spawn_mode=SpawnMode.SYNC,
+        query_source="agent_tool",
+        prompt_messages=(),
+        cwd=Path("."),
+    )
+    trace_result = AgentRunResult(
+        agent_name="reviewer",
+        status="completed",
+        messages=list(child_record.messages),
+        background=False,
+        isolation_mode=IsolationMode.WORKTREE,
+        run_id=child_record.run_id,
+        parent_run_id=child_record.parent_run_id,
+        turn_id=child_record.turn_id,
+        query_source=child_record.query_source,
+        execution_spec=trace_execution_spec,
+        run_record=child_record,
+    )
+
+    parent_projection = project_agent_run_result(trace_result)
+    child_projection = project_child_run_record(child_record)
+    assert parent_projection["scope_summary"] is not None
+    assert parent_projection["scope_summary"]["memory_scope"] == "local"
+    assert child_projection["scope_summary"] is not None
+    assert child_projection["scope_summary"]["memory_scope"] == "local"
+
+    summary_from_child_run = child_summary((child_record,), agent_name="reviewer")
+    assert summary_from_child_run is not None
+    assert summary_from_child_run.scope_summary is not None
+    assert summary_from_child_run.scope_summary.memory_scope == "local"
+
+    unknown_memory_metadata = _delegated_request_metadata(
+        memory_scope=None,
+        trace_memory_scope=None,
+    )
+    unknown_record = AgentRunRecord(
+        run_id="review-run-memory-unknown",
+        parent_run_id="parent-run",
+        session_id="session-memory-unknown",
+        parent_turn_id="turn-parent",
+        turn_id="turn-child",
+        agent_name="reviewer",
+        spawn_mode=SpawnMode.SYNC,
+        status=AgentRunStatus.COMPLETED,
+        query_source="agent_tool",
+        request_metadata=unknown_memory_metadata,
+        messages=(
+            RuntimeMessage(
+                message_id="review-unknown-summary",
+                role=MessageRole.ASSISTANT,
+                content="review: memory unknown",
+            ),
+        ),
+    )
+    unknown_execution_spec = AgentExecutionSpec(
+        run_id="review-run-memory-unknown",
+        parent_run_id="parent-run",
+        session_id="session-memory-unknown",
+        parent_turn_id="turn-parent",
+        turn_id="turn-child",
+        agent_name="reviewer",
+        spawn_mode=SpawnMode.SYNC,
+        query_source="agent_tool",
+        prompt_messages=(),
+        cwd=Path("."),
+    )
+    unknown_result = AgentRunResult(
+        agent_name="reviewer",
+        status="completed",
+        messages=list(unknown_record.messages),
+        background=False,
+        isolation_mode=IsolationMode.WORKTREE,
+        run_id=unknown_record.run_id,
+        parent_run_id=unknown_record.parent_run_id,
+        turn_id=unknown_record.turn_id,
+        query_source=unknown_record.query_source,
+        execution_spec=unknown_execution_spec,
+        run_record=unknown_record,
+    )
+
+    unknown_parent_projection = project_agent_run_result(unknown_result)
+    unknown_projection = project_child_run_record(unknown_record)
+    assert unknown_parent_projection["scope_summary"] == {
+        "visible_tools": ["collect_scope"],
+        "visible_skills": ["scoped-skill"],
+        "permission_mode": "dontAsk",
+        "memory_scope": None,
+        "isolation_mode": "worktree",
+    }
+    assert unknown_projection["scope_summary"] == {
+        "visible_tools": ["collect_scope"],
+        "visible_skills": ["scoped-skill"],
+        "permission_mode": "dontAsk",
+        "memory_scope": None,
+        "isolation_mode": "worktree",
+    }
+
+    unknown_summary = child_summary((unknown_record,), agent_name="reviewer")
+    assert unknown_summary is not None
+    assert unknown_summary.scope_summary is not None
+    assert unknown_summary.scope_summary.visible_tools == ("collect_scope",)
+    assert unknown_summary.scope_summary.memory_scope is None
+
+
+def test_builtin_agent_output_schema_declares_scope_summary_contract() -> None:
+    agent_tool = next(tool for tool in builtin_tools() if tool.name == "agent")
+    scope_schema = agent_tool.output_schema["properties"]["scope_summary"]
+
+    assert scope_schema["type"] == ["object", "null"]
+    assert scope_schema["required"] == [
+        "visible_tools",
+        "visible_skills",
+        "permission_mode",
+        "isolation_mode",
+        "memory_scope",
+    ]
+    assert scope_schema["properties"]["memory_scope"]["type"] == ["string", "null"]

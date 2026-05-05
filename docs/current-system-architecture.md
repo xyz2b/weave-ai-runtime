@@ -133,7 +133,7 @@ helper 语义也已经固定：
 - `run_prompt()` 和 `stream_prompt()` 保证 helper-owned session close
 - `run_prompt_report()` 和 `stream_prompt_report()` 都是 helper-owned report surface；helper 负责 canonical report completion，以及 helper-owned session close
 - `run_prompt_report_in_session()` 和 `stream_prompt_report_in_session()` 只包装当前 turn，不接管 caller-owned session close
-- `BoundHostRuntime` 当前直接覆盖 host-owned message / stream path；如果 host path 还要 canonical report，正式组合仍是 `bound.create_session(...)` + `RuntimeAssembly.run_prompt_report_in_session(...)`
+- `BoundHostRuntime` 现在直接覆盖 host-owned message / stream / one-shot report path；`bound.run_prompt_report()` 是 helper-owned report surface，`bound.run_prompt_report_in_session()` 保留 caller-owned session reuse
 - outer host shutdown 仍由 `BoundHostRuntime` 负责，不是 helper 的隐式职责
 
 ## 4. 分层架构视图
@@ -701,6 +701,7 @@ host 不是外围包装层，而是 runtime 的正式集成边界。
 - 它是 host-scope owner
 - 它统一托管 managed sessions
 - 它保证 host shutdown 前先完成 session cleanup
+- 它直接承接 host-owned message / stream / one-shot report surface
 - 它现在同时承接 runtime-owned task control plane：
   - query/watch：`list_task_lists`、`get_task_list`、`watch_task_list`
   - mutation：`create_task`、`get_task`、`update_task`、`claim_task`、`release_task`、`assign_next_task`、`block_task`、`unblock_task`、`archive_task`、`unarchive_task`、`delete_task`
@@ -818,6 +819,8 @@ host 不是外围包装层，而是 runtime 的正式集成边界。
 - bundled definitions
 - user definitions
 - project definitions
+- `ToolDefinition.output_schema` 应视为正式结果契约，供 typed consumer、UI 和 contract test 稳定消费
+- 但 `output_schema` 不是 primary execution-path driver；tool 是否可执行仍取决于 `input_schema`、`validate_input`、`check_permissions`、`execute`
 
 ### 13.2 Host 扩展
 

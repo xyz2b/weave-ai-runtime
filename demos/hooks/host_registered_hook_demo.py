@@ -90,7 +90,7 @@ def main() -> None:
         run_async(bound.ready())
         session = bound.create_session(session_id="host-hook-demo")
         report = run_async(
-            runtime.run_prompt_report_in_session(
+            bound.run_prompt_report_in_session(
                 session,
                 "Call echo once.",
             )

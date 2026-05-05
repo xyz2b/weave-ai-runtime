@@ -1701,6 +1701,7 @@ class RuntimeAssembly:
         *,
         metadata: dict[str, object] | None = None,
         session_owner: Literal["helper", "caller"],
+        wait_for_finalization: bool = False,
     ) -> WorkflowRunReport:
         stream = WorkflowRunReportStream(
             runtime=self,
@@ -1708,6 +1709,7 @@ class RuntimeAssembly:
             prompt=prompt,
             metadata=metadata,
             session_owner=session_owner,
+            wait_for_finalization=wait_for_finalization,
         )
         return await stream.report()
 

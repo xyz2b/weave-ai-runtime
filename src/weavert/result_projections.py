@@ -45,6 +45,7 @@ class ChildScopeSummaryProjection:
     visible_tools: tuple[str, ...] = ()
     visible_skills: tuple[str, ...] = ()
     permission_mode: str | None = None
+    memory_scope: str | None = None
     isolation_mode: str | None = None
 
     def __post_init__(self) -> None:
@@ -534,13 +535,21 @@ def _scope_summary_from_mapping(
     visible_tools = _coerce_string_tuple(payload.get("visible_tools"))
     visible_skills = _coerce_string_tuple(payload.get("visible_skills"))
     permission_mode = _coerce_optional_string(payload.get("permission_mode"))
+    memory_scope = _coerce_optional_string(payload.get("memory_scope"))
     isolation_mode = _coerce_optional_string(payload.get("isolation_mode"))
-    if not visible_tools and not visible_skills and permission_mode is None and isolation_mode is None:
+    if (
+        not visible_tools
+        and not visible_skills
+        and permission_mode is None
+        and memory_scope is None
+        and isolation_mode is None
+    ):
         return None
     return ChildScopeSummaryProjection(
         visible_tools=visible_tools,
         visible_skills=visible_skills,
         permission_mode=permission_mode,
+        memory_scope=memory_scope,
         isolation_mode=isolation_mode,
     )
 

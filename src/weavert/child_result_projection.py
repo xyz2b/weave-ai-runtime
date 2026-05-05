@@ -238,15 +238,25 @@ def _scope_summary_from_request_metadata(
     permission_mode = _coerce_optional_string(effective.get("permission_mode")) or _coerce_optional_string(
         trace.get("effective_permission_mode")
     )
+    memory_scope = _coerce_optional_string(effective.get("memory_scope")) or _coerce_optional_string(
+        trace.get("effective_memory_scope")
+    )
     isolation_mode = _coerce_optional_string(effective.get("isolation_mode")) or _coerce_optional_string(
         trace.get("effective_isolation_mode")
     )
-    if not visible_tools and not visible_skills and permission_mode is None and isolation_mode is None:
+    if (
+        not visible_tools
+        and not visible_skills
+        and permission_mode is None
+        and memory_scope is None
+        and isolation_mode is None
+    ):
         return None
     return {
         "visible_tools": visible_tools,
         "visible_skills": visible_skills,
         "permission_mode": permission_mode,
+        "memory_scope": memory_scope,
         "isolation_mode": isolation_mode,
     }
 

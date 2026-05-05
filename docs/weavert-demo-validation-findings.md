@@ -48,7 +48,7 @@ It is repo-owned validation evidence, not an implied roadmap commitment.
 ### minimal_host_bound_demo
 
 - demo: `minimal_host_bound_demo`
-- observed issue: The smallest `bind_host()` path is compact, but adopters still need to know when to use `bound.run_prompt(...)` versus creating a managed session and when explicit shutdown remains their responsibility.
+- observed issue: The smallest `bind_host()` path is compact, but adopters still need to know when to use `bound.run_prompt(...)`, helper-owned `bound.run_prompt_report(...)`, or caller-owned `bound.create_session(...) + bound.run_prompt_report_in_session(...)`, and when explicit shutdown remains their responsibility.
 - user impact: A first integration can appear to work while still leaving host lifecycle or cleanup questions unresolved.
 - suggested follow-up area: Host-bound quickstart guidance and lifecycle examples.
 - status: documented

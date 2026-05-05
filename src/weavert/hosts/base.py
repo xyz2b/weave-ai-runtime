@@ -392,15 +392,12 @@ class BoundHostRuntime:
     ) -> Any:
         self._bind_host()
         await self.ready()
-        self._ensure_managed_session_id_available(session_id)
-        session = self.runtime.create_session(
+        session = self._create_helper_owned_session(
             session_id=session_id,
             agent_name=agent_name,
             cwd=cwd,
             system_prompt=system_prompt,
-            close_callback=self._on_managed_session_close,
         )
-        self._register_managed_session(session, owner="helper")
         final_status = "completed"
         try:
             return await self.runtime._run_prompt_in_session(
@@ -414,6 +411,50 @@ class BoundHostRuntime:
         finally:
             await session.close(final_status=final_status)
 
+    async def run_prompt_report(
+        self,
+        prompt: str,
+        *,
+        session_id: str | None = None,
+        agent_name: str | None = None,
+        cwd: str | Path | None = None,
+        system_prompt: str | None = None,
+        metadata: dict[str, object] | None = None,
+        wait_for_finalization: bool = False,
+    ) -> Any:
+        self._bind_host()
+        await self.ready()
+        session = self._create_helper_owned_session(
+            session_id=session_id,
+            agent_name=agent_name,
+            cwd=cwd,
+            system_prompt=system_prompt,
+        )
+        return await self.runtime._run_prompt_report_in_session(
+            session,
+            prompt,
+            metadata=metadata,
+            session_owner="helper",
+            wait_for_finalization=wait_for_finalization,
+        )
+
+    async def run_prompt_report_in_session(
+        self,
+        session: Any,
+        prompt: str,
+        *,
+        metadata: dict[str, object] | None = None,
+        wait_for_finalization: bool = False,
+    ) -> Any:
+        self._bind_host()
+        await self.ready()
+        return await self.runtime.run_prompt_report_in_session(
+            session,
+            prompt,
+            metadata=metadata,
+            wait_for_finalization=wait_for_finalization,
+        )
+
     async def stream_prompt(
         self,
         prompt: str,
@@ -426,15 +467,12 @@ class BoundHostRuntime:
     ):
         self._bind_host()
         await self.ready()
-        self._ensure_managed_session_id_available(session_id)
-        session = self.runtime.create_session(
+        session = self._create_helper_owned_session(
             session_id=session_id,
             agent_name=agent_name,
             cwd=cwd,
             system_prompt=system_prompt,
-            close_callback=self._on_managed_session_close,
         )
-        self._register_managed_session(session, owner="helper")
         final_status = "completed"
         try:
             await self.runtime._prepare_one_shot_session(session, prompt, metadata=metadata)
@@ -470,6 +508,25 @@ class BoundHostRuntime:
         session_key = str(session_id)
         if self._managed_sessions.get(session_key) is not None:
             raise ValueError(f"Managed session '{session_key}' is already active")
+
+    def _create_helper_owned_session(
+        self,
+        *,
+        session_id: str | None = None,
+        agent_name: str | None = None,
+        cwd: str | Path | None = None,
+        system_prompt: str | None = None,
+    ) -> Any:
+        self._ensure_managed_session_id_available(session_id)
+        session = self.runtime.create_session(
+            session_id=session_id,
+            agent_name=agent_name,
+            cwd=cwd,
+            system_prompt=system_prompt,
+            close_callback=self._on_managed_session_close,
+        )
+        self._register_managed_session(session, owner="helper")
+        return session
 
     async def _on_managed_session_close(self, session: Any, final_status: str) -> None:
         session_id = getattr(getattr(session, "state", None), "session_id", None)

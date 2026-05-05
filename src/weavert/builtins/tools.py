@@ -99,6 +99,30 @@ def builtin_tools() -> tuple[ToolDefinition, ...]:
                     "spawn_mode": {"type": ["string", "null"]},
                     "delegation_depth": {"type": "integer"},
                     "summary": {"type": "string"},
+                    "scope_summary": {
+                        "type": ["object", "null"],
+                        "properties": {
+                            "visible_tools": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                            },
+                            "visible_skills": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                            },
+                            "permission_mode": {"type": ["string", "null"]},
+                            "isolation_mode": {"type": ["string", "null"]},
+                            "memory_scope": {"type": ["string", "null"]},
+                        },
+                        "required": [
+                            "visible_tools",
+                            "visible_skills",
+                            "permission_mode",
+                            "isolation_mode",
+                            "memory_scope",
+                        ],
+                        "additionalProperties": True,
+                    },
                     "messages": {"type": "array"},
                     "task_id": {"type": ["string", "null"]},
                     "requested_model": {"type": ["string", "null"]},
