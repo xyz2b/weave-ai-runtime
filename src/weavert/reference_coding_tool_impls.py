@@ -168,8 +168,7 @@ def validate_workspace_test_targets_tool(
 def _resolve_optional_path(context: ToolContext, raw_path: Any) -> Path:
     if raw_path is None or not str(raw_path).strip():
         return context.cwd
-    resolved = _resolve_path(context.cwd, str(raw_path), context=context)
-    return resolved if resolved.is_dir() else resolved.parent
+    return _resolve_path(context.cwd, str(raw_path), context=context)
 
 
 def _git_status_sync(start_path: Path, tool_input: dict[str, Any]) -> dict[str, Any]:
@@ -271,11 +270,13 @@ def _workspace_symbols_sync(root: Path, query: str, limit: int, context: ToolCon
         text = _read_text(file_path)
         if text is None:
             continue
-        file_matches = (
-            _python_symbol_matches(file_path, text, lowered_query)
-            if file_path.suffix == ".py"
-            else _regex_symbol_matches(file_path, text, lowered_query)
-        )
+        if file_path.suffix == ".py":
+            try:
+                file_matches = _python_symbol_matches(file_path, text, lowered_query)
+            except SyntaxError:
+                file_matches = _regex_symbol_matches(file_path, text, lowered_query)
+        else:
+            file_matches = _regex_symbol_matches(file_path, text, lowered_query)
         total_matches += len(file_matches)
         for match in file_matches:
             if len(matches) < limit:
@@ -457,6 +458,18 @@ def _run_git_command(repo_root: str, args: list[str]) -> dict[str, Any]:
 
 
 def _iter_text_files(root: Path, context: ToolContext):
+    if root.exists() and root.is_file():
+        try:
+            resolved = root.resolve()
+        except OSError:
+            return
+        if _path_allowed(resolved, context):
+            try:
+                if root.stat().st_size <= _MAX_TEXT_FILE_BYTES:
+                    yield root
+            except OSError:
+                return
+        return
     for current_root, dirnames, filenames in os.walk(root):
         dirnames[:] = [
             name

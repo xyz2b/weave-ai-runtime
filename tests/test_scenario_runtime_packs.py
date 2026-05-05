@@ -163,6 +163,55 @@ def test_reference_shared_coding_packages_can_be_admitted_selected_and_executed(
         assert any(match["name"] == "GreetingService" for match in result["matches"])
 
 
+def test_shared_git_tools_respect_file_path_focus(tmp_path: Path) -> None:
+    runtime, _shape, runtime_root = _assemble_shared_reference_runtime(tmp_path, "weavert-shared-git")
+
+    focused_file = runtime_root / "a.py"
+    other_file = runtime_root / "b.py"
+    focused_file.write_text("VALUE = 1\n", encoding="utf-8")
+    other_file.write_text("OTHER = 2\n", encoding="utf-8")
+    subprocess.run(["git", "init"], cwd=runtime_root, check=True, capture_output=True, text=True)
+
+    tool = runtime.kernel.tool_registry.get("git_status")
+    result = asyncio.run(tool.execute({"path": "a.py"}, _tool_context(runtime, runtime_root)))
+
+    assert [entry["path"] for entry in result["entries"]] == ["a.py"]
+
+
+def test_workspace_intelligence_tools_respect_file_path_focus_and_tolerate_broken_python(
+    tmp_path: Path,
+) -> None:
+    runtime, _shape, runtime_root = _assemble_shared_reference_runtime(
+        tmp_path,
+        "weavert-shared-workspace-intelligence",
+    )
+    focused_file = runtime_root / "a.py"
+    other_file = runtime_root / "b.py"
+    broken_file = runtime_root / "broken.py"
+    focused_file.write_text("def target():\n    pass\n\ntarget()\n", encoding="utf-8")
+    other_file.write_text("def target_two():\n    target()\n", encoding="utf-8")
+    broken_file.write_text("def broken(:\n    pass\n", encoding="utf-8")
+
+    symbols_tool = runtime.kernel.tool_registry.get("workspace_symbols")
+    symbols_result = asyncio.run(
+        symbols_tool.execute({"query": "target", "path": "a.py"}, _tool_context(runtime, runtime_root))
+    )
+    assert {Path(match["file_path"]).name for match in symbols_result["matches"]} == {"a.py"}
+    assert any(match["name"] == "target" for match in symbols_result["matches"])
+
+    references_tool = runtime.kernel.tool_registry.get("workspace_references")
+    references_result = asyncio.run(
+        references_tool.execute({"symbol": "target", "path": "a.py"}, _tool_context(runtime, runtime_root))
+    )
+    assert {Path(match["file_path"]).name for match in references_result["matches"]} == {"a.py"}
+
+    broken_result = asyncio.run(
+        symbols_tool.execute({"query": "broken", "path": "broken.py"}, _tool_context(runtime, runtime_root))
+    )
+    assert any(match["name"] == "broken" for match in broken_result["matches"])
+    assert {Path(match["file_path"]).name for match in broken_result["matches"]} == {"broken.py"}
+
+
 @pytest.mark.parametrize(
     (
         "package_name",
