@@ -269,9 +269,10 @@ scope_tools = reviewer.scope_summary.visible_tools if reviewer and reviewer.scop
 - 它回答“最后一次 bash 验证结果是什么”“最终 assistant summary 是什么”“最近一次 review skill 结果是什么”这类通用问题
 - 它保留 typed projection，而不是只返回松散 dict
 - `child_summary(...)` 优先走 parent-visible child result contract；只有在 caller 显式提供 child run records / child projections 时，才回退到 richer child-run observability surface
-- `child_summary(...).scope_summary` 会把 delegated child 的 `visible_tools`、`visible_skills`、`permission_mode`、`isolation_mode` 一并保留下来
+- `child_summary(...).scope_summary` 当前会把 delegated child 的 `visible_tools`、`visible_skills`、`permission_mode`、`isolation_mode` 一并保留下来
 - 这意味着 parent 侧 workflow validation 通常不需要再检查 raw child transcript
-- 如果你只是想回答“这个 child 最终到底还能看见什么”，优先看 `scope_summary`，不要回去翻 request-time metadata
+- 如果你只是想回答“这个 child 最终到底还能调用哪些工具 / skill，以及权限与隔离 posture 是什么”，优先看 `scope_summary`，不要回去翻 request-time metadata
+- 如果你还要审计 child 的 memory reach 或完整 execution policy，当前 `scope_summary` 还不是 full policy dump；继续看 child-run observability 或 request-time policy metadata
 
 如果你发现自己在业务代码、demo、test 或 host layer 里手写下面这些模式，优先考虑改用 projection helper：
 
@@ -600,6 +601,7 @@ ownership quick rule：
 - 手里还没有 session object，且也不想自己 close session -> 用 helper-owned `run_prompt_report()` / `stream_prompt_report()`
 - 已经持有 session，并且后面还要复用或自己决定 close timing -> 用 caller-owned `run_prompt_report_in_session()` / `stream_prompt_report_in_session()`
 - 任何 `_in_session()` surface 都不会替你接管 session close；caller 仍然是 owner
+- 从 `bound.create_session(...)` 拿到的 host-bound session 也属于 caller-owned session；当前要拿 canonical report 时，仍然走 `run_prompt_report_in_session()`
 
 ```python
 async with weavert.stream_prompt_report(
@@ -686,9 +688,32 @@ flowchart LR
 `bind_host()` 这一层也有 ownership boundary：
 
 - 只想跑一个 host-owned one-shot turn，用 `bound.run_prompt(...)`
+- 只想看 turn event / message path，而不关心 canonical final report 时，也优先用 `bound.stream_prompt(...)`
 - 想保留同一个 host-bound session、自己决定何时 close，用 `session = bound.create_session(...)`
 - 用 `async with weavert.bind_host(host)` 时，runtime 会替你跑 `startup()` / `ready()` / `shutdown()`
 - 如果你不用 context manager，而是手动拿 `bound = weavert.bind_host(host)`，那么 host lifecycle cleanup 仍然归 caller
+
+当前还有一个容易误解的点需要明确：
+
+- `BoundHostRuntime` 今天直接覆盖的是 host-owned message / stream path
+- 如果你已经在 host path 里拿到了 `session = bound.create_session(...)`，并且还要 canonical `WorkflowRunReport`，当前正式路径仍是 `weavert.run_prompt_report_in_session(session, ...)`
+- 这不是 host path 不稳定，而是 canonical report helper 目前仍挂在 `RuntimeAssembly`
+
+推荐写法：
+
+```python
+async with weavert.bind_host(host) as bound:
+    session = bound.create_session(session_id="host-session")
+    try:
+        report = await weavert.run_prompt_report_in_session(
+            session,
+            "检查当前目录里是否有风险改动",
+        )
+    finally:
+        await session.close()
+```
+
+如果你在 host path 上还要注册 Hook，`session-template` materialization、`host_api` inventory entry，以及 `pending_activation -> active` 的诊断语义，优先继续看 `docs/weavert-hook-configuration-platform.md`。
 
 ### 4.3 能力接入：通过 definitions 扩展 Runtime
 
@@ -1564,7 +1589,8 @@ leader 接收 teammate collaboration message 时，默认策略是：
 目标 C：我要 CLI / UI / SDK 宿主
   -> assemble_runtime(config)
   -> weavert.bind_host(host)
-  -> bound.run_prompt() / bound.stream_prompt()
+  -> 只要 messages / turn events: bound.run_prompt() / bound.stream_prompt()
+  -> 要 canonical report: bound.create_session() + weavert.run_prompt_report_in_session()
 
 目标 D：我要自定义能力
   -> .weavert/tools|agents|skills

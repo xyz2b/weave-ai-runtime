@@ -158,7 +158,7 @@ TOOL_DEFINITION = ToolDefinition(
 | `name` | canonical 名称 | 必填 |
 | `description` | 能力说明 | 必填 |
 | `input_schema` | 输入 schema | 用于验证和对模型暴露 |
-| `output_schema` | 输出 schema | 可选 |
+| `output_schema` | 输出 schema | 可选；如果结果会被 typed consumer / UI / contract test 直接消费，建议显式维护 |
 | `aliases` | 别名 | 可选 |
 | `search_hint` | 搜索提示 | 可选 |
 | `traits` | 静态特征 | 影响并发、只读、破坏性和中断行为 |
@@ -620,6 +620,11 @@ printf 'hello'
 - `weavert.resolve_invocations(...)`
 - `weavert.visible_invocations(session)`
 - `weavert.invocation_diagnostics(session)`
+
+补充判断：
+
+- `output_schema` 不是“这个 tool 能不能跑起来”的执行前提
+- 但如果你希望别的系统稳定消费这个 tool 的结果形状，它仍然是值得维护的正式结果契约
 
 检查：
 

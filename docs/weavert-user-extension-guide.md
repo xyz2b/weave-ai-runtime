@@ -670,7 +670,7 @@ advanced public phase 包括：
 用户视角怎么扩：
 
 1. 想给所有 session 默认挂一个 hook，用 `weavert.register_hook(...)` 或 `RuntimeConfig(hooks=...)`。
-2. 想给宿主统一挂策略，用 `bound.register_hook(...)`。
+2. 想给宿主统一挂策略，用 `bound.register_hook(...)`；它默认走 `session-template` materialization，再落到 concrete session。
 3. 想只影响当前会话，用 `session.register_hook(...)`。
 4. 想只影响当前 turn，用 `session.register_turn_hook(...)`，但把它视为 advanced surface。
 5. 想把 hook 随 skill 一起打包，用 skill frontmatter 的 `hooks`。
@@ -1074,10 +1074,13 @@ Memory 默认是 file-backed。
 - `ToolDefinition.prompt`
 - 用户自定义 tool 的 `runtime_execution_class="privileged"`
 
-另外，下面这些字段当前更偏描述性 metadata，而不是执行主路径的核心依赖：
+另外，下面这些字段不是执行主路径的 authoritative input，但仍值得区分对待：
 
 - `ToolDefinition.output_schema`
+  - 它更像结果契约，而不是执行调度入口
+  - 如果你的 tool output 会被 typed SDK、UI、schema 校验、contract test 或别的自动消费方直接依赖，仍然应把它当稳定 public contract 认真维护
 - `ToolDefinition.search_hint`
+  - 它更偏提示性 metadata
 
 如果你要做稳定接入，优先围绕这些字段构建：
 
