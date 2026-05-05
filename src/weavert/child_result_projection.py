@@ -24,7 +24,13 @@ def project_agent_run_result(
     messages = tuple(getattr(result, "messages", ()) or ())
     if isinstance(run_record, AgentRunRecord):
         messages = tuple(run_record.messages or messages)
-    projection = _base_projection_from_result(result, run_record, policy=policy, messages=messages)
+    projection = _base_projection_from_result(
+        result,
+        run_record,
+        policy=policy,
+        messages=messages,
+        request_metadata=_projection_request_metadata(result, run_record),
+    )
     workflow_observability = workflow_run_observability_from_agent_result(result)
     if workflow_observability is not None:
         projection["workflow_observability"] = serialize_workflow_run_observability(workflow_observability)
@@ -52,6 +58,7 @@ def project_child_run_record(
         "query_source": record.query_source,
         "spawn_mode": record.spawn_mode.value,
         "delegation_depth": record.delegation_depth,
+        "scope_summary": _scope_summary_from_request_metadata(record.request_metadata),
         "summary": summarize_child_run_record(record, policy=policy),
         "terminal_metadata": dict(record.terminal_metadata),
         "requested_model": record.requested_model,
@@ -102,6 +109,7 @@ def _base_projection_from_result(
     *,
     policy: DelegationPolicy,
     messages: Sequence[RuntimeMessage],
+    request_metadata: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     execution_spec = getattr(result, "execution_spec", None)
     isolation_mode = getattr(result, "isolation_mode", None)
@@ -133,6 +141,7 @@ def _base_projection_from_result(
         "spawn_mode": (
             execution_spec.spawn_mode.value if execution_spec is not None else None
         ),
+        "scope_summary": _scope_summary_from_request_metadata(request_metadata),
         "summary": summary,
         "terminal_metadata": terminal_metadata,
         "task_id": getattr(result, "task_id", None),
@@ -197,3 +206,69 @@ def _serialize_message(message: RuntimeMessage) -> dict[str, Any]:
         "content": serialize_content_blocks(message.content),
         "metadata": dict(message.metadata),
     }
+
+
+def _projection_request_metadata(
+    result: Any,
+    run_record: AgentRunRecord | None,
+) -> Mapping[str, Any] | None:
+    if run_record is not None and isinstance(run_record.request_metadata, Mapping):
+        return run_record.request_metadata
+    execution_spec = getattr(result, "execution_spec", None)
+    metadata = getattr(execution_spec, "metadata", None)
+    if isinstance(metadata, Mapping):
+        return metadata
+    return None
+
+
+def _scope_summary_from_request_metadata(
+    metadata: Mapping[str, Any] | None,
+) -> dict[str, Any] | None:
+    if not isinstance(metadata, Mapping):
+        return None
+    policy = metadata.get("policy")
+    if not isinstance(policy, Mapping):
+        return None
+    effective = policy.get("effective")
+    if not isinstance(effective, Mapping):
+        return None
+    trace = effective.get("trace") if isinstance(effective.get("trace"), Mapping) else {}
+    visible_tools = _coerce_string_list(effective.get("tools"), fallback=trace.get("effective_tools"))
+    visible_skills = _coerce_string_list(effective.get("skills"), fallback=trace.get("effective_skills"))
+    permission_mode = _coerce_optional_string(effective.get("permission_mode")) or _coerce_optional_string(
+        trace.get("effective_permission_mode")
+    )
+    isolation_mode = _coerce_optional_string(effective.get("isolation_mode")) or _coerce_optional_string(
+        trace.get("effective_isolation_mode")
+    )
+    if not visible_tools and not visible_skills and permission_mode is None and isolation_mode is None:
+        return None
+    return {
+        "visible_tools": visible_tools,
+        "visible_skills": visible_skills,
+        "permission_mode": permission_mode,
+        "isolation_mode": isolation_mode,
+    }
+
+
+def _coerce_string_list(
+    value: Any,
+    *,
+    fallback: Any = None,
+) -> list[str]:
+    candidate = value if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)) else fallback
+    if not isinstance(candidate, Sequence) or isinstance(candidate, (str, bytes, bytearray)):
+        return []
+    resolved: list[str] = []
+    for item in candidate:
+        normalized = _coerce_optional_string(item)
+        if normalized is not None:
+            resolved.append(normalized)
+    return resolved
+
+
+def _coerce_optional_string(value: Any) -> str | None:
+    if value is None:
+        return None
+    normalized = str(value).strip()
+    return normalized or None

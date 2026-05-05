@@ -211,6 +211,25 @@ handle = host.register_hook(
 )
 ```
 
+这里有一个 adopter 最容易忽略的点：
+
+- `host.register_hook(...)` 默认不是“立刻给所有现有 session 挂一个 active hook”。
+- 它先以 `session-template` lifetime 注册到 host-owned template 层。
+- 当 concrete session 创建出来后，这条 template registration 才会 materialize 成该 session 里的 active hook。
+
+因此观察时建议分两步：
+
+1. 刚注册完时先看 `handle.activation_state`，常见值会是 `pending_activation`。
+2. 真正要确认某个 session 已经挂上时，用 `bound.list_hooks(HookInventoryQuery(session_id=..., phase=...))` 看 materialized inventory entry。
+
+inventory 里的 source kind 会保持 `host_api`，所以你可以明确区分：
+
+- 这是 host 注入的策略
+- 不是 session 自己动态注册的 hook
+- 它是先走 template，再落到 concrete session 的
+
+如果你想看“为什么 active 了”或“为什么没触发”，再继续用 `list_hook_dispatch_traces(...)` 看 dispatch trace，而不要只盯着 callback 本身。
+
 `session API / turn API`
 
 - 适合当前 session 或当前 turn 的动态注册。

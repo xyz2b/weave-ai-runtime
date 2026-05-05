@@ -59,6 +59,7 @@ DEMO_CASES = (
         (
             "demo: scoped agent delegation",
             "visible tools: collect_scope",
+            "scope tools: collect_scope",
             "delegated agent: scoped-worker",
             "child summary: worker summary: scoped tools only",
             "status: ok",
@@ -183,6 +184,7 @@ DEMO_CASES = (
         "demos.runtime.assembly_diagnostics_demo",
         (
             "demo: assembly diagnostics",
+            "posture helper: session.query_assembly_posture()",
             "assembly preset: headless-live",
             "visible invocations: diagnostic-note",
             "failure class: missing_env",
@@ -220,11 +222,12 @@ README_USER_CENTRIC_SNIPPETS = (
         (
             "demo: scoped agent delegation",
             "visible tools:",
+            "scope tools:",
             "delegated agent:",
             "child summary:",
             "status: ok",
         ),
-        "It proves tool scoping and child summaries before delegation is mixed into a project workflow.",
+        "It proves both the request-time tool narrowing and the parent-visible `scope_summary` before delegation is mixed into a project workflow.",
     ),
     (
         "demos.skills.inline_vs_fork_skill_demo",
@@ -273,15 +276,16 @@ README_USER_CENTRIC_SNIPPETS = (
     ),
     (
         "demos.runtime.assembly_diagnostics_demo",
-        "How do I inspect assembly posture, visible invocations, and a predictable model-route failure without product UX?",
+        "How do I inspect assembly posture, visible invocations, and a predictable model-route failure through one official helper without product UX?",
         (
             "demo: assembly diagnostics",
+            "posture helper:",
             "assembly preset:",
             "visible invocations:",
             "failure class:",
             "status: ok",
         ),
-        "It keeps assembly and route diagnostics below host binding and app-specific presentation.",
+        "It keeps assembly and route diagnostics below host binding and app-specific presentation, while using the same consolidated posture helper that docs and tests can assert directly.",
     ),
     (
         "demos.runtime.durable_resume_demo",

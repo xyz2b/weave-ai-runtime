@@ -41,6 +41,18 @@ class ToolOutcomeProjection:
 
 
 @dataclass(frozen=True, slots=True)
+class ChildScopeSummaryProjection:
+    visible_tools: tuple[str, ...] = ()
+    visible_skills: tuple[str, ...] = ()
+    permission_mode: str | None = None
+    isolation_mode: str | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "visible_tools", _coerce_string_tuple(self.visible_tools))
+        object.__setattr__(self, "visible_skills", _coerce_string_tuple(self.visible_skills))
+
+
+@dataclass(frozen=True, slots=True)
 class ChildSummaryProjection:
     agent_name: str = ""
     summary: str = ""
@@ -60,6 +72,7 @@ class ChildSummaryProjection:
     resolved_model_route: str | None = None
     provider_name: str | None = None
     invocation_mode: Any = None
+    scope_summary: ChildScopeSummaryProjection | None = None
     workflow_observability: WorkflowRunObservability | None = None
     source_kind: str = "parent_result"
     payload: Mapping[str, Any] = field(default_factory=dict)
@@ -486,6 +499,7 @@ def _child_summary_from_mapping(
         return None
     delegation_depth = copied.get("delegation_depth")
     workflow_observability = workflow_run_observability_from_mapping(copied.get("workflow_observability"))
+    scope_summary = _scope_summary_from_mapping(copied.get("scope_summary"))
     return ChildSummaryProjection(
         agent_name=agent_name,
         summary=summary or "",
@@ -505,9 +519,29 @@ def _child_summary_from_mapping(
         resolved_model_route=_coerce_optional_string(copied.get("resolved_model_route")),
         provider_name=_coerce_optional_string(copied.get("provider_name")),
         invocation_mode=copied.get("invocation_mode"),
+        scope_summary=scope_summary,
         workflow_observability=workflow_observability,
         source_kind=source_kind,
         payload=copied,
+    )
+
+
+def _scope_summary_from_mapping(
+    payload: Any,
+) -> ChildScopeSummaryProjection | None:
+    if not isinstance(payload, Mapping):
+        return None
+    visible_tools = _coerce_string_tuple(payload.get("visible_tools"))
+    visible_skills = _coerce_string_tuple(payload.get("visible_skills"))
+    permission_mode = _coerce_optional_string(payload.get("permission_mode"))
+    isolation_mode = _coerce_optional_string(payload.get("isolation_mode"))
+    if not visible_tools and not visible_skills and permission_mode is None and isolation_mode is None:
+        return None
+    return ChildScopeSummaryProjection(
+        visible_tools=visible_tools,
+        visible_skills=visible_skills,
+        permission_mode=permission_mode,
+        isolation_mode=isolation_mode,
     )
 
 
@@ -576,6 +610,17 @@ def _coerce_mapping(value: Any) -> dict[str, Any]:
     return {}
 
 
+def _coerce_string_tuple(value: Any) -> tuple[str, ...]:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
+        return ()
+    resolved: list[str] = []
+    for item in value:
+        normalized = _coerce_optional_string(item)
+        if normalized is not None:
+            resolved.append(normalized)
+    return tuple(resolved)
+
+
 def _coerce_optional_string(value: Any) -> str | None:
     if value is None:
         return None
@@ -584,6 +629,7 @@ def _coerce_optional_string(value: Any) -> str | None:
 
 
 __all__ = [
+    "ChildScopeSummaryProjection",
     "ChildSummaryProjection",
     "SkillOutcomeProjection",
     "TerminalFailureProjection",

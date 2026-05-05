@@ -30,6 +30,9 @@ from .config import (
 )
 from .kernel import (
     RuntimeAssembly,
+    RuntimeAssemblyInvocationDiagnosticsSnapshot,
+    RuntimeAssemblyPostureReport,
+    RuntimeAssemblyVisibleInvocationSnapshot,
     RuntimeKernel,
     WorkflowRunFinalizationReport,
     WorkflowRunFinalizationTask,
@@ -77,6 +80,9 @@ __all__ = [
     "RuntimeDistribution",
     "RuntimeDistributionSpec",
     "RuntimeAssembly",
+    "RuntimeAssemblyInvocationDiagnosticsSnapshot",
+    "RuntimeAssemblyPostureReport",
+    "RuntimeAssemblyVisibleInvocationSnapshot",
     "RuntimeKernel",
     "WorkflowRunFinalizationReport",
     "WorkflowRunFinalizationTask",

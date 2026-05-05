@@ -83,6 +83,7 @@ class SessionController:
         runtime_services: RuntimeServices | None = None,
         ingress_processor: SessionIngressProcessor | None = None,
         close_callback: Any = None,
+        assembly_posture_reporter: Any = None,
     ) -> None:
         self.state = SessionState(session_id=session_id, current_agent=agent.name)
         self._agent = agent
@@ -102,6 +103,7 @@ class SessionController:
         self._closed = False
         self._close_task: asyncio.Task[None] | None = None
         self._close_callback = close_callback
+        self._assembly_posture_reporter = assembly_posture_reporter
         self._session_private_context = RuntimePrivateContext()
         self.state.metadata.setdefault(
             "permission_context",
@@ -161,6 +163,13 @@ class SessionController:
 
     def invocation_diagnostics(self):
         return self.resolve_invocations().diagnostics
+
+    async def query_assembly_posture(self, *, deeper_probe: bool = False):
+        if self._assembly_posture_reporter is None:
+            raise RuntimeError(
+                "SessionController.query_assembly_posture() requires a session created by RuntimeAssembly"
+            )
+        return await self._assembly_posture_reporter(self, deeper_probe=deeper_probe)
 
     def bind_hook_callback(self, name: str, handler: Any) -> None:
         self._runtime_services.hook_bus.bind_callback(name, handler)

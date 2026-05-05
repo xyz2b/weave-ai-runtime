@@ -113,10 +113,15 @@ def main() -> None:
         assert _VISIBLE_TOOLS == ("collect_scope",)
         assert summary is not None
         assert summary.summary == _CHILD_SUMMARY
+        assert summary.scope_summary is not None
+        assert summary.scope_summary.visible_tools == ("collect_scope",)
+        assert summary.scope_summary.permission_mode == "default"
+        assert summary.scope_summary.isolation_mode == "none"
         assert report.final_status == "completed"
 
         print("demo: scoped agent delegation")
         print(f"visible tools: {', '.join(_VISIBLE_TOOLS)}")
+        print(f"scope tools: {', '.join(summary.scope_summary.visible_tools)}")
         print("delegated agent: scoped-worker")
         print(f"child summary: {summary.summary}")
         print("status: ok")

@@ -92,7 +92,8 @@ weavert-starter generate minimal-project ./my-weavert-app --force
 
 1. 先直接跑生成出来的 entrypoint，确认 baseline 成立
 2. 再把你自己的 agent / tool / skill 放到 `.weavert/`
-3. 最后再决定是否进入更高级的 host-bound integration
+3. 再跑 `demos/README.md` 里的 user-centric validation：先验证 guarded tool、scoped delegation、report ownership、assembly diagnostics 这些 follow-up 问题
+4. 只有当这些基础 seam 都已经成立时，再进入 minimal host-bound / advanced app demos，看 `bind_host()`、durable state、builtin replacement
 
 ## Relationship to demos
 
@@ -104,6 +105,7 @@ starter scaffold 和 `demos/README.md` 的职责不同：
 建议这样理解：
 
 - 想新建项目：先用 starter scaffold
-- 想验证 framework seam：跑 demos
+- starter baseline 成立后：先跑 user-centric demos
+- 想验证 framework seam：再按 demos 的 layered path 往上走
 - 想验证同一个 workflow 的 offline/live layering：继续用 demos
 - 想看 host binding、builtin replacement、durable state：看 advanced app demos

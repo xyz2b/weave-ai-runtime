@@ -238,6 +238,102 @@ class WorkflowRunReport:
         return self.turn_id or self.session_id
 
 
+@dataclass(frozen=True, slots=True)
+class RuntimeAssemblyVisibleInvocationSnapshot:
+    name: str
+    source_kind: str
+    description: str
+    display_name: str | None = None
+    argument_hint: str | None = None
+    user_invocable: bool = True
+    model_invocable: bool = True
+    source_label: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "metadata", deepcopy(dict(self.metadata)))
+
+    def to_dict(self) -> dict[str, Any]:
+        payload = {
+            "name": self.name,
+            "source_kind": self.source_kind,
+            "description": self.description,
+            "display_name": self.display_name,
+            "argument_hint": self.argument_hint,
+            "user_invocable": self.user_invocable,
+            "model_invocable": self.model_invocable,
+            "source_label": self.source_label,
+        }
+        if self.metadata:
+            payload["metadata"] = deepcopy(self.metadata)
+        return payload
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeAssemblyInvocationDiagnosticsSnapshot:
+    name: str
+    source_kind: str
+    visible: bool
+    user_invocable: bool
+    model_invocable: bool
+    hidden_reason: str | None = None
+    matched_paths: tuple[str, ...] = ()
+    path_match_state: str = "matched"
+    narrowed_by_policy: dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "matched_paths", tuple(self.matched_paths))
+        object.__setattr__(self, "narrowed_by_policy", deepcopy(dict(self.narrowed_by_policy)))
+        object.__setattr__(self, "metadata", deepcopy(dict(self.metadata)))
+
+    def to_dict(self) -> dict[str, Any]:
+        payload = {
+            "name": self.name,
+            "source_kind": self.source_kind,
+            "visible": self.visible,
+            "user_invocable": self.user_invocable,
+            "model_invocable": self.model_invocable,
+            "hidden_reason": self.hidden_reason,
+            "matched_paths": list(self.matched_paths),
+            "path_match_state": self.path_match_state,
+            "narrowed_by_policy": deepcopy(self.narrowed_by_policy),
+        }
+        if self.metadata:
+            payload["metadata"] = deepcopy(self.metadata)
+        return payload
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeAssemblyPostureReport:
+    session_id: str
+    default_model_route: str | None
+    default_route_preflight: ModelRoutePreflightReport
+    assembly_preset_provenance: dict[str, Any] = field(default_factory=dict)
+    visible_invocations: tuple[RuntimeAssemblyVisibleInvocationSnapshot, ...] = ()
+    invocation_diagnostics: tuple[RuntimeAssemblyInvocationDiagnosticsSnapshot, ...] = ()
+    closure_status: str | None = None
+    persistence_profile: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "assembly_preset_provenance", deepcopy(dict(self.assembly_preset_provenance)))
+        object.__setattr__(self, "visible_invocations", tuple(self.visible_invocations))
+        object.__setattr__(self, "invocation_diagnostics", tuple(self.invocation_diagnostics))
+        object.__setattr__(self, "persistence_profile", deepcopy(dict(self.persistence_profile)))
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "session_id": self.session_id,
+            "default_model_route": self.default_model_route,
+            "assembly_preset_provenance": deepcopy(self.assembly_preset_provenance),
+            "visible_invocations": [entry.to_dict() for entry in self.visible_invocations],
+            "invocation_diagnostics": [entry.to_dict() for entry in self.invocation_diagnostics],
+            "default_route_preflight": self.default_route_preflight.to_dict(),
+            "closure_status": self.closure_status,
+            "persistence_profile": deepcopy(self.persistence_profile),
+        }
+
+
 @dataclass(slots=True)
 class _WorkflowRunCollectorState:
     messages: list[RuntimeMessage] = field(default_factory=list)
@@ -711,6 +807,30 @@ class RuntimeAssembly:
         return await self.preflight_model_route(
             route_name=None,
             deeper_probe=deeper_probe,
+        )
+
+    async def query_assembly_posture(
+        self,
+        session: SessionController,
+        *,
+        deeper_probe: bool = False,
+    ) -> RuntimeAssemblyPostureReport:
+        catalog = self.resolve_session_invocations(session)
+        preflight = await self.preflight_default_model_route(deeper_probe=deeper_probe)
+        closure_report = self.query_closure_report()
+        return RuntimeAssemblyPostureReport(
+            session_id=session.state.session_id,
+            default_model_route=self.kernel.config.default_model_route,
+            default_route_preflight=preflight,
+            assembly_preset_provenance=self.query_assembly_preset_provenance(),
+            visible_invocations=tuple(
+                _visible_invocation_snapshot(entry) for entry in catalog.visible_capabilities()
+            ),
+            invocation_diagnostics=tuple(
+                _invocation_diagnostics_snapshot(entry) for entry in catalog.diagnostics
+            ),
+            closure_status=_coerce_optional_string(closure_report.get("status")),
+            persistence_profile=self.query_persistence_profile(),
         )
 
     def bind_hook_callback(self, name: str, handler: Any) -> None:
@@ -1435,6 +1555,7 @@ class RuntimeAssembly:
             system_prompt=self.system_prompt if system_prompt is None else system_prompt,
             runtime_services=self.services,
             close_callback=close_callback,
+            assembly_posture_reporter=self.query_assembly_posture,
         )
 
     def stream_prompt_report(
@@ -4792,6 +4913,39 @@ def _serialize_team_workflow_record(record: Any) -> dict[str, Any]:
         "terminal": bool(getattr(record, "terminal", False)),
         "metadata": dict(getattr(record, "metadata", {}) or {}),
     }
+
+
+def _visible_invocation_snapshot(
+    value: InvocationCapabilityView,
+) -> RuntimeAssemblyVisibleInvocationSnapshot:
+    return RuntimeAssemblyVisibleInvocationSnapshot(
+        name=value.name,
+        source_kind=value.source_kind.value,
+        description=value.description,
+        display_name=value.display_name,
+        argument_hint=value.argument_hint,
+        user_invocable=value.user_invocable,
+        model_invocable=value.model_invocable,
+        source_label=value.source_label,
+        metadata=value.metadata,
+    )
+
+
+def _invocation_diagnostics_snapshot(
+    value: InvocationDiagnostics,
+) -> RuntimeAssemblyInvocationDiagnosticsSnapshot:
+    return RuntimeAssemblyInvocationDiagnosticsSnapshot(
+        name=value.name,
+        source_kind=value.source_kind.value,
+        visible=value.visible,
+        user_invocable=value.user_invocable,
+        model_invocable=value.model_invocable,
+        hidden_reason=value.hidden_reason.value if value.hidden_reason is not None else None,
+        matched_paths=tuple(value.matched_paths),
+        path_match_state=value.path_match_state.value,
+        narrowed_by_policy=value.narrowed_by_policy,
+        metadata=value.metadata,
+    )
 
 
 def _coerce_optional_string(value: Any) -> str | None:

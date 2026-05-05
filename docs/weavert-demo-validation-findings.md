@@ -19,7 +19,7 @@ It is repo-owned validation evidence, not an implied roadmap commitment.
 - observed issue: The repo exposes all the pieces for schema validation plus permission presets, but there is not yet one small helper pattern that bundles the three most common guarded-tool checks into a starter example.
 - user impact: Tool authors still need to combine `ToolExecutionSemantics`, `check_permissions`, and a permission preset by hand before they can answer a simple "what happens when this is denied?" question.
 - suggested follow-up area: Tool authoring docs and demo helpers for guarded permission patterns.
-- status: open
+- status: documented
 
 ### scoped_agent_delegation_demo
 
@@ -27,7 +27,7 @@ It is repo-owned validation evidence, not an implied roadmap commitment.
 - observed issue: Child-agent summaries are easy to project after the run, but the most direct proof of tool-pool narrowing still lives in request-time turn context rather than a first-class runtime summary field.
 - user impact: Adopters can confirm that delegation worked, yet they still have to inspect request context or tests to prove exactly which tools remained visible to the child.
 - suggested follow-up area: Child-run summary payloads and delegation diagnostics surfaces.
-- status: open
+- status: follow-up landed
 
 ### inline_vs_fork_skill_demo
 
@@ -43,7 +43,7 @@ It is repo-owned validation evidence, not an implied roadmap commitment.
 - observed issue: Host-side hook registration is stable, but the public docs do not yet foreground that host registrations default to session-template materialization and appear internally as `host_api` inventory entries.
 - user impact: Product embedders can register hooks successfully, yet still have to cross-read tests to understand why the hook is pending first and active only after a session exists.
 - suggested follow-up area: Host integration docs for hook materialization and inventory terminology.
-- status: open
+- status: documented
 
 ### minimal_host_bound_demo
 
@@ -59,7 +59,7 @@ It is repo-owned validation evidence, not an implied roadmap commitment.
 - observed issue: Helper-owned and caller-owned report helpers share most behavior, so the ownership difference is easy to miss until a demo proves which path keeps the session open for reuse.
 - user impact: Runtime adopters can accidentally choose a helper-owned path when they actually need a reusable caller-owned session.
 - suggested follow-up area: Runtime helper docs around report ownership and session reuse.
-- status: open
+- status: documented
 
 ### assembly_diagnostics_demo
 
@@ -67,7 +67,7 @@ It is repo-owned validation evidence, not an implied roadmap commitment.
 - observed issue: Assembly preset provenance, visible invocations, and route preflight diagnostics are all stable, but they currently live behind separate queries that users have to assemble mentally.
 - user impact: A user validating runtime assembly posture can answer the question, but only after hopping across multiple APIs.
 - suggested follow-up area: Higher-level assembly diagnostics helpers or consolidated documentation.
-- status: open
+- status: follow-up landed
 
 ### durable_resume_demo
 
@@ -75,4 +75,4 @@ It is repo-owned validation evidence, not an implied roadmap commitment.
 - observed issue: Durable resume works on the full distribution, but the minimum proof still requires a re-assembly plus explicit `resume()` call that is more procedural than the lighter-weight demos.
 - user impact: Adopters can validate persistence, yet they may not immediately understand which distribution and resume steps are required for the guarantee they want.
 - suggested follow-up area: Durable-session docs and preset guidance for persistence expectations.
-- status: open
+- status: documented

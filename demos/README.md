@@ -26,6 +26,12 @@ Recommended starting path:
 - If that offline coding workflow passes and you want provider-backed evidence for the same workflow, run `python3 -B -m demos.projects.coding_workflow_demo --live`.
 - If you need host-owned UX, durable runtime state, or builtin replacement, move on to the advanced integration sample under `demos/apps/code_assistant/`.
 
+Post-starter path, in one sentence:
+
+1. Boot the generated starter entrypoint first.
+2. Use the user-centric demos to validate guarded tools, delegated scope, report ownership, and assembly posture on isolated seams.
+3. Only move to minimal host-bound or advanced app demos when you actually need host-owned UX, durable state, or builtin replacement.
+
 How to interpret failures across the layers:
 
 - seam basics fail -> likely a discovery or stable-seam contract issue
@@ -68,7 +74,7 @@ These demos sit between seam basics and broader workflow samples. They answer fo
 | Demo | Adopter question | Run command | Stable anchors | Why before project demos |
 | --- | --- | --- | --- | --- |
 | Guarded tool | How do I validate custom input guards, schema errors, permission denial, and a successful guarded tool path before I wire the tool into a larger workflow? | `python3 -B -m demos.tools.guarded_tool_demo` | `demo: guarded tool`, `schema validation: rejected invalid input`, `input validation: rejected blank value`, `permission path: denied`, `permission path: allowed`, `status: ok` | It isolates the tool contract before the same behavior is hidden inside a multi-step agent loop. |
-| Scoped agent delegation | What actually changes when I delegate to a child agent with a narrower tool pool? | `python3 -B -m demos.agents.scoped_agent_delegation_demo` | `demo: scoped agent delegation`, `visible tools:`, `delegated agent:`, `child summary:`, `status: ok` | It proves tool scoping and child summaries before delegation is mixed into a project workflow. |
+| Scoped agent delegation | What actually changes when I delegate to a child agent with a narrower tool pool? | `python3 -B -m demos.agents.scoped_agent_delegation_demo` | `demo: scoped agent delegation`, `visible tools:`, `scope tools:`, `delegated agent:`, `child summary:`, `status: ok` | It proves both the request-time tool narrowing and the parent-visible `scope_summary` before delegation is mixed into a project workflow. |
 | Inline vs fork skill | When should I keep a skill inline versus forking it to a child agent? | `python3 -B -m demos.skills.inline_vs_fork_skill_demo` | `demo: inline vs fork skill`, `inline result:`, `fork child summary:`, `status: ok` | It makes the execution-mode tradeoff visible before skills become one step in a larger composition. |
 | Host-registered hook | How do I attach a hook from host-owned integration code, confirm that it materialized as an active session hook, and prove that it actually fired? | `python3 -B -m demos.hooks.host_registered_hook_demo` | `demo: host.register_hook`, `hook source: host`, `hook activation: active`, `dispatch traces:`, `status: ok` | It keeps host-owned hook attachment smaller than a full product shell. |
 
@@ -83,7 +89,7 @@ These demos sit between seam basics and broader workflow samples. They answer fo
 | Demo | Adopter question | Run command | Stable anchors | Why before project demos or advanced apps |
 | --- | --- | --- | --- | --- |
 | Stream/report session | Which helper owns the session, and how do I prove a caller-owned session remains reusable? | `python3 -B -m demos.runtime.stream_report_session_demo` | `demo: stream/report session`, `helper-owned report: completed`, `session reusable: true`, `status: ok` | It answers helper-lifecycle questions directly instead of burying them in workflow orchestration. |
-| Assembly diagnostics | How do I inspect assembly posture, visible invocations, and a predictable model-route failure without product UX? | `python3 -B -m demos.runtime.assembly_diagnostics_demo` | `demo: assembly diagnostics`, `assembly preset:`, `visible invocations:`, `failure class:`, `status: ok` | It keeps assembly and route diagnostics below host binding and app-specific presentation. |
+| Assembly diagnostics | How do I inspect assembly posture, visible invocations, and a predictable model-route failure through one official helper without product UX? | `python3 -B -m demos.runtime.assembly_diagnostics_demo` | `demo: assembly diagnostics`, `posture helper:`, `assembly preset:`, `visible invocations:`, `failure class:`, `status: ok` | It keeps assembly and route diagnostics below host binding and app-specific presentation, while using the same consolidated posture helper that docs and tests can assert directly. |
 | Durable resume | What does the minimum durable transcript and resume proof look like before I build custom product UX around it? | `python3 -B -m demos.runtime.durable_resume_demo` | `demo: durable resume`, `turn one persisted: true`, `session resumed: true`, `status: ok` | It validates persistence expectations directly, without requiring the advanced app shell. |
 
 ## Semantic demos

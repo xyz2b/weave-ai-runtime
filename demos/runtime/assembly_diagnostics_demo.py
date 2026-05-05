@@ -32,23 +32,26 @@ def main() -> None:
                 os.environ["OPENAI_API_KEY"] = preserved_api_key
 
         session = runtime.create_session(session_id="assembly-diagnostics-demo")
-        visible = [entry.name for entry in session.visible_invocations() if entry.name == SKILL_NAME]
 
         preserved_api_key = os.environ.pop("OPENAI_API_KEY", None)
         try:
-            preflight = run_async(runtime.preflight_default_model_route())
+            posture = run_async(session.query_assembly_posture())
         finally:
             if preserved_api_key is not None:
                 os.environ["OPENAI_API_KEY"] = preserved_api_key
 
-        preset = runtime.query_assembly_preset_provenance()
+        visible = [entry.name for entry in posture.visible_invocations if entry.name == SKILL_NAME]
+        preflight = posture.default_route_preflight
+        preset = posture.assembly_preset_provenance
 
         assert preset["name"] == "headless-live"
         assert visible == [SKILL_NAME]
         assert preflight.ready is False
         assert preflight.failure_class.value == "missing_env"
+        assert posture.default_model_route == runtime.kernel.config.default_model_route
 
         print("demo: assembly diagnostics")
+        print("posture helper: session.query_assembly_posture()")
         print(f"assembly preset: {preset['name']}")
         print(f"visible invocations: {', '.join(visible)}")
         print(f"failure class: {preflight.failure_class.value}")

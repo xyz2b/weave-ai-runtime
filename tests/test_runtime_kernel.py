@@ -39,6 +39,7 @@ from weavert.definitions import (
     DefinitionOrigin,
     DefinitionSource,
     IsolationMode,
+    SkillDefinition,
     ToolDefinition,
 )
 from weavert.hosts.base import NullHostAdapter
@@ -2983,6 +2984,63 @@ def test_runtime_preflight_reports_bundled_openai_missing_credentials_before_inv
     assert environment["OPENAI_API_KEY"].required is True
     assert environment["OPENAI_API_KEY"].present is False
     assert report.probe.attempted is False
+
+
+def test_runtime_assembly_posture_report_combines_provenance_snapshots_and_missing_env_preflight(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    config = RuntimeConfig.for_headless_live(tmp_path)
+    config.builtins = BuiltinPackConfig(
+        extra_skills=[
+            SkillDefinition(
+                name="diagnostic-note",
+                description="Deterministic posture snapshot skill.",
+                content="diagnostic note",
+            )
+        ]
+    )
+    runtime = assemble_runtime(config)
+    session = runtime.create_session(session_id="assembly-posture")
+
+    report = asyncio.run(runtime.query_assembly_posture(session))
+    forwarded = asyncio.run(session.query_assembly_posture())
+    payload = report.to_dict()
+
+    assert forwarded.to_dict() == payload
+    assert report.session_id == "assembly-posture"
+    assert report.default_model_route == runtime.kernel.config.default_model_route
+    assert report.assembly_preset_provenance["name"] == "headless-live"
+    assert report.default_route_preflight.ready is False
+    assert report.default_route_preflight.failure_class is ModelRoutePreflightFailureClass.MISSING_ENV
+    assert report.closure_status == runtime.query_closure_report()["status"]
+
+    visible = next(entry for entry in report.visible_invocations if entry.name == "diagnostic-note")
+    diagnostics = next(entry for entry in report.invocation_diagnostics if entry.name == "diagnostic-note")
+    assert visible.source_kind.endswith("skill")
+    assert diagnostics.visible is True
+    assert diagnostics.path_match_state == "matched"
+
+    assert set(payload) == {
+        "session_id",
+        "default_model_route",
+        "assembly_preset_provenance",
+        "visible_invocations",
+        "invocation_diagnostics",
+        "default_route_preflight",
+        "closure_status",
+        "persistence_profile",
+    }
+    visible_payload = next(entry for entry in payload["visible_invocations"] if entry["name"] == "diagnostic-note")
+    diagnostics_payload = next(
+        entry for entry in payload["invocation_diagnostics"] if entry["name"] == "diagnostic-note"
+    )
+    assert visible_payload["source_kind"].endswith("skill")
+    assert diagnostics_payload["visible"] is True
+    assert diagnostics_payload["path_match_state"] == "matched"
+    assert payload["default_route_preflight"]["failure_class"] == "missing_env"
+    assert payload["assembly_preset_provenance"]["name"] == "headless-live"
 
 
 def test_runtime_preflight_resolves_default_model_from_provider_model_env(

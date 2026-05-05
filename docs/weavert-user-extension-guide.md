@@ -1150,6 +1150,70 @@ weavert = assemble_runtime(config)
 - 查询型工具尽量声明 `read_only=True`。
 - 真正有副作用的工具再配 `check_permissions`。
 
+#### 6.1.1 Guarded tool 的 canonical 组合方式
+
+如果你要写的是“schema 先兜底，再做自定义输入校验，然后按 mode 决定是否触发审批”的 tool，推荐直接沿用这条 public contract 组合，而不是另外包一层 demo-private helper：
+
+```python
+from weavert import ToolDefinition, ToolTraits, ValidationOutcome
+from weavert.definitions import PermissionBehavior, PermissionDecision
+from weavert.permissions import ReadOnlyPermissionService
+
+
+async def validate_input(tool_input, _context):
+    value = tool_input["value"].strip()
+    if not value:
+        return ValidationOutcome(False, "value must not be blank")
+    return ValidationOutcome(
+        True,
+        updated_input={"value": value, "mode": tool_input["mode"]},
+    )
+
+
+async def check_permissions(tool_input, _context):
+    if tool_input["mode"] == "write":
+        return PermissionDecision(PermissionBehavior.ASK, "write approval required")
+    return PermissionDecision(PermissionBehavior.ALLOW)
+
+
+async def execute(tool_input, _context):
+    return {"value": tool_input["value"], "mode": tool_input["mode"]}
+
+
+TOOL_DEFINITION = ToolDefinition(
+    name="guarded_echo",
+    description="Validate input, then gate writes behind the permission control plane.",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "value": {"type": "string"},
+            "mode": {"type": "string", "enum": ["read", "write"]},
+        },
+        "required": ["value", "mode"],
+        "additionalProperties": False,
+    },
+    traits=ToolTraits(read_only=False, concurrency_safe=True),
+    validate_input=validate_input,
+    check_permissions=check_permissions,
+    execute=execute,
+)
+
+runtime.services.permissions = ReadOnlyPermissionService()
+```
+
+推荐这样理解执行顺序：
+
+1. `input_schema` 负责结构正确性。
+2. `validate_input` 负责业务级输入约束和标准化。
+3. `check_permissions` 负责把 write / risky path 送进 runtime-owned permission control plane。
+4. `execute` 只做真正的副作用或结果产出。
+
+这样写的好处是：
+
+- tool contract 仍然只有标准 `ToolDefinition`，没有额外私有抽象。
+- 你可以直接切换官方 permission preset，例如 `AllowAllPermissionService`、`ReadOnlyPermissionService`、`SelectiveAutoApprovePermissionService`。
+- demo proof 和正式文档是同一条 contract：要看可运行验证，直接跑 `python3 -B -m demos.tools.guarded_tool_demo`。
+
 ### 6.2 示例二：新增一个项目级 Agent
 
 文件：
