@@ -40,6 +40,8 @@ from .platform import (
     HookScopeLifetime,
     HookSourceKind,
     HookTraceRegistration,
+    PUBLIC_PHASE_CONTRACTS,
+    is_advanced_phase,
     is_public_phase,
     phase_contract_for,
 )
@@ -169,6 +171,8 @@ class HookBus:
         session_id: str | None = None,
         turn_id: str | None = None,
         default_scope_lifetime: HookScopeLifetime = HookScopeLifetime.SESSION,
+        allowed_phase_contracts: Mapping[str, Any] = PUBLIC_PHASE_CONTRACTS,
+        allow_turn_scope: bool = True,
         local_order: int = 0,
     ) -> HookRegistrationHandle:
         normalized_source_kind = HookSourceKind(str(source_kind))
@@ -204,6 +208,8 @@ class HookBus:
             phase_name=phase_name,
             callback_bindings=self._callback_bindings,
             require_bound_callbacks=scope.lifetime != HookScopeLifetime.SESSION_TEMPLATE,
+            allowed_phase_contracts=allowed_phase_contracts,
+            allow_turn_scope=allow_turn_scope,
         )
         if rejection_reason is not None:
             self._records[handle.registration_id] = _RegistrationRecord(
@@ -981,7 +987,7 @@ def _sanitize_effect(
 ) -> tuple[HookEffect, tuple[HookIgnoredEffect, ...]]:
     phase_contract = phase_contract_for(phase_name)
     allowed_fields = set(phase_contract.effect_fields)
-    if declared_contract.effect_fields:
+    if declared_contract.restrict_fields and declared_contract.effect_fields:
         allowed_fields &= set(declared_contract.effect_fields)
     runtime_contract = _coerce_effect_contract(getattr(effect, "contract", None))
     if runtime_contract.effect_fields:
@@ -1162,12 +1168,20 @@ def _validate_request(
     phase_name: str,
     callback_bindings: Mapping[str, HookHandler] | None = None,
     require_bound_callbacks: bool,
+    allowed_phase_contracts: Mapping[str, Any],
+    allow_turn_scope: bool,
 ) -> str | None:
     phase_contract = phase_contract_for(phase_name)
     if not is_public_phase(phase_name):
         return "phase_not_public"
+    if phase_name not in allowed_phase_contracts:
+        if is_advanced_phase(phase_name):
+            return "advanced_phase_requires_advanced_surface"
+        return "phase_not_allowed_for_surface"
     if scope.lifetime == HookScopeLifetime.TURN and scope.turn_id is None:
         return "invalid_turn_scope"
+    if scope.lifetime == HookScopeLifetime.TURN and not allow_turn_scope:
+        return "turn_scope_requires_advanced_surface"
     if scope.lifetime == HookScopeLifetime.SESSION and scope.session_id is None:
         return "invalid_session_scope"
     if request.handler.kind.external and not phase_contract.external_handler_allowed:
@@ -1345,7 +1359,11 @@ def _coerce_effect_contract(value: object) -> HookEffectContract:
         return HookEffectContract()
     effect_classes = tuple(value.get("effect_classes", ()) or ())
     effect_fields = tuple(value.get("effect_fields", ()) or ())
-    return HookEffectContract(effect_classes=effect_classes, effect_fields=effect_fields)
+    return HookEffectContract(
+        effect_classes=effect_classes,
+        effect_fields=effect_fields,
+        restrict_fields=bool(value.get("restrict_fields", True)),
+    )
 
 
 def _coerce_handler_manifest(value: object, *, effect: object = None) -> HookHandlerManifest:

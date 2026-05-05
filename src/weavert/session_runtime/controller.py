@@ -36,6 +36,7 @@ from ..hooks import (
     SessionEndPayload,
     SessionStartPayload,
     build_configured_hook_registrar,
+    is_advanced_phase,
 )
 from ..permissions import PermissionContext
 from ..public_contract import workspace_skill_root_candidates
@@ -81,6 +82,12 @@ def _request_targets_turn_scope(request: HookRegistrationRequest | Mapping[str, 
     if not isinstance(raw_scope, Mapping):
         return False
     return str(raw_scope.get("lifetime", "")).strip() == HookScopeLifetime.TURN.value
+
+
+def _request_targets_advanced_phase(request: HookRegistrationRequest | Mapping[str, Any]) -> bool:
+    if isinstance(request, HookRegistrationRequest):
+        return is_advanced_phase(request.phase)
+    return is_advanced_phase(str(request.get("phase") or request.get("name") or ""))
 
 
 class SessionController:
@@ -212,6 +219,8 @@ class SessionController:
     ) -> Any:
         if _request_targets_turn_scope(request):
             return self.hooks.advanced.turn.raw.register(request)
+        if _request_targets_advanced_phase(request):
+            return self.hooks.advanced.raw.register(request)
         return self.hooks.raw.register(request)
 
     def list_hooks(

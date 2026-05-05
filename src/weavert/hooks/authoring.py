@@ -9,10 +9,12 @@ from .models import RuntimeHookPhase
 from .platform import (
     HookDispatchTraceQuery,
     HookInventoryQuery,
+    PUBLIC_PHASE_CONTRACTS,
     HookRegistrationHandle,
     HookRegistrationRequest,
     HookScopeLifetime,
     HookSourceKind,
+    STABLE_PUBLIC_PHASE_CONTRACTS,
 )
 
 _InventoryQuery = HookInventoryQuery | Mapping[str, Any] | None
@@ -61,6 +63,8 @@ class _HookRegistrarContext:
     session_id_factory: _ValueFactory
     turn_id_factory: _ValueFactory
     default_scope_lifetime_factory: _ValueFactory
+    allowed_phase_contracts: Mapping[str, Any]
+    allow_turn_scope: bool
     list_hooks_callback: Callable[[_InventoryQuery], tuple[Any, ...]]
     list_hook_dispatch_traces_callback: Callable[[_TraceQuery], tuple[Any, ...]]
 
@@ -80,6 +84,8 @@ class _HookRegistrarContext:
             session_id=self.session_id_factory(),
             turn_id=self.turn_id_factory(),
             default_scope_lifetime=self.default_scope_lifetime,
+            allowed_phase_contracts=self.allowed_phase_contracts,
+            allow_turn_scope=self.allow_turn_scope,
         )
 
     def list_hooks(self, query: _InventoryQuery = None) -> tuple[Any, ...]:
@@ -137,7 +143,32 @@ class _CallbackHookSurface(_HookSurfaceBase):
 
 
 class HookTypedRegistrar(_CallbackHookSurface):
-    pass
+    def _register_callback(
+        self,
+        phase: str,
+        handler: object,
+        *,
+        match: object = None,
+        effects: object = (),
+        once: bool = False,
+        metadata: Mapping[str, Any] | None = None,
+        owner_hint: str | None = None,
+        source_ref: str | None = None,
+    ) -> HookRegistrationHandle:
+        if not callable(handler):
+            raise TypeError("Typed hook authoring requires a callable handler")
+        if effects in (None, (), []):
+            raise ValueError("Typed hook authoring requires explicit effect declarations")
+        return super()._register_callback(
+            phase,
+            handler,
+            match=match,
+            effects=effects,
+            once=once,
+            metadata=metadata,
+            owner_hint=owner_hint,
+            source_ref=source_ref,
+        )
 
 
 class HookAdvancedRegistrar(_CallbackHookSurface):
@@ -180,9 +211,11 @@ class ConfiguredHookRegistrar(_CallbackHookSurface):
         self,
         context: _HookRegistrarContext,
         *,
+        advanced_context_factory: Callable[[], _HookRegistrarContext],
         turn_context_factory: Callable[[], _HookRegistrarContext] | None = None,
     ) -> None:
         super().__init__(context)
+        self._advanced_context_factory = advanced_context_factory
         self._turn_context_factory = turn_context_factory
 
     @property
@@ -199,10 +232,11 @@ class ConfiguredHookRegistrar(_CallbackHookSurface):
 
     @property
     def advanced(self) -> HookAdvancedRegistrar:
+        advanced_context = self._advanced_context_factory()
         if self._turn_context_factory is None:
-            return HookAdvancedRegistrar(self._context)
+            return HookAdvancedRegistrar(advanced_context)
         return SessionHookAdvancedRegistrar(
-            self._context,
+            advanced_context,
             turn_context_factory=self._turn_context_factory,
         )
 
@@ -262,32 +296,65 @@ def build_configured_hook_registrar(
     turn_turn_id: str | Callable[[], str | None] | None = None,
     turn_default_scope_lifetime: HookScopeLifetime | Callable[[], HookScopeLifetime] = HookScopeLifetime.TURN,
 ) -> ConfiguredHookRegistrar:
-    base_context = _HookRegistrarContext(
-        bus=bus,
-        source_kind=HookSourceKind(str(source_kind)),
-        owner_factory=_coerce_factory(owner),
-        source_ref_factory=_coerce_factory(source_ref),
-        session_id_factory=_coerce_factory(session_id),
-        turn_id_factory=_coerce_factory(turn_id),
-        default_scope_lifetime_factory=_coerce_factory(default_scope_lifetime),
-        list_hooks_callback=list_hooks,
-        list_hook_dispatch_traces_callback=list_hook_dispatch_traces,
-    )
-    turn_context_factory: Callable[[], _HookRegistrarContext] | None = None
-    if turn_source_kind is not None:
-        turn_context_factory = lambda: _HookRegistrarContext(
+    normalized_source_kind = HookSourceKind(str(source_kind))
+    owner_factory = _coerce_factory(owner)
+    source_ref_factory = _coerce_factory(source_ref)
+    session_id_factory = _coerce_factory(session_id)
+    turn_id_factory = _coerce_factory(turn_id)
+    default_scope_lifetime_factory = _coerce_factory(default_scope_lifetime)
+
+    def build_context(
+        *,
+        source_kind_value: HookSourceKind,
+        default_scope_lifetime_value: _ValueFactory,
+        allowed_phase_contracts: Mapping[str, Any],
+        allow_turn_scope: bool,
+        owner_value: _ValueFactory = owner_factory,
+        source_ref_value: _ValueFactory = source_ref_factory,
+        session_id_value: _ValueFactory = session_id_factory,
+        turn_id_value: _ValueFactory = turn_id_factory,
+    ) -> _HookRegistrarContext:
+        return _HookRegistrarContext(
             bus=bus,
-            source_kind=HookSourceKind(str(turn_source_kind)),
-            owner_factory=_coerce_factory(turn_owner),
-            source_ref_factory=_coerce_factory(turn_source_ref),
-            session_id_factory=_coerce_factory(turn_session_id),
-            turn_id_factory=_coerce_factory(turn_turn_id),
-            default_scope_lifetime_factory=_coerce_factory(turn_default_scope_lifetime),
+            source_kind=source_kind_value,
+            owner_factory=owner_value,
+            source_ref_factory=source_ref_value,
+            session_id_factory=session_id_value,
+            turn_id_factory=turn_id_value,
+            default_scope_lifetime_factory=default_scope_lifetime_value,
+            allowed_phase_contracts=allowed_phase_contracts,
+            allow_turn_scope=allow_turn_scope,
             list_hooks_callback=list_hooks,
             list_hook_dispatch_traces_callback=list_hook_dispatch_traces,
         )
+
+    base_context = build_context(
+        source_kind_value=normalized_source_kind,
+        default_scope_lifetime_value=default_scope_lifetime_factory,
+        allowed_phase_contracts=STABLE_PUBLIC_PHASE_CONTRACTS,
+        allow_turn_scope=False,
+    )
+    advanced_context_factory = lambda: build_context(
+        source_kind_value=normalized_source_kind,
+        default_scope_lifetime_value=default_scope_lifetime_factory,
+        allowed_phase_contracts=PUBLIC_PHASE_CONTRACTS,
+        allow_turn_scope=False,
+    )
+    turn_context_factory: Callable[[], _HookRegistrarContext] | None = None
+    if turn_source_kind is not None:
+        turn_context_factory = lambda: build_context(
+            source_kind_value=HookSourceKind(str(turn_source_kind)),
+            owner_value=_coerce_factory(turn_owner),
+            source_ref_value=_coerce_factory(turn_source_ref),
+            session_id_value=_coerce_factory(turn_session_id),
+            turn_id_value=_coerce_factory(turn_turn_id),
+            default_scope_lifetime_value=_coerce_factory(turn_default_scope_lifetime),
+            allowed_phase_contracts=PUBLIC_PHASE_CONTRACTS,
+            allow_turn_scope=True,
+        )
     return ConfiguredHookRegistrar(
         base_context,
+        advanced_context_factory=advanced_context_factory,
         turn_context_factory=turn_context_factory,
     )
 

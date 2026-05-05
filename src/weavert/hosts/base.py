@@ -16,6 +16,7 @@ from ..hooks import (
     HookScopeLifetime,
     HookSourceKind,
     build_configured_hook_registrar,
+    is_advanced_phase,
 )
 from ..permissions import PermissionOutcome, PermissionRequest, coerce_permission_outcome
 if TYPE_CHECKING:
@@ -374,6 +375,11 @@ class BoundHostRuntime:
         self,
         request: HookRegistrationRequest | Mapping[str, Any],
     ) -> Any:
+        if isinstance(request, HookRegistrationRequest):
+            if is_advanced_phase(request.phase):
+                return self.hooks.advanced.raw.register(request)
+        elif is_advanced_phase(str(request.get("phase") or request.get("name") or "")):
+            return self.hooks.advanced.raw.register(request)
         return self.hooks.raw.register(request)
 
     def list_hooks(

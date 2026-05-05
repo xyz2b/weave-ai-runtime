@@ -599,11 +599,13 @@ def _coerce_effect_contract(value: object) -> HookEffectContract:
         return HookEffectContract(
             effect_classes=value.effect_classes,
             effect_fields=value.effect_fields,
+            restrict_fields=value.restrict_fields,
         )
     if isinstance(value, Mapping):
         return HookEffectContract(
             effect_classes=tuple(value.get("effect_classes", ()) or ()),
             effect_fields=tuple(value.get("effect_fields", ()) or ()),
+            restrict_fields=bool(value.get("restrict_fields", True)),
         )
     if value is None:
         return HookEffectContract()
@@ -630,10 +632,7 @@ def _contract_from_declaration(value: object) -> HookEffectContract:
     if isinstance(value, Mapping):
         return _coerce_effect_contract(value)
     if callable(value):
-        contract = _coerce_effect_contract(getattr(value, _EFFECT_FACTORY_CONTRACT_ATTR, None))
-        if contract.effect_classes and contract.effect_fields:
-            return HookEffectContract(effect_classes=contract.effect_classes)
-        return contract
+        return _coerce_effect_contract(getattr(value, _EFFECT_FACTORY_CONTRACT_ATTR, None))
     if isinstance(value, Iterable) and not isinstance(value, (str, bytes, HookEffect)):
         return _merge_effect_contracts(*(_contract_from_declaration(item) for item in value))
     return HookEffectContract()
@@ -644,9 +643,11 @@ def _merge_effect_contracts(*contracts: HookEffectContract) -> HookEffectContrac
     effect_fields: list[str] = []
     seen_classes: set[HookEffectClass] = set()
     seen_fields: set[str] = set()
+    restrict_fields = True
     for contract in contracts:
         if not isinstance(contract, HookEffectContract):
             continue
+        restrict_fields = restrict_fields and contract.restrict_fields
         for effect_class in contract.effect_classes:
             if effect_class not in seen_classes:
                 seen_classes.add(effect_class)
@@ -664,6 +665,7 @@ def _merge_effect_contracts(*contracts: HookEffectContract) -> HookEffectContrac
     return HookEffectContract(
         effect_classes=ordered_classes or tuple(effect_classes),
         effect_fields=ordered_fields or tuple(effect_fields),
+        restrict_fields=restrict_fields,
     )
 
 
@@ -671,10 +673,12 @@ def _effect_contract(
     *,
     effect_classes: tuple[HookEffectClass, ...],
     effect_fields: tuple[str, ...],
+    restrict_fields: bool = True,
 ) -> HookEffectContract:
     return HookEffectContract(
         effect_classes=effect_classes,
         effect_fields=effect_fields,
+        restrict_fields=restrict_fields,
     )
 
 
@@ -714,6 +718,7 @@ _register_effect_factory(
     _effect_contract(
         effect_classes=(HookEffectClass.TRANSFORM,),
         effect_fields=("updated_input",),
+        restrict_fields=False,
     ),
 )
 _register_effect_factory(
@@ -721,6 +726,7 @@ _register_effect_factory(
     _effect_contract(
         effect_classes=(HookEffectClass.DECIDE,),
         effect_fields=("continue_execution",),
+        restrict_fields=False,
     ),
 )
 _register_effect_factory(
@@ -728,6 +734,7 @@ _register_effect_factory(
     _effect_contract(
         effect_classes=(HookEffectClass.SIDECAR,),
         effect_fields=("notifications",),
+        restrict_fields=False,
     ),
 )
 _register_effect_factory(
@@ -735,6 +742,7 @@ _register_effect_factory(
     _effect_contract(
         effect_classes=(HookEffectClass.DECIDE,),
         effect_fields=("elicitation_result",),
+        restrict_fields=False,
     ),
 )
 

@@ -62,6 +62,7 @@ from ..hooks import (
     STABLE_PUBLIC_HOOK_HANDLER_KINDS,
     STABLE_PUBLIC_PHASE_CONTRACTS,
     build_configured_hook_registrar,
+    is_advanced_phase,
 )
 from ..invocation_catalog import SkillInvocationProvider
 from ..jobs import DefaultJobService, FileJobStore, InMemoryJobStore, JobScopeFilter, job_record_to_payload
@@ -856,6 +857,11 @@ class RuntimeAssembly:
         self,
         request: HookRegistrationRequest | dict[str, Any],
     ) -> Any:
+        if isinstance(request, HookRegistrationRequest):
+            if is_advanced_phase(request.phase):
+                return self.hooks.advanced.raw.register(request)
+        elif is_advanced_phase(str(request.get("phase") or request.get("name") or "")):
+            return self.hooks.advanced.raw.register(request)
         return self.hooks.raw.register(request)
 
     def list_hooks(

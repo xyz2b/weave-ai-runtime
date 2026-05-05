@@ -1,6 +1,8 @@
 import asyncio
 from pathlib import Path
 
+import pytest
+
 from weavert.hooks import (
     HookActivationState,
     HookBus,
@@ -368,6 +370,114 @@ def test_layered_and_raw_hook_registrations_share_rejection_diagnostics(tmp_path
     assert raw_handle.activation_state == HookActivationState.REJECTED
     assert records[layered_handle.registration_id].rejection_reason == records[raw_handle.registration_id].rejection_reason
     assert records[layered_handle.registration_id].rejection_reason == "unsupported_effect_fields:elicitation_result"
+
+
+def test_typed_surface_requires_callable_handlers_and_explicit_effect_declarations(
+    tmp_path: Path,
+) -> None:
+    runtime = assemble_runtime(RuntimeConfig(working_directory=tmp_path))
+    session = runtime.create_session(session_id="typed-shape", cwd=tmp_path)
+
+    with pytest.raises(TypeError, match="callable handler"):
+        session.hooks.typed.on_pre_tool_use(
+            rewrite_input({"value": "static"}),
+            match=match_tool("typed"),
+            effects=(rewrite_input,),
+        )
+
+    with pytest.raises(ValueError, match="effect declarations"):
+        session.hooks.typed.on_pre_tool_use(
+            lambda _payload: rewrite_input({"value": "dynamic"}),
+            match=match_tool("typed"),
+        )
+
+
+def test_typed_effect_declarations_preserve_field_level_phase_validation(tmp_path: Path) -> None:
+    runtime = assemble_runtime(RuntimeConfig(working_directory=tmp_path))
+    session = runtime.create_session(session_id="typed-invalid", cwd=tmp_path)
+
+    handle = session.hooks.typed.on_pre_tool_use(
+        lambda _payload: respond_to_elicitation({"response": "approved"}),
+        match=match_tool("typed-invalid"),
+        effects=(respond_to_elicitation,),
+    )
+
+    record = runtime.services.hook_bus._records[handle.registration_id]
+
+    assert handle.activation_state == HookActivationState.REJECTED
+    assert record.rejection_reason == "unsupported_effect_fields:elicitation_result"
+
+
+def test_ordinary_raw_surface_rejects_advanced_phases_and_turn_scope(tmp_path: Path) -> None:
+    runtime = assemble_runtime(RuntimeConfig(working_directory=tmp_path))
+    session = runtime.create_session(session_id="ordinary-raw-boundary", cwd=tmp_path)
+    session.state.active_turn_id = "turn-boundary"
+
+    advanced_handle = session.hooks.raw.register(
+        HookRegistrationRequest(
+            phase="RecoveryDecision",
+            scope=HookRegistrationScope(lifetime=HookScopeLifetime.SESSION),
+            handler=HookHandlerManifest(
+                kind=HookHandlerKind.CALLBACK,
+                callback=lambda _payload: None,
+            ),
+        )
+    )
+    turn_handle = session.hooks.raw.register(
+        HookRegistrationRequest(
+            phase="PreToolUse",
+            scope=HookRegistrationScope(lifetime=HookScopeLifetime.TURN),
+            handler=HookHandlerManifest(
+                kind=HookHandlerKind.CALLBACK,
+                callback=lambda _payload: None,
+            ),
+        )
+    )
+
+    records = runtime.services.hook_bus._records
+
+    assert advanced_handle.activation_state == HookActivationState.REJECTED
+    assert records[advanced_handle.registration_id].rejection_reason == (
+        "advanced_phase_requires_advanced_surface"
+    )
+    assert turn_handle.activation_state == HookActivationState.REJECTED
+    assert records[turn_handle.registration_id].rejection_reason == (
+        "turn_scope_requires_advanced_surface"
+    )
+
+
+def test_explicit_advanced_raw_surfaces_preserve_advanced_and_turn_registration_paths(
+    tmp_path: Path,
+) -> None:
+    runtime = assemble_runtime(RuntimeConfig(working_directory=tmp_path))
+    session = runtime.create_session(session_id="advanced-raw-boundary", cwd=tmp_path)
+    session.state.active_turn_id = "turn-advanced"
+
+    advanced_handle = session.hooks.advanced.raw.register(
+        HookRegistrationRequest(
+            phase="RecoveryDecision",
+            scope=HookRegistrationScope(lifetime=HookScopeLifetime.SESSION),
+            handler=HookHandlerManifest(
+                kind=HookHandlerKind.CALLBACK,
+                callback=lambda _payload: None,
+            ),
+        )
+    )
+    turn_handle = session.hooks.advanced.turn.raw.register(
+        HookRegistrationRequest(
+            phase="PreToolUse",
+            scope=HookRegistrationScope(lifetime=HookScopeLifetime.TURN),
+            handler=HookHandlerManifest(
+                kind=HookHandlerKind.CALLBACK,
+                callback=lambda _payload: None,
+            ),
+        )
+    )
+
+    assert advanced_handle.activation_state == HookActivationState.ACTIVE
+    assert turn_handle.activation_state == HookActivationState.ACTIVE
+    assert advanced_handle.source_kind == HookSourceKind.SESSION_API
+    assert turn_handle.source_kind == HookSourceKind.TURN_API
 
 
 def test_runtime_and_host_layered_registrars_default_to_template_scope(tmp_path: Path) -> None:

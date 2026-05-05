@@ -162,11 +162,12 @@ handle = session.hooks.advanced.turn.on_pre_tool_use(
 
 - 你仍然想保留 phase-aware callback authoring，但需要显式声明 effect intent，而不想手写低层 `HookHandlerManifest` / `HookEffectContract`。
 - 你希望 callback-first surface 和 raw canonical request 之间仍有一个中间层。
+- `.typed` 只接受 callable handler，并要求显式提供 `effects=...` 声明；如果你只是想挂一个静态 effect，继续用默认 simple surface。
 
-什么时候继续直接写 `.raw.register(...)` 或 raw `HookRegistrationRequest`：
+什么时候继续直接写 `.advanced.raw.register(...)`、`.advanced.turn.raw.register(...)` 或 raw `HookRegistrationRequest`：
 
 - 你要显式控制低层 `HookEffectContract`、`HookHandlerManifest` 或非 helper 覆盖到的 effect 字段。
-- 你要用 advanced phase、外部 handler kind、definition document authoring，或其他不属于普通 callback 的路径。
+- 你要用 advanced phase、turn-owned registration、外部 handler kind、definition document authoring，或其他不属于 ordinary stable surface 的路径。
 - 你已经需要把 scope、policy、contract、diagnostics 都完整展开，helper 不再明显减小样板代码。
 
 注册完成后，你会拿到一个 `handle`：

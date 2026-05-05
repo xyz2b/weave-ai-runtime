@@ -113,6 +113,7 @@ class HookRegistrationScope:
 class HookEffectContract:
     effect_classes: tuple[HookEffectClass, ...] = ()
     effect_fields: tuple[str, ...] = ()
+    restrict_fields: bool = field(default=True, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -125,6 +126,7 @@ class HookEffectContract:
             "effect_fields",
             tuple(str(value) for value in self.effect_fields if str(value).strip()),
         )
+        object.__setattr__(self, "restrict_fields", bool(self.restrict_fields))
 
 
 @dataclass(frozen=True, slots=True)
