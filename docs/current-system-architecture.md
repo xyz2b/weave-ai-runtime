@@ -133,7 +133,7 @@ helper 语义也已经固定：
 - `run_prompt()` 和 `stream_prompt()` 保证 helper-owned session close
 - `run_prompt_report()` 和 `stream_prompt_report()` 都是 helper-owned report surface；helper 负责 canonical report completion，以及 helper-owned session close
 - `run_prompt_report_in_session()` 和 `stream_prompt_report_in_session()` 只包装当前 turn，不接管 caller-owned session close
-- `BoundHostRuntime` 现在直接覆盖 host-owned message / stream / one-shot report path；`bound.run_prompt_report()` 是 helper-owned report surface，`bound.run_prompt_report_in_session()` 保留 caller-owned session reuse
+- `BoundHostRuntime` 现在是 host-owned lifecycle core，并通过 `bound.prompts`、`bound.sessions`、`bound.hooks`、`bound.inspection`、`bound.work` 暴露 grouped surfaces；保留的 flat helpers 只是 compatibility projection
 - outer host shutdown 仍由 `BoundHostRuntime` 负责，不是 helper 的隐式职责
 
 ## 4. 分层架构视图

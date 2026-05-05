@@ -162,7 +162,7 @@ weavert = assemble_runtime(config)
 host = MyHostRuntime(...)
 
 async with weavert.bind_host(host) as bound:
-    async for event in bound.stream_prompt("Check the workspace", session_id="session-1"):
+    async for event in bound.prompts.stream_prompt("Check the workspace", session_id="session-1"):
         ...
 ```
 
@@ -171,6 +171,7 @@ async with weavert.bind_host(host) as bound:
 - Host 成为 Runtime 的正式控制面一部分
 - 权限、提问、通知、turn event 都统一走 host bridge
 - team mode 打开时，structured `team_event` 也通过同一条 host bridge 侧带发出，但 host 仍然不是 team state 的 authority
+- `BoundHostRuntime` 现在推荐先从 grouped surfaces 使用：`bound.prompts`、`bound.sessions`、`bound.hooks`、`bound.inspection`、`bound.work`
 
 ### 3.3 Host 生命周期顺序
 

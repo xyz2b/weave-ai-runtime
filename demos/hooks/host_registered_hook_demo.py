@@ -108,7 +108,7 @@ def main() -> None:
         run_async(session.close())
         run_async(bound.shutdown())
 
-        print("demo: host.hooks.on_pre_tool_use")
+        print("demo: bound.hooks.on_pre_tool_use")
         print("hook source: host")
         print(f"hook activation: {inventory[0].activation_state.value}")
         print(f"dispatch traces: {len(traces)}")

@@ -104,7 +104,7 @@ DEMO_CASES = (
     (
         "demos.hooks.host_registered_hook_demo",
         (
-            "demo: host.hooks.on_pre_tool_use",
+            "demo: bound.hooks.on_pre_tool_use",
             "hook source: host",
             "hook activation: active",
             "dispatch traces: 1",
@@ -245,7 +245,7 @@ README_USER_CENTRIC_SNIPPETS = (
         "demos.hooks.host_registered_hook_demo",
         "How do I attach a hook from host-owned integration code through the layered registrar, confirm that it materialized as an active session hook, and prove that it actually fired?",
         (
-            "demo: host.hooks.on_pre_tool_use",
+            "demo: bound.hooks.on_pre_tool_use",
             "hook source: host",
             "hook activation: active",
             "dispatch traces:",
