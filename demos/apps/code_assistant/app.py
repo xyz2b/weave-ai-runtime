@@ -22,6 +22,7 @@ from weavert.runtime_kernel import (
     RuntimeConfig,
     assemble_runtime,
 )
+from weavert.scenario_runtime_packs import reference_scenario_runtime_pack_manifests
 from weavert.session_runtime import InboundEvent, InboundEventType
 from weavert.turn_engine.engine import TurnStreamEventType
 
@@ -247,10 +248,12 @@ def assemble_demo_runtime(
     resolved_layout = layout or default_layout()
     workspace_root = ensure_demo_state(layout=resolved_layout)
     config = RuntimeConfig.for_host_bound(workspace_root)
-    # The app demo intentionally stays workspace-local even when the preset would also include user definitions.
+    # The app shell stays workspace-local while the reusable coding workflow stack comes from packages.
     config.discovery_sources = (
         DefinitionSourcePaths(DefinitionSource.PROJECT, workspace_root / ".weavert"),
     )
+    config.extra_package_manifests = reference_scenario_runtime_pack_manifests()
+    config.requested_packages.add("weavert-scenario-coding")
     config.builtins = BuiltinPackConfig(
         tool_replacements={"bash": build_code_assistant_bash_replacement()},
     )
@@ -1563,9 +1566,9 @@ def _workflow_validation_result(
 
     skill_result = _find_skill_result(messages, skill_name="coding-loop")
     if skill_result is None:
-        gaps.append("the workspace-local coding-loop skill was not applied")
+        gaps.append("the coding-loop skill was not applied")
     elif skill_result.get("mode") != "inline":
-        gaps.append("the workspace-local coding-loop skill did not run inline")
+        gaps.append("the coding-loop skill did not run inline")
 
     if not _has_successful_tool(parent_events + planner_events, "task_list"):
         gaps.append("the shared task list was never inspected")

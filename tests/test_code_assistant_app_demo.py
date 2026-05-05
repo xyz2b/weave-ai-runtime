@@ -36,6 +36,22 @@ from weavert.tool_runtime import ToolContext
 
 PYTHON = sys.executable
 ROOT = Path(__file__).resolve().parents[1]
+OFFICIAL_SHARED_GIT_TOOLS = {"git_status", "git_diff", "git_history"}
+OFFICIAL_SHARED_WORKSPACE_TOOLS = {
+    "workspace_symbols",
+    "workspace_references",
+    "workspace_outline",
+    "workspace_test_targets",
+}
+OFFICIAL_CODE_ASSISTANT_SKILLS = {
+    "coding-loop",
+    "task-discipline",
+    "repo-conventions",
+    "bugfix",
+    "review-change",
+    "verify-change",
+    "repo-onboard",
+}
 
 
 def _layout(tmp_path: Path):
@@ -84,10 +100,21 @@ def _scripted_run_report(tmp_path: Path):
     def _assert_main_request(request) -> None:
         assert request.agent is not None
         assert request.agent.name == "code-assistant"
-        assert {"read", "glob", "grep", "edit", "write", "bash", "agent", "skill"}.issubset(
+        assert {
+            "read",
+            "glob",
+            "grep",
+            "edit",
+            "write",
+            "bash",
+            "git_status",
+            "workspace_symbols",
+            "agent",
+            "skill",
+        }.issubset(
             set(request.turn_context.available_tools)
         )
-        assert {"coding-loop", "review-change", "verify-change"}.issubset(
+        assert {"coding-loop", "review-change", "verify-change", "task-discipline", "repo-onboard"}.issubset(
             set(request.turn_context.available_skills)
         )
 
@@ -119,7 +146,7 @@ def _scripted_run_report(tmp_path: Path):
     def _planner_task_list_batch(request):
         assert request.agent is not None
         assert request.agent.name == "coding-planner"
-        assert {"read", "glob", "grep", "task_create", "task_list"}.issubset(
+        assert {"read", "glob", "grep", "workspace_symbols", "workspace_test_targets", "task_create", "task_list"}.issubset(
             set(request.turn_context.available_tools)
         )
         return tool_call_batch(
@@ -222,7 +249,9 @@ def _scripted_run_report(tmp_path: Path):
     def _reviewer_child_batch(request):
         assert request.agent is not None
         assert request.agent.name == "reviewer"
-        assert {"read", "glob", "grep", "task_list"} == set(request.turn_context.available_tools)
+        assert {"read", "glob", "grep", "git_status", "git_diff", "task_list"} == set(
+            request.turn_context.available_tools
+        )
         return text_batch(request_id="req-reviewer-1", text="review: pass")
 
     def _verifier_batch(request):
@@ -237,7 +266,7 @@ def _scripted_run_report(tmp_path: Path):
     def _verifier_child_batch(request):
         assert request.agent is not None
         assert request.agent.name == "verifier"
-        assert {"read", "glob", "grep", "bash", "task_list", "job_get", "job_list", "job_stop"} == set(
+        assert {"read", "glob", "grep", "bash", "git_status", "git_diff", "workspace_test_targets", "task_list", "job_get", "job_list", "job_stop"} == set(
             request.turn_context.available_tools
         )
         return text_batch(request_id="req-verifier-1", text="verification: pass")
@@ -297,10 +326,10 @@ def _run_scripted_demo(tmp_path: Path, scripted_batches: list[object]):
 def _assert_code_assistant_request(request) -> None:
     assert request.agent is not None
     assert request.agent.name == "code-assistant"
-    assert {"read", "glob", "grep", "edit", "write", "bash", "agent", "skill"}.issubset(
+    assert {"read", "glob", "grep", "edit", "write", "bash", "git_status", "workspace_symbols", "agent", "skill"}.issubset(
         set(request.turn_context.available_tools)
     )
-    assert {"coding-loop", "review-change", "verify-change"}.issubset(
+    assert {"coding-loop", "review-change", "verify-change", "task-discipline", "repo-onboard"}.issubset(
         set(request.turn_context.available_skills)
     )
 
@@ -308,7 +337,7 @@ def _assert_code_assistant_request(request) -> None:
 def _assert_planner_request(request) -> None:
     assert request.agent is not None
     assert request.agent.name == "coding-planner"
-    assert {"read", "glob", "grep", "task_create", "task_list"}.issubset(
+    assert {"read", "glob", "grep", "workspace_symbols", "workspace_test_targets", "task_create", "task_list"}.issubset(
         set(request.turn_context.available_tools)
     )
 
@@ -351,28 +380,26 @@ def _latest_shell_session_id(request) -> str:
     raise AssertionError("Missing shell_session_id in prior tool results")
 
 
-def test_reset_demo_state_materializes_shell_agents_and_skills(tmp_path: Path) -> None:
+def test_reset_demo_state_keeps_only_app_owned_shell_definitions(tmp_path: Path) -> None:
     layout = _layout(tmp_path)
     workspace = reset_demo_state(layout=layout)
-    planner_definition = (workspace / ".weavert" / "agents" / "coding-planner.md").read_text(encoding="utf-8")
     assistant_definition = (workspace / ".weavert" / "agents" / "code-assistant.md").read_text(encoding="utf-8")
-    coding_loop_skill = (workspace / ".weavert" / "skills" / "coding-loop" / "SKILL.md").read_text(
-        encoding="utf-8"
-    )
 
     assert workspace == layout.workspace_root
     assert (workspace / ".weavert" / "agents" / "code-assistant.md").exists()
-    assert (workspace / ".weavert" / "agents" / "coding-planner.md").exists()
-    assert (workspace / ".weavert" / "agents" / "reviewer.md").exists()
-    assert (workspace / ".weavert" / "agents" / "verifier.md").exists()
-    assert (workspace / ".weavert" / "skills" / "coding-loop" / "SKILL.md").exists()
-    assert (workspace / ".weavert" / "skills" / "review-change" / "SKILL.md").exists()
+    assert not (workspace / ".weavert" / "agents" / "coding-planner.md").exists()
+    assert not (workspace / ".weavert" / "agents" / "reviewer.md").exists()
+    assert not (workspace / ".weavert" / "agents" / "verifier.md").exists()
+    assert not (workspace / ".weavert" / "skills" / "coding-loop" / "SKILL.md").exists()
+    assert not (workspace / ".weavert" / "skills" / "review-change" / "SKILL.md").exists()
+    assert (workspace / ".weavert" / "skills" / "bugfix" / "SKILL.md").exists()
+    assert (workspace / ".weavert" / "skills" / "repo-conventions" / "SKILL.md").exists()
     assert (workspace / "src" / "demo_service" / "greeting.py").exists()
     assert not (layout.fixture_root / ".weavert" / "transcripts").exists()
-    assert "Limit repo inspection to only the files needed" in planner_definition
     assert "`max_turns: 8`" in assistant_definition
     assert "visible shared plan" in assistant_definition
-    assert "`max_turns: 8`" in coding_loop_skill
+    assert "git_*" in assistant_definition
+    assert "workspace_*" in assistant_definition
 
 
 def test_demo_runtime_defaults_to_full_distribution_and_replaces_only_bash(tmp_path: Path) -> None:
@@ -386,6 +413,12 @@ def test_demo_runtime_defaults_to_full_distribution_and_replaces_only_bash(tmp_p
     planner = runtime.kernel.agent_registry.get("coding-planner")
     reviewer = runtime.kernel.agent_registry.get("reviewer")
     verifier = runtime.kernel.agent_registry.get("verifier")
+    coding_loop = runtime.kernel.skill_registry.get("coding-loop")
+    review_change = runtime.kernel.skill_registry.get("review-change")
+    verify_change = runtime.kernel.skill_registry.get("verify-change")
+    task_discipline = runtime.kernel.skill_registry.get("task-discipline")
+    repo_onboard = runtime.kernel.skill_registry.get("repo-onboard")
+    package_manifests = {manifest.name for manifest in runtime.kernel.package_manifests}
 
     assert runtime.kernel.distribution == RuntimeDistribution.FULL.value
     assert runtime.kernel.config.default_model_route == OPENAI_ROUTE_NAME
@@ -393,6 +426,7 @@ def test_demo_runtime_defaults_to_full_distribution_and_replaces_only_bash(tmp_p
     assert profile["surfaces"]["transcript"]["durability"] == "durable"
     assert profile["surfaces"]["child_runs"]["durability"] == "durable"
     assert profile["surfaces"]["task_lists"]["durability"] == "durable"
+    assert {"weavert-scenario-coding", "weavert-shared-git", "weavert-shared-workspace-intelligence"} <= package_manifests
     assert bash_tool is not None
     assert "action" in bash_tool.input_schema["properties"]
     assert "description" in bash_tool.input_schema["properties"]
@@ -403,19 +437,34 @@ def test_demo_runtime_defaults_to_full_distribution_and_replaces_only_bash(tmp_p
     assert planner is not None
     assert reviewer is not None
     assert verifier is not None
+    assert coding_loop is not None
+    assert review_change is not None
+    assert verify_change is not None
+    assert task_discipline is not None
+    assert repo_onboard is not None
     assert code_assistant.max_turns == 16
     assert planner.max_turns == 8
     assert reviewer.max_turns == 4
     assert verifier.max_turns == 4
-    assert {"read", "glob", "grep", "edit", "write", "bash", "agent", "skill", "task_*", "job_*"} == set(
+    assert {"read", "glob", "grep", "edit", "write", "bash", "git_*", "workspace_*", "agent", "skill", "task_*", "job_*"} == set(
         code_assistant.tools
     )
-    assert {"read", "glob", "grep", "task_*"} == set(planner.tools)
-    assert {"read", "glob", "grep", "task_list"} == set(reviewer.tools)
-    assert {"read", "glob", "grep", "bash", "task_list", "job_*"} == set(verifier.tools)
-    assert {"coding-loop", "task-discipline", "repo-conventions", "bugfix", "review-change", "verify-change", "repo-onboard"} == set(
-        code_assistant.skills
+    assert {"read", "glob", "grep", "workspace_*", "task_*"} == set(planner.tools)
+    assert {"read", "glob", "grep", "git_status", "git_diff", "task_list"} == set(reviewer.tools)
+    assert {"read", "glob", "grep", "bash", "git_status", "git_diff", "workspace_test_targets", "task_list", "job_*"} == set(
+        verifier.tools
     )
+    assert OFFICIAL_CODE_ASSISTANT_SKILLS == set(code_assistant.skills)
+    assert planner.metadata["builtin_owner"] == "weavert-scenario-coding"
+    assert reviewer.metadata["builtin_owner"] == "weavert-scenario-coding"
+    assert verifier.metadata["builtin_owner"] == "weavert-scenario-coding"
+    assert coding_loop.metadata["builtin_owner"] == "weavert-scenario-coding"
+    assert review_change.metadata["builtin_owner"] == "weavert-scenario-coding"
+    assert verify_change.metadata["builtin_owner"] == "weavert-scenario-coding"
+    assert task_discipline.metadata["builtin_owner"] == "weavert-scenario-coding"
+    assert repo_onboard.metadata["builtin_owner"] == "weavert-scenario-coding"
+    assert runtime.kernel.agent_registry.get("planner").metadata["builtin_owner"] == "weavert-planning"
+    assert runtime.kernel.agent_registry.get("verification").metadata["builtin_owner"] == "weavert-devtools"
 
 
 def test_run_demo_with_scripted_model_exercises_shell_agents_tools_and_child_runs(tmp_path: Path) -> None:
@@ -1956,7 +2005,7 @@ def test_run_demo_fails_when_required_workflow_surfaces_do_not_execute(tmp_path:
 
     assert report.ok is False
     assert "Workflow validation failed" in str(report.error_message)
-    assert "the workspace-local coding-loop skill was not applied" in report.workflow_gaps
+    assert "the coding-loop skill was not applied" in report.workflow_gaps
     assert "the coding-planner child run never executed" in report.workflow_gaps
     assert "the workflow never used bash verification" in report.workflow_gaps
 

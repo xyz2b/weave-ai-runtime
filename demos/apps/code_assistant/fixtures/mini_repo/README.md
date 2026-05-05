@@ -9,4 +9,6 @@ The default live demo task asks the code assistant to:
 - run the unit tests
 - request reviewer and verifier child-agent passes
 
-The fixture's `.weavert/` directory defines the app-local agents and skill used by the live demo.
+The fixture's `.weavert/` directory now keeps only the app-owned shell layer.
+The official coding scenario pack supplies the reusable `coding-planner`, `reviewer`, `verifier`,
+`coding-loop`, `review-change`, `verify-change`, `task-discipline`, and `repo-onboard` workflow surfaces.

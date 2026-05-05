@@ -1,17 +1,23 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Iterable
 
 from .diagnostics import Diagnostic, DiagnosticSeverity
+from .reference_coding_builtins import (
+    coding_scenario_builtin_agents,
+    coding_scenario_builtin_skills,
+    shared_git_builtin_tools,
+    shared_workspace_intelligence_builtin_tools,
+)
 from .runtime_package_protocols import (
     CapabilityBinding,
-    CapabilityPackageBindingSpec,
     ContextContributorBinding,
     ContextContributorStage,
     PackageAssemblyStage,
     PackageContribution,
     RuntimePackageManifest,
-    build_capability_only_package_manifest,
+    annotate_builtin_owner,
     snapshot_runtime_value,
 )
 
@@ -47,6 +53,9 @@ class ReferenceScenarioPackShape:
     host_assumptions: tuple[str, ...]
     permission_policy_posture: tuple[str, ...]
     profile_prompt_fragments: tuple[str, ...]
+    workflow_tool_ids: tuple[str, ...] = ()
+    workflow_agent_ids: tuple[str, ...] = ()
+    workflow_skill_ids: tuple[str, ...] = ()
     staged_scope_boundaries: tuple[str, ...] = ()
     notes: tuple[str, ...] = ()
 
@@ -61,6 +70,45 @@ class _ScenarioPackProfileContributor:
 
     async def collect(self, **_kwargs):
         return self.prompt_fragments
+
+
+CODING_SHARED_GIT_TOOLS = (
+    "git_status",
+    "git_diff",
+    "git_history",
+)
+CODING_SHARED_WORKSPACE_TOOLS = (
+    "workspace_symbols",
+    "workspace_references",
+    "workspace_outline",
+    "workspace_test_targets",
+)
+CODING_SCENARIO_AGENTS = (
+    "coding-planner",
+    "reviewer",
+    "verifier",
+)
+CODING_GENERIC_AGENTS = (
+    "plan",
+    "verification",
+    "planner",
+    "coordinator",
+    "worker",
+)
+CODING_SCENARIO_SKILLS = (
+    "coding-loop",
+    "review-change",
+    "verify-change",
+    "task-discipline",
+    "repo-onboard",
+)
+CODING_GENERIC_SKILLS = (
+    "verify",
+    "debug",
+    "stuck",
+    "batch",
+    "simplify",
+)
 
 
 def _reference_package_candidate_metadata(package_name: str) -> dict[str, dict[str, str]]:
@@ -101,6 +149,9 @@ def _scenario_pack_surface_contract(shape: ReferenceScenarioPackShape) -> dict[s
         "expected_tools": _surface_inventory(shape.expected_tools),
         "expected_agents": _surface_inventory(shape.expected_agents),
         "expected_skills": _surface_inventory(shape.expected_skills),
+        "workflow_tool_ids": _surface_inventory(shape.workflow_tool_ids),
+        "workflow_agent_ids": _surface_inventory(shape.workflow_agent_ids),
+        "workflow_skill_ids": _surface_inventory(shape.workflow_skill_ids),
         "default_boundaries": list(shape.default_boundaries),
         "app_owned_wiring": list(shape.app_owned_wiring),
         "host_assumptions": list(shape.host_assumptions),
@@ -172,6 +223,39 @@ REFERENCE_SHARED_PACKAGE_SHAPES: tuple[ReferenceSharedPackageShape, ...] = (
             "PIM adapters remain shared integrations even when a local assistant scenario pack recommends them.",
         ),
     ),
+    ReferenceSharedPackageShape(
+        package_name="weavert-shared-git",
+        capability_key="weavert.reference.shared.git",
+        description="Reference shared package for read-mostly git inspection in coding products.",
+        shared_surface_family="git",
+        intended_profiles=("coding",),
+        surfaces=(
+            "workspace git status inspection",
+            "focused diff inspection",
+            "recent history inspection",
+        ),
+        tool_ids=CODING_SHARED_GIT_TOOLS,
+        notes=(
+            "Keep git inspection reusable so coding products do not need shell-only conventions for common repo state checks.",
+        ),
+    ),
+    ReferenceSharedPackageShape(
+        package_name="weavert-shared-workspace-intelligence",
+        capability_key="weavert.reference.shared.workspace_intelligence",
+        description="Reference shared package for workspace-intelligence surfaces in coding products.",
+        shared_surface_family="workspace-intelligence",
+        intended_profiles=("coding",),
+        surfaces=(
+            "symbol lookup",
+            "reference search",
+            "file outline inspection",
+            "test-target discovery",
+        ),
+        tool_ids=CODING_SHARED_WORKSPACE_TOOLS,
+        notes=(
+            "Start with lightweight symbol and test-target discovery before deeper indexing or IDE integration.",
+        ),
+    ),
 )
 
 
@@ -187,10 +271,24 @@ REFERENCE_SCENARIO_PACK_SHAPES: tuple[ReferenceScenarioPackShape, ...] = (
             "weavert-planning",
             "weavert-builtin-workflows",
         ),
-        shared_package_dependencies=(),
-        expected_tools=("read", "glob", "grep", "edit", "write", "bash"),
-        expected_agents=("plan", "verification", "planner", "coordinator", "worker"),
-        expected_skills=("verify", "debug", "stuck", "batch", "simplify"),
+        shared_package_dependencies=(
+            "weavert-shared-git",
+            "weavert-shared-workspace-intelligence",
+        ),
+        expected_tools=(
+            "read",
+            "glob",
+            "grep",
+            "edit",
+            "write",
+            "bash",
+            *CODING_SHARED_GIT_TOOLS,
+            *CODING_SHARED_WORKSPACE_TOOLS,
+        ),
+        expected_agents=(*CODING_SCENARIO_AGENTS, *CODING_GENERIC_AGENTS),
+        expected_skills=(*CODING_SCENARIO_SKILLS, *CODING_GENERIC_SKILLS),
+        workflow_agent_ids=CODING_SCENARIO_AGENTS,
+        workflow_skill_ids=CODING_SCENARIO_SKILLS,
         default_boundaries=(
             "workspace-oriented by default",
             "shell and file mutation surfaces are expected",
@@ -200,6 +298,7 @@ REFERENCE_SCENARIO_PACK_SHAPES: tuple[ReferenceScenarioPackShape, ...] = (
             "model provider selection",
             "transcript and child-run store selection",
             "host binding for terminal or IDE shells",
+            "app-owned main shell agent and enhanced shell tool replacements",
             "final permission policy composition",
         ),
         host_assumptions=(
@@ -214,7 +313,8 @@ REFERENCE_SCENARIO_PACK_SHAPES: tuple[ReferenceScenarioPackShape, ...] = (
             "Keep workspace-oriented planning, verification, and review posture visible.",
         ),
         notes=(
-            "The scenario pack proves profile selection without inventing a new package protocol.",
+            "The scenario pack publishes product-role workflow agents without replacing the generic first-party planning layer.",
+            "The coding workflow layer remains additive to app-owned shells and shared coding packages.",
         ),
     ),
     ReferenceScenarioPackShape(
@@ -336,32 +436,80 @@ def build_reference_shared_package_manifest(name: str) -> RuntimePackageManifest
     surface_contract = _shared_package_surface_contract(shape)
     capability_surface_contract = snapshot_runtime_value(surface_contract)
     manifest_surface_contract = snapshot_runtime_value(surface_contract)
-    return build_capability_only_package_manifest(
-        name=shape.package_name,
-        role="shared_capability",
-        description=shape.description,
-        capabilities=(
-            CapabilityPackageBindingSpec(
-                key=shape.capability_key,
-                value={
-                    "kind": "shared-package",
-                    "package_name": shape.package_name,
-                    "capability_key": shape.capability_key,
-                    "description": shape.description,
-                    "surfaces": list(shape.surfaces),
-                    **capability_surface_contract,
-                },
-                metadata={
-                    "reference_kind": "shared-package",
-                    "shared_surface_family": shape.shared_surface_family,
-                    "intended_profiles": list(shape.intended_profiles),
-                    "tool_ids": _surface_inventory(shape.tool_ids),
-                    "agent_ids": _surface_inventory(shape.agent_ids),
-                    "skill_ids": _surface_inventory(shape.skill_ids),
-                },
+
+    builtin_tools = _shared_package_builtin_tools(shape.package_name)
+    builtin_agents = _shared_package_builtin_agents(shape.package_name)
+    builtin_skills = _shared_package_builtin_skills(shape.package_name)
+
+    dependencies = ("weavert-core",)
+
+    def _assemble(context) -> PackageContribution:
+        if context.stage == PackageAssemblyStage.BUILTINS:
+            return PackageContribution(
+                builtin_tools=_annotated_builtin_definitions(
+                    builtin_tools,
+                    package_name=context.manifest.name,
+                    package_role=context.manifest.role,
+                    expected_names=shape.tool_ids,
+                ),
+                builtin_agents=_annotated_builtin_definitions(
+                    builtin_agents,
+                    package_name=context.manifest.name,
+                    package_role=context.manifest.role,
+                    expected_names=shape.agent_ids,
+                ),
+                builtin_skills=_annotated_builtin_definitions(
+                    builtin_skills,
+                    package_name=context.manifest.name,
+                    package_role=context.manifest.role,
+                    expected_names=shape.skill_ids,
+                ),
+            )
+        if context.stage != PackageAssemblyStage.SERVICES:
+            return PackageContribution()
+        return PackageContribution(
+            capabilities=(
+                CapabilityBinding(
+                    key=shape.capability_key,
+                    value={
+                        "kind": "shared-package",
+                        "package_name": shape.package_name,
+                        "capability_key": shape.capability_key,
+                        "description": shape.description,
+                        "surfaces": list(shape.surfaces),
+                        **capability_surface_contract,
+                    },
+                    owner=context.ownership(
+                        "capability",
+                        capability_key=shape.capability_key,
+                        package_pattern="shared-package",
+                        shared_surface_family=shape.shared_surface_family,
+                    ),
+                    metadata={
+                        "package_pattern": "shared-package",
+                        "shared_surface_family": shape.shared_surface_family,
+                    },
+                ),
             ),
-        ),
-        manifest_metadata=manifest_surface_contract,
+            metadata={
+                "package_pattern": "shared-package",
+                "registration_path": "PackageContribution.capabilities",
+            },
+        )
+
+    return RuntimePackageManifest(
+        name=shape.package_name,
+        role="shared_package",
+        description=shape.description,
+        dependencies=dependencies,
+        assembly_entrypoint=_assemble,
+        metadata={
+            "package_pattern": "shared-package",
+            "baseline_dependencies": list(dependencies),
+            "capabilities": [shape.capability_key],
+            "capability_registration_path": "PackageContribution.capabilities",
+            **manifest_surface_contract,
+        },
     )
 
 
@@ -371,8 +519,32 @@ def build_reference_scenario_pack_manifest(name: str) -> RuntimePackageManifest:
     surface_contract = _scenario_pack_surface_contract(shape)
     capability_surface_contract = snapshot_runtime_value(surface_contract)
     manifest_surface_contract = snapshot_runtime_value(surface_contract)
+    builtin_tools = _scenario_pack_builtin_tools(shape.package_name)
+    builtin_agents = _scenario_pack_builtin_agents(shape.package_name)
+    builtin_skills = _scenario_pack_builtin_skills(shape.package_name)
 
     def _assemble(context) -> PackageContribution:
+        if context.stage == PackageAssemblyStage.BUILTINS:
+            return PackageContribution(
+                builtin_tools=_annotated_builtin_definitions(
+                    builtin_tools,
+                    package_name=context.manifest.name,
+                    package_role=context.manifest.role,
+                    expected_names=shape.workflow_tool_ids,
+                ),
+                builtin_agents=_annotated_builtin_definitions(
+                    builtin_agents,
+                    package_name=context.manifest.name,
+                    package_role=context.manifest.role,
+                    expected_names=shape.workflow_agent_ids,
+                ),
+                builtin_skills=_annotated_builtin_definitions(
+                    builtin_skills,
+                    package_name=context.manifest.name,
+                    package_role=context.manifest.role,
+                    expected_names=shape.workflow_skill_ids,
+                ),
+            )
         if context.stage != PackageAssemblyStage.SERVICES:
             return PackageContribution()
         missing_recommended_packages = tuple(
@@ -513,6 +685,65 @@ def reference_scenario_pack_manifests() -> tuple[RuntimePackageManifest, ...]:
 
 def reference_scenario_runtime_pack_manifests() -> tuple[RuntimePackageManifest, ...]:
     return (*reference_shared_package_manifests(), *reference_scenario_pack_manifests())
+
+
+def _shared_package_builtin_tools(package_name: str) -> tuple:
+    if package_name == "weavert-shared-git":
+        return shared_git_builtin_tools()
+    if package_name == "weavert-shared-workspace-intelligence":
+        return shared_workspace_intelligence_builtin_tools()
+    return ()
+
+
+def _shared_package_builtin_agents(package_name: str) -> tuple:
+    _ = package_name
+    return ()
+
+
+def _shared_package_builtin_skills(package_name: str) -> tuple:
+    _ = package_name
+    return ()
+
+
+def _scenario_pack_builtin_tools(package_name: str) -> tuple:
+    _ = package_name
+    return ()
+
+
+def _scenario_pack_builtin_agents(package_name: str) -> tuple:
+    if package_name == "weavert-scenario-coding":
+        return coding_scenario_builtin_agents()
+    return ()
+
+
+def _scenario_pack_builtin_skills(package_name: str) -> tuple:
+    if package_name == "weavert-scenario-coding":
+        return coding_scenario_builtin_skills()
+    return ()
+
+
+def _annotated_builtin_definitions(
+    definitions: Iterable,
+    *,
+    package_name: str,
+    package_role: str,
+    expected_names: tuple[str, ...],
+) -> tuple:
+    resolved = tuple(definitions)
+    actual_names = tuple(getattr(definition, "name", None) for definition in resolved)
+    if actual_names != expected_names:
+        raise ValueError(
+            f"Builtin definitions for {package_name} do not match the published surface contract: "
+            f"expected {expected_names}, got {actual_names}"
+        )
+    return tuple(
+        annotate_builtin_owner(
+            definition,
+            package_name=package_name,
+            package_role=package_role,
+        )
+        for definition in resolved
+    )
 
 
 def _stable_unique_names(names: tuple[str, ...]) -> tuple[str, ...]:

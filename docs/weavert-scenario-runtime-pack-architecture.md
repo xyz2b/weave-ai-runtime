@@ -129,11 +129,16 @@ scenario pack 继续回答：
   - local OS bridge surface
 - `weavert-bridge-pim`
   - PIM bridge surface
+- `weavert-shared-git`
+  - coding-oriented shared git inspection surface
+- `weavert-shared-workspace-intelligence`
+  - coding-oriented shared symbol / reference / outline / test-target surface
 
-这些 shared package 现在都通过 ordinary capability-only package pattern 表达，目的不是把它们产品化，而是明确：
+这些 shared package 现在都通过 ordinary manifest-backed `shared-package` pattern 表达，目的不是把它们产品化，而是明确：
 
 - retrieval 不应该被塞进每一个 scenario pack 私有实现里
 - browser / local OS / PIM bridge 不应该在每个 assistant profile 里重复实现
+- git inspection / workspace intelligence 不应该继续只靠 demo-local shell 约定
 - scenario pack 应该组合它们，而不是吸收它们的所有权
 
 同时这组 reference shared package 现在也演示 canonical shared-package surface contract：
@@ -146,7 +151,7 @@ scenario pack 继续回答：
   - `tool_ids` / `agent_ids` / `skill_ids`
   - `shared_surfaces`
 
-也就是说，shared package 仍然走 ordinary capability-only package pattern，但会额外发布一层
+也就是说，shared package 仍然走 ordinary runtime package contract，但会额外发布一层
 family-specific metadata vocabulary，供 caller 安全 inspect，而不是逼应用再发明自己的字段名。
 更完整的 authoring 约定见 `docs/weavert-user-extension-guide.md`。
 
@@ -166,20 +171,29 @@ recommended first-party packages:
 
 shared-package dependencies:
 
-- none in the first reference path
+- `weavert-shared-git`
+- `weavert-shared-workspace-intelligence`
 
 expected profile tools / agents / skills
 (after recommended first-party packages are enabled):
 
-- tools: `read`, `glob`, `grep`, `edit`, `write`, `bash`
-- agents: `plan`, `verification`, `planner`, `coordinator`, `worker`
-- skills: `verify`, `debug`, `stuck`, `batch`, `simplify`
+- tools:
+  - baseline first-party: `read`, `glob`, `grep`, `edit`, `write`, `bash`
+  - shared git: `git_status`, `git_diff`, `git_history`
+  - shared workspace intelligence: `workspace_symbols`, `workspace_references`, `workspace_outline`, `workspace_test_targets`
+- agents:
+  - scenario-pack-owned workflow roles: `coding-planner`, `reviewer`, `verifier`
+  - generic first-party baseline: `plan`, `verification`, `planner`, `coordinator`, `worker`
+- skills:
+  - scenario-pack-owned workflow skills: `coding-loop`, `review-change`, `verify-change`, `task-discipline`, `repo-onboard`
+  - generic first-party baseline: `verify`, `debug`, `stuck`, `batch`, `simplify`
 
 default boundaries:
 
 - workspace-oriented by default
 - shell and file mutation are expected surfaces
 - verification / review loops stay visible
+- app 可以保留自己的 main shell agent 与 `bash` replacement
 - package-owned profile guidance 通过 hook-stage context contributor 注入
 
 ### 5.2 Chat pack
@@ -263,10 +277,11 @@ request 这些 external/optional packages。
 
 - `weavert.services.metadata["package_manifests"]`
   - 看 projected package-surface metadata，例如 `package_candidate`、`scenario_profile`、
-    `expected_tools`
+    `expected_tools`、`workflow_agent_ids`、`workflow_skill_ids`
 - `RuntimeServices.require_capability(...)`
   - 看 scenario-pack capability payload 里镜像出来的 profile contract，例如
-    `expected_tools` / `expected_agents` / `expected_skills` / `app_owned_wiring`
+    `expected_tools` / `expected_agents` / `expected_skills` /
+    `workflow_agent_ids` / `workflow_skill_ids` / `app_owned_wiring`
 
 最直接的 reference activation 写法如下：
 
@@ -303,10 +318,15 @@ chat 与 local assistant 只需要把：
 
 - scenario-pack capability metadata
 - shared-package dependency graph
+- scenario-pack-owned workflow agents / skills
 - package-owned profile guidance context contributor
 - scenario-pack-specific warning diagnostics
 
-而不会自动 materialize shape 里列出的 expected tools / agents / skills。
+而不会自动 materialize 依赖 first-party package 的那部分 generic expected tools / agents / skills。
+换句话说，coding pack 自己拥有的 `coding-planner` / `reviewer` / `verifier` 和
+`coding-loop` / `review-change` / `verify-change` / `task-discipline` / `repo-onboard`
+仍然会出现；但 `plan` / `verification` / `planner` / `coordinator` / `worker` 等 generic
+first-party surfaces 仍然需要 app-owned package selection。
 
 注意这里的 ownership split：
 
@@ -325,12 +345,17 @@ host expectation、final permission notes 保留在 app-owned config / docs / co
 
 - scenario pack
   - `weavert-scenario-coding`
+- shared packages
+  - `weavert-shared-git`
+  - `weavert-shared-workspace-intelligence`
 - app-owned provider choice
   - 例如 `openai_default` 或其他 route
 - app-owned store choice
   - transcript / child-run store 可用 file-backed durable store
 - app-owned host binding
   - CLI、IDE shell、terminal-oriented host
+- app-owned shell layer
+  - main coding shell agent、host UX、`bash` replacement 等仍然留在 app 里
 - app-owned permission composition
   - coding-grade read/write posture，外加 deployment-specific allowlist / approval policy
 

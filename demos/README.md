@@ -193,7 +193,7 @@ They are advanced integration samples, not the baseline getting-started path for
 
 | Demo | Integration posture | Use this when | What it validates | Run command | Expected output |
 | --- | --- | --- | --- | --- | --- |
-| Code assistant | Advanced host-bound app | You need host-owned UX, durable state, approvals, local shell commands, reactive task or job rendering, or builtin replacement behavior. | Host-bound reactive AI coding shell V2 with local commands, session-oriented `bash`, reusable child agents and skills, durable state, approvals, and builtin replacement for `bash` | `python3 -B -m demos.apps.code_assistant shell` | Starts an interactive coding shell, reactively renders assistant, task, job, and workflow activity through the host, supports `/tasks`, `/jobs`, and `/inspect`, and leaves transcripts plus other durable state under `demos/apps/code_assistant/state/mini_repo/.weavert/`. |
+| Code assistant | Advanced host-bound app | You need host-owned UX, durable state, approvals, local shell commands, reactive task or job rendering, or builtin replacement behavior. | Host-bound reactive AI coding shell V2 that composes the official coding scenario pack and shared coding packages under an app-owned shell layer with local commands, session-oriented `bash`, durable state, approvals, and builtin replacement for `bash` | `python3 -B -m demos.apps.code_assistant shell` | Starts an interactive coding shell, reactively renders assistant, task, job, and workflow activity through the host, supports `/tasks`, `/jobs`, and `/inspect`, and leaves transcripts plus other durable state under `demos/apps/code_assistant/state/mini_repo/.weavert/`. |
 
 Reset, inspect, and scripted smoke commands for the same advanced integration sample:
 
@@ -203,6 +203,6 @@ python3 -B -m demos.apps.code_assistant inspect
 python3 -B -m demos.apps.code_assistant run --auto-approve
 ```
 
-That `run --auto-approve` smoke treats missing planning, inspection, verification, or review coverage as blocking `workflow gaps`, while surfacing planner degradation that still left a usable shared plan as non-blocking `workflow advisories`.
+That `run --auto-approve` smoke keeps the main `code-assistant` shell agent and `bash` replacement app-owned, while pulling `coding-planner` / `reviewer` / `verifier` plus the core coding-loop skills from the official coding scenario pack. It treats missing planning, inspection, verification, or review coverage as blocking `workflow gaps`, while surfacing planner degradation that still left a usable shared plan as non-blocking `workflow advisories`.
 
 If you want an automated check that these commands still work, run `pytest tests/test_runtime_extension_demos.py`.

@@ -236,7 +236,9 @@ product-profile layer，而不是新的 kernel mode。
 
 - scenario pack 可以推荐 provider、store、host、permission posture
 - scenario pack capability 里列出的 `expected_tools` / `expected_agents` / `expected_skills`，表示“把推荐 first-party package 也一起打开后，这个 profile 期望出现什么”
-- 单独 request scenario pack 本身，不会自动 materialize 这些 tools / agents / skills
+- `workflow_agent_ids` / `workflow_skill_ids` 用来单独标出 scenario-pack-own 的高层 workflow surfaces
+- 单独 request scenario pack 本身，不会自动 materialize 依赖 recommended first-party package 的那部分 generic tools / agents / skills
+- 但 scenario pack 自己拥有的 workflow agents / skills 仍然会随 package 一起出现
 - 但 scenario pack 仍然可以通过 package-owned context contributor 注入 profile guidance，并在缺少推荐 first-party package 时发出 profile-specific diagnostics
 - 但 final provider selection、store selection、`bind_host()`、以及最终 permission-policy composition 仍然是 app-owned wiring
 
@@ -261,7 +263,7 @@ product-profile layer，而不是新的 kernel mode。
 
 - `package_candidate`
   - 既是 runtime-resolved，也是 projected
-- `shared_surface_family`、`tool_ids`、`scenario_profile`、`expected_tools`、`app_owned_wiring`
+- `shared_surface_family`、`tool_ids`、`scenario_profile`、`expected_tools`、`workflow_agent_ids`、`app_owned_wiring`
   - 可以被 projected 供 caller inspect
   - 但默认仍属于 convention-only guidance，而不是新的 kernel switch
 
@@ -285,6 +287,7 @@ scenario pack 当前推荐发布下面这组 family-specific metadata：
 | `recommended_first_party_packages` | list[str] | convention-only + projected | app-owned wiring 应额外启用的 first-party packages |
 | `shared_package_dependencies` | list[str] | convention-only + projected | scenario pack 组合的 shared package 依赖 |
 | `expected_tools` / `expected_agents` / `expected_skills` | list[str] | convention-only + projected | profile contract 期望看到的 flat surface inventory |
+| `workflow_tool_ids` / `workflow_agent_ids` / `workflow_skill_ids` | list[str] | convention-only + projected | scenario pack 自己拥有的 workflow surface inventory，用来和 generic first-party baseline 区分 |
 | `default_boundaries` | list[str] | convention-only + projected | profile 默认边界 |
 | `app_owned_wiring` / `host_assumptions` / `permission_policy_posture` | list[str] | convention-only + projected | 明确哪些 wiring 仍然归 app / host |
 
@@ -326,10 +329,55 @@ manifest_metadata = {
         "weavert-planning",
         "weavert-builtin-workflows",
     ],
-    "shared_package_dependencies": [],
-    "expected_tools": ["read", "glob", "grep", "edit", "write", "bash"],
-    "expected_agents": ["plan", "verification", "planner", "coordinator", "worker"],
-    "expected_skills": ["verify", "debug", "stuck", "batch", "simplify"],
+    "shared_package_dependencies": [
+        "weavert-shared-git",
+        "weavert-shared-workspace-intelligence",
+    ],
+    "expected_tools": [
+        "read",
+        "glob",
+        "grep",
+        "edit",
+        "write",
+        "bash",
+        "git_status",
+        "git_diff",
+        "git_history",
+        "workspace_symbols",
+        "workspace_references",
+        "workspace_outline",
+        "workspace_test_targets",
+    ],
+    "expected_agents": [
+        "coding-planner",
+        "reviewer",
+        "verifier",
+        "plan",
+        "verification",
+        "planner",
+        "coordinator",
+        "worker",
+    ],
+    "expected_skills": [
+        "coding-loop",
+        "review-change",
+        "verify-change",
+        "task-discipline",
+        "repo-onboard",
+        "verify",
+        "debug",
+        "stuck",
+        "batch",
+        "simplify",
+    ],
+    "workflow_agent_ids": ["coding-planner", "reviewer", "verifier"],
+    "workflow_skill_ids": [
+        "coding-loop",
+        "review-change",
+        "verify-change",
+        "task-discipline",
+        "repo-onboard",
+    ],
     "default_boundaries": [
         "workspace-oriented by default",
         "shell and file mutation surfaces are expected",
@@ -337,6 +385,7 @@ manifest_metadata = {
     "app_owned_wiring": [
         "model provider selection",
         "host binding for terminal or IDE shells",
+        "app-owned main shell agent and shell tool replacements",
         "final permission policy composition",
     ],
 }
@@ -350,12 +399,17 @@ convention 例子大概长这样：
 coding_shell_guidance = {
     "app_kind": "cli-coding-shell",
     "scenario_package": "weavert-scenario-coding",
+    "shared_packages": [
+        "weavert-shared-git",
+        "weavert-shared-workspace-intelligence",
+    ],
     "selected_first_party_packages": [
         "weavert-devtools",
         "weavert-planning",
         "weavert-builtin-workflows",
     ],
     "host_expectations": ["terminal-or-IDE host"],
+    "app_owned_shell_layers": ["main coding shell agent", "bash replacement"],
     "permission_policy_notes": ["coding-grade read/write posture"],
 }
 ```

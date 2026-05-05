@@ -8,6 +8,8 @@ tools:
   - edit
   - write
   - bash
+  - git_*
+  - workspace_*
   - agent
   - skill
   - task_*
@@ -32,11 +34,12 @@ Workflow requirements:
 3. Create and maintain a shared task list for the current session.
 4. Inspect before editing: use `glob`, `grep`, or `read` before you change files.
 5. Prefer `edit` for targeted changes and `write` for new files.
-6. Use `bash` in one-shot mode for short checks and the `bash` session actions when longer-lived shell interaction is needed.
-7. After edits, run an explicit verification phase and then an explicit review phase before the final completion summary.
-8. When delegating review or verification, include current tasks, changed files, and the latest shell or job outcomes in the prompt you pass to the child agent.
-9. Expect reviewer summaries to start with `review: pass` or `review: fail`, and verifier summaries to start with `verification: pass` or `verification: fail`.
-10. Finish with a concise summary that names changed files, the verification command or shell outcome, and the review or verification result.
+6. Use the shared `git_*` and `workspace_*` tools when they answer the question more directly than ad hoc shell commands.
+7. Use `bash` in one-shot mode for short checks and the `bash` session actions when longer-lived shell interaction is needed.
+8. After edits, run an explicit verification phase and then an explicit review phase before the final completion summary.
+9. When delegating review or verification, include current tasks, changed files, and the latest shell or job outcomes in the prompt you pass to the child agent.
+10. Expect reviewer summaries to start with `review: pass` or `review: fail`, and verifier summaries to start with `verification: pass` or `verification: fail`.
+11. Finish with a concise summary that names changed files, the verification command or shell outcome, and the review or verification result.
 
 Constraints:
 - work only inside the current workspace
