@@ -430,13 +430,27 @@ class BoundHostRuntime:
             cwd=cwd,
             system_prompt=system_prompt,
         )
-        return await self.runtime._run_prompt_report_in_session(
-            session,
-            prompt,
-            metadata=metadata,
-            session_owner="helper",
-            wait_for_finalization=wait_for_finalization,
-        )
+        try:
+            return await self.runtime._run_prompt_report_in_session(
+                session,
+                prompt,
+                metadata=metadata,
+                session_owner="helper",
+                wait_for_finalization=wait_for_finalization,
+            )
+        except asyncio.CancelledError:
+            await self._close_active_helper_owned_session(
+                session,
+                default_status="interrupted",
+                interrupt_reason="bound_run_prompt_report_cancelled",
+            )
+            raise
+        except Exception:
+            await self._close_active_helper_owned_session(
+                session,
+                default_status="failed",
+            )
+            raise
 
     async def run_prompt_report_in_session(
         self,
@@ -509,6 +523,12 @@ class BoundHostRuntime:
         if self._managed_sessions.get(session_key) is not None:
             raise ValueError(f"Managed session '{session_key}' is already active")
 
+    def _managed_session_is_active(self, session: Any) -> bool:
+        session_id = getattr(getattr(session, "state", None), "session_id", None)
+        if session_id is None:
+            return False
+        return self._managed_sessions.get(str(session_id)) is session
+
     def _create_helper_owned_session(
         self,
         *,
@@ -527,6 +547,21 @@ class BoundHostRuntime:
         )
         self._register_managed_session(session, owner="helper")
         return session
+
+    async def _close_active_helper_owned_session(
+        self,
+        session: Any,
+        *,
+        default_status: str,
+        interrupt_reason: str | None = None,
+    ) -> None:
+        if not self._managed_session_is_active(session):
+            return
+        session_status = getattr(getattr(session, "state", None), "status", None)
+        session_status_value = getattr(session_status, "value", session_status)
+        if interrupt_reason is not None and str(session_status_value).strip().lower() == "running":
+            session.interrupt(interrupt_reason)
+        await session.close(final_status=_managed_session_close_status(session, default=default_status))
 
     async def _on_managed_session_close(self, session: Any, final_status: str) -> None:
         session_id = getattr(getattr(session, "state", None), "session_id", None)

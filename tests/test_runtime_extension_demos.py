@@ -223,6 +223,7 @@ README_USER_CENTRIC_SNIPPETS = (
             "demo: scoped agent delegation",
             "visible tools:",
             "scope tools:",
+            "scope memory:",
             "delegated agent:",
             "child summary:",
             "status: ok",

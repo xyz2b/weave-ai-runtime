@@ -40,6 +40,23 @@ class BatchedModelClient:
             yield event
 
 
+class InterruptibleModelClient:
+    def __init__(self) -> None:
+        self.requests: list[ModelRequest] = []
+        self.started = asyncio.Event()
+
+    async def complete(self, request: ModelRequest):  # pragma: no cover - protocol completeness
+        raise NotImplementedError
+
+    async def stream(self, request: ModelRequest):
+        self.requests.append(request)
+        yield ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-interrupt"})
+        self.started.set()
+        yield ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "partial"})
+        while request.abort_signal is not None and not request.abort_signal.aborted:
+            await asyncio.sleep(0.01)
+
+
 def test_hook_bus_updates_tool_input_and_scopes_ownership(tmp_path: Path) -> None:
     registry = ToolRegistry()
     registry.register(
@@ -547,6 +564,42 @@ def test_bound_host_runtime_run_prompt_report_in_session_keeps_session_reusable(
     assert status_after_first == "ready"
     assert status_after_second == "ready"
     assert closed_before_manual_close == []
+    assert host.lifecycle == ["startup", "ready", "shutdown"]
+
+
+def test_bound_host_runtime_run_prompt_report_cancellation_closes_helper_owned_session(tmp_path: Path) -> None:
+    host = SdkHostRuntime(name="sdk")
+    model_client = InterruptibleModelClient()
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            model_client=model_client,
+        )
+    )
+    bound = runtime.bind_host(host)
+
+    async def scenario():
+        task = asyncio.create_task(
+            bound.run_prompt_report(
+                "hello host",
+                session_id="bound-helper-report-cancelled",
+            )
+        )
+        await model_client.started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert bound.metadata["closed_sessions"][-1] == {
+            "session_id": "bound-helper-report-cancelled",
+            "owner": "helper",
+            "final_status": "interrupted",
+        }
+        session = bound.create_session(session_id="bound-helper-report-cancelled")
+        await session.close()
+        await bound.shutdown()
+
+    asyncio.run(scenario())
+
     assert host.lifecycle == ["startup", "ready", "shutdown"]
 
 
