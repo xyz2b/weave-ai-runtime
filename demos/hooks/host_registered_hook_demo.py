@@ -85,18 +85,18 @@ def main() -> None:
         )
         run_async(bound.startup())
         run_async(bound.ready())
-        session = bound.create_session(session_id="host-hook-demo")
+        session = bound.sessions.create_session(session_id="host-hook-demo")
         report = run_async(
-            bound.run_prompt_report_in_session(
+            bound.sessions.run_prompt_report_in_session(
                 session,
                 "Call echo once.",
             )
         )
         tool_result = extract_tool_result(report.messages, "call-host-hook-echo")
-        inventory = bound.list_hooks(
+        inventory = bound.hooks.list_hooks(
             HookInventoryQuery(session_id="host-hook-demo", phase="PreToolUse")
         )
-        traces = bound.list_hook_dispatch_traces(
+        traces = bound.hooks.list_hook_dispatch_traces(
             HookDispatchTraceQuery(session_id="host-hook-demo", phase="PreToolUse")
         )
 

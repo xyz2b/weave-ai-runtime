@@ -1,5 +1,9 @@
 from .base import (
+    BoundHostInspectionSurface,
+    BoundHostPromptSurface,
     BoundHostRuntime,
+    BoundHostSessionSurface,
+    BoundHostWorkSurface,
     CallbackHostAdapter,
     HostAdapter,
     HostExtensionEvent,
@@ -9,7 +13,11 @@ from .base import (
 )
 
 __all__ = [
+    "BoundHostInspectionSurface",
+    "BoundHostPromptSurface",
     "BoundHostRuntime",
+    "BoundHostSessionSurface",
+    "BoundHostWorkSurface",
     "CallbackHostAdapter",
     "CliHostRuntime",
     "HostAdapter",

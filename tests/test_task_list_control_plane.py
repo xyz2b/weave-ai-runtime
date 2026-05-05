@@ -900,6 +900,46 @@ def test_bound_host_runtime_exposes_task_list_watch_and_job_queries(tmp_path: Pa
     assert job["status"] == "running"
 
 
+def test_bound_host_work_surface_matches_flat_task_and_job_helpers(tmp_path: Path) -> None:
+    runtime = assemble_runtime(RuntimeConfig.for_project(tmp_path))
+    bound = runtime.bind_host(NullHostAdapter())
+    runtime.task_manager.create(
+        "job-surface",
+        title="background-surface",
+        metadata={"session_id": "session-surface", "kind": "background_agent"},
+    )
+    runtime.task_manager.update("job-surface", status=TaskStatus.RUNNING)
+
+    async def scenario():
+        grouped_task = await bound.work.create_task(
+            session_id="session-surface",
+            subject="Grouped task",
+        )
+        flat_task = await bound.create_task(
+            session_id="session-surface",
+            subject="Flat task",
+        )
+        grouped_list = await bound.work.get_task_list(session_id="session-surface")
+        flat_list = await bound.get_task_list(session_id="session-surface")
+        grouped_jobs = await bound.work.list_jobs(session_id="session-surface")
+        flat_jobs = await bound.list_jobs(session_id="session-surface")
+        grouped_job = await bound.work.get_job("job-surface", session_id="session-surface")
+        flat_job = await bound.get_job("job-surface", session_id="session-surface")
+        return grouped_task, flat_task, grouped_list, flat_list, grouped_jobs, flat_jobs, grouped_job, flat_job
+
+    grouped_task, flat_task, grouped_list, flat_list, grouped_jobs, flat_jobs, grouped_job, flat_job = asyncio.run(
+        scenario()
+    )
+
+    assert grouped_task["task"]["subject"] == "Grouped task"
+    assert flat_task["task"]["subject"] == "Flat task"
+    assert grouped_list == flat_list
+    assert grouped_jobs == flat_jobs
+    assert grouped_job == flat_job
+    assert [task["subject"] for task in grouped_list["tasks"]] == ["Grouped task", "Flat task"]
+    assert grouped_jobs[0]["job_id"] == "job-surface"
+
+
 def test_task_list_watch_rolls_back_failed_initial_callback() -> None:
     task_lists = DefaultTaskListService()
 

@@ -655,12 +655,12 @@ async def main() -> None:
         permission_handler=my_permission_handler,
     )
 
-    async with weavert.bind_host(host) as bound:
-        async for event in bound.stream_prompt(
-            "检查当前目录里是否有风险改动",
-            session_id="host-session",
-        ):
-            handle_turn_event(event)
+async with weavert.bind_host(host) as bound:
+    async for event in bound.prompts.stream_prompt(
+        "检查当前目录里是否有风险改动",
+        session_id="host-session",
+    ):
+        handle_turn_event(event)
 ```
 
 这一类接法的核心不是“换了个调用方式”，而是把宿主本身变成 Runtime 的正式一部分：
@@ -689,27 +689,29 @@ flowchart LR
 
 `bind_host()` 这一层也有 ownership boundary：
 
-- 只想跑一个 host-owned one-shot turn，用 `bound.run_prompt(...)`
-- 只想直接拿 canonical `WorkflowRunReport`，用 helper-owned `bound.run_prompt_report(...)`
-- 只想看 turn event / message path，而不关心 canonical final report 时，也优先用 `bound.stream_prompt(...)`
-- 想保留同一个 host-bound session、自己决定何时 close，用 `session = bound.create_session(...)`
-- 对已经持有的 host-bound session，要 canonical report 时，用 `bound.run_prompt_report_in_session(...)`
+- 只想跑一个 host-owned one-shot turn，用 `bound.prompts.run_prompt(...)`
+- 只想直接拿 canonical `WorkflowRunReport`，用 helper-owned `bound.prompts.run_prompt_report(...)`
+- 只想看 turn event / message path，而不关心 canonical final report 时，也优先用 `bound.prompts.stream_prompt(...)`
+- 想保留同一个 host-bound session、自己决定何时 close，用 `session = bound.sessions.create_session(...)`
+- 对已经持有的 host-bound session，要 canonical report 时，用 `bound.sessions.run_prompt_report_in_session(...)`
 - 用 `async with weavert.bind_host(host)` 时，runtime 会替你跑 `startup()` / `ready()` / `shutdown()`
 - 如果你不用 context manager，而是手动拿 `bound = weavert.bind_host(host)`，那么 host lifecycle cleanup 仍然归 caller
+- 兼容起见，`bound.run_prompt(...)`、`bound.run_prompt_report(...)`、`bound.stream_prompt(...)`、`bound.create_session(...)`、`bound.run_prompt_report_in_session(...)` 这些 flat helper 仍然保留，但它们只是转发到 grouped surfaces
 
 当前还有一个容易误解的点需要明确：
 
-- `BoundHostRuntime` 现在直接覆盖的是 host-owned message / stream / one-shot report path
-- `bound.run_prompt_report(...)` 复用 runtime-owned canonical report pipeline，同时保留 helper-owned session close 语义
-- `bound.run_prompt_report_in_session(...)` 保留 caller-owned session reuse；session close 仍然归 caller
+- `BoundHostRuntime` 现在是 canonical lifecycle core：统一负责 host startup / ready / shutdown，以及 managed session cleanup
+- `bound.prompts.run_prompt_report(...)` 复用 runtime-owned canonical report pipeline，同时保留 helper-owned session close 语义
+- `bound.sessions.run_prompt_report_in_session(...)` 保留 caller-owned session reuse；session close 仍然归 caller
+- retained flat helpers 只是 compatibility projection，不再是推荐的第一视角
 
 推荐写法：
 
 ```python
 async with weavert.bind_host(host) as bound:
-    session = bound.create_session(session_id="host-session")
+    session = bound.sessions.create_session(session_id="host-session")
     try:
-        report = await bound.run_prompt_report_in_session(
+        report = await bound.sessions.run_prompt_report_in_session(
             session,
             "检查当前目录里是否有风险改动",
         )

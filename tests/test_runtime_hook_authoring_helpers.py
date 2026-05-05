@@ -1,4 +1,5 @@
 import asyncio
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -506,6 +507,59 @@ def test_runtime_and_host_layered_registrars_default_to_template_scope(tmp_path:
         HookSourceKind.RUNTIME_CONFIG,
         HookSourceKind.HOST_API,
     ]
+
+
+def test_bound_host_grouped_hook_and_inspection_surfaces_match_flat_helpers(tmp_path: Path) -> None:
+    runtime = assemble_runtime(RuntimeConfig(working_directory=tmp_path))
+    bound = runtime.bind_host(SdkHostRuntime(name="sdk"))
+    session = bound.sessions.create_session(session_id="host-surface-parity", cwd=tmp_path)
+
+    grouped_handle = bound.hooks.on_pre_tool_use(
+        rewrite_input({"value": "grouped"}),
+        match=match_tool("deploy"),
+        effects=(rewrite_input,),
+    )
+    flat_handle = bound.register_hook(
+        on_pre_tool_use(
+            rewrite_input({"value": "flat"}),
+            match=match_tool("deploy-flat"),
+            effects=(rewrite_input,),
+        )
+    )
+
+    runtime.services.hook_bus.materialize_session("host-surface-parity")
+    grouped_inventory = bound.hooks.list_hooks(
+        HookInventoryQuery(session_id="host-surface-parity", phase="PreToolUse")
+    )
+    flat_inventory = bound.list_hooks(
+        HookInventoryQuery(session_id="host-surface-parity", phase="PreToolUse")
+    )
+    grouped_resolved = bound.inspection.resolve_session_invocations(session)
+    flat_resolved = bound.resolve_session_invocations(session)
+    grouped_visible = bound.inspection.visible_invocations(session)
+    flat_visible = bound.visible_invocations(session)
+    grouped_diagnostics = bound.inspection.invocation_diagnostics(session)
+    flat_diagnostics = bound.invocation_diagnostics(session)
+
+    assert grouped_handle.activation_state == HookActivationState.PENDING_ACTIVATION
+    assert flat_handle.activation_state == HookActivationState.PENDING_ACTIVATION
+    assert grouped_inventory == flat_inventory
+    assert [entry.activation_state for entry in grouped_inventory] == [
+        HookActivationState.ACTIVE,
+        HookActivationState.ACTIVE,
+    ]
+    assert [entry.source_kind for entry in grouped_inventory] == [
+        HookSourceKind.HOST_API,
+        HookSourceKind.HOST_API,
+    ]
+    assert tuple(entry.name for entry in grouped_resolved.visible_capabilities()) == tuple(
+        entry.name for entry in flat_resolved.visible_capabilities()
+    )
+    assert tuple(entry.name for entry in grouped_visible) == tuple(entry.name for entry in flat_visible)
+    assert tuple(entry.name for entry in grouped_diagnostics) == tuple(entry.name for entry in flat_diagnostics)
+
+    asyncio.run(session.close())
+    asyncio.run(bound.shutdown())
 
 
 def test_session_advanced_turn_registrar_uses_turn_api_source_kind(tmp_path: Path) -> None:

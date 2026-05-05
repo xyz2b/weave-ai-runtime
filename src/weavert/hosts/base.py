@@ -184,6 +184,192 @@ class CallbackHostAdapter:
         await _maybe_await(self.extension_event_sink(event))
 
 
+@dataclass(frozen=True, slots=True)
+class BoundHostPromptSurface:
+    _core: "BoundHostRuntime"
+
+    async def run_prompt(
+        self,
+        prompt: str,
+        *,
+        session_id: str | None = None,
+        agent_name: str | None = None,
+        cwd: str | Path | None = None,
+        system_prompt: str | None = None,
+        metadata: dict[str, object] | None = None,
+    ) -> Any:
+        return await self._core._run_prompt_impl(
+            prompt,
+            session_id=session_id,
+            agent_name=agent_name,
+            cwd=cwd,
+            system_prompt=system_prompt,
+            metadata=metadata,
+        )
+
+    async def run_prompt_report(
+        self,
+        prompt: str,
+        *,
+        session_id: str | None = None,
+        agent_name: str | None = None,
+        cwd: str | Path | None = None,
+        system_prompt: str | None = None,
+        metadata: dict[str, object] | None = None,
+        wait_for_finalization: bool = False,
+    ) -> Any:
+        return await self._core._run_prompt_report_impl(
+            prompt,
+            session_id=session_id,
+            agent_name=agent_name,
+            cwd=cwd,
+            system_prompt=system_prompt,
+            metadata=metadata,
+            wait_for_finalization=wait_for_finalization,
+        )
+
+    async def stream_prompt(
+        self,
+        prompt: str,
+        *,
+        session_id: str | None = None,
+        agent_name: str | None = None,
+        cwd: str | Path | None = None,
+        system_prompt: str | None = None,
+        metadata: dict[str, object] | None = None,
+    ):
+        async for event in self._core._stream_prompt_impl(
+            prompt,
+            session_id=session_id,
+            agent_name=agent_name,
+            cwd=cwd,
+            system_prompt=system_prompt,
+            metadata=metadata,
+        ):
+            yield event
+
+
+@dataclass(frozen=True, slots=True)
+class BoundHostSessionSurface:
+    _core: "BoundHostRuntime"
+
+    def create_session(self, **kwargs: Any) -> Any:
+        return self._core._create_bound_session_impl(**kwargs)
+
+    async def run_prompt_report_in_session(
+        self,
+        session: Any,
+        prompt: str,
+        *,
+        metadata: dict[str, object] | None = None,
+        wait_for_finalization: bool = False,
+    ) -> Any:
+        return await self._core._run_prompt_report_in_session_impl(
+            session,
+            prompt,
+            metadata=metadata,
+            wait_for_finalization=wait_for_finalization,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class BoundHostInspectionSurface:
+    _core: "BoundHostRuntime"
+
+    def resolve_session_invocations(self, *args: Any, **kwargs: Any) -> Any:
+        self._core._bind_host()
+        return self._core.runtime.resolve_session_invocations(*args, **kwargs)
+
+    def visible_invocations(self, *args: Any, **kwargs: Any) -> Any:
+        self._core._bind_host()
+        return self._core.runtime.visible_invocations(*args, **kwargs)
+
+    def invocation_diagnostics(self, *args: Any, **kwargs: Any) -> Any:
+        self._core._bind_host()
+        return self._core.runtime.invocation_diagnostics(*args, **kwargs)
+
+
+@dataclass(frozen=True, slots=True)
+class BoundHostWorkSurface:
+    _core: "BoundHostRuntime"
+
+    async def resolve_task_list_id(self, *args: Any, **kwargs: Any) -> Any:
+        self._core._bind_host()
+        return await self._core.runtime.resolve_task_list_id(*args, **kwargs)
+
+    async def list_task_lists(self, *args: Any, **kwargs: Any) -> Any:
+        self._core._bind_host()
+        return await self._core.runtime.list_task_lists(*args, **kwargs)
+
+    async def create_task(self, *args: Any, **kwargs: Any) -> Any:
+        self._core._bind_host()
+        return await self._core.runtime.create_task(*args, **kwargs)
+
+    async def get_task(self, *args: Any, **kwargs: Any) -> Any:
+        self._core._bind_host()
+        return await self._core.runtime.get_task(*args, **kwargs)
+
+    async def update_task(self, *args: Any, **kwargs: Any) -> Any:
+        self._core._bind_host()
+        return await self._core.runtime.update_task(*args, **kwargs)
+
+    async def claim_task(self, *args: Any, **kwargs: Any) -> Any:
+        self._core._bind_host()
+        return await self._core.runtime.claim_task(*args, **kwargs)
+
+    async def release_task(self, *args: Any, **kwargs: Any) -> Any:
+        self._core._bind_host()
+        return await self._core.runtime.release_task(*args, **kwargs)
+
+    async def assign_next_task(self, *args: Any, **kwargs: Any) -> Any:
+        self._core._bind_host()
+        return await self._core.runtime.assign_next_task(*args, **kwargs)
+
+    async def block_task(self, *args: Any, **kwargs: Any) -> Any:
+        self._core._bind_host()
+        return await self._core.runtime.block_task(*args, **kwargs)
+
+    async def unblock_task(self, *args: Any, **kwargs: Any) -> Any:
+        self._core._bind_host()
+        return await self._core.runtime.unblock_task(*args, **kwargs)
+
+    async def archive_task(self, *args: Any, **kwargs: Any) -> Any:
+        self._core._bind_host()
+        return await self._core.runtime.archive_task(*args, **kwargs)
+
+    async def unarchive_task(self, *args: Any, **kwargs: Any) -> Any:
+        self._core._bind_host()
+        return await self._core.runtime.unarchive_task(*args, **kwargs)
+
+    async def delete_task(self, *args: Any, **kwargs: Any) -> Any:
+        self._core._bind_host()
+        return await self._core.runtime.delete_task(*args, **kwargs)
+
+    async def get_task_list(self, *args: Any, **kwargs: Any) -> Any:
+        self._core._bind_host()
+        return await self._core.runtime.get_task_list(*args, **kwargs)
+
+    async def watch_task_list(self, *args: Any, **kwargs: Any) -> Any:
+        self._core._bind_host()
+        return await self._core.runtime.watch_task_list(*args, **kwargs)
+
+    async def list_jobs(self, *args: Any, **kwargs: Any) -> Any:
+        self._core._bind_host()
+        return await self._core.runtime.list_jobs(*args, **kwargs)
+
+    async def get_job(self, *args: Any, **kwargs: Any) -> Any:
+        self._core._bind_host()
+        return await self._core.runtime.get_job(*args, **kwargs)
+
+    async def watch_jobs(self, *args: Any, **kwargs: Any) -> Any:
+        self._core._bind_host()
+        return await self._core.runtime.watch_jobs(*args, **kwargs)
+
+    async def stop_job(self, *args: Any, **kwargs: Any) -> Any:
+        self._core._bind_host()
+        return await self._core.runtime.stop_job(*args, **kwargs)
+
+
 @dataclass(slots=True)
 class BoundHostRuntime:
     kernel: Any
@@ -191,6 +377,11 @@ class BoundHostRuntime:
     runtime: Any = None
     services: Any = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    prompts: BoundHostPromptSurface = field(init=False, repr=False)
+    sessions: BoundHostSessionSurface = field(init=False, repr=False)
+    hooks: ConfiguredHookRegistrar = field(init=False, repr=False)
+    inspection: BoundHostInspectionSurface = field(init=False, repr=False)
+    work: BoundHostWorkSurface = field(init=False, repr=False)
     _host_started: bool = False
     _host_ready: bool = False
     _managed_sessions: dict[str, Any] = field(default_factory=dict)
@@ -198,6 +389,21 @@ class BoundHostRuntime:
 
     def __post_init__(self) -> None:
         self._bind_host()
+        self.prompts = BoundHostPromptSurface(self)
+        self.sessions = BoundHostSessionSurface(self)
+        self.hooks = build_configured_hook_registrar(
+            bus=self.services.hook_bus,
+            source_kind=HookSourceKind.HOST_API,
+            owner=lambda: f"host:{self.host.name}",
+            source_ref=lambda: self.host.name,
+            session_id=None,
+            turn_id=None,
+            default_scope_lifetime=HookScopeLifetime.SESSION_TEMPLATE,
+            list_hooks=self._list_hooks_impl,
+            list_hook_dispatch_traces=self._list_hook_dispatch_traces_impl,
+        )
+        self.inspection = BoundHostInspectionSurface(self)
+        self.work = BoundHostWorkSurface(self)
 
     async def __aenter__(self) -> "BoundHostRuntime":
         await self.startup()
@@ -251,125 +457,81 @@ class BoundHostRuntime:
             raise errors[0]
 
     def create_session(self, **kwargs: Any) -> Any:
-        self._bind_host()
-        self._ensure_managed_session_id_available(kwargs.get("session_id"))
-        session = self.runtime.create_session(
-            **kwargs,
-            close_callback=self._on_managed_session_close,
-        )
-        self._register_managed_session(session, owner="bound")
-        return session
+        return self.sessions.create_session(**kwargs)
 
     def resolve_session_invocations(self, *args: Any, **kwargs: Any) -> Any:
-        self._bind_host()
-        return self.runtime.resolve_session_invocations(*args, **kwargs)
+        return self.inspection.resolve_session_invocations(*args, **kwargs)
 
     def visible_invocations(self, *args: Any, **kwargs: Any) -> Any:
-        self._bind_host()
-        return self.runtime.visible_invocations(*args, **kwargs)
+        return self.inspection.visible_invocations(*args, **kwargs)
 
     def invocation_diagnostics(self, *args: Any, **kwargs: Any) -> Any:
-        self._bind_host()
-        return self.runtime.invocation_diagnostics(*args, **kwargs)
+        return self.inspection.invocation_diagnostics(*args, **kwargs)
 
     def resolve_host_facet(self, name: str) -> Any:
         self._bind_host()
         return self.runtime.resolve_host_facet(name)
 
     async def resolve_task_list_id(self, *args: Any, **kwargs: Any) -> Any:
-        self._bind_host()
-        return await self.runtime.resolve_task_list_id(*args, **kwargs)
+        return await self.work.resolve_task_list_id(*args, **kwargs)
 
     async def list_task_lists(self, *args: Any, **kwargs: Any) -> Any:
-        self._bind_host()
-        return await self.runtime.list_task_lists(*args, **kwargs)
+        return await self.work.list_task_lists(*args, **kwargs)
 
     async def create_task(self, *args: Any, **kwargs: Any) -> Any:
-        self._bind_host()
-        return await self.runtime.create_task(*args, **kwargs)
+        return await self.work.create_task(*args, **kwargs)
 
     async def get_task(self, *args: Any, **kwargs: Any) -> Any:
-        self._bind_host()
-        return await self.runtime.get_task(*args, **kwargs)
+        return await self.work.get_task(*args, **kwargs)
 
     async def update_task(self, *args: Any, **kwargs: Any) -> Any:
-        self._bind_host()
-        return await self.runtime.update_task(*args, **kwargs)
+        return await self.work.update_task(*args, **kwargs)
 
     async def claim_task(self, *args: Any, **kwargs: Any) -> Any:
-        self._bind_host()
-        return await self.runtime.claim_task(*args, **kwargs)
+        return await self.work.claim_task(*args, **kwargs)
 
     async def release_task(self, *args: Any, **kwargs: Any) -> Any:
-        self._bind_host()
-        return await self.runtime.release_task(*args, **kwargs)
+        return await self.work.release_task(*args, **kwargs)
 
     async def assign_next_task(self, *args: Any, **kwargs: Any) -> Any:
-        self._bind_host()
-        return await self.runtime.assign_next_task(*args, **kwargs)
+        return await self.work.assign_next_task(*args, **kwargs)
 
     async def block_task(self, *args: Any, **kwargs: Any) -> Any:
-        self._bind_host()
-        return await self.runtime.block_task(*args, **kwargs)
+        return await self.work.block_task(*args, **kwargs)
 
     async def unblock_task(self, *args: Any, **kwargs: Any) -> Any:
-        self._bind_host()
-        return await self.runtime.unblock_task(*args, **kwargs)
+        return await self.work.unblock_task(*args, **kwargs)
 
     async def archive_task(self, *args: Any, **kwargs: Any) -> Any:
-        self._bind_host()
-        return await self.runtime.archive_task(*args, **kwargs)
+        return await self.work.archive_task(*args, **kwargs)
 
     async def unarchive_task(self, *args: Any, **kwargs: Any) -> Any:
-        self._bind_host()
-        return await self.runtime.unarchive_task(*args, **kwargs)
+        return await self.work.unarchive_task(*args, **kwargs)
 
     async def delete_task(self, *args: Any, **kwargs: Any) -> Any:
-        self._bind_host()
-        return await self.runtime.delete_task(*args, **kwargs)
+        return await self.work.delete_task(*args, **kwargs)
 
     async def get_task_list(self, *args: Any, **kwargs: Any) -> Any:
-        self._bind_host()
-        return await self.runtime.get_task_list(*args, **kwargs)
+        return await self.work.get_task_list(*args, **kwargs)
 
     async def watch_task_list(self, *args: Any, **kwargs: Any) -> Any:
-        self._bind_host()
-        return await self.runtime.watch_task_list(*args, **kwargs)
+        return await self.work.watch_task_list(*args, **kwargs)
 
     async def list_jobs(self, *args: Any, **kwargs: Any) -> Any:
-        self._bind_host()
-        return await self.runtime.list_jobs(*args, **kwargs)
+        return await self.work.list_jobs(*args, **kwargs)
 
     async def get_job(self, *args: Any, **kwargs: Any) -> Any:
-        self._bind_host()
-        return await self.runtime.get_job(*args, **kwargs)
+        return await self.work.get_job(*args, **kwargs)
 
     async def watch_jobs(self, *args: Any, **kwargs: Any) -> Any:
-        self._bind_host()
-        return await self.runtime.watch_jobs(*args, **kwargs)
+        return await self.work.watch_jobs(*args, **kwargs)
 
     async def stop_job(self, *args: Any, **kwargs: Any) -> Any:
-        self._bind_host()
-        return await self.runtime.stop_job(*args, **kwargs)
+        return await self.work.stop_job(*args, **kwargs)
 
     def bind_hook_callback(self, name: str, handler: Any) -> None:
         self._bind_host()
         self.services.hook_bus.bind_callback(name, handler)
-
-    @property
-    def hooks(self) -> ConfiguredHookRegistrar:
-        self._bind_host()
-        return build_configured_hook_registrar(
-            bus=self.services.hook_bus,
-            source_kind=HookSourceKind.HOST_API,
-            owner=lambda: f"host:{self.host.name}",
-            source_ref=lambda: self.host.name,
-            session_id=None,
-            turn_id=None,
-            default_scope_lifetime=HookScopeLifetime.SESSION_TEMPLATE,
-            list_hooks=self.list_hooks,
-            list_hook_dispatch_traces=self.list_hook_dispatch_traces,
-        )
 
     def register_hook(
         self,
@@ -386,15 +548,13 @@ class BoundHostRuntime:
         self,
         query: HookInventoryQuery | Mapping[str, Any] | None = None,
     ) -> tuple[Any, ...]:
-        self._bind_host()
-        return self.services.hook_bus.list_hooks(query)
+        return self.hooks.list_hooks(query)
 
     def list_hook_dispatch_traces(
         self,
         query: HookDispatchTraceQuery | Mapping[str, Any] | None = None,
     ) -> tuple[Any, ...]:
-        self._bind_host()
-        return self.services.hook_bus.list_hook_dispatch_traces(query)
+        return self.hooks.list_hook_dispatch_traces(query)
 
     async def run_prompt(
         self,
@@ -406,26 +566,14 @@ class BoundHostRuntime:
         system_prompt: str | None = None,
         metadata: dict[str, object] | None = None,
     ) -> Any:
-        self._bind_host()
-        await self.ready()
-        session = self._create_helper_owned_session(
+        return await self.prompts.run_prompt(
+            prompt,
             session_id=session_id,
             agent_name=agent_name,
             cwd=cwd,
             system_prompt=system_prompt,
+            metadata=metadata,
         )
-        final_status = "completed"
-        try:
-            return await self.runtime._run_prompt_in_session(
-                session,
-                prompt,
-                metadata=metadata,
-            )
-        except Exception:
-            final_status = _managed_session_close_status(session, default="failed")
-            raise
-        finally:
-            await session.close(final_status=final_status)
 
     async def run_prompt_report(
         self,
@@ -438,35 +586,15 @@ class BoundHostRuntime:
         metadata: dict[str, object] | None = None,
         wait_for_finalization: bool = False,
     ) -> Any:
-        self._bind_host()
-        await self.ready()
-        session = self._create_helper_owned_session(
+        return await self.prompts.run_prompt_report(
+            prompt,
             session_id=session_id,
             agent_name=agent_name,
             cwd=cwd,
             system_prompt=system_prompt,
+            metadata=metadata,
+            wait_for_finalization=wait_for_finalization,
         )
-        try:
-            return await self.runtime._run_prompt_report_in_session(
-                session,
-                prompt,
-                metadata=metadata,
-                session_owner="helper",
-                wait_for_finalization=wait_for_finalization,
-            )
-        except asyncio.CancelledError:
-            await self._close_active_helper_owned_session(
-                session,
-                default_status="interrupted",
-                interrupt_reason="bound_run_prompt_report_cancelled",
-            )
-            raise
-        except Exception:
-            await self._close_active_helper_owned_session(
-                session,
-                default_status="failed",
-            )
-            raise
 
     async def run_prompt_report_in_session(
         self,
@@ -476,9 +604,7 @@ class BoundHostRuntime:
         metadata: dict[str, object] | None = None,
         wait_for_finalization: bool = False,
     ) -> Any:
-        self._bind_host()
-        await self.ready()
-        return await self.runtime.run_prompt_report_in_session(
+        return await self.sessions.run_prompt_report_in_session(
             session,
             prompt,
             metadata=metadata,
@@ -495,31 +621,43 @@ class BoundHostRuntime:
         system_prompt: str | None = None,
         metadata: dict[str, object] | None = None,
     ):
-        self._bind_host()
-        await self.ready()
-        session = self._create_helper_owned_session(
+        async for event in self.prompts.stream_prompt(
+            prompt,
             session_id=session_id,
             agent_name=agent_name,
             cwd=cwd,
             system_prompt=system_prompt,
-        )
-        final_status = "completed"
-        try:
-            await self.runtime._prepare_one_shot_session(session, prompt, metadata=metadata)
-            async for event in session.stream_until_idle():
-                if getattr(event, "event_type", None) is not None and getattr(event.event_type, "value", None) == "terminal":
-                    terminal = getattr(event, "terminal", None)
-                    final_status = _managed_session_close_status(session, terminal=terminal)
-                yield event
-        except Exception:
-            final_status = _managed_session_close_status(session, default="failed")
-            raise
-        finally:
-            await session.close(final_status=final_status)
+            metadata=metadata,
+        ):
+            yield event
 
     def _bind_host(self) -> None:
         if self.services is not None and hasattr(self.services, "bind_host"):
             self.services.bind_host(self.host)
+
+    def _create_bound_session_impl(self, **kwargs: Any) -> Any:
+        self._bind_host()
+        self._ensure_managed_session_id_available(kwargs.get("session_id"))
+        session = self.runtime.create_session(
+            **kwargs,
+            close_callback=self._on_managed_session_close,
+        )
+        self._register_managed_session(session, owner="bound")
+        return session
+
+    def _list_hooks_impl(
+        self,
+        query: HookInventoryQuery | Mapping[str, Any] | None = None,
+    ) -> tuple[Any, ...]:
+        self._bind_host()
+        return self.services.hook_bus.list_hooks(query)
+
+    def _list_hook_dispatch_traces_impl(
+        self,
+        query: HookDispatchTraceQuery | Mapping[str, Any] | None = None,
+    ) -> tuple[Any, ...]:
+        self._bind_host()
+        return self.services.hook_bus.list_hook_dispatch_traces(query)
 
     def _register_managed_session(self, session: Any, *, owner: str) -> None:
         session_id = getattr(getattr(session, "state", None), "session_id", None)
@@ -564,6 +702,127 @@ class BoundHostRuntime:
         self._register_managed_session(session, owner="helper")
         return session
 
+    async def _run_prompt_impl(
+        self,
+        prompt: str,
+        *,
+        session_id: str | None = None,
+        agent_name: str | None = None,
+        cwd: str | Path | None = None,
+        system_prompt: str | None = None,
+        metadata: dict[str, object] | None = None,
+    ) -> Any:
+        self._bind_host()
+        await self.ready()
+        session = self._create_helper_owned_session(
+            session_id=session_id,
+            agent_name=agent_name,
+            cwd=cwd,
+            system_prompt=system_prompt,
+        )
+        final_status = "completed"
+        try:
+            return await self.runtime._run_prompt_in_session(
+                session,
+                prompt,
+                metadata=metadata,
+            )
+        except Exception:
+            final_status = _managed_session_close_status(session, default="failed")
+            raise
+        finally:
+            await session.close(final_status=final_status)
+
+    async def _run_prompt_report_impl(
+        self,
+        prompt: str,
+        *,
+        session_id: str | None = None,
+        agent_name: str | None = None,
+        cwd: str | Path | None = None,
+        system_prompt: str | None = None,
+        metadata: dict[str, object] | None = None,
+        wait_for_finalization: bool = False,
+    ) -> Any:
+        self._bind_host()
+        await self.ready()
+        session = self._create_helper_owned_session(
+            session_id=session_id,
+            agent_name=agent_name,
+            cwd=cwd,
+            system_prompt=system_prompt,
+        )
+        try:
+            return await self.runtime._run_prompt_report_in_session(
+                session,
+                prompt,
+                metadata=metadata,
+                session_owner="helper",
+                wait_for_finalization=wait_for_finalization,
+            )
+        except asyncio.CancelledError:
+            await self._close_active_helper_owned_session(
+                session,
+                default_status="interrupted",
+                interrupt_reason="bound_run_prompt_report_cancelled",
+            )
+            raise
+        except Exception:
+            await self._close_active_helper_owned_session(
+                session,
+                default_status="failed",
+            )
+            raise
+
+    async def _run_prompt_report_in_session_impl(
+        self,
+        session: Any,
+        prompt: str,
+        *,
+        metadata: dict[str, object] | None = None,
+        wait_for_finalization: bool = False,
+    ) -> Any:
+        self._bind_host()
+        await self.ready()
+        return await self.runtime.run_prompt_report_in_session(
+            session,
+            prompt,
+            metadata=metadata,
+            wait_for_finalization=wait_for_finalization,
+        )
+
+    async def _stream_prompt_impl(
+        self,
+        prompt: str,
+        *,
+        session_id: str | None = None,
+        agent_name: str | None = None,
+        cwd: str | Path | None = None,
+        system_prompt: str | None = None,
+        metadata: dict[str, object] | None = None,
+    ):
+        self._bind_host()
+        await self.ready()
+        session = self._create_helper_owned_session(
+            session_id=session_id,
+            agent_name=agent_name,
+            cwd=cwd,
+            system_prompt=system_prompt,
+        )
+        final_status = "completed"
+        try:
+            await self.runtime._prepare_one_shot_session(session, prompt, metadata=metadata)
+            async for event in session.stream_until_idle():
+                if getattr(event, "event_type", None) is not None and getattr(event.event_type, "value", None) == "terminal":
+                    terminal = getattr(event, "terminal", None)
+                    final_status = _managed_session_close_status(session, terminal=terminal)
+                yield event
+        except Exception:
+            final_status = _managed_session_close_status(session, default="failed")
+            raise
+        finally:
+            await session.close(final_status=final_status)
+
     async def _close_active_helper_owned_session(
         self,
         session: Any,
@@ -598,7 +857,11 @@ class BoundHostRuntime:
 
 
 __all__ = [
+    "BoundHostInspectionSurface",
+    "BoundHostPromptSurface",
     "BoundHostRuntime",
+    "BoundHostSessionSurface",
+    "BoundHostWorkSurface",
     "CallbackHostAdapter",
     "HostExtensionEvent",
     "HostAdapter",

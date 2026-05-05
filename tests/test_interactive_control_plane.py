@@ -627,3 +627,160 @@ def test_bound_host_runtime_rejects_duplicate_active_session_ids(tmp_path: Path)
     assert first.state.status.value == "completed"
     assert host.lifecycle == ["startup", "ready", "shutdown"]
     assert [entry["session_id"] for entry in bound.metadata["closed_sessions"]] == ["dup-session"]
+
+
+def test_bound_host_runtime_grouped_sessions_share_core_registry_and_shutdown_order(tmp_path: Path) -> None:
+    events: list[str] = []
+
+    class RecordingHost(SdkHostRuntime):
+        async def shutdown(self) -> None:
+            events.append("host_shutdown")
+            await super().shutdown()
+
+    host = RecordingHost(name="sdk")
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            model_client=BatchedModelClient([]),
+        )
+    )
+    for session_id in ("grouped-session", "compat-session"):
+        runtime.services.hook_bus.register(
+            session_id=session_id,
+            owner=f"test:{session_id}",
+            phase=RuntimeHookPhase.SESSION_END,
+            handler=lambda _payload, session_id=session_id: events.append(f"{session_id}:session_end"),
+        )
+    bound = runtime.bind_host(host)
+
+    async def scenario() -> None:
+        await bound.startup()
+        await bound.ready()
+        grouped = bound.sessions.create_session(session_id="grouped-session")
+        with pytest.raises(ValueError, match="grouped-session"):
+            bound.create_session(session_id="grouped-session")
+        compat = bound.create_session(session_id="compat-session")
+        await grouped.start()
+        await compat.start()
+        await bound.shutdown()
+
+    asyncio.run(scenario())
+
+    assert events == [
+        "grouped-session:session_end",
+        "compat-session:session_end",
+        "host_shutdown",
+    ]
+    assert bound.metadata["managed_shutdown_order"] == ["grouped-session", "compat-session"]
+    assert bound.metadata["closed_sessions"][-2:] == [
+        {
+            "session_id": "grouped-session",
+            "owner": "bound",
+            "final_status": "completed",
+        },
+        {
+            "session_id": "compat-session",
+            "owner": "bound",
+            "final_status": "completed",
+        },
+    ]
+    assert host.lifecycle == ["startup", "ready", "shutdown"]
+
+
+def test_bound_host_runtime_grouped_prompt_and_session_surfaces_match_flat_helpers(tmp_path: Path) -> None:
+    host = SdkHostRuntime(name="sdk")
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            model_client=BatchedModelClient(
+                [
+                    [
+                        ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-grouped-helper"}),
+                        ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "grouped helper"}),
+                        ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+                    ],
+                    [
+                        ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-flat-helper"}),
+                        ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "flat helper"}),
+                        ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+                    ],
+                    [
+                        ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-grouped-caller"}),
+                        ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "grouped caller"}),
+                        ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+                    ],
+                    [
+                        ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-flat-caller"}),
+                        ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "flat caller"}),
+                        ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+                    ],
+                ]
+            ),
+        )
+    )
+    bound = runtime.bind_host(host)
+
+    async def scenario():
+        grouped_helper = await bound.prompts.run_prompt_report(
+            "grouped helper",
+            session_id="grouped-helper-session",
+        )
+        flat_helper = await bound.run_prompt_report(
+            "flat helper",
+            session_id="flat-helper-session",
+        )
+        grouped_session = bound.sessions.create_session(session_id="grouped-caller-session")
+        flat_session = bound.create_session(session_id="flat-caller-session")
+        grouped_caller = await bound.sessions.run_prompt_report_in_session(
+            grouped_session,
+            "grouped caller",
+        )
+        flat_caller = await bound.run_prompt_report_in_session(
+            flat_session,
+            "flat caller",
+        )
+        statuses = {
+            "grouped": grouped_session.state.status.value,
+            "flat": flat_session.state.status.value,
+        }
+        closed_before_manual_close = list(bound.metadata.get("closed_sessions", []))
+        await grouped_session.close()
+        await flat_session.close()
+        await bound.shutdown()
+        return grouped_helper, flat_helper, grouped_caller, flat_caller, statuses, closed_before_manual_close
+
+    (
+        grouped_helper,
+        flat_helper,
+        grouped_caller,
+        flat_caller,
+        statuses,
+        closed_before_manual_close,
+    ) = asyncio.run(scenario())
+
+    assert grouped_helper.session_owner == "helper"
+    assert grouped_helper.final_status == "completed"
+    assert grouped_helper.messages[-1].text == "grouped helper"
+    assert flat_helper.session_owner == "helper"
+    assert flat_helper.final_status == "completed"
+    assert flat_helper.messages[-1].text == "flat helper"
+    assert grouped_caller.session_owner == "caller"
+    assert grouped_caller.final_status == "completed"
+    assert grouped_caller.messages[-1].text == "grouped caller"
+    assert flat_caller.session_owner == "caller"
+    assert flat_caller.final_status == "completed"
+    assert flat_caller.messages[-1].text == "flat caller"
+    assert statuses == {"grouped": "ready", "flat": "ready"}
+    assert closed_before_manual_close == [
+        {
+            "session_id": "grouped-helper-session",
+            "owner": "helper",
+            "final_status": "completed",
+        },
+        {
+            "session_id": "flat-helper-session",
+            "owner": "helper",
+            "final_status": "completed",
+        },
+    ]
+    assert host.lifecycle == ["startup", "ready", "shutdown"]

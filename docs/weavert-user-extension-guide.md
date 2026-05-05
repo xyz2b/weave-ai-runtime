@@ -1364,7 +1364,7 @@ config.model_client = my_model_client
 weavert = assemble_runtime(config)
 
 async with weavert.bind_host(MyHost()) as bound:
-    async for event in bound.stream_prompt(
+    async for event in bound.prompts.stream_prompt(
         "Check the workspace for risky edits.",
         session_id="host-demo",
     ):

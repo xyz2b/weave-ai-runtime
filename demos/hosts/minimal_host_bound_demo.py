@@ -29,7 +29,7 @@ def main() -> None:
         bound = runtime.bind_host(host)
 
         messages = run_async(
-            bound.run_prompt(
+            bound.prompts.run_prompt(
                 "hello host",
                 session_id="minimal-host-bound-demo",
             )
