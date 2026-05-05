@@ -784,3 +784,101 @@ def test_bound_host_runtime_grouped_prompt_and_session_surfaces_match_flat_helpe
         },
     ]
     assert host.lifecycle == ["startup", "ready", "shutdown"]
+
+
+def test_bound_host_runtime_grouped_prompt_and_stream_surfaces_match_flat_helpers(tmp_path: Path) -> None:
+    host = SdkHostRuntime(name="sdk")
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            model_client=BatchedModelClient(
+                [
+                    [
+                        ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-grouped-run"}),
+                        ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "grouped run"}),
+                        ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+                    ],
+                    [
+                        ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-flat-run"}),
+                        ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "flat run"}),
+                        ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+                    ],
+                    [
+                        ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-grouped-stream"}),
+                        ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "grouped stream"}),
+                        ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+                    ],
+                    [
+                        ModelStreamEvent(ModelStreamEventType.MESSAGE_START, {"request_id": "req-flat-stream"}),
+                        ModelStreamEvent(ModelStreamEventType.CONTENT_DELTA, {"text": "flat stream"}),
+                        ModelStreamEvent(ModelStreamEventType.MESSAGE_STOP, {"stop_reason": "end_turn"}),
+                    ],
+                ]
+            ),
+        )
+    )
+    bound = runtime.bind_host(host)
+
+    async def scenario():
+        grouped_run = await bound.prompts.run_prompt(
+            "grouped run",
+            session_id="grouped-run-session",
+        )
+        flat_run = await bound.run_prompt(
+            "flat run",
+            session_id="flat-run-session",
+        )
+        grouped_stream = [
+            event
+            async for event in bound.prompts.stream_prompt(
+                "grouped stream",
+                session_id="grouped-stream-session",
+            )
+        ]
+        flat_stream = [
+            event
+            async for event in bound.stream_prompt(
+                "flat stream",
+                session_id="flat-stream-session",
+            )
+        ]
+        closed_sessions = list(bound.metadata.get("closed_sessions", []))
+        await bound.shutdown()
+        return grouped_run, flat_run, grouped_stream, flat_stream, closed_sessions
+
+    grouped_run, flat_run, grouped_stream, flat_stream, closed_sessions = asyncio.run(scenario())
+
+    assert grouped_run[-1].text == "grouped run"
+    assert flat_run[-1].text == "flat run"
+    assert [event.event_type.value for event in grouped_stream] == [event.event_type.value for event in flat_stream]
+    assert any(event.event_type.value == "terminal" for event in grouped_stream)
+    assert any(event.event_type.value == "terminal" for event in flat_stream)
+    assert closed_sessions[-4:] == [
+        {
+            "session_id": "grouped-run-session",
+            "owner": "helper",
+            "final_status": "completed",
+        },
+        {
+            "session_id": "flat-run-session",
+            "owner": "helper",
+            "final_status": "completed",
+        },
+        {
+            "session_id": "grouped-stream-session",
+            "owner": "helper",
+            "final_status": "completed",
+        },
+        {
+            "session_id": "flat-stream-session",
+            "owner": "helper",
+            "final_status": "completed",
+        },
+    ]
+    assert [session_id for session_id, event in host.turn_events if event.event_type.value == "terminal"] == [
+        "grouped-run-session",
+        "flat-run-session",
+        "grouped-stream-session",
+        "flat-stream-session",
+    ]
+    assert host.lifecycle == ["startup", "ready", "shutdown"]

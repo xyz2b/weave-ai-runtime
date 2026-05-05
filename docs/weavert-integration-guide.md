@@ -655,12 +655,12 @@ async def main() -> None:
         permission_handler=my_permission_handler,
     )
 
-async with weavert.bind_host(host) as bound:
-    async for event in bound.prompts.stream_prompt(
-        "检查当前目录里是否有风险改动",
-        session_id="host-session",
-    ):
-        handle_turn_event(event)
+    async with weavert.bind_host(host) as bound:
+        async for event in bound.prompts.stream_prompt(
+            "检查当前目录里是否有风险改动",
+            session_id="host-session",
+        ):
+            handle_turn_event(event)
 ```
 
 这一类接法的核心不是“换了个调用方式”，而是把宿主本身变成 Runtime 的正式一部分：
