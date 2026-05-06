@@ -116,7 +116,7 @@ scenario pack 继续回答：
 ## 4. Reference shared package shapes
 
 当前仓库提供一组 manifest-backed reference shared package shape，代码在
-`packages/product-kits/**` 里的 package-local modules（`packages/core/src/weavert/scenario_runtime_packs.py` 现在只保留兼容 shim）：
+`packages/product-kits/**` 里的 package-local modules：
 
 - `weavert-shared-retrieval`
   - retrieval-oriented shared package example

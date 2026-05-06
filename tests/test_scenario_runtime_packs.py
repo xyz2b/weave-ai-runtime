@@ -1351,21 +1351,17 @@ def test_reference_scenario_runtime_packs_are_not_part_of_default_distribution_b
             runtime.services.require_capability(shape.capability_key)
 
 
-def test_core_scenario_runtime_packs_module_is_only_a_compatibility_shim() -> None:
-    source = (
+def test_core_scenario_runtime_packs_module_is_removed_after_product_kit_extraction() -> None:
+    source_path = (
         Path(__file__).resolve().parents[1]
         / "packages"
         / "core"
         / "src"
         / "weavert"
         / "scenario_runtime_packs.py"
-    ).read_text(encoding="utf-8")
+    )
 
-    assert "ReferenceSharedPackageShape(" not in source
-    assert "ReferenceScenarioPackShape(" not in source
-    assert "weavert_kit_chat" in source
-    assert "weavert_kit_coding" in source
-    assert "weavert_kit_local_assistant" in source
+    assert source_path.exists() is False
 
 
 def test_reference_package_manifest_metadata_follows_family_specific_surface_contracts() -> None:

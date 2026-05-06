@@ -24,6 +24,7 @@ from weavert.registries import AgentRegistry, SkillRegistry, ToolRegistry
 from weavert.runtime_kernel import ModelProviderBinding, ModelRouteBinding
 from weavert.runtime_services import RuntimeServices
 from weavert.tasking import TaskManager, TaskStatus
+from weavert_isolation import assemble_isolation_package
 from weavert.turn_engine import (
     ModelInvocationMode,
     ModelRequest,
@@ -758,7 +759,7 @@ def test_remote_isolation_without_backend_fails_before_model_execution(tmp_path:
                 isolation=IsolationMode.REMOTE,
             )
         )
-        services = RuntimeServices()
+        services = RuntimeServices(isolation=assemble_isolation_package().manager)
         runtime = AgentRuntime(
             turn_engine=TurnEngine(
                 model_client=model_client,

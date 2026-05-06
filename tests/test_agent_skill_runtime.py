@@ -41,6 +41,7 @@ from weavert.runtime_services import RuntimeServices
 from weavert.skill_runtime import SkillExecutor
 from weavert.tasking import TaskManager
 from weavert.tool_runtime import ToolCall, ToolCallStatus, ToolContext, ToolScheduler
+from weavert_isolation import assemble_isolation_package
 from weavert.turn_engine import (
     ModelRequest,
     ModelStreamEvent,
@@ -619,6 +620,7 @@ def test_agent_runtime_routes_and_skill_executor_supports_inline_and_fork(
         tool_registry=tool_registry,
         skill_registry=skill_registry,
         task_manager=task_manager,
+        runtime_services=RuntimeServices(isolation=assemble_isolation_package().manager),
     )
     skill_executor = SkillExecutor(skill_registry=skill_registry, agent_runtime=agent_runtime)
 
