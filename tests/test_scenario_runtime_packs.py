@@ -1,11 +1,19 @@
 from __future__ import annotations
 
 import asyncio
+from email.message import Message
 from pathlib import Path
 import subprocess
 
 import pytest
 
+from weavert.memory.models import MemoryEntry
+from weavert.reference_chat_builtins import (
+    CHAT_RETRIEVAL_TOOLS,
+    CHAT_SCENARIO_AGENTS as CHAT_SCENARIO_AGENT_NAMES,
+    CHAT_SCENARIO_SKILLS as CHAT_SCENARIO_SKILL_NAMES,
+    CHAT_WEB_TOOLS,
+)
 from weavert.runtime_kernel import RuntimeConfig, assemble_runtime
 from weavert.runtime_package_resolution import PACKAGE_CANDIDATE_METADATA_KEY
 from weavert.scenario_runtime_packs import (
@@ -44,6 +52,13 @@ CODING_SCENARIO_SKILLS = {
 }
 CODING_GENERIC_SKILLS = {"verify", "debug", "stuck", "batch", "simplify"}
 CODING_PROFILE_SKILLS = CODING_SCENARIO_SKILLS | CODING_GENERIC_SKILLS
+CHAT_RETRIEVAL_TOOL_SET = set(CHAT_RETRIEVAL_TOOLS)
+CHAT_WEB_TOOL_SET = set(CHAT_WEB_TOOLS)
+CHAT_PROFILE_TOOLS = CHAT_RETRIEVAL_TOOL_SET | CHAT_WEB_TOOL_SET
+CHAT_SCENARIO_AGENTS = set(CHAT_SCENARIO_AGENT_NAMES)
+CHAT_SCENARIO_SKILLS = set(CHAT_SCENARIO_SKILL_NAMES)
+CHAT_PROFILE_SKILLS = CHAT_SCENARIO_SKILLS | {"remember"}
+LOCAL_ASSISTANT_PROFILE_TOOLS = CHAT_RETRIEVAL_TOOL_SET
 
 
 def _assemble_reference_runtime(
@@ -114,6 +129,45 @@ def _tool_context(runtime, cwd: Path) -> ToolContext:
         tool_registry=runtime.kernel.tool_registry,
         runtime_services=runtime.services,
     )
+
+
+class _FakeUrlopenResponse:
+    def __init__(self, body: str, *, content_type: str = "text/html", status: int = 200) -> None:
+        self.status = status
+        self._body = body.encode("utf-8")
+        self.headers = Message()
+        self.headers.add_header("Content-Type", content_type)
+
+    def read(self, amount: int = -1) -> bytes:
+        if amount is None or amount < 0:
+            return self._body
+        return self._body[:amount]
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        _ = exc_type, exc, tb
+        return False
+
+
+def _grounding_urlopen(request, timeout=10):  # pragma: no cover - exercised through tool calls
+    _ = timeout
+    url = request.full_url if hasattr(request, "full_url") else str(request)
+    if "duckduckgo.com" in url:
+        return _FakeUrlopenResponse(
+            '<html><body><a class="result__a" href="https://grounding.example.test/refund-policy">'
+            "Refund policy</a></body></html>"
+        )
+    if url == "https://grounding.example.test/refund-policy":
+        return _FakeUrlopenResponse(
+            (
+                "<html><head><title>Refund policy</title></head><body>"
+                "<article><h1>Refund policy</h1><p>Refunds stay available for 30 days after purchase.</p>"
+                "<p>Support can cite this window directly.</p></article></body></html>"
+            )
+        )
+    raise AssertionError(f"Unexpected URL requested during test: {url}")
 
 
 @pytest.mark.parametrize(
@@ -212,6 +266,93 @@ def test_workspace_intelligence_tools_respect_file_path_focus_and_tolerate_broke
     assert {Path(match["file_path"]).name for match in broken_result["matches"]} == {"broken.py"}
 
 
+def test_grounded_reference_shared_packages_can_be_admitted_selected_and_executed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("weavert.reference_chat_tool_impls.urllib.request.urlopen", _grounding_urlopen)
+
+    retrieval_runtime, retrieval_shape, retrieval_root = _assemble_shared_reference_runtime(
+        tmp_path,
+        "weavert-shared-retrieval",
+    )
+    retrieval_tool_names = _tool_names(retrieval_runtime)
+    assert CHAT_RETRIEVAL_TOOL_SET <= retrieval_tool_names
+    assert all(
+        retrieval_runtime.kernel.tool_registry.get(tool_name).metadata["builtin_owner"]
+        == retrieval_shape.package_name
+        for tool_name in CHAT_RETRIEVAL_TOOL_SET
+    )
+    assert all(
+        retrieval_runtime.kernel.tool_registry.get(tool_name).traits.read_only
+        for tool_name in CHAT_RETRIEVAL_TOOL_SET
+    )
+
+    retrieve_tool = retrieval_runtime.kernel.tool_registry.get("retrieve_context")
+    retrieval_result = asyncio.run(
+        retrieve_tool.execute(
+            {
+                "query": "refund window",
+                "items": [
+                    {
+                        "id": "support-doc",
+                        "title": "Refund window",
+                        "content": "Customers can request a refund within 30 days after purchase.",
+                        "url": "https://grounding.example.test/refund-policy",
+                    },
+                    {
+                        "id": "shipping-doc",
+                        "title": "Shipping times",
+                        "content": "Physical orders usually arrive in 7 days.",
+                    },
+                ],
+            },
+            _tool_context(retrieval_runtime, retrieval_root),
+        )
+    )
+    assert [item["id"] for item in retrieval_result["results"]] == ["support-doc"]
+
+    citations_tool = retrieval_runtime.kernel.tool_registry.get("prepare_citations")
+    citations_result = asyncio.run(
+        citations_tool.execute({"items": retrieval_result["results"]}, _tool_context(retrieval_runtime, retrieval_root))
+    )
+    assert citations_result["citations"][0]["label"] == "[1]"
+    assert "Refund window" in citations_result["citation_block"]
+
+    web_runtime, web_shape, web_root = _assemble_shared_reference_runtime(tmp_path, "weavert-bridge-web")
+    web_tool_names = _tool_names(web_runtime)
+    assert CHAT_WEB_TOOL_SET <= web_tool_names
+    assert all(
+        web_runtime.kernel.tool_registry.get(tool_name).metadata["builtin_owner"] == web_shape.package_name
+        for tool_name in CHAT_WEB_TOOL_SET
+    )
+    assert all(
+        web_runtime.kernel.tool_registry.get(tool_name).traits.read_only
+        for tool_name in CHAT_WEB_TOOL_SET
+    )
+
+    search_tool = web_runtime.kernel.tool_registry.get("grounding_web_search")
+    search_result = asyncio.run(
+        search_tool.execute({"query": "refund policy", "limit": 3}, _tool_context(web_runtime, web_root))
+    )
+    assert search_result["results"] == [
+        {
+            "title": "Refund policy",
+            "url": "https://grounding.example.test/refund-policy",
+        }
+    ]
+
+    fetch_tool = web_runtime.kernel.tool_registry.get("grounding_web_fetch")
+    fetch_result = asyncio.run(
+        fetch_tool.execute(
+            {"url": "https://grounding.example.test/refund-policy"},
+            _tool_context(web_runtime, web_root),
+        )
+    )
+    assert fetch_result["title"] == "Refund policy"
+    assert "30 days" in fetch_result["content"]
+
+
 @pytest.mark.parametrize(
     (
         "package_name",
@@ -234,19 +375,19 @@ def test_workspace_intelligence_tools_respect_file_path_focus_and_tolerate_broke
         ),
         (
             "weavert-scenario-chat",
-            set(),
-            set(),
-            {"remember"},
-            CODING_WORKSPACE_TOOLS,
+            CHAT_PROFILE_TOOLS,
+            CHAT_SCENARIO_AGENTS,
+            CHAT_PROFILE_SKILLS,
+            CODING_PROFILE_TOOLS,
             CODING_PROFILE_AGENTS,
             CODING_PROFILE_SKILLS,
         ),
         (
             "weavert-scenario-local-assistant",
-            set(),
+            LOCAL_ASSISTANT_PROFILE_TOOLS,
             set(),
             {"remember"},
-            CODING_WORKSPACE_TOOLS,
+            CODING_PROFILE_TOOLS,
             CODING_PROFILE_AGENTS,
             CODING_PROFILE_SKILLS,
         ),
@@ -316,20 +457,60 @@ def test_reference_scenario_pack_shapes_activate_through_existing_runtime_packag
     assert tool_names.isdisjoint(forbidden_tools)
     assert agent_names.isdisjoint(forbidden_agents)
     assert skill_names.isdisjoint(forbidden_skills)
+    if shape.profile != "coding":
+        assert all(runtime.kernel.tool_registry.get(tool_name).traits.read_only for tool_name in expected_tools)
     assert "scenario_pack_recommended_first_party_packages_missing" not in _diagnostic_codes(runtime)
 
 
 @pytest.mark.parametrize(
-    "package_name",
     (
-        "weavert-scenario-coding",
-        "weavert-scenario-chat",
-        "weavert-scenario-local-assistant",
+        "package_name",
+        "materialized_tools",
+        "materialized_agents",
+        "materialized_skills",
+        "withheld_tools",
+        "withheld_agents",
+        "withheld_skills",
+    ),
+    (
+        (
+            "weavert-scenario-coding",
+            CODING_SHARED_GIT_TOOLS | CODING_SHARED_WORKSPACE_TOOLS,
+            CODING_SCENARIO_AGENTS,
+            CODING_SCENARIO_SKILLS,
+            CODING_WORKSPACE_TOOLS,
+            CODING_GENERIC_AGENTS,
+            CODING_GENERIC_SKILLS,
+        ),
+        (
+            "weavert-scenario-chat",
+            CHAT_PROFILE_TOOLS,
+            CHAT_SCENARIO_AGENTS,
+            CHAT_SCENARIO_SKILLS,
+            set(),
+            set(),
+            {"remember"},
+        ),
+        (
+            "weavert-scenario-local-assistant",
+            LOCAL_ASSISTANT_PROFILE_TOOLS,
+            set(),
+            set(),
+            set(),
+            set(),
+            {"remember"},
+        ),
     ),
 )
 def test_reference_scenario_pack_capabilities_publish_expected_profile_surfaces_and_warn_on_missing_recommended_packages(
     tmp_path: Path,
     package_name: str,
+    materialized_tools: set[str],
+    materialized_agents: set[str],
+    materialized_skills: set[str],
+    withheld_tools: set[str],
+    withheld_agents: set[str],
+    withheld_skills: set[str],
 ) -> None:
     runtime, shape, _runtime_root = _assemble_reference_runtime(
         tmp_path,
@@ -354,14 +535,16 @@ def test_reference_scenario_pack_capabilities_publish_expected_profile_surfaces_
         and entry.binding.name == f"{shape.package_name}.profile_guidance"
         for entry in execution_plan
     )
-    if package_name == "weavert-scenario-coding":
-        assert set(shape.workflow_agent_ids) <= _agent_names(runtime)
-        assert _agent_names(runtime).isdisjoint(CODING_GENERIC_AGENTS)
-        assert set(shape.workflow_skill_ids) <= _skill_names(runtime)
-        assert _skill_names(runtime).isdisjoint(CODING_GENERIC_SKILLS)
-    else:
-        assert _agent_names(runtime).isdisjoint(shape.expected_agents)
-        assert _skill_names(runtime).isdisjoint(shape.expected_skills)
+    tool_names = _tool_names(runtime)
+    agent_names = _agent_names(runtime)
+    skill_names = _skill_names(runtime)
+
+    assert materialized_tools <= tool_names
+    assert materialized_agents <= agent_names
+    assert materialized_skills <= skill_names
+    assert tool_names.isdisjoint(withheld_tools)
+    assert agent_names.isdisjoint(withheld_agents)
+    assert skill_names.isdisjoint(withheld_skills)
     assert "scenario_pack_recommended_first_party_packages_missing" in _diagnostic_codes(runtime)
 
 
@@ -418,6 +601,79 @@ def test_non_coding_reference_scenario_packs_publish_contextual_boundary_diagnos
     runtime, _shape, _runtime_root = _assemble_reference_runtime(tmp_path, package_name)
 
     assert "scenario_pack_default_profile_omits_coding_surfaces" in _diagnostic_codes(runtime)
+
+
+def test_grounded_chat_reference_stack_exercises_retrieval_web_and_memory_surfaces(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("weavert.reference_chat_tool_impls.urllib.request.urlopen", _grounding_urlopen)
+
+    runtime, shape, runtime_root = _assemble_reference_runtime(tmp_path, "weavert-scenario-chat")
+    assert shape.expected_tools == CHAT_RETRIEVAL_TOOLS + CHAT_WEB_TOOLS
+    assert set(shape.workflow_agent_ids) == CHAT_SCENARIO_AGENTS
+    assert set(shape.workflow_skill_ids) == CHAT_SCENARIO_SKILLS
+
+    search_tool = runtime.kernel.tool_registry.get("grounding_web_search")
+    search_result = asyncio.run(
+        search_tool.execute({"query": "refund policy"}, _tool_context(runtime, runtime_root))
+    )
+    assert search_result["results"][0]["url"] == "https://grounding.example.test/refund-policy"
+
+    fetch_tool = runtime.kernel.tool_registry.get("grounding_web_fetch")
+    fetched = asyncio.run(
+        fetch_tool.execute(
+            {"url": search_result["results"][0]["url"]},
+            _tool_context(runtime, runtime_root),
+        )
+    )
+    assert "30 days" in fetched["content"]
+
+    memory_service = runtime.services.resolve_memory_service()
+    support_agent = runtime.kernel.agent_registry.get("support-agent")
+    persisted = asyncio.run(
+        memory_service.persist_entries(
+            session_id="grounded-chat-stack",
+            agent=support_agent,
+            cwd=runtime_root,
+            entries=(
+                MemoryEntry(
+                    title="Refund preference",
+                    content="Support answers should mention the 30 day refund window when users ask about refunds.",
+                    metadata={"tags": ["refunds", "policy"]},
+                ),
+            ),
+        )
+    )
+    assert persisted
+
+    retrieve_tool = runtime.kernel.tool_registry.get("retrieve_context")
+    retrieval = asyncio.run(
+        retrieve_tool.execute(
+            {
+                "query": "refund window",
+                "items": [
+                    {
+                        "id": "web-refund-policy",
+                        "title": fetched["title"],
+                        "content": fetched["content"],
+                        "url": fetched["url"],
+                    }
+                ],
+            },
+            _tool_context(runtime, runtime_root),
+        )
+    )
+    assert len(retrieval["results"]) >= 2
+    assert {"external", "memory"} <= {item["source_kind"] for item in retrieval["results"]}
+
+    citations_tool = runtime.kernel.tool_registry.get("prepare_citations")
+    citations = asyncio.run(
+        citations_tool.execute({"items": retrieval["results"][:2]}, _tool_context(runtime, runtime_root))
+    )
+    assert citations["citations"][0]["label"] == "[1]"
+    assert "Refund policy" in citations["citation_block"]
+    assert "Refund preference" in citations["citation_block"]
 
 
 def test_reference_scenario_pack_capabilities_preserve_distinct_default_boundaries(

@@ -4,6 +4,16 @@ from dataclasses import dataclass
 from typing import Iterable
 
 from .diagnostics import Diagnostic, DiagnosticSeverity
+from .reference_chat_builtins import (
+    CHAT_RETRIEVAL_TOOLS,
+    CHAT_SCENARIO_AGENTS,
+    CHAT_SCENARIO_SKILLS,
+    CHAT_WEB_TOOLS,
+    chat_scenario_builtin_agents,
+    chat_scenario_builtin_skills,
+    chat_shared_retrieval_builtin_tools,
+    chat_web_grounding_builtin_tools,
+)
 from .reference_coding_builtins import (
     coding_scenario_builtin_agents,
     coding_scenario_builtin_skills,
@@ -166,28 +176,31 @@ REFERENCE_SHARED_PACKAGE_SHAPES: tuple[ReferenceSharedPackageShape, ...] = (
     ReferenceSharedPackageShape(
         package_name="weavert-shared-retrieval",
         capability_key="weavert.reference.shared.retrieval",
-        description="Reference retrieval-oriented shared package for chat and assistant scenario packs.",
+        description="Reference retrieval-oriented shared package for grounded chat and assistant scenario packs.",
         shared_surface_family="retrieval",
         intended_profiles=("chat", "local_assistant"),
         surfaces=(
-            "retrieval context contributors",
-            "search-oriented memory adapters",
-            "grounding helpers",
+            "grounding context retrieval",
+            "memory-backed evidence ranking",
+            "citation preparation helpers",
         ),
+        tool_ids=CHAT_RETRIEVAL_TOOLS,
         notes=(
-            "Keep retrieval adapters reusable so multiple scenario packs can compose them.",
-            "Do not treat retrieval ownership as a coding-only concern.",
+            "Keep retrieval adapters reusable so multiple scenario packs can compose them without copying prompt logic.",
+            "Local-assistant stacks can reuse the same retrieval surface without inheriting coding-oriented mutation tools.",
         ),
     ),
     ReferenceSharedPackageShape(
         package_name="weavert-bridge-web",
         capability_key="weavert.reference.bridge.web",
-        description="Reference shared package shape for web and HTTP capability surfaces.",
+        description="Reference shared package for read-only web search and fetch grounding surfaces.",
         shared_surface_family="web-bridge",
         intended_profiles=("chat", "local_assistant"),
-        surfaces=("web fetch bridge", "remote content access", "HTTP-aware grounding helpers"),
+        surfaces=("read-only web search", "bounded remote fetch", "HTTP-aware grounding helpers"),
+        tool_ids=CHAT_WEB_TOOLS,
         notes=(
             "Scenario packs should consume this bridge instead of duplicating web adapters.",
+            "The default posture stays read-only and chat-safe even when external grounding is enabled.",
         ),
     ),
     ReferenceSharedPackageShape(
@@ -328,13 +341,13 @@ REFERENCE_SCENARIO_PACK_SHAPES: tuple[ReferenceScenarioPackShape, ...] = (
             "weavert-shared-retrieval",
             "weavert-bridge-web",
         ),
-        expected_tools=(),
-        expected_agents=(),
-        expected_skills=("remember",),
+        expected_tools=(*CHAT_RETRIEVAL_TOOLS, *CHAT_WEB_TOOLS),
+        expected_agents=CHAT_SCENARIO_AGENTS,
+        expected_skills=("remember", *CHAT_SCENARIO_SKILLS),
         default_boundaries=(
             "read-mostly by default",
             "no implicit workspace mutation or shell execution surfaces",
-            "grounding and retrieval are shared-package concerns",
+            "retrieval and web grounding stay shared-package concerns while workflow roles stay scenario-pack owned",
         ),
         app_owned_wiring=(
             "model provider selection",
@@ -353,8 +366,11 @@ REFERENCE_SCENARIO_PACK_SHAPES: tuple[ReferenceScenarioPackShape, ...] = (
             "Scenario profile: AI chat.",
             "Preserve read-mostly defaults and avoid implicit workspace mutation or shell execution.",
         ),
+        workflow_agent_ids=CHAT_SCENARIO_AGENTS,
+        workflow_skill_ids=CHAT_SCENARIO_SKILLS,
         notes=(
             "Chat inherits memory and retrieval posture without inheriting coding defaults.",
+            "The chat scenario pack owns workflow agents and skills, while shared retrieval/web packages own the grounding tools.",
         ),
     ),
     ReferenceScenarioPackShape(
@@ -370,7 +386,7 @@ REFERENCE_SCENARIO_PACK_SHAPES: tuple[ReferenceScenarioPackShape, ...] = (
             "weavert-bridge-local-os",
             "weavert-bridge-pim",
         ),
-        expected_tools=(),
+        expected_tools=CHAT_RETRIEVAL_TOOLS,
         expected_agents=(),
         expected_skills=("remember",),
         default_boundaries=(
@@ -688,6 +704,10 @@ def reference_scenario_runtime_pack_manifests() -> tuple[RuntimePackageManifest,
 
 
 def _shared_package_builtin_tools(package_name: str) -> tuple:
+    if package_name == "weavert-shared-retrieval":
+        return chat_shared_retrieval_builtin_tools()
+    if package_name == "weavert-bridge-web":
+        return chat_web_grounding_builtin_tools()
     if package_name == "weavert-shared-git":
         return shared_git_builtin_tools()
     if package_name == "weavert-shared-workspace-intelligence":
@@ -713,12 +733,16 @@ def _scenario_pack_builtin_tools(package_name: str) -> tuple:
 def _scenario_pack_builtin_agents(package_name: str) -> tuple:
     if package_name == "weavert-scenario-coding":
         return coding_scenario_builtin_agents()
+    if package_name == "weavert-scenario-chat":
+        return chat_scenario_builtin_agents()
     return ()
 
 
 def _scenario_pack_builtin_skills(package_name: str) -> tuple:
     if package_name == "weavert-scenario-coding":
         return coding_scenario_builtin_skills()
+    if package_name == "weavert-scenario-chat":
+        return chat_scenario_builtin_skills()
     return ()
 
 

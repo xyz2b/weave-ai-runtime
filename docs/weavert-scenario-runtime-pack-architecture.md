@@ -120,9 +120,11 @@ scenario pack 继续回答：
 
 - `weavert-shared-retrieval`
   - retrieval-oriented shared package example
+  - 暴露 `retrieve_context` / `prepare_citations`
   - 适合 chat / local assistant 复用
 - `weavert-bridge-web`
-  - web / HTTP capability surface
+  - read-only web / HTTP grounding surface
+  - 暴露 `grounding_web_search` / `grounding_web_fetch`
 - `weavert-bridge-browser`
   - browser bridge surface
 - `weavert-bridge-local-os`
@@ -214,16 +216,22 @@ shared-package dependencies:
 expected profile tools / agents / skills
 (after recommended first-party packages are enabled):
 
-- tools: none by default
-- agents: none by default
-- skills: `remember`
+- tools:
+  - shared retrieval: `retrieve_context`, `prepare_citations`
+  - shared web grounding: `grounding_web_search`, `grounding_web_fetch`
+- agents:
+  - scenario-pack-owned workflow roles: `researcher`, `support-agent`, `memory-curator`
+- skills:
+  - shared first-party baseline: `remember`
+  - scenario-pack-owned workflow skills: `chat-summarize`, `answer-with-citations`, `clarify-request`, `capture-preferences`
 
 default boundaries:
 
 - read-mostly by default
 - no implicit workspace writes
 - no implicit shell execution
-- grounding / retrieval remain shared-package concerns
+- retrieval / web grounding 继续归 shared package 所有
+- workflow agents / skills 继续归 chat scenario pack 所有
 - package-owned profile guidance 通过 hook-stage context contributor 注入
 
 ### 5.3 Local assistant pack
@@ -246,7 +254,8 @@ shared-package dependencies:
 expected profile tools / agents / skills
 (after recommended first-party packages are enabled):
 
-- tools: none by default
+- tools:
+  - shared retrieval: `retrieve_context`, `prepare_citations`
 - agents: none by default
 - skills: `remember`
 
@@ -318,6 +327,7 @@ chat 与 local assistant 只需要把：
 
 - scenario-pack capability metadata
 - shared-package dependency graph
+- shared-package-owned grounding tools
 - scenario-pack-owned workflow agents / skills
 - package-owned profile guidance context contributor
 - scenario-pack-specific warning diagnostics
@@ -326,7 +336,10 @@ chat 与 local assistant 只需要把：
 换句话说，coding pack 自己拥有的 `coding-planner` / `reviewer` / `verifier` 和
 `coding-loop` / `review-change` / `verify-change` / `task-discipline` / `repo-onboard`
 仍然会出现；但 `plan` / `verification` / `planner` / `coordinator` / `worker` 等 generic
-first-party surfaces 仍然需要 app-owned package selection。
+first-party surfaces 仍然需要 app-owned package selection。chat pack 也是一样：
+`researcher` / `support-agent` / `memory-curator` 与它们的 workflow skills 会随 scenario pack
+出现，`retrieve_context` / `prepare_citations` / `grounding_web_search` / `grounding_web_fetch`
+会随 shared package 依赖出现，但 `remember` 仍然依赖你显式启用 `weavert-memory`。
 
 注意这里的 ownership split：
 

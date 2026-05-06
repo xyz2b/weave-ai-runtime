@@ -296,22 +296,33 @@ shared package 示例：
 ```python
 manifest_metadata = {
     "package_candidate": {
-        "candidate_id": "reference::weavert-bridge-web",
+        "candidate_id": "reference::weavert-shared-retrieval",
         "version": "1.0.0",
     },
     "reference_kind": "shared-package",
-    "shared_surface_family": "web-bridge",
+    "shared_surface_family": "retrieval",
     "intended_profiles": ["chat", "local_assistant"],
-    "tool_ids": [],
+    "tool_ids": ["retrieve_context", "prepare_citations"],
     "agent_ids": [],
     "skill_ids": [],
     "shared_surfaces": [
-        "web fetch bridge",
-        "remote content access",
-        "HTTP-aware grounding helpers",
+        "grounding context retrieval",
+        "memory-backed evidence ranking",
+        "citation preparation helpers",
     ],
 }
 ```
+
+grounded chat 这类 profile 最值得明确写出来的 ownership split 是：
+
+- shared package
+  - 拥有 retrieval / web grounding 这类低层 read-mostly tool surface
+  - 例如 `weavert-shared-retrieval` 发布 `retrieve_context` / `prepare_citations`
+  - 例如 `weavert-bridge-web` 发布 `grounding_web_search` / `grounding_web_fetch`
+- scenario pack
+  - 拥有 profile-specific workflow agents / skills
+  - 同时把 shared package tool inventory 扁平地镜像进 `expected_tools`
+  - 这样 caller inspect capability payload 时，能同时看到 shared grounding surface 和 scenario-owned workflow role
 
 scenario pack 示例：
 
@@ -440,7 +451,7 @@ app_owned_wiring = coding_capability["app_owned_wiring"]
 - 要看 runtime selection / candidate truth -> 先看 `package_candidate`
 - 要看 package graph 里当前投影出来的 surface contract -> 看 `package_manifests`
 - 要看 scenario profile 直接对 caller 承诺的 expected surface / wiring guidance -> 看 capability payload
-  里的 `expected_tools` / `expected_agents` / `expected_skills` / `app_owned_wiring`
+里的 `expected_tools` / `expected_agents` / `expected_skills` / `app_owned_wiring`
 
 同时要把 stable core protocol catalog 和 package capability 分开看。当前 runtime 会把 stable core protocol 单独发布到：
 
