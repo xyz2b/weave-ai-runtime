@@ -7,3 +7,7 @@ name = "weavert-toolchain-scripts"
 version = "0.1.0"
 description = "Repository support scripts for the WeaveRT toolchain family."
 requires-python = ">=3.11"
+dependencies = ["weavert"]
+
+[tool.setuptools]
+py-modules = ["check_workspace_layout", "openai_responses_live_smoke"]
