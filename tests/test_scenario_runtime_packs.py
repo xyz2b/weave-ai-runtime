@@ -14,6 +14,7 @@ from weavert.reference_chat_builtins import (
     CHAT_SCENARIO_SKILLS as CHAT_SCENARIO_SKILL_NAMES,
     CHAT_WEB_TOOLS,
 )
+from weavert.reference_chat_tool_impls import validate_grounding_web_fetch
 from weavert.runtime_kernel import RuntimeConfig, assemble_runtime
 from weavert.runtime_package_resolution import PACKAGE_CANDIDATE_METADATA_KEY
 from weavert.scenario_runtime_packs import (
@@ -66,6 +67,7 @@ def _assemble_reference_runtime(
     package_name: str,
     *,
     include_recommended_packages: bool = True,
+    extra_enabled_packages: set[str] | None = None,
     model_client=None,
 ):
     shape = reference_scenario_pack_shape(package_name)
@@ -76,6 +78,8 @@ def _assemble_reference_runtime(
         if include_recommended_packages
         else set()
     )
+    if extra_enabled_packages:
+        enabled_packages.update(extra_enabled_packages)
     runtime = assemble_runtime(
         RuntimeConfig(
             working_directory=runtime_root,
@@ -156,8 +160,13 @@ def _grounding_urlopen(request, timeout=10):  # pragma: no cover - exercised thr
     url = request.full_url if hasattr(request, "full_url") else str(request)
     if "duckduckgo.com" in url:
         return _FakeUrlopenResponse(
-            '<html><body><a class="result__a" href="https://grounding.example.test/refund-policy">'
-            "Refund policy</a></body></html>"
+            (
+                '<html><body><a class="result__a" '
+                'href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fgrounding.example.test%2Frefund-policy">'
+                "Refund policy</a>"
+                '<a class="result__a" href="http://127.0.0.1:8000/admin">Unsafe internal page</a>'
+                "</body></html>"
+            )
         )
     if url == "https://grounding.example.test/refund-policy":
         return _FakeUrlopenResponse(
@@ -270,7 +279,7 @@ def test_grounded_reference_shared_packages_can_be_admitted_selected_and_execute
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr("weavert.reference_chat_tool_impls.urllib.request.urlopen", _grounding_urlopen)
+    monkeypatch.setattr("weavert.reference_chat_tool_impls._grounding_urlopen", _grounding_urlopen)
 
     retrieval_runtime, retrieval_shape, retrieval_root = _assemble_shared_reference_runtime(
         tmp_path,
@@ -603,11 +612,54 @@ def test_non_coding_reference_scenario_packs_publish_contextual_boundary_diagnos
     assert "scenario_pack_default_profile_omits_coding_surfaces" in _diagnostic_codes(runtime)
 
 
+@pytest.mark.parametrize(
+    "package_name",
+    (
+        "weavert-scenario-chat",
+        "weavert-scenario-local-assistant",
+    ),
+)
+def test_non_coding_reference_scenario_packs_warn_when_coding_surfaces_are_enabled(
+    tmp_path: Path,
+    package_name: str,
+) -> None:
+    runtime, _shape, _runtime_root = _assemble_reference_runtime(
+        tmp_path,
+        package_name,
+        extra_enabled_packages={"weavert-devtools", "weavert-planning"},
+    )
+
+    diagnostic_codes = _diagnostic_codes(runtime)
+    assert "scenario_pack_non_coding_profile_admits_coding_surfaces" in diagnostic_codes
+    assert "scenario_pack_default_profile_omits_coding_surfaces" not in diagnostic_codes
+    assert runtime.kernel.tool_registry.get("bash") is not None
+    assert runtime.kernel.tool_registry.get("edit") is not None
+
+
+@pytest.mark.parametrize(
+    "url",
+    (
+        "http://127.0.0.1:8000/admin",
+        "http://169.254.169.254/latest/meta-data/",
+        "http://10.0.0.5/internal",
+        "https://metadata.google.internal/computeMetadata/v1/",
+    ),
+)
+def test_grounding_web_fetch_validation_rejects_non_public_hosts(url: str) -> None:
+    outcome = validate_grounding_web_fetch(
+        {"url": url},
+        ToolContext(session_id="grounding-validation", turn_id="turn-1", agent_name="tester", cwd=Path.cwd()),
+    )
+
+    assert outcome.valid is False
+    assert outcome.message == "Grounding fetch only supports public web hosts"
+
+
 def test_grounded_chat_reference_stack_exercises_retrieval_web_and_memory_surfaces(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr("weavert.reference_chat_tool_impls.urllib.request.urlopen", _grounding_urlopen)
+    monkeypatch.setattr("weavert.reference_chat_tool_impls._grounding_urlopen", _grounding_urlopen)
 
     runtime, shape, runtime_root = _assemble_reference_runtime(tmp_path, "weavert-scenario-chat")
     assert shape.expected_tools == CHAT_RETRIEVAL_TOOLS + CHAT_WEB_TOOLS

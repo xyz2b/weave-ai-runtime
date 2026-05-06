@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import html
+import ipaddress
 import re
+import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Mapping, Sequence
@@ -47,6 +49,22 @@ _HTML_TAG_RE = re.compile(r"<[^>]+>")
 _WHITESPACE_RE = re.compile(r"\s+")
 _MAX_FETCH_BYTES = 256_000
 _DEFAULT_FETCH_CHARS = 12_000
+_GROUNDING_SEARCH_BASE_URL = "https://duckduckgo.com/html/"
+_GROUNDING_REDIRECT_HOSTS = frozenset({"duckduckgo.com", "www.duckduckgo.com"})
+_GROUNDING_BLOCKED_HOSTS = frozenset(
+    {
+        "localhost",
+        "localhost.localdomain",
+        "metadata.google.internal",
+    }
+)
+_GROUNDING_BLOCKED_HOST_SUFFIXES = (
+    ".localhost",
+    ".localdomain",
+    ".local",
+    ".internal",
+    ".home.arpa",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -165,11 +183,11 @@ async def grounding_web_search_tool(tool_input: dict[str, Any], _: ToolContext) 
     query = str(tool_input["query"]).strip()
     limit = max(1, min(int(tool_input.get("limit", 5)), 8))
     encoded = urllib.parse.urlencode({"q": query})
-    url = f"https://duckduckgo.com/html/?{encoded}"
+    url = f"{_GROUNDING_SEARCH_BASE_URL}?{encoded}"
 
     def search() -> dict[str, Any]:
         request = urllib.request.Request(url, headers={"User-Agent": "weavert/0.1"})
-        with urllib.request.urlopen(request, timeout=10) as response:
+        with _grounding_urlopen(request, timeout=10) as response:
             body = response.read().decode("utf-8", errors="replace")
         results: list[dict[str, Any]] = []
         for match in re.finditer(
@@ -177,8 +195,8 @@ async def grounding_web_search_tool(tool_input: dict[str, Any], _: ToolContext) 
             body,
         ):
             title = html.unescape(_HTML_TAG_RE.sub("", match.group("title"))).strip()
-            href = html.unescape(match.group("href")).strip()
-            if not href:
+            href = _normalize_grounding_url(match.group("href"))
+            if href is None or _grounding_url_validation_error(href) is not None:
                 continue
             results.append({"title": title or href, "url": href})
             if len(results) >= limit:
@@ -189,28 +207,37 @@ async def grounding_web_search_tool(tool_input: dict[str, Any], _: ToolContext) 
 
 
 def validate_grounding_web_fetch(tool_input: dict[str, Any], _: ToolContext) -> ValidationOutcome:
-    url = str(tool_input.get("url") or "").strip()
-    if not url.startswith(("http://", "https://")):
+    url = _normalize_grounding_url(tool_input.get("url"))
+    if url is None:
         return ValidationOutcome(False, "Only http:// and https:// URLs are supported")
+    validation_error = _grounding_url_validation_error(url)
+    if validation_error is not None:
+        return ValidationOutcome(False, validation_error)
     return ValidationOutcome(True)
 
 
 async def grounding_web_fetch_tool(tool_input: dict[str, Any], _: ToolContext) -> dict[str, Any]:
     timeout = max(1, int(tool_input.get("timeout_ms", 10_000))) / 1000
     max_chars = max(500, min(int(tool_input.get("max_chars", _DEFAULT_FETCH_CHARS)), 32_000))
-    url = str(tool_input["url"]).strip()
+    url = _normalize_grounding_url(tool_input.get("url"))
+    if url is None:
+        raise ValueError("Only http:// and https:// URLs are supported")
+    validation_error = _grounding_url_validation_error(url)
+    if validation_error is not None:
+        raise ValueError(validation_error)
 
     def fetch() -> dict[str, Any]:
         request = urllib.request.Request(url, headers={"User-Agent": "weavert/0.1"})
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with _grounding_urlopen(request, timeout=timeout) as response:
             raw = response.read(_MAX_FETCH_BYTES + 1)
             content_type = response.headers.get_content_type()
             body = raw.decode("utf-8", errors="replace")
             normalized = _normalize_remote_text(body, content_type=content_type)
             truncated = len(raw) > _MAX_FETCH_BYTES or len(normalized) > max_chars
             title = _extract_html_title(body) if "html" in content_type else None
+            resolved_url = _normalize_grounding_url(_response_url(response)) or url
             return {
-                "url": url,
+                "url": resolved_url,
                 "status": getattr(response, "status", 200),
                 "content_type": content_type,
                 "title": title,
@@ -344,6 +371,72 @@ def _render_citation(citation: Mapping[str, Any]) -> str:
     if excerpt:
         return f"{citation['label']} {title}{suffix}: {excerpt}"
     return f"{citation['label']} {title}{suffix}"
+
+
+def _normalize_grounding_url(value: Any) -> str | None:
+    candidate = _normalize_optional_string(value)
+    if candidate is None:
+        return None
+    candidate = html.unescape(candidate)
+    if candidate.startswith("//"):
+        candidate = f"https:{candidate}"
+    elif candidate.startswith("/"):
+        candidate = urllib.parse.urljoin(_GROUNDING_SEARCH_BASE_URL, candidate)
+    parsed = urllib.parse.urlparse(candidate)
+    scheme = parsed.scheme.lower()
+    if scheme not in {"http", "https"} or not parsed.netloc:
+        return None
+    hostname = (parsed.hostname or "").rstrip(".").lower()
+    if hostname in _GROUNDING_REDIRECT_HOSTS and parsed.path in {"/l", "/l/"}:
+        redirect_targets = urllib.parse.parse_qs(parsed.query).get("uddg")
+        if redirect_targets:
+            return _normalize_grounding_url(redirect_targets[0])
+    return urllib.parse.urlunparse(parsed._replace(fragment=""))
+
+
+def _grounding_url_validation_error(url: str) -> str | None:
+    parsed = urllib.parse.urlparse(url)
+    hostname = (parsed.hostname or "").rstrip(".").lower()
+    if not hostname:
+        return "Grounding fetch requires a public web hostname"
+    if parsed.username is not None or parsed.password is not None:
+        return "Grounding fetch does not allow embedded URL credentials"
+    if hostname in _GROUNDING_BLOCKED_HOSTS or any(
+        hostname.endswith(suffix) for suffix in _GROUNDING_BLOCKED_HOST_SUFFIXES
+    ):
+        return "Grounding fetch only supports public web hosts"
+    try:
+        address = ipaddress.ip_address(hostname)
+    except ValueError:
+        if "." not in hostname:
+            return "Grounding fetch only supports public web hosts"
+        return None
+    if not address.is_global:
+        return "Grounding fetch only supports public web hosts"
+    return None
+
+
+class _SafeGroundingRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        normalized = _normalize_grounding_url(newurl)
+        if normalized is None:
+            raise urllib.error.HTTPError(newurl, code, "Only http:// and https:// URLs are supported", headers, fp)
+        validation_error = _grounding_url_validation_error(normalized)
+        if validation_error is not None:
+            raise urllib.error.HTTPError(normalized, code, validation_error, headers, fp)
+        return super().redirect_request(req, fp, code, msg, headers, normalized)
+
+
+def _grounding_urlopen(request: urllib.request.Request, *, timeout: float | int):
+    opener = urllib.request.build_opener(_SafeGroundingRedirectHandler())
+    return opener.open(request, timeout=timeout)
+
+
+def _response_url(response: Any) -> str | None:
+    resolver = getattr(response, "geturl", None)
+    if callable(resolver):
+        return _normalize_optional_string(resolver())
+    return getattr(response, "url", None)
 
 
 def _normalize_remote_text(body: str, *, content_type: str) -> str:

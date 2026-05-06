@@ -568,6 +568,11 @@ def build_reference_scenario_pack_manifest(name: str) -> RuntimePackageManifest:
             for package_name in shape.recommended_first_party_packages
             if package_name not in context.selected_packages
         )
+        admitted_coding_packages = tuple(
+            package_name
+            for package_name in ("weavert-devtools", "weavert-planning")
+            if package_name in context.selected_packages
+        )
         diagnostics: list[Diagnostic] = []
         if missing_recommended_packages:
             diagnostics.append(
@@ -590,11 +595,27 @@ def build_reference_scenario_pack_manifest(name: str) -> RuntimePackageManifest:
                     },
                 )
             )
-        elif (
-            shape.profile != "coding"
-            and "weavert-devtools" not in context.selected_packages
-            and "weavert-planning" not in context.selected_packages
-        ):
+        if shape.profile != "coding" and admitted_coding_packages:
+            diagnostics.append(
+                Diagnostic(
+                    severity=DiagnosticSeverity.WARNING,
+                    code="scenario_pack_non_coding_profile_admits_coding_surfaces",
+                    message=(
+                        f"Scenario pack '{shape.package_name}' is a non-coding profile, but app-owned "
+                        "wiring admitted coding-oriented devtools or planning surfaces: "
+                        f"{', '.join(admitted_coding_packages)}"
+                    ),
+                    definition_type="runtime_package_manifest",
+                    source="package",
+                    location=shape.package_name,
+                    details={
+                        "scenario_profile": shape.profile,
+                        "admitted_first_party_packages": list(admitted_coding_packages),
+                        "selected_packages": list(context.selected_packages),
+                    },
+                )
+            )
+        elif shape.profile != "coding" and not missing_recommended_packages:
             diagnostics.append(
                 Diagnostic(
                     severity=DiagnosticSeverity.WARNING,
