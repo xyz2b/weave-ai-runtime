@@ -7,15 +7,11 @@ from pathlib import Path
 
 import pytest
 
-from weavert import (
-    RuntimeAssemblyPresetName,
-    generate_starter_scaffold,
-    official_starter_scaffold_catalog,
-)
-from weavert.starter_scaffolds import main as starter_main
+from weavert.runtime_kernel import RuntimeAssemblyPresetName
+from weavert_starter import generate_starter_scaffold, main as starter_main, official_starter_scaffold_catalog
 
 ROOT = Path(__file__).resolve().parents[1]
-SRC = ROOT / "packages" / "core" / "src"
+SRC_ROOTS = tuple(sorted(ROOT.glob("packages/**/src")))
 PYTHON = sys.executable
 
 
@@ -29,7 +25,7 @@ def _clean_env() -> dict[str, str]:
 
 def _script_env() -> dict[str, str]:
     env = _clean_env()
-    pythonpath = str(SRC)
+    pythonpath = os.pathsep.join(str(path) for path in SRC_ROOTS)
     existing = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = pythonpath if not existing else f"{pythonpath}{os.pathsep}{existing}"
     return env
@@ -80,6 +76,8 @@ def test_generate_starter_scaffold_uses_canonical_layout_and_public_imports(tmp_
     readme = (result.destination / "README.md").read_text(encoding="utf-8")
     assert "python3 -m venv .venv" in readme
     assert "python -m pip install -e /path/to/weave-ai-runtime/packages/core" in readme
+    if shape != "live-smoke":
+        assert "python -m pip install -e /path/to/weave-ai-runtime/packages/toolchain/testing" in readme
 
     python_files = sorted(result.destination.rglob("*.py"))
     assert python_files
@@ -197,6 +195,16 @@ def test_generated_minimal_starter_runs_in_a_fresh_virtualenv_after_installing_l
         env=_clean_env(),
     )
     assert install_runtime.returncode == 0, install_runtime.stderr
+
+    install_testing = subprocess.run(
+        [str(venv_python), "-m", "pip", "install", "-q", "-e", str(ROOT / "packages" / "toolchain" / "testing")],
+        cwd=tmp_path,
+        check=False,
+        capture_output=True,
+        text=True,
+        env=_clean_env(),
+    )
+    assert install_testing.returncode == 0, install_testing.stderr
 
     install_project = subprocess.run(
         [str(venv_python), "-m", "pip", "install", "-q", "-e", str(result.destination)],

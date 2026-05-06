@@ -13,7 +13,7 @@ from weavert.runtime_kernel import (
     RuntimeDistribution,
     assemble_runtime,
 )
-from weavert.testing import ScriptedModelClient, text_batch, tool_call_batch
+from weavert_testing import ScriptedModelClient, text_batch, tool_call_batch
 
 _VISIBLE_TOOLS: tuple[str, ...] = ()
 _CHILD_SUMMARY = "worker summary: scoped tools only"

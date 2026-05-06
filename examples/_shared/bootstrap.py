@@ -4,9 +4,8 @@ import sys
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-SRC_ROOT = PROJECT_ROOT / "packages" / "core" / "src"
-
 sys.dont_write_bytecode = True
 
-if str(SRC_ROOT) not in sys.path:
-    sys.path.insert(0, str(SRC_ROOT))
+for src_root in reversed(sorted(PROJECT_ROOT.glob("packages/**/src"))):
+    if str(src_root) not in sys.path:
+        sys.path.insert(0, str(src_root))

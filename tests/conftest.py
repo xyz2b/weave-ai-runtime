@@ -5,9 +5,10 @@ import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SRC = ROOT / "packages" / "core" / "src"
-if str(SRC) not in sys.path:
-    sys.path.insert(0, str(SRC))
+SRC_ROOTS = tuple(sorted(ROOT.glob("packages/**/src")))
+for src_root in reversed(SRC_ROOTS):
+    if str(src_root) not in sys.path:
+        sys.path.insert(0, str(src_root))
 
 
 @pytest.fixture(autouse=True)

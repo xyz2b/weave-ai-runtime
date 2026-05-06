@@ -8,7 +8,7 @@ import pytest
 from weavert.contracts import TurnContext
 from weavert.definitions import AgentDefinition
 from weavert.runtime_kernel import BuiltinPackConfig, ModelRouteBinding, RuntimeConfig, WorkflowRunReport
-from weavert.testing import (
+from weavert_testing import (
     ScriptedModelClient,
     ScriptedModelExhaustionError,
     assert_child_summary,

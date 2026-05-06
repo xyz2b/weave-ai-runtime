@@ -22,7 +22,7 @@ from weavert.runtime_kernel import (
     RuntimeConfig,
     assemble_runtime,
 )
-from weavert.scenario_runtime_packs import reference_scenario_runtime_pack_manifests
+from weavert_kit_coding import coding_scenario_runtime_pack_manifests
 from weavert.session_runtime import InboundEvent, InboundEventType
 from weavert.turn_engine.engine import TurnStreamEventType
 
@@ -257,7 +257,7 @@ def assemble_demo_runtime(
     config.discovery_sources = (
         DefinitionSourcePaths(DefinitionSource.PROJECT, workspace_root / ".weavert"),
     )
-    config.extra_package_manifests = reference_scenario_runtime_pack_manifests()
+    config.extra_package_manifests = coding_scenario_runtime_pack_manifests()
     config.requested_packages.add("weavert-scenario-coding")
     config.builtins = BuiltinPackConfig(
         tool_replacements={"bash": build_code_assistant_bash_replacement()},

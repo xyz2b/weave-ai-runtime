@@ -5,7 +5,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SCRIPT = ROOT / "scripts" / "check_workspace_layout.py"
+SCRIPT = ROOT / "packages" / "toolchain" / "scripts" / "check_workspace_layout.py"
 
 
 def _load_module():

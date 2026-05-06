@@ -7,7 +7,7 @@ from examples._shared.common import (
     run_async,
 )
 from weavert import AgentDefinition, AllowAllPermissionService
-from weavert.testing import (
+from weavert_testing import (
     ScriptedModelClient,
     copied_fixture_workspace,
     extract_tool_result,

@@ -307,9 +307,9 @@ scope_memory = reviewer.scope_summary.memory_scope if reviewer and reviewer.scop
 
 raw transcript 和 child-run history 仍然是正式底层契约；projection helper 只是把常见问法收敛成稳定、可复用的上层读接口。
 
-#### 2.2.2 Workflow testing kit：优先用 `weavert.testing` 走 deterministic offline validation
+#### 2.2.2 Workflow testing kit：优先用 `weavert_testing` 走 deterministic offline validation
 
-从 `2026-05-04` 起，runtime 还提供了一个正式的 `weavert.testing` namespace，把之前散落在 demo-private helper 里的离线 workflow 验证路径产品化成了公共 surface：
+从 `2026-05-04` 起，runtime 还提供了一个正式的 `weavert_testing` namespace，把之前散落在 demo-private helper 里的离线 workflow 验证路径产品化成了公共 surface：
 
 - scripted model helper：`ScriptedModelClient`
 - fixture workspace helper：`copied_fixture_workspace(...)`、`temporary_workspace(...)`
@@ -323,7 +323,7 @@ raw transcript 和 child-run history 仍然是正式底层契约；projection he
 import asyncio
 from pathlib import Path
 
-from weavert.testing import (
+from weavert_testing import (
     ScriptedModelClient,
     assert_tool_outcome,
     copied_fixture_workspace,

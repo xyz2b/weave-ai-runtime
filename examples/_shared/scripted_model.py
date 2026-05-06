@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from weavert.testing import (
+from weavert_testing import (
     BatchFactory,
     BatchSpec,
     ScriptedModelClient,

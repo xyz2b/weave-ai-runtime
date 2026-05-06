@@ -284,14 +284,6 @@ from .result_projections import (
     latest_tool_outcome,
     terminal_failure,
 )
-from .starter_scaffolds import (
-    StarterScaffoldDefinition,
-    StarterScaffoldGenerationResult,
-    StarterScaffoldName,
-    generate_starter_scaffold,
-    official_starter_scaffold,
-    official_starter_scaffold_catalog,
-)
 from .workflow_observability import (
     WORKFLOW_EXTENSION_EVENT_NAMESPACE,
     WORKFLOW_EXTENSION_EVENT_SCHEMA_VERSION,
@@ -680,9 +672,6 @@ __all__ = [
     "SlashCommandInvocationProvider",
     "StaticInvocationProvider",
     "StoreBinding",
-    "StarterScaffoldDefinition",
-    "StarterScaffoldGenerationResult",
-    "StarterScaffoldName",
     "RouteContextWindowPolicy",
     "TokenEstimationHint",
     "ToolCallEnvelope",
@@ -738,7 +727,6 @@ __all__ = [
     "deny_all_policy",
     "distribution_spec",
     "final_assistant_text",
-    "generate_starter_scaffold",
     "is_advanced_hook_source",
     "is_advanced_phase",
     "is_stable_public_hook_source",
@@ -746,8 +734,6 @@ __all__ = [
     "latest_skill_outcome",
     "latest_tool_outcome",
     "normalize_runtime_distribution",
-    "official_starter_scaffold",
-    "official_starter_scaffold_catalog",
     "official_runtime_assembly_preset",
     "official_runtime_assembly_presets",
     "official_runtime_distribution_catalog",

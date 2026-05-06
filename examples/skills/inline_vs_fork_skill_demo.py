@@ -13,7 +13,7 @@ from weavert.runtime_kernel import (
     RuntimeDistribution,
     assemble_runtime,
 )
-from weavert.testing import ScriptedModelClient, text_batch
+from weavert_testing import ScriptedModelClient, text_batch
 
 INLINE_TEXT = "inline note for demo-user"
 FORK_SUMMARY = "forked child wrote a scoped summary"

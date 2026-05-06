@@ -19,12 +19,23 @@ testpaths = ["tests"]
 addopts = "-q"
 
 [tool.weavert_workspace]
-concrete_package_roots = ["packages/core"]
-family_placeholder_roots = [
-  "packages/framework-packs",
-  "packages/product-kits",
-  "packages/toolchain",
+concrete_package_roots = [
+  "packages/core",
+  "packages/product-kits/chat",
+  "packages/product-kits/coding",
+  "packages/product-kits/common/browser",
+  "packages/product-kits/common/git",
+  "packages/product-kits/common/local-os",
+  "packages/product-kits/common/pim",
+  "packages/product-kits/common/retrieval",
+  "packages/product-kits/common/web",
+  "packages/product-kits/common/workspace-intelligence",
+  "packages/product-kits/local-assistant",
+  "packages/toolchain/scripts",
+  "packages/toolchain/starter",
+  "packages/toolchain/testing",
 ]
+family_placeholder_roots = ["packages/framework-packs"]
 docs_root = "docs"
 tests_root = "tests"
 examples_root = "examples"

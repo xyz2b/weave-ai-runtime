@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "weavert-kit-coding"
+version = "0.1.0"
+description = "Coding-oriented product kit for extracted WeaveRT scenario packs."
+requires-python = ">=3.11"
+dependencies = [
+  "weavert",
+  "weavert-kit-common-git",
+  "weavert-kit-common-workspace-intelligence",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]

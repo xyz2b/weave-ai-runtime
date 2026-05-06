@@ -19,7 +19,7 @@ from weavert.runtime_kernel import (
     RuntimeDistribution,
     assemble_runtime,
 )
-from weavert.testing import ScriptedModelClient, extract_tool_result, text_batch, tool_call_batch
+from weavert_testing import ScriptedModelClient, extract_tool_result, text_batch, tool_call_batch
 
 
 def _echo_tool() -> ToolDefinition:

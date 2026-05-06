@@ -8,7 +8,7 @@ from examples._shared.common import (
     run_async,
     temporary_workspace,
 )
-from weavert.testing import ScriptedModelClient, text_batch, tool_call_batch
+from weavert_testing import ScriptedModelClient, text_batch, tool_call_batch
 
 from weavert import ToolDefinition, ToolTraits
 from weavert.runtime_kernel import BuiltinPackConfig, RuntimeConfig, assemble_runtime

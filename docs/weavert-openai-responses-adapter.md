@@ -134,7 +134,7 @@ print(report.to_dict())
 仓库现在还附带了一个真实 Responses live smoke：
 
 ```bash
-python3 scripts/openai_responses_live_smoke.py
+python3 packages/toolchain/scripts/openai_responses_live_smoke.py
 ```
 
 它会直接用默认完整工具集跑一次：

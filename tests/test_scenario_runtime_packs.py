@@ -9,44 +9,99 @@ from typing import Any
 
 import pytest
 
-import weavert.reference_chat_tool_impls as reference_chat_tool_impls
 from weavert.contracts import MessageRole
 from weavert.definitions import ToolRiskLevel
 from weavert.memory.models import MemoryEntry
-from weavert.reference_chat_builtins import (
-    CHAT_RETRIEVAL_TOOLS,
-    CHAT_SCENARIO_AGENTS as CHAT_SCENARIO_AGENT_NAMES,
-    CHAT_SCENARIO_SKILLS as CHAT_SCENARIO_SKILL_NAMES,
-    CHAT_WEB_TOOLS,
-)
-from weavert.reference_local_assistant_builtins import (
-    LOCAL_ASSISTANT_BROWSER_HOST_FACET,
-    LOCAL_ASSISTANT_BROWSER_TOOLS,
-    LOCAL_ASSISTANT_LOCAL_OS_HOST_FACET,
-    LOCAL_ASSISTANT_LOCAL_OS_TOOLS,
-    LOCAL_ASSISTANT_PIM_HOST_FACET,
-    LOCAL_ASSISTANT_PIM_TOOLS,
-    LOCAL_ASSISTANT_SCENARIO_AGENTS as LOCAL_ASSISTANT_SCENARIO_AGENT_NAMES,
-    LOCAL_ASSISTANT_SCENARIO_SKILLS as LOCAL_ASSISTANT_SCENARIO_SKILL_NAMES,
-)
-from weavert.reference_chat_tool_impls import validate_grounding_web_fetch
 from weavert.runtime_kernel import RuntimeConfig, assemble_runtime
 from weavert.runtime_package_protocols import HostFacetBinding, PackageOwnership
 from weavert.runtime_package_resolution import PACKAGE_CANDIDATE_METADATA_KEY
-from weavert.scenario_runtime_packs import (
-    reference_scenario_pack_manifests,
-    reference_scenario_pack_shape,
-    reference_scenario_pack_shapes,
-    reference_scenario_runtime_pack_manifests,
-    reference_shared_package_manifests,
-    reference_shared_package_shape,
-    reference_shared_package_shapes,
-)
-from weavert.testing import ScriptedModelClient, text_batch, tool_call_batch
 from weavert.tool_runtime import ToolContext
+from weavert_testing import ScriptedModelClient, text_batch, tool_call_batch
+import weavert_kit_common_web._tool_impls as reference_chat_tool_impls
+from weavert_kit_chat import (
+    CHAT_RETRIEVAL_TOOLS,
+    CHAT_SCENARIO_AGENTS as CHAT_SCENARIO_AGENT_NAMES,
+    CHAT_SCENARIO_SKILLS as CHAT_SCENARIO_SKILL_NAMES,
+    chat_scenario_runtime_pack_manifests,
+    reference_scenario_pack_manifest as chat_scenario_pack_manifest,
+    reference_scenario_pack_shape as chat_scenario_pack_shape,
+    reference_scenario_pack_shapes as chat_scenario_pack_shapes,
+)
+from weavert_kit_coding import (
+    coding_scenario_runtime_pack_manifests,
+    reference_scenario_pack_manifest as coding_scenario_pack_manifest,
+    reference_scenario_pack_shape as coding_scenario_pack_shape,
+    reference_scenario_pack_shapes as coding_scenario_pack_shapes,
+)
+from weavert_kit_common_browser import (
+    LOCAL_ASSISTANT_BROWSER_HOST_FACET,
+    LOCAL_ASSISTANT_BROWSER_TOOLS,
+    reference_shared_package_manifest as browser_shared_package_manifest,
+    reference_shared_package_shape as browser_shared_package_shape,
+    reference_shared_package_shapes as browser_shared_package_shapes,
+)
+from weavert_kit_common_git import (
+    reference_shared_package_manifest as git_shared_package_manifest,
+    reference_shared_package_shape as git_shared_package_shape,
+    reference_shared_package_shapes as git_shared_package_shapes,
+)
+from weavert_kit_common_local_os import (
+    LOCAL_ASSISTANT_LOCAL_OS_HOST_FACET,
+    LOCAL_ASSISTANT_LOCAL_OS_TOOLS,
+    reference_shared_package_manifest as local_os_shared_package_manifest,
+    reference_shared_package_shape as local_os_shared_package_shape,
+    reference_shared_package_shapes as local_os_shared_package_shapes,
+)
+from weavert_kit_common_pim import (
+    LOCAL_ASSISTANT_PIM_HOST_FACET,
+    LOCAL_ASSISTANT_PIM_TOOLS,
+    reference_shared_package_manifest as pim_shared_package_manifest,
+    reference_shared_package_shape as pim_shared_package_shape,
+    reference_shared_package_shapes as pim_shared_package_shapes,
+)
+from weavert_kit_common_retrieval import (
+    reference_shared_package_manifest as retrieval_shared_package_manifest,
+    reference_shared_package_shape as retrieval_shared_package_shape,
+    reference_shared_package_shapes as retrieval_shared_package_shapes,
+)
+from weavert_kit_common_web import (
+    CHAT_WEB_TOOLS,
+    reference_shared_package_manifest as web_shared_package_manifest,
+    reference_shared_package_shape as web_shared_package_shape,
+    reference_shared_package_shapes as web_shared_package_shapes,
+    validate_grounding_web_fetch,
+)
+from weavert_kit_common_workspace_intelligence import (
+    reference_shared_package_manifest as workspace_shared_package_manifest,
+    reference_shared_package_shape as workspace_shared_package_shape,
+    reference_shared_package_shapes as workspace_shared_package_shapes,
+)
+from weavert_kit_local_assistant import (
+    LOCAL_ASSISTANT_SCENARIO_AGENTS as LOCAL_ASSISTANT_SCENARIO_AGENT_NAMES,
+    LOCAL_ASSISTANT_SCENARIO_SKILLS as LOCAL_ASSISTANT_SCENARIO_SKILL_NAMES,
+    local_assistant_scenario_runtime_pack_manifests,
+    reference_scenario_pack_manifest as local_assistant_scenario_pack_manifest,
+    reference_scenario_pack_shape as local_assistant_scenario_pack_shape,
+    reference_scenario_pack_shapes as local_assistant_scenario_pack_shapes,
+)
+
+def _dedupe_manifests(*groups):
+    manifests = []
+    seen = set()
+    for group in groups:
+        for manifest in group:
+            if manifest.name in seen:
+                continue
+            manifests.append(manifest)
+            seen.add(manifest.name)
+    return tuple(manifests)
 
 
-REFERENCE_MANIFESTS = reference_scenario_runtime_pack_manifests()
+REFERENCE_MANIFESTS = _dedupe_manifests(
+    coding_scenario_runtime_pack_manifests(),
+    chat_scenario_runtime_pack_manifests(),
+    local_assistant_scenario_runtime_pack_manifests(),
+)
 REFERENCE_PACKAGE_VERSION = "1.0.0"
 CODING_WORKSPACE_TOOLS = {"read", "glob", "grep", "edit", "write", "bash"}
 CODING_SHARED_GIT_TOOLS = {"git_status", "git_diff", "git_history"}
@@ -113,6 +168,79 @@ LOCAL_ASSISTANT_PROFILE_TOOLS = (
 LOCAL_ASSISTANT_SCENARIO_AGENTS = set(LOCAL_ASSISTANT_SCENARIO_AGENT_NAMES)
 LOCAL_ASSISTANT_SCENARIO_SKILLS = set(LOCAL_ASSISTANT_SCENARIO_SKILL_NAMES)
 LOCAL_ASSISTANT_PROFILE_SKILLS = LOCAL_ASSISTANT_SCENARIO_SKILLS | {"remember"}
+
+REFERENCE_SHARED_SHAPES = (
+    *retrieval_shared_package_shapes(),
+    *web_shared_package_shapes(),
+    *browser_shared_package_shapes(),
+    *local_os_shared_package_shapes(),
+    *pim_shared_package_shapes(),
+    *git_shared_package_shapes(),
+    *workspace_shared_package_shapes(),
+)
+REFERENCE_SCENARIO_SHAPES = (
+    *coding_scenario_pack_shapes(),
+    *chat_scenario_pack_shapes(),
+    *local_assistant_scenario_pack_shapes(),
+)
+
+
+def reference_shared_package_shapes():
+    return REFERENCE_SHARED_SHAPES
+
+
+def reference_scenario_pack_shapes():
+    return REFERENCE_SCENARIO_SHAPES
+
+
+def reference_shared_package_shape(name: str):
+    for resolver in (
+        retrieval_shared_package_shape,
+        web_shared_package_shape,
+        browser_shared_package_shape,
+        local_os_shared_package_shape,
+        pim_shared_package_shape,
+        git_shared_package_shape,
+        workspace_shared_package_shape,
+    ):
+        try:
+            return resolver(name)
+        except KeyError:
+            continue
+    raise KeyError(name)
+
+
+def reference_scenario_pack_shape(name: str):
+    for resolver in (
+        coding_scenario_pack_shape,
+        chat_scenario_pack_shape,
+        local_assistant_scenario_pack_shape,
+    ):
+        try:
+            return resolver(name)
+        except KeyError:
+            continue
+    raise KeyError(name)
+
+
+def reference_shared_package_manifests():
+    return (
+        retrieval_shared_package_manifest(),
+        web_shared_package_manifest(),
+        browser_shared_package_manifest(),
+        local_os_shared_package_manifest(),
+        pim_shared_package_manifest(),
+        git_shared_package_manifest(),
+        workspace_shared_package_manifest(),
+    )
+
+
+def reference_scenario_pack_manifests():
+    return (
+        coding_scenario_pack_manifest(),
+        chat_scenario_pack_manifest(),
+        local_assistant_scenario_pack_manifest(),
+    )
 
 
 def _assemble_reference_runtime(
@@ -332,7 +460,7 @@ def test_grounded_reference_shared_packages_can_be_admitted_selected_and_execute
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr("weavert.reference_chat_tool_impls._grounding_urlopen", _grounding_urlopen)
+    monkeypatch.setattr(reference_chat_tool_impls, "_grounding_urlopen", _grounding_urlopen)
 
     retrieval_runtime, retrieval_shape, retrieval_root = _assemble_shared_reference_runtime(
         tmp_path,
@@ -811,7 +939,7 @@ def test_grounded_chat_reference_stack_exercises_retrieval_web_and_memory_surfac
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr("weavert.reference_chat_tool_impls._grounding_urlopen", _grounding_urlopen)
+    monkeypatch.setattr(reference_chat_tool_impls, "_grounding_urlopen", _grounding_urlopen)
 
     runtime, shape, runtime_root = _assemble_reference_runtime(tmp_path, "weavert-scenario-chat")
     assert shape.expected_tools == CHAT_RETRIEVAL_TOOLS + CHAT_WEB_TOOLS + ("ask_user",)
@@ -1221,6 +1349,23 @@ def test_reference_scenario_runtime_packs_are_not_part_of_default_distribution_b
     for shape in reference_scenario_pack_shapes():
         with pytest.raises(KeyError):
             runtime.services.require_capability(shape.capability_key)
+
+
+def test_core_scenario_runtime_packs_module_is_only_a_compatibility_shim() -> None:
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "packages"
+        / "core"
+        / "src"
+        / "weavert"
+        / "scenario_runtime_packs.py"
+    ).read_text(encoding="utf-8")
+
+    assert "ReferenceSharedPackageShape(" not in source
+    assert "ReferenceScenarioPackShape(" not in source
+    assert "weavert_kit_chat" in source
+    assert "weavert_kit_coding" in source
+    assert "weavert_kit_local_assistant" in source
 
 
 def test_reference_package_manifest_metadata_follows_family_specific_surface_contracts() -> None:

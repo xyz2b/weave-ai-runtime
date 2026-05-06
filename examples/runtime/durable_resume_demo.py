@@ -9,7 +9,7 @@ from examples._shared.common import (
 )
 
 from weavert.runtime_kernel import RuntimeConfig, RuntimeDistribution, assemble_runtime
-from weavert.testing import ScriptedModelClient, text_batch
+from weavert_testing import ScriptedModelClient, text_batch
 
 
 SESSION_ID = "durable-resume-demo"

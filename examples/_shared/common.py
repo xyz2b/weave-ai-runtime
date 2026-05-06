@@ -10,7 +10,7 @@ from .bootstrap import PROJECT_ROOT
 from weavert.contracts import RuntimeMessage
 from weavert.permissions import AllowAllPermissionService
 from weavert.session_runtime import InboundEvent, InboundEventType, SessionController
-from weavert.testing import discovery_source, extract_tool_result, temporary_workspace
+from weavert_testing import discovery_source, extract_tool_result, temporary_workspace
 from weavert.turn_engine import TurnStreamEventType
 
 

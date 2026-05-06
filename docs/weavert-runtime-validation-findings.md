@@ -147,7 +147,7 @@ package demo 证明了下面这些都不是概念：
 
 当前状态：
 
-- runtime 现在已经提供正式的 `weavert.testing` namespace
+- runtime 现在已经提供正式的 `weavert_testing` namespace
 - 包含 `ScriptedModelClient`
 - 包含 `copied_fixture_workspace(...)` / `temporary_workspace(...)`
 - 包含 `run_workflow_test(...)`

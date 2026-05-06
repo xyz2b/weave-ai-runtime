@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "weavert-starter"
+version = "0.1.0"
+description = "Developer-facing starter scaffold generator for WeaveRT."
+requires-python = ">=3.11"
+dependencies = ["weavert"]
+
+[project.scripts]
+weavert-starter = "weavert_starter:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "weavert-kit-local-assistant"
+version = "0.1.0"
+description = "Local-assistant product kit for extracted WeaveRT scenario packs."
+requires-python = ">=3.11"
+dependencies = [
+  "weavert",
+  "weavert-kit-common-browser",
+  "weavert-kit-common-local-os",
+  "weavert-kit-common-pim",
+  "weavert-kit-common-retrieval",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]

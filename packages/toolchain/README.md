@@ -1,10 +1,11 @@
 # Toolchain
 
-This family root is a placeholder for developer tooling packages that support the workspace but should not be folded back into the runtime core package.
+Concrete developer-side toolchain packages now live under this family root.
 
-Planned population:
+Available packages:
 
-- `extract-product-kits-and-toolchain`
-- future repository tooling changes that create concrete packages under `packages/toolchain/`
+- `starter/` -> canonical import root `weavert_starter`
+- `testing/` -> canonical import root `weavert_testing`
+- `scripts/` -> repository support scripts
 
-Keep tooling package metadata local to each concrete package once the family is populated.
+These packages remain outside runtime package selection and are only reached through developer workflows, imports, or CLI entrypoints.

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from examples._shared.common import demo_workspace, discovery_source, run_async, temporary_workspace
-from weavert.testing import ScriptedModelClient, text_batch
+from weavert_testing import ScriptedModelClient, text_batch
 
 from weavert.runtime_kernel import BuiltinPackConfig, RuntimeConfig, assemble_runtime
 

@@ -1,8 +1,8 @@
 # Runtime Examples
 
-Run every command from the repository root. The example modules bootstrap `packages/core/src/` automatically, so they do not require an editable install.
+Run every command from the repository root. The example modules bootstrap every workspace `packages/**/src/` root automatically, so they do not require an editable install.
 
-The public offline workflow testing kit now lives under `weavert.testing`. The seam, skill, and project demos use that shared runtime-owned surface so the default validation story stays deterministic and does not require external model credentials.
+The public offline workflow testing kit now lives under `weavert_testing`. The seam, skill, and project demos use that shared toolchain-owned surface so the default validation story stays deterministic and does not require external model credentials.
 
 If you are starting a brand-new WeaveRT project, begin with the official starter scaffolds in `docs/weavert-starter-scaffolds.md`. The demos in this folder are the validation story, not the primary copy-paste adoption path.
 
@@ -143,7 +143,7 @@ It still stays below custom host binding and builtin replacement.
 If you only want the lower-level provider smoke instead of the workflow-level live smoke above, use the bundled live OpenAI path below.
 This validates the Responses transport layer, not the coding-workflow fixture itself.
 The snippet starts from the official `for_headless_live(...)` preset so the live route choice is explicit before assembly.
-Because the inline snippet does not run through an example-module bootstrap, it adds `packages/core/src/` to `sys.path` explicitly.
+Because the inline snippet does not run through an example-module bootstrap, it adds every workspace `packages/**/src/` root to `sys.path` explicitly.
 
 Minimal live check from the repo root:
 
@@ -156,7 +156,8 @@ import sys
 from pathlib import Path
 
 project_root = Path.cwd()
-sys.path.insert(0, str(project_root / "packages" / "core" / "src"))
+for src_root in sorted((project_root / "packages").glob("**/src")):
+    sys.path.insert(0, str(src_root))
 
 from weavert.runtime_kernel import RuntimeConfig, assemble_runtime
 
@@ -181,7 +182,7 @@ Expected live behavior:
 If you want a slightly stronger live smoke than the inline snippet above, run:
 
 ```bash
-python3 scripts/openai_responses_live_smoke.py
+python3 packages/toolchain/scripts/openai_responses_live_smoke.py
 ```
 
 Basic troubleshooting:

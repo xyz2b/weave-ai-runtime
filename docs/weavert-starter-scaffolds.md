@@ -11,7 +11,7 @@
 
 ## One official generation path
 
-安装了 `weavert` 之后，使用同一条官方命令生成 starter：
+安装了 `weavert-starter` 之后，使用同一条官方命令生成 starter：
 
 ```bash
 weavert-starter list
@@ -42,7 +42,7 @@ weavert-starter generate minimal-project ./my-weavert-app --force
 
 - `RuntimeConfig.for_ordinary_workflow(...)`
 - `.weavert/agents/` + `.weavert/tools/`
-- `weavert.testing.ScriptedModelClient`
+- `weavert_testing.ScriptedModelClient`
 - 一个很小的 `app.py` entrypoint
 
 ### `headless-workflow`
@@ -85,8 +85,8 @@ weavert-starter generate minimal-project ./my-weavert-app --force
 - canonical `.weavert/` workspace root
 - 一个对应 shape 的 runnable entrypoint
 
-生成出来的项目要求运行它的那个 Python 环境里已经安装了 `weavert`。
-如果你切到一个全新的 virtualenv，先把 `weavert` source checkout 的 `packages/core/` 或发布包装进去，再执行 scaffold 自己的 `pip install -e .`。
+生成出来的项目要求运行它的那个 Python 环境里已经安装了 `weavert`；offline starter 还要求 `weavert_testing`。
+如果你切到一个全新的 virtualenv，先把 `weavert` source checkout 的 `packages/core/` 装进去；如果是 `minimal-project` 或 `headless-workflow`，再把 `packages/toolchain/testing/` 装进去，最后再执行 scaffold 自己的 `pip install -e .`。
 
 推荐顺序：
 

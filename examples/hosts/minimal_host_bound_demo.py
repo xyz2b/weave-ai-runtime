@@ -6,7 +6,7 @@ from examples._shared.common import run_async, temporary_workspace
 
 from weavert.hosts import SdkHostRuntime
 from weavert.runtime_kernel import RuntimeConfig, RuntimeDistribution, assemble_runtime
-from weavert.testing import ScriptedModelClient, text_batch
+from weavert_testing import ScriptedModelClient, text_batch
 
 
 def main() -> None:

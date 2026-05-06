@@ -25,15 +25,15 @@
 from pathlib import Path
 
 from weavert.runtime_kernel import RuntimeConfig, assemble_runtime
-from weavert.scenario_runtime_packs import reference_scenario_runtime_pack_manifests
+from weavert_kit_coding import coding_scenario_runtime_pack_manifests
 
 runtime = assemble_runtime(
     RuntimeConfig(
         working_directory=Path.cwd(),
         distribution="weavert-core",
         enabled_packages=set(),
-        extra_package_manifests=reference_scenario_runtime_pack_manifests(),
-        requested_packages=set(),
+        extra_package_manifests=coding_scenario_runtime_pack_manifests(),
+        requested_packages={"weavert-scenario-coding"},
     )
 )
 ```
@@ -64,7 +64,7 @@ runtime = assemble_runtime(
 from pathlib import Path
 
 from weavert.runtime_kernel import RuntimeConfig, assemble_runtime
-from weavert.scenario_runtime_packs import reference_scenario_runtime_pack_manifests
+from weavert_kit_coding import coding_scenario_runtime_pack_manifests
 
 runtime = assemble_runtime(
     RuntimeConfig(
@@ -75,7 +75,7 @@ runtime = assemble_runtime(
             "weavert-planning",
             "weavert-builtin-workflows",
         },
-        extra_package_manifests=reference_scenario_runtime_pack_manifests(),
+        extra_package_manifests=coding_scenario_runtime_pack_manifests(),
         requested_packages={"weavert-scenario-coding"},
     )
 )
@@ -115,14 +115,14 @@ runtime = assemble_runtime(
 from pathlib import Path
 
 from weavert.runtime_kernel import RuntimeConfig, assemble_runtime
-from weavert.scenario_runtime_packs import reference_scenario_runtime_pack_manifests
+from weavert_kit_chat import chat_scenario_runtime_pack_manifests
 
 runtime = assemble_runtime(
     RuntimeConfig(
         working_directory=Path.cwd(),
         distribution="weavert-core",
         enabled_packages={"weavert-memory"},
-        extra_package_manifests=reference_scenario_runtime_pack_manifests(),
+        extra_package_manifests=chat_scenario_runtime_pack_manifests(),
         requested_packages={"weavert-scenario-chat"},
     )
 )
@@ -160,14 +160,14 @@ runtime = assemble_runtime(
 from pathlib import Path
 
 from weavert.runtime_kernel import RuntimeConfig, assemble_runtime
-from weavert.scenario_runtime_packs import reference_scenario_runtime_pack_manifests
+from weavert_kit_local_assistant import local_assistant_scenario_runtime_pack_manifests
 
 runtime = assemble_runtime(
     RuntimeConfig(
         working_directory=Path.cwd(),
         distribution="weavert-core",
         enabled_packages={"weavert-memory"},
-        extra_package_manifests=reference_scenario_runtime_pack_manifests(),
+        extra_package_manifests=local_assistant_scenario_runtime_pack_manifests(),
         requested_packages={"weavert-scenario-local-assistant"},
     )
 )
@@ -225,13 +225,17 @@ host 层绑定 facet，例如：
 from pathlib import Path
 
 from weavert.runtime_kernel import RuntimeConfig, assemble_runtime
-from weavert.scenario_runtime_packs import reference_scenario_runtime_pack_manifests
+from weavert_kit_common_retrieval import reference_shared_package_manifest as retrieval_shared_package_manifest
+from weavert_kit_common_web import reference_shared_package_manifest as web_shared_package_manifest
 
 runtime = assemble_runtime(
     RuntimeConfig(
         working_directory=Path.cwd(),
         distribution="weavert-core",
-        extra_package_manifests=reference_scenario_runtime_pack_manifests(),
+        extra_package_manifests=(
+            retrieval_shared_package_manifest(),
+            web_shared_package_manifest(),
+        ),
         requested_packages={
             "weavert-shared-retrieval",
             "weavert-bridge-web",
