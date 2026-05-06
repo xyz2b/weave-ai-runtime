@@ -112,6 +112,22 @@ DEMO_CASES = (
         ),
     ),
     (
+        "examples.packages.capability_only_package_demo",
+        (
+            "demo: capability-only package",
+            'capability: {"active": true, "owner": "weavert-capability-only-demo"}',
+            "status: ok",
+        ),
+    ),
+    (
+        "examples.packages.context_contributor_only_package_demo",
+        (
+            "demo: context-contributor-only package",
+            'hook fragments: ["package context: release-freeze is active"]',
+            "status: ok",
+        ),
+    ),
+    (
         "examples.packages.provider_only_package_demo",
         (
             "demo: provider-only package",
