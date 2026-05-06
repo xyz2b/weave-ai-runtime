@@ -244,6 +244,32 @@ product-profile layer，而不是新的 kernel mode。
 
 参考 shape、shared package 示例和验证路径，见 `docs/weavert-scenario-runtime-pack-architecture.md`。
 
+如果你站在“我要给用户一个可选 package 入口”的角度，当前最常见的四种选择是：
+
+1. `weavert-scenario-coding`
+   - 用于 AI coding 产品
+   - 一般同时启用 `weavert-devtools`、`weavert-planning`、`weavert-builtin-workflows`
+2. `weavert-scenario-chat`
+   - 用于 grounded/support chat
+   - 一般同时启用 `weavert-memory`
+3. `weavert-scenario-local-assistant`
+   - 用于 host-mediated local assistant
+   - 一般同时启用 `weavert-memory`
+4. 只 request shared package
+   - 例如 `weavert-shared-retrieval`、`weavert-bridge-web`、`weavert-shared-git`
+   - 适合已有 app shell 做增量 capability attach
+
+这四种方式的共同点是：
+
+- 都必须通过 `RuntimeConfig.extra_package_manifests` admission
+- 都必须通过 `RuntimeConfig.requested_packages` 激活
+- 都不属于默认 distribution baseline
+
+更完整的 wiring 示例、最小代码片段和 package 组合建议，见：
+
+- `docs/weavert-scenario-runtime-pack-quickstart.md`
+- `docs/weavert-scenario-runtime-pack-architecture.md` 的 “6.1 Four common user recipes”
+
 ### 2.4.2 Package-surface contract：runtime-resolved、runtime-projected、convention-only
 
 如果你要 author shared package 或 scenario pack，当前仓库推荐把 metadata contract 拆成三层看：

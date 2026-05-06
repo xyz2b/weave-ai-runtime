@@ -379,6 +379,216 @@ first-party surfaces 仍然需要 app-owned package selection。chat pack 也是
 - external scenario pack admission 仍由 `extra_package_manifests` / `requested_packages` 决定
 - scenario pack 只是在普通 runtime package contract 上公开一套 product-profile guidance
 
+### 6.1 Four common user recipes
+
+对最终接入方来说，当前最常见的不是“逐个研究所有 reference package”，而是先从下面四种入口里选一种：
+
+如果你要的是更偏“复制就能跑”的终端用户 quickstart，直接看：
+
+- `docs/weavert-scenario-runtime-pack-quickstart.md`
+
+1. `weavert-scenario-coding`
+2. `weavert-scenario-chat`
+3. `weavert-scenario-local-assistant`
+4. 只 request 某些 shared package，而不启用完整 scenario pack
+
+这四种入口都共享同一个 baseline：
+
+- 它们都不是默认 distribution baseline 的一部分
+- 它们都必须通过 `RuntimeConfig.extra_package_manifests` admission
+- 它们都必须通过 `RuntimeConfig.requested_packages` 才会真正进入 active runtime
+
+#### 6.1.1 AI coding
+
+适合：
+
+- CLI coding shell
+- IDE coding assistant
+- repo-oriented coding workflow
+
+推荐 package 选择：
+
+- scenario pack
+  - `weavert-scenario-coding`
+- recommended first-party packages
+  - `weavert-devtools`
+  - `weavert-planning`
+  - `weavert-builtin-workflows`
+
+最小写法：
+
+```python
+from pathlib import Path
+
+from weavert.runtime_kernel import RuntimeConfig, assemble_runtime
+from weavert.scenario_runtime_packs import reference_scenario_runtime_pack_manifests
+
+runtime = assemble_runtime(
+    RuntimeConfig(
+        working_directory=Path.cwd(),
+        distribution="weavert-core",
+        enabled_packages={
+            "weavert-devtools",
+            "weavert-planning",
+            "weavert-builtin-workflows",
+        },
+        extra_package_manifests=reference_scenario_runtime_pack_manifests(),
+        requested_packages={"weavert-scenario-coding"},
+    )
+)
+```
+
+启用后，用户通常会关心：
+
+- shared coding tools
+  - `git_status`, `git_diff`, `git_history`
+  - `workspace_symbols`, `workspace_references`, `workspace_outline`, `workspace_test_targets`
+- scenario-pack-owned workflow agents / skills
+  - `coding-planner`, `reviewer`, `verifier`
+  - `coding-loop`, `review-change`, `verify-change`, `task-discipline`, `repo-onboard`
+
+#### 6.1.2 AI chat
+
+适合：
+
+- grounded Q&A
+- support chat
+- citation-aware assistant
+
+推荐 package 选择：
+
+- scenario pack
+  - `weavert-scenario-chat`
+- recommended first-party packages
+  - `weavert-memory`
+
+最小写法：
+
+```python
+from pathlib import Path
+
+from weavert.runtime_kernel import RuntimeConfig, assemble_runtime
+from weavert.scenario_runtime_packs import reference_scenario_runtime_pack_manifests
+
+runtime = assemble_runtime(
+    RuntimeConfig(
+        working_directory=Path.cwd(),
+        distribution="weavert-core",
+        enabled_packages={"weavert-memory"},
+        extra_package_manifests=reference_scenario_runtime_pack_manifests(),
+        requested_packages={"weavert-scenario-chat"},
+    )
+)
+```
+
+启用后，用户通常会关心：
+
+- shared grounding tools
+  - `retrieve_context`, `prepare_citations`
+  - `grounding_web_search`, `grounding_web_fetch`
+- scenario-pack-owned workflow agents / skills
+  - `researcher`, `support-agent`, `memory-curator`
+  - `chat-summarize`, `answer-with-citations`, `clarify-request`, `capture-preferences`
+
+#### 6.1.3 Local assistant
+
+适合：
+
+- 桌面工作助手
+- device-centric assistant
+- host-mediated personal workflow assistant
+
+推荐 package 选择：
+
+- scenario pack
+  - `weavert-scenario-local-assistant`
+- recommended first-party packages
+  - `weavert-memory`
+
+最小写法：
+
+```python
+from pathlib import Path
+
+from weavert.runtime_kernel import RuntimeConfig, assemble_runtime
+from weavert.scenario_runtime_packs import reference_scenario_runtime_pack_manifests
+
+runtime = assemble_runtime(
+    RuntimeConfig(
+        working_directory=Path.cwd(),
+        distribution="weavert-core",
+        enabled_packages={"weavert-memory"},
+        extra_package_manifests=reference_scenario_runtime_pack_manifests(),
+        requested_packages={"weavert-scenario-local-assistant"},
+    )
+)
+```
+
+启用后，用户通常会关心：
+
+- shared retrieval / bridge tools
+  - `retrieve_context`, `prepare_citations`
+  - `browser_snapshot`, `browser_stage_navigation`, `browser_stage_interaction`
+  - `local_os_snapshot`, `local_os_stage_file_change`, `local_os_stage_process_launch`, `local_os_stage_notification`
+  - `pim_list_agenda`, `pim_lookup_contacts`, `pim_stage_calendar_event`, `pim_stage_reminder`, `pim_stage_task`
+- scenario-pack-owned workflow agents / skills
+  - `assistant-planner`, `assistant-action-worker`, `assistant-recovery`
+  - `safe-action-check`, `daily-brief`, `resume-interrupted-task`, `research-and-act`
+
+但这里要特别注意：
+
+- package 只提供 staged / host-mediated bridge contract
+- live browser / OS / PIM authority 仍然是 app-owned host binding
+- 如果不额外绑定 host facet，这些 bridge tools 只会返回 staged receipt 或 `host_bridge_required`
+
+#### 6.1.4 Shared packages only
+
+适合：
+
+- 你只想给现有 app 增加一块复用 capability
+- 你不想引入完整 scenario workflow 角色
+- 你已经有自己的主 agent / shell / host UX
+
+常见组合：
+
+- coding augmentation
+  - `weavert-shared-git`
+  - `weavert-shared-workspace-intelligence`
+- grounded chat augmentation
+  - `weavert-shared-retrieval`
+  - `weavert-bridge-web`
+- local assistant bridge augmentation
+  - `weavert-bridge-browser`
+  - `weavert-bridge-local-os`
+  - `weavert-bridge-pim`
+
+最小写法：
+
+```python
+from pathlib import Path
+
+from weavert.runtime_kernel import RuntimeConfig, assemble_runtime
+from weavert.scenario_runtime_packs import reference_scenario_runtime_pack_manifests
+
+runtime = assemble_runtime(
+    RuntimeConfig(
+        working_directory=Path.cwd(),
+        distribution="weavert-core",
+        extra_package_manifests=reference_scenario_runtime_pack_manifests(),
+        requested_packages={
+            "weavert-shared-retrieval",
+            "weavert-bridge-web",
+        },
+    )
+)
+```
+
+这种模式下：
+
+- runtime 会 materialize 你 request 的 shared tool surface
+- 但不会额外带入 coding/chat/local assistant 的高层 workflow agents / skills
+- 更适合已有产品在 app-owned shell 上做增量 capability attach
+
 ## 7. App-owned wiring examples
 
 下面三种 wiring example 都故意把 provider、store、host、permission 放在 scenario pack 外面。
