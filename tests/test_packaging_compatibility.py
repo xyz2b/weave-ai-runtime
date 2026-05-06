@@ -65,6 +65,8 @@ def test_core_compatibility_shims_import_without_optional_packages_installed(tmp
     completed = _run_python(
         venv_python,
         """
+        import weavert.compaction as compaction
+        import weavert.isolation as isolation
         import weavert.reference_chat_builtins
         import weavert.reference_chat_tool_impls
         import weavert.reference_coding_builtins
@@ -72,6 +74,7 @@ def test_core_compatibility_shims_import_without_optional_packages_installed(tmp
         import weavert.reference_local_assistant_builtins
         import weavert.scenario_runtime_packs as scenario_runtime_packs
         import weavert.starter_scaffolds as starter_scaffolds
+        import weavert.stores_file as stores_file
         import weavert.testing as testing
         import weavert.testing.assertions
         import weavert.testing.fixtures
@@ -79,11 +82,16 @@ def test_core_compatibility_shims_import_without_optional_packages_installed(tmp
         import weavert.testing.scripted
 
         print("imports-ok")
+        print("core-isolation-worktree", isolation.IsolationManager().describe_modes()["worktree"]["status"])
+        assert compaction.CompactionPolicy().enabled is True
 
         checks = {
             "scenario": lambda: scenario_runtime_packs.reference_scenario_pack_manifests(),
             "starter": lambda: starter_scaffolds.generate_starter_scaffold("minimal-project", "unused"),
             "testing": lambda: testing.run_workflow_test,
+            "compaction_manager": lambda: compaction.CompactionManager,
+            "stores_file": lambda: stores_file.FileChildRunStore,
+            "isolation_worktree": lambda: isolation.WorktreeIsolationAdapter,
         }
 
         for name, thunk in checks.items():
@@ -98,9 +106,13 @@ def test_core_compatibility_shims_import_without_optional_packages_installed(tmp
 
     assert completed.returncode == 0, completed.stderr
     assert "imports-ok" in completed.stdout
+    assert "core-isolation-worktree not_available" in completed.stdout
     assert "packages/product-kits/chat" in completed.stdout
     assert "packages/toolchain/starter" in completed.stdout
     assert "packages/toolchain/testing" in completed.stdout
+    assert "packages/framework-packs/mechanisms/compaction" in completed.stdout
+    assert "packages/framework-packs/mechanisms/isolation" in completed.stdout
+    assert "packages/framework-packs/integrations/stores-file" in completed.stdout
 
 
 def test_toolchain_scripts_package_installs_editably_and_exposes_modules(tmp_path: Path) -> None:

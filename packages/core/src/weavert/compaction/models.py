@@ -309,6 +309,36 @@ def latest_compaction_payload(messages: Sequence[RuntimeMessage]) -> dict[str, A
     return None
 
 
+def evaluate_context_pressure(
+    messages: Sequence[RuntimeMessage],
+    policy: CompactionPolicy,
+) -> ContextPressure:
+    message_count = len(messages)
+    character_count = sum(_message_size(message) for message in messages)
+    message_limit_exceeded = (
+        policy.max_message_count is not None and message_count > policy.max_message_count
+    )
+    character_limit_exceeded = (
+        policy.max_characters is not None and character_count > policy.max_characters
+    )
+    return ContextPressure(
+        message_count=message_count,
+        character_count=character_count,
+        max_message_count=policy.max_message_count,
+        max_characters=policy.max_characters,
+        message_limit_exceeded=message_limit_exceeded,
+        character_limit_exceeded=character_limit_exceeded,
+        triggered=policy.force or message_limit_exceeded or character_limit_exceeded,
+    )
+
+
+def _message_size(message: RuntimeMessage) -> int:
+    return len(message.text) + sum(
+        len(attachment.name) + len(attachment.path)
+        for attachment in message.attachments
+    )
+
+
 def _coerce_bool(value: object, *, default: bool) -> bool:
     if isinstance(value, bool):
         return value

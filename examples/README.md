@@ -156,8 +156,10 @@ import sys
 from pathlib import Path
 
 project_root = Path.cwd()
+sys.path.insert(0, str(project_root / "packages" / "core" / "src"))
 for src_root in sorted((project_root / "packages").glob("**/src")):
-    sys.path.insert(0, str(src_root))
+    if str(src_root) not in sys.path:
+        sys.path.insert(0, str(src_root))
 
 from weavert.runtime_kernel import RuntimeConfig, assemble_runtime
 

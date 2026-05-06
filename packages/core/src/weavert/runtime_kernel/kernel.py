@@ -115,7 +115,6 @@ from ..registries import (
 )
 from ..runtime_services import DefaultTranscriptService, NoopCompactionService, NoopMemoryService, RuntimeServices
 from ..public_contract import workspace_skill_root_candidates
-from ..stores_file import FileChildRunStore
 from ..task_discipline import TaskDisciplineSidecar
 from ..task_lists import (
     DefaultTaskListService,
@@ -3342,6 +3341,8 @@ def _classify_durability(
     *,
     durable_types: tuple[type[Any], ...],
     non_durable_types: tuple[type[Any], ...],
+    durable_matchers: tuple[tuple[str, str], ...] = (),
+    non_durable_matchers: tuple[tuple[str, str], ...] = (),
     available: bool = True,
 ) -> dict[str, Any]:
     if component is None:
@@ -3352,13 +3353,34 @@ def _classify_durability(
         )
     if isinstance(component, durable_types):
         return _durability_entry(PersistenceDurabilityState.DURABLE, component=component, available=available)
+    if any(
+        _matches_named_runtime_type(component, module_name, class_name)
+        for module_name, class_name in durable_matchers
+    ):
+        return _durability_entry(PersistenceDurabilityState.DURABLE, component=component, available=available)
     if isinstance(component, non_durable_types):
         return _durability_entry(
             PersistenceDurabilityState.NON_DURABLE,
             component=component,
             available=available,
         )
+    if any(
+        _matches_named_runtime_type(component, module_name, class_name)
+        for module_name, class_name in non_durable_matchers
+    ):
+        return _durability_entry(
+            PersistenceDurabilityState.NON_DURABLE,
+            component=component,
+            available=available,
+        )
     return _durability_entry(PersistenceDurabilityState.HOST_PROVIDED, component=component, available=available)
+
+
+def _matches_named_runtime_type(component: Any, module_name: str, class_name: str) -> bool:
+    return (
+        type(component).__module__ == module_name
+        and type(component).__name__ == class_name
+    )
 
 
 def _memory_durability_entry(memory_service: Any) -> dict[str, Any]:
@@ -3391,8 +3413,9 @@ def _persistence_profile_metadata(
         ),
         "child_runs": _classify_durability(
             run_store,
-            durable_types=(FileChildRunStore,),
+            durable_types=(),
             non_durable_types=(InMemoryChildRunStore,),
+            durable_matchers=(("weavert_stores_file.child_runs", "FileChildRunStore"),),
         ),
         "jobs": _classify_durability(
             services.job_service.store,

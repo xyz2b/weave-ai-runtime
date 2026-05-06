@@ -1,5 +1,5 @@
 from .package import CompactionPackageComponents, assemble_compaction_package
-from .manager import CompactionManager, OrderedCompactionStrategy, ThresholdSummaryCompactionStrategy, evaluate_context_pressure
+from .manager import CompactionManager, OrderedCompactionStrategy, ThresholdSummaryCompactionStrategy
 from .models import (
     CompactionBoundary,
     CompactionContinuation,
@@ -9,6 +9,7 @@ from .models import (
     CompactionStepResult,
     CompactionSummary,
     ContextPressure,
+    evaluate_context_pressure,
     latest_compaction_payload,
     serialize_compaction_boundary,
     serialize_compaction_continuation,

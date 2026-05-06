@@ -15,7 +15,6 @@ from pathlib import Path
 from typing import Any
 
 from weavert.definitions import MemoryScope, ValidationOutcome
-from weavert.memory.models import MemoryDocument
 from weavert.tool_runtime import ToolContext
 
 _STOPWORDS = {
@@ -304,11 +303,23 @@ def _memory_candidates(context: ToolContext, scope_value: Any) -> tuple[_Groundi
     return tuple(
         _candidate_from_memory_document(document, resolved_scope.memory_root)
         for document in documents
-        if isinstance(document, MemoryDocument) and document.content.strip()
+        if _looks_like_memory_document(document)
     )
 
 
-def _candidate_from_memory_document(document: MemoryDocument, memory_root: Path) -> _GroundingCandidate:
+def _looks_like_memory_document(document: Any) -> bool:
+    scope = getattr(document, "scope", None)
+    return (
+        hasattr(document, "path")
+        and hasattr(document, "title")
+        and hasattr(document, "metadata")
+        and hasattr(document, "kind")
+        and hasattr(scope, "value")
+        and bool(str(getattr(document, "content", "") or "").strip())
+    )
+
+
+def _candidate_from_memory_document(document: Any, memory_root: Path) -> _GroundingCandidate:
     try:
         relative_path = document.path.relative_to(memory_root).as_posix()
     except ValueError:

@@ -1,14 +1,14 @@
-from .isolation import (
+from weavert._isolation_contracts import (
     BaseIsolationAdapter,
     IsolationAdapter,
     IsolationLease,
     IsolationManager,
     IsolationPreparationError,
     IsolationRequest,
-    RemoteIsolationAdapter,
-    WorktreeIsolationAdapter,
     serialize_isolation_lease,
 )
+
+from .isolation import RemoteIsolationAdapter, WorktreeIsolationAdapter
 from .package import (
     IsolationPackageComponents,
     assemble_core_isolation_manager,

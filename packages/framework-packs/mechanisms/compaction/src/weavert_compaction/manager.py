@@ -22,6 +22,7 @@ from .models import (
     CompactionStepResult,
     CompactionSummary,
     ContextPressure,
+    evaluate_context_pressure,
     serialize_compaction_boundary,
     serialize_compaction_continuation,
     serialize_compaction_summary,

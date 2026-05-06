@@ -372,9 +372,12 @@ def _render_minimal_project(context: _TemplateContext) -> dict[str, str]:
                     ]
                 )
 
+            __LOCAL_CHECKOUT_BOOTSTRAP__
+
 
             async def run() -> None:
                 project_root = Path(__file__).resolve().parent
+                bootstrap_local_source_checkout()
                 config = RuntimeConfig.for_ordinary_workflow(project_root)
                 config.model_client = build_model_client()
                 runtime = assemble_runtime(config)
@@ -399,7 +402,7 @@ def _render_minimal_project(context: _TemplateContext) -> dict[str, str]:
             if __name__ == "__main__":
                 asyncio.run(run())
             '''
-        ),
+        ).replace("__LOCAL_CHECKOUT_BOOTSTRAP__", _local_checkout_bootstrap_snippet()),
         ".weavert/agents/starter-guide.md": dedent(
             '''
             ---
@@ -491,9 +494,12 @@ def _render_headless_workflow(context: _TemplateContext) -> dict[str, str]:
                     ]
                 )
 
+            __LOCAL_CHECKOUT_BOOTSTRAP__
+
 
             async def run() -> int:
                 project_root = Path(__file__).resolve().parent
+                bootstrap_local_source_checkout()
                 config = RuntimeConfig.for_ordinary_workflow(project_root)
                 report = await run_workflow_test(
                     "Review the current workflow checklist and summarize the next step.",
@@ -523,7 +529,7 @@ def _render_headless_workflow(context: _TemplateContext) -> dict[str, str]:
             if __name__ == "__main__":
                 raise SystemExit(asyncio.run(run()))
             '''
-        ),
+        ).replace("__LOCAL_CHECKOUT_BOOTSTRAP__", _local_checkout_bootstrap_snippet()),
         ".weavert/agents/release-runner.md": dedent(
             '''
             ---
@@ -596,9 +602,12 @@ def _render_live_smoke(context: _TemplateContext) -> dict[str, str]:
 
             from weavert import RuntimeConfig, assemble_runtime, final_assistant_text, terminal_failure
 
+            __LOCAL_CHECKOUT_BOOTSTRAP__
+
 
             async def run() -> int:
                 project_root = Path(__file__).resolve().parent
+                bootstrap_local_source_checkout()
                 config = RuntimeConfig.for_headless_live(project_root)
                 runtime = assemble_runtime(config)
 
@@ -642,7 +651,7 @@ def _render_live_smoke(context: _TemplateContext) -> dict[str, str]:
             if __name__ == "__main__":
                 raise SystemExit(asyncio.run(run()))
             '''
-        ),
+        ).replace("__LOCAL_CHECKOUT_BOOTSTRAP__", _local_checkout_bootstrap_snippet()),
         ".weavert/agents/live-smoke-runner.md": dedent(
             '''
             ---
@@ -674,6 +683,35 @@ def _common_gitignore() -> str:
         '''
     )
 
+
+
+def _local_checkout_bootstrap_snippet() -> str:
+    return dedent(
+        '''
+        def bootstrap_local_source_checkout() -> None:
+            import sys
+            import weavert as weavert_package
+
+            module_file = getattr(weavert_package, "__file__", None)
+            if not module_file:
+                return
+            module_path = Path(module_file).resolve()
+            packages_root = next(
+                (
+                    candidate
+                    for candidate in module_path.parents
+                    if candidate.name == "packages" and candidate.is_dir()
+                ),
+                None,
+            )
+            if packages_root is None:
+                return
+            for src_root in reversed(sorted(packages_root.glob("**/src"))):
+                source_entry = str(src_root)
+                if source_entry not in sys.path:
+                    sys.path.insert(0, source_entry)
+        '''
+    )
 
 
 def _common_pyproject(context: _TemplateContext, description: str) -> str:
@@ -722,7 +760,8 @@ def _minimal_readme(context: _TemplateContext) -> str:
         5. `python -m pip install -e .`
         6. `python app.py`
 
-        If you are using published packages instead of a source checkout, install the runtime and testing packages in steps 3 and 4.
+        If step 3 points at a local source checkout, `app.py` can discover sibling framework packs from that same checkout automatically.
+        If you are using published packages instead of a source checkout, install the matching first-party distribution or extracted framework packs alongside the runtime and testing packages in steps 3 and 4.
 
         Extension points:
 
@@ -760,7 +799,8 @@ def _headless_readme(context: _TemplateContext) -> str:
         5. `python -m pip install -e .`
         6. `python workflow_runner.py`
 
-        If you are using published packages instead of a source checkout, install the runtime and testing packages in steps 3 and 4.
+        If step 3 points at a local source checkout, `workflow_runner.py` can discover sibling framework packs from that same checkout automatically.
+        If you are using published packages instead of a source checkout, install the matching first-party distribution or extracted framework packs alongside the runtime and testing packages in steps 3 and 4.
 
         Extension points:
 
@@ -803,7 +843,8 @@ def _live_readme(context: _TemplateContext) -> str:
         5. `export OPENAI_API_KEY=your-key`
         6. `python live_smoke.py`
 
-        If you are using a published `weavert` package instead of a source checkout, install that package in step 3.
+        If step 3 points at a local source checkout, `live_smoke.py` can discover sibling framework packs from that same checkout automatically.
+        If you are using published packages instead of a source checkout, install the matching first-party distribution or extracted framework packs in step 3.
 
         If preflight fails, fix the reported environment or route issue first. The scaffold does not silently drop back to an offline path.
         '''

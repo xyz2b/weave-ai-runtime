@@ -5,7 +5,7 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping, Protocol, Sequence
 
-from ..compaction import CompactionManager, CompactionPolicy, CompactionResult, evaluate_context_pressure
+from ..compaction import CompactionPolicy, CompactionResult, evaluate_context_pressure
 from ..contracts import PromptContextEnvelope, RuntimeMessage, RuntimePrivateContext
 from ..definitions import AgentDefinition, ToolDefinition
 from ..elicitation import SharedElicitationService
@@ -279,7 +279,7 @@ class RuntimeServices:
     elicitation: ElicitationService = field(default_factory=SharedElicitationService)
     isolation: IsolationManager = field(default_factory=IsolationManager)
     memory: ContextContributionService = field(default_factory=NoopMemoryService)
-    compaction: CompactionService | ContextContributionService = field(default_factory=CompactionManager)
+    compaction: CompactionService | ContextContributionService = field(default_factory=NoopCompactionService)
     host: HostRuntime = field(default_factory=NullHostAdapter)
     jobs: DefaultJobService | None = None
     tasks: DefaultTaskService = field(default_factory=DefaultTaskService)
