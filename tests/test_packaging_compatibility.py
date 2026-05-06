@@ -24,7 +24,7 @@ def _clean_env() -> dict[str, str]:
 def _create_virtualenv(tmp_path: Path) -> Path:
     virtualenv = tmp_path / "venv"
     completed = subprocess.run(
-        [PYTHON, "-m", "venv", "--system-site-packages", str(virtualenv)],
+        [PYTHON, "-m", "venv", str(virtualenv)],
         cwd=tmp_path,
         check=False,
         capture_output=True,

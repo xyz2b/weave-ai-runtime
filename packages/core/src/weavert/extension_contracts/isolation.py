@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
-from importlib import import_module
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -109,7 +108,7 @@ class IsolationManager:
 
     def __post_init__(self) -> None:
         if not self.adapters:
-            self.adapters = _default_isolation_adapters()
+            self.adapters = {IsolationMode.NONE: BaseIsolationAdapter()}
         else:
             self.adapters.setdefault(IsolationMode.NONE, BaseIsolationAdapter())
 
@@ -192,44 +191,6 @@ async def _maybe_await(value: Any) -> Any:
     if asyncio.iscoroutine(value):
         return await value
     return value
-
-
-def _default_isolation_adapters() -> dict[IsolationMode, IsolationAdapter]:
-    adapters: dict[IsolationMode, IsolationAdapter] = {
-        IsolationMode.NONE: BaseIsolationAdapter(),
-    }
-    worktree_adapter = _load_optional_isolation_adapter(
-        "weavert_isolation.isolation",
-        "WorktreeIsolationAdapter",
-        expected_root="weavert_isolation",
-    )
-    if worktree_adapter is not None:
-        adapters[IsolationMode.WORKTREE] = worktree_adapter
-    remote_adapter = _load_optional_isolation_adapter(
-        "weavert_isolation.isolation",
-        "RemoteIsolationAdapter",
-        expected_root="weavert_isolation",
-    )
-    if remote_adapter is not None:
-        adapters[IsolationMode.REMOTE] = remote_adapter
-    return adapters
-
-
-def _load_optional_isolation_adapter(
-    module_name: str,
-    attr_name: str,
-    *,
-    expected_root: str,
-) -> IsolationAdapter | None:
-    try:
-        module = import_module(module_name)
-    except ModuleNotFoundError as exc:
-        missing_root = str(getattr(exc, "name", "") or "").split(".", 1)[0]
-        if missing_root == expected_root:
-            return None
-        raise
-    adapter_type = getattr(module, attr_name)
-    return adapter_type()
 
 
 def _lease_identifier(request: IsolationRequest) -> str:
