@@ -127,10 +127,18 @@ scenario pack 继续回答：
   - 暴露 `grounding_web_search` / `grounding_web_fetch`
 - `weavert-bridge-browser`
   - browser bridge surface
+  - 暴露 `browser_snapshot` / `browser_stage_navigation` / `browser_stage_interaction`
+  - 只发布 staged inspection / action receipt，不接管最终 browser host
 - `weavert-bridge-local-os`
   - local OS bridge surface
+  - 暴露 `local_os_snapshot` / `local_os_stage_file_change` /
+    `local_os_stage_process_launch` / `local_os_stage_notification`
+  - 适合把 file / process / notification capability 保持在 shared package，而不是塞进 assistant profile
 - `weavert-bridge-pim`
   - PIM bridge surface
+  - 暴露 `pim_list_agenda` / `pim_lookup_contacts` / `pim_stage_calendar_event` /
+    `pim_stage_reminder` / `pim_stage_task`
+  - 明确 calendar / reminder / contact / task surface 可以 shared reuse，同时把最终 account binding 留给应用
 - `weavert-shared-git`
   - coding-oriented shared git inspection surface
 - `weavert-shared-workspace-intelligence`
@@ -256,14 +264,31 @@ expected profile tools / agents / skills
 
 - tools:
   - shared retrieval: `retrieve_context`, `prepare_citations`
-- agents: none by default
-- skills: `remember`
+  - browser bridge: `browser_snapshot`, `browser_stage_navigation`, `browser_stage_interaction`
+  - local OS bridge: `local_os_snapshot`, `local_os_stage_file_change`,
+    `local_os_stage_process_launch`, `local_os_stage_notification`
+  - PIM bridge: `pim_list_agenda`, `pim_lookup_contacts`, `pim_stage_calendar_event`,
+    `pim_stage_reminder`, `pim_stage_task`
+- agents:
+  - `assistant-planner`
+  - `assistant-action-worker`
+  - `assistant-recovery`
+- skills:
+  - `remember`
+  - `safe-action-check`
+  - `daily-brief`
+  - `resume-interrupted-task`
+  - `research-and-act`
 
 host-facing assumptions:
 
 - host owns desktop or device mediation
 - host decides which browser / OS / PIM bridges are actually bound
 - host owns approval UX for high-risk actions
+- host 如果要 materialize live bridge state，建议在 app-owned layer 自己绑定
+  `weavert.local_assistant.bridge.browser` /
+  `weavert.local_assistant.bridge.local_os` /
+  `weavert.local_assistant.bridge.pim` 之类的 host facet
 
 default boundaries:
 
@@ -276,6 +301,8 @@ staged scope boundaries:
 
 - first step is retrieval + host-mediated bridges
 - full automation ecosystems are later follow-up work
+- bridge tool 只负责 stage request 或声明缺少 host bridge；
+  final host mediation、final allowlist、final audit sink 都仍然是 app-owned layer
 
 ## 6. Reference activation path
 
@@ -397,6 +424,8 @@ host expectation、final permission notes 保留在 app-owned config / docs / co
   - desktop shell、device shell、system tray、OS-integrated host
 - app-owned permission composition
   - browser / OS / PIM actions 使用 staged approval + audit sink；最终 allowlist 仍归应用
+- app-owned bridge execution
+  - scenario pack / shared package 可以给出 staged request，但真正执行 request 的 browser / OS / PIM adapter 仍归应用装配
 
 如果要把这些 boundary 落到代码里，推荐把 scenario pack 当成下面这个组合里的其中一层，而不是整个产品：
 

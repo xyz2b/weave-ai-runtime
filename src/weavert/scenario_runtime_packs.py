@@ -20,6 +20,18 @@ from .reference_coding_builtins import (
     shared_git_builtin_tools,
     shared_workspace_intelligence_builtin_tools,
 )
+from .reference_local_assistant_builtins import (
+    LOCAL_ASSISTANT_BROWSER_TOOLS,
+    LOCAL_ASSISTANT_LOCAL_OS_TOOLS,
+    LOCAL_ASSISTANT_PIM_TOOLS,
+    LOCAL_ASSISTANT_SCENARIO_AGENTS,
+    LOCAL_ASSISTANT_SCENARIO_SKILLS,
+    local_assistant_browser_bridge_builtin_tools,
+    local_assistant_local_os_bridge_builtin_tools,
+    local_assistant_pim_bridge_builtin_tools,
+    local_assistant_scenario_builtin_agents,
+    local_assistant_scenario_builtin_skills,
+)
 from .runtime_package_protocols import (
     CapabilityBinding,
     ContextContributorBinding,
@@ -210,8 +222,10 @@ REFERENCE_SHARED_PACKAGE_SHAPES: tuple[ReferenceSharedPackageShape, ...] = (
         shared_surface_family="browser-bridge",
         intended_profiles=("local_assistant",),
         surfaces=("browser bridge", "tab/session mediation", "navigation helpers"),
+        tool_ids=LOCAL_ASSISTANT_BROWSER_TOOLS,
         notes=(
             "Keep browser bindings reusable and host-mediated instead of embedding them into each scenario pack.",
+            "Expose staged browser inspection and action receipts without taking final host ownership.",
         ),
     ),
     ReferenceSharedPackageShape(
@@ -221,8 +235,10 @@ REFERENCE_SHARED_PACKAGE_SHAPES: tuple[ReferenceSharedPackageShape, ...] = (
         shared_surface_family="local-os-bridge",
         intended_profiles=("local_assistant",),
         surfaces=("filesystem adapter", "process launch mediation", "desktop integration hooks"),
+        tool_ids=LOCAL_ASSISTANT_LOCAL_OS_TOOLS,
         notes=(
             "Local OS surfaces need stronger permission posture than read-mostly chat scenarios.",
+            "Bridge tools stage file, process, and notification requests while leaving final execution app-owned.",
         ),
     ),
     ReferenceSharedPackageShape(
@@ -232,8 +248,10 @@ REFERENCE_SHARED_PACKAGE_SHAPES: tuple[ReferenceSharedPackageShape, ...] = (
         shared_surface_family="pim-bridge",
         intended_profiles=("local_assistant",),
         surfaces=("calendar adapter", "contacts/tasks adapter", "notification handoff hooks"),
+        tool_ids=LOCAL_ASSISTANT_PIM_TOOLS,
         notes=(
             "PIM adapters remain shared integrations even when a local assistant scenario pack recommends them.",
+            "Stage calendar, reminder, contact, and task requests without claiming final account binding.",
         ),
     ),
     ReferenceSharedPackageShape(
@@ -386,9 +404,14 @@ REFERENCE_SCENARIO_PACK_SHAPES: tuple[ReferenceScenarioPackShape, ...] = (
             "weavert-bridge-local-os",
             "weavert-bridge-pim",
         ),
-        expected_tools=CHAT_RETRIEVAL_TOOLS,
-        expected_agents=(),
-        expected_skills=("remember",),
+        expected_tools=(
+            *CHAT_RETRIEVAL_TOOLS,
+            *LOCAL_ASSISTANT_BROWSER_TOOLS,
+            *LOCAL_ASSISTANT_LOCAL_OS_TOOLS,
+            *LOCAL_ASSISTANT_PIM_TOOLS,
+        ),
+        expected_agents=LOCAL_ASSISTANT_SCENARIO_AGENTS,
+        expected_skills=("remember", *LOCAL_ASSISTANT_SCENARIO_SKILLS),
         default_boundaries=(
             "host-centric by default",
             "stronger permission, audit, and approval expectations than chat",
@@ -412,12 +435,15 @@ REFERENCE_SCENARIO_PACK_SHAPES: tuple[ReferenceScenarioPackShape, ...] = (
             "Scenario profile: local assistant.",
             "Preserve host-centric defaults and require explicit approval posture for bridge-heavy actions.",
         ),
+        workflow_agent_ids=LOCAL_ASSISTANT_SCENARIO_AGENTS,
+        workflow_skill_ids=LOCAL_ASSISTANT_SCENARIO_SKILLS,
         staged_scope_boundaries=(
             "start with retrieval and approval-mediated bridge composition before full automation",
             "treat richer automation bundles as later follow-up work",
         ),
         notes=(
-            "Local assistant remains a boundary reference first, not a full product shell.",
+            "Local assistant remains a staged bridge reference, not a full product shell.",
+            "Final host mediation, final allowlists, and final audit sinks stay outside the scenario pack.",
         ),
     ),
 )
@@ -729,6 +755,12 @@ def _shared_package_builtin_tools(package_name: str) -> tuple:
         return chat_shared_retrieval_builtin_tools()
     if package_name == "weavert-bridge-web":
         return chat_web_grounding_builtin_tools()
+    if package_name == "weavert-bridge-browser":
+        return local_assistant_browser_bridge_builtin_tools()
+    if package_name == "weavert-bridge-local-os":
+        return local_assistant_local_os_bridge_builtin_tools()
+    if package_name == "weavert-bridge-pim":
+        return local_assistant_pim_bridge_builtin_tools()
     if package_name == "weavert-shared-git":
         return shared_git_builtin_tools()
     if package_name == "weavert-shared-workspace-intelligence":
@@ -756,6 +788,8 @@ def _scenario_pack_builtin_agents(package_name: str) -> tuple:
         return coding_scenario_builtin_agents()
     if package_name == "weavert-scenario-chat":
         return chat_scenario_builtin_agents()
+    if package_name == "weavert-scenario-local-assistant":
+        return local_assistant_scenario_builtin_agents()
     return ()
 
 
@@ -764,6 +798,8 @@ def _scenario_pack_builtin_skills(package_name: str) -> tuple:
         return coding_scenario_builtin_skills()
     if package_name == "weavert-scenario-chat":
         return chat_scenario_builtin_skills()
+    if package_name == "weavert-scenario-local-assistant":
+        return local_assistant_scenario_builtin_skills()
     return ()
 
 

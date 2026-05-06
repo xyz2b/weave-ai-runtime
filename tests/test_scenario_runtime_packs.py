@@ -4,15 +4,27 @@ import asyncio
 from email.message import Message
 from pathlib import Path
 import subprocess
+from typing import Any
 
 import pytest
 
+from weavert.definitions import ToolRiskLevel
 from weavert.memory.models import MemoryEntry
 from weavert.reference_chat_builtins import (
     CHAT_RETRIEVAL_TOOLS,
     CHAT_SCENARIO_AGENTS as CHAT_SCENARIO_AGENT_NAMES,
     CHAT_SCENARIO_SKILLS as CHAT_SCENARIO_SKILL_NAMES,
     CHAT_WEB_TOOLS,
+)
+from weavert.reference_local_assistant_builtins import (
+    LOCAL_ASSISTANT_BROWSER_HOST_FACET,
+    LOCAL_ASSISTANT_BROWSER_TOOLS,
+    LOCAL_ASSISTANT_LOCAL_OS_HOST_FACET,
+    LOCAL_ASSISTANT_LOCAL_OS_TOOLS,
+    LOCAL_ASSISTANT_PIM_HOST_FACET,
+    LOCAL_ASSISTANT_PIM_TOOLS,
+    LOCAL_ASSISTANT_SCENARIO_AGENTS as LOCAL_ASSISTANT_SCENARIO_AGENT_NAMES,
+    LOCAL_ASSISTANT_SCENARIO_SKILLS as LOCAL_ASSISTANT_SCENARIO_SKILL_NAMES,
 )
 from weavert.reference_chat_tool_impls import validate_grounding_web_fetch
 from weavert.runtime_kernel import RuntimeConfig, assemble_runtime
@@ -59,7 +71,15 @@ CHAT_PROFILE_TOOLS = CHAT_RETRIEVAL_TOOL_SET | CHAT_WEB_TOOL_SET
 CHAT_SCENARIO_AGENTS = set(CHAT_SCENARIO_AGENT_NAMES)
 CHAT_SCENARIO_SKILLS = set(CHAT_SCENARIO_SKILL_NAMES)
 CHAT_PROFILE_SKILLS = CHAT_SCENARIO_SKILLS | {"remember"}
-LOCAL_ASSISTANT_PROFILE_TOOLS = CHAT_RETRIEVAL_TOOL_SET
+LOCAL_ASSISTANT_BRIDGE_TOOL_SET = (
+    set(LOCAL_ASSISTANT_BROWSER_TOOLS)
+    | set(LOCAL_ASSISTANT_LOCAL_OS_TOOLS)
+    | set(LOCAL_ASSISTANT_PIM_TOOLS)
+)
+LOCAL_ASSISTANT_PROFILE_TOOLS = CHAT_RETRIEVAL_TOOL_SET | LOCAL_ASSISTANT_BRIDGE_TOOL_SET
+LOCAL_ASSISTANT_SCENARIO_AGENTS = set(LOCAL_ASSISTANT_SCENARIO_AGENT_NAMES)
+LOCAL_ASSISTANT_SCENARIO_SKILLS = set(LOCAL_ASSISTANT_SCENARIO_SKILL_NAMES)
+LOCAL_ASSISTANT_PROFILE_SKILLS = LOCAL_ASSISTANT_SCENARIO_SKILLS | {"remember"}
 
 
 def _assemble_reference_runtime(
@@ -366,6 +386,65 @@ def test_grounded_reference_shared_packages_can_be_admitted_selected_and_execute
     (
         "package_name",
         "expected_tools",
+        "sample_tool_name",
+        "sample_input",
+        "expected_status",
+    ),
+    (
+        (
+            "weavert-bridge-browser",
+            set(LOCAL_ASSISTANT_BROWSER_TOOLS),
+            "browser_stage_navigation",
+            {"url": "https://assistant.example.test/briefing"},
+            "staged",
+        ),
+        (
+            "weavert-bridge-local-os",
+            set(LOCAL_ASSISTANT_LOCAL_OS_TOOLS),
+            "local_os_snapshot",
+            {"topics": ["files"]},
+            "host_bridge_required",
+        ),
+        (
+            "weavert-bridge-pim",
+            set(LOCAL_ASSISTANT_PIM_TOOLS),
+            "pim_stage_task",
+            {"title": "Send weekly update"},
+            "staged",
+        ),
+    ),
+)
+def test_local_assistant_reference_shared_bridge_packages_can_be_admitted_selected_and_executed(
+    tmp_path: Path,
+    package_name: str,
+    expected_tools: set[str],
+    sample_tool_name: str,
+    sample_input: dict[str, Any],
+    expected_status: str,
+) -> None:
+    runtime, shape, runtime_root = _assemble_shared_reference_runtime(tmp_path, package_name)
+
+    manifest_names = {manifest.name for manifest in runtime.kernel.package_manifests}
+    assert shape.package_name in manifest_names
+    assert expected_tools <= _tool_names(runtime)
+    assert all(runtime.kernel.tool_registry.get(tool_name).metadata["builtin_owner"] == shape.package_name for tool_name in expected_tools)
+
+    capability = runtime.services.require_capability(shape.capability_key)
+    assert capability["package_name"] == shape.package_name
+    assert capability["tool_ids"] == list(shape.tool_ids)
+
+    tool = runtime.kernel.tool_registry.get(sample_tool_name)
+    result = asyncio.run(tool.execute(sample_input, _tool_context(runtime, runtime_root)))
+    assert result["status"] == expected_status
+    assert result["host_binding_owner"] == "app"
+    assert result["allowlist_owner"] == "app"
+    assert result["audit_sink_owner"] == "app"
+
+
+@pytest.mark.parametrize(
+    (
+        "package_name",
+        "expected_tools",
         "expected_agents",
         "expected_skills",
         "forbidden_tools",
@@ -394,8 +473,8 @@ def test_grounded_reference_shared_packages_can_be_admitted_selected_and_execute
         (
             "weavert-scenario-local-assistant",
             LOCAL_ASSISTANT_PROFILE_TOOLS,
-            set(),
-            {"remember"},
+            LOCAL_ASSISTANT_SCENARIO_AGENTS,
+            LOCAL_ASSISTANT_PROFILE_SKILLS,
             CODING_PROFILE_TOOLS,
             CODING_PROFILE_AGENTS,
             CODING_PROFILE_SKILLS,
@@ -466,8 +545,6 @@ def test_reference_scenario_pack_shapes_activate_through_existing_runtime_packag
     assert tool_names.isdisjoint(forbidden_tools)
     assert agent_names.isdisjoint(forbidden_agents)
     assert skill_names.isdisjoint(forbidden_skills)
-    if shape.profile != "coding":
-        assert all(runtime.kernel.tool_registry.get(tool_name).traits.read_only for tool_name in expected_tools)
     assert "scenario_pack_recommended_first_party_packages_missing" not in _diagnostic_codes(runtime)
 
 
@@ -503,8 +580,8 @@ def test_reference_scenario_pack_shapes_activate_through_existing_runtime_packag
         (
             "weavert-scenario-local-assistant",
             LOCAL_ASSISTANT_PROFILE_TOOLS,
-            set(),
-            set(),
+            LOCAL_ASSISTANT_SCENARIO_AGENTS,
+            LOCAL_ASSISTANT_SCENARIO_SKILLS,
             set(),
             set(),
             {"remember"},
@@ -726,6 +803,116 @@ def test_grounded_chat_reference_stack_exercises_retrieval_web_and_memory_surfac
     assert citations["citations"][0]["label"] == "[1]"
     assert "Refund policy" in citations["citation_block"]
     assert "Refund preference" in citations["citation_block"]
+
+
+@pytest.mark.parametrize(
+    (
+        "tool_name",
+        "tool_input",
+        "expected_status",
+        "expected_package_name",
+        "expected_host_facet",
+        "expected_risk_level",
+        "expected_read_only",
+    ),
+    (
+        (
+            "browser_snapshot",
+            {"include_recent_tabs": True},
+            "host_bridge_required",
+            "weavert-bridge-browser",
+            LOCAL_ASSISTANT_BROWSER_HOST_FACET,
+            ToolRiskLevel.READ,
+            True,
+        ),
+        (
+            "browser_stage_navigation",
+            {"url": "https://assistant.example.test/agenda", "reason": "prepare morning briefing"},
+            "staged",
+            "weavert-bridge-browser",
+            LOCAL_ASSISTANT_BROWSER_HOST_FACET,
+            ToolRiskLevel.WRITE,
+            False,
+        ),
+        (
+            "local_os_snapshot",
+            {"topics": ["clipboard", "notifications"]},
+            "host_bridge_required",
+            "weavert-bridge-local-os",
+            LOCAL_ASSISTANT_LOCAL_OS_HOST_FACET,
+            ToolRiskLevel.READ,
+            True,
+        ),
+        (
+            "local_os_stage_process_launch",
+            {"command": "open", "args": ["Calendar.app"], "reason": "open meeting details"},
+            "staged",
+            "weavert-bridge-local-os",
+            LOCAL_ASSISTANT_LOCAL_OS_HOST_FACET,
+            ToolRiskLevel.EXEC,
+            False,
+        ),
+        (
+            "pim_list_agenda",
+            {"include_reminders": True},
+            "host_bridge_required",
+            "weavert-bridge-pim",
+            LOCAL_ASSISTANT_PIM_HOST_FACET,
+            ToolRiskLevel.READ,
+            True,
+        ),
+        (
+            "pim_stage_calendar_event",
+            {"title": "Team sync", "start_time": "2026-05-06T09:00:00Z"},
+            "staged",
+            "weavert-bridge-pim",
+            LOCAL_ASSISTANT_PIM_HOST_FACET,
+            ToolRiskLevel.WRITE,
+            False,
+        ),
+    ),
+)
+def test_local_assistant_bridge_tools_keep_host_mediation_allowlists_and_audit_app_owned(
+    tmp_path: Path,
+    tool_name: str,
+    tool_input: dict[str, Any],
+    expected_status: str,
+    expected_package_name: str,
+    expected_host_facet: str,
+    expected_risk_level: ToolRiskLevel,
+    expected_read_only: bool,
+) -> None:
+    runtime, shape, runtime_root = _assemble_reference_runtime(tmp_path, "weavert-scenario-local-assistant")
+
+    assert shape.expected_tools == CHAT_RETRIEVAL_TOOLS + LOCAL_ASSISTANT_BROWSER_TOOLS + LOCAL_ASSISTANT_LOCAL_OS_TOOLS + LOCAL_ASSISTANT_PIM_TOOLS
+    assert set(shape.workflow_agent_ids) == LOCAL_ASSISTANT_SCENARIO_AGENTS
+    assert set(shape.workflow_skill_ids) == LOCAL_ASSISTANT_SCENARIO_SKILLS
+    assert LOCAL_ASSISTANT_PROFILE_TOOLS <= _tool_names(runtime)
+
+    host_resolution = runtime.services.resolve_host_facet(expected_host_facet)
+    assert host_resolution.available is False
+    assert host_resolution.code == "not_available"
+
+    tool = runtime.kernel.tool_registry.get(tool_name)
+    assert tool.metadata["builtin_owner"] == expected_package_name
+    assert tool.metadata["expected_host_facet"] == expected_host_facet
+    assert tool.metadata["host_binding_owner"] == "app"
+    assert tool.metadata["allowlist_owner"] == "app"
+    assert tool.metadata["audit_sink_owner"] == "app"
+    assert tool.traits.read_only is expected_read_only
+
+    classifier = tool.execution_semantics.to_classifier_input(tool_input, _tool_context(runtime, runtime_root))
+    assert classifier.risk_level == expected_risk_level
+    assert classifier.side_effects is (not expected_read_only)
+
+    result = asyncio.run(tool.execute(tool_input, _tool_context(runtime, runtime_root)))
+    assert result["status"] == expected_status
+    assert result["expected_host_facet"] == expected_host_facet
+    assert result["host_binding_owner"] == "app"
+    assert result["allowlist_owner"] == "app"
+    assert result["audit_sink_owner"] == "app"
+    assert result["approval_required"] is (not expected_read_only)
+    assert result["request"] == tool_input
 
 
 def test_reference_scenario_pack_capabilities_preserve_distinct_default_boundaries(
