@@ -208,9 +208,17 @@ Reset, inspect, and scripted smoke commands for the same advanced integration sa
 ```bash
 python3 -B -m examples.apps.code_assistant reset
 python3 -B -m examples.apps.code_assistant inspect
-python3 -B -m examples.apps.code_assistant run --auto-approve
+python3 -B -m examples.apps.code_assistant run --deterministic --auto-approve
 ```
 
-That `run --auto-approve` smoke keeps the main `code-assistant` shell agent and `bash` replacement app-owned, while pulling `coding-planner` / `reviewer` / `verifier` plus the core coding-loop skills from the official coding scenario pack. It treats missing planning, inspection, verification, or review coverage as blocking `workflow gaps`, while surfacing planner degradation that still left a usable shared plan as non-blocking `workflow advisories`.
+Use `python3 -B -m examples.apps.code_assistant run --session-id live-smoke --auto-approve` when you want the live provider-backed workflow, or `python3 -B -m examples.apps.code_assistant shell --session-id local-shell --auto-approve` followed by `/inspect`, `/tasks`, `/jobs`, and `/exit` when you want a provider-free shell smoke.
+
+The advanced sample keeps the split ownership model visible in all three validation paths:
+
+- the app-owned `code-assistant` shell layer and app-configured `bash` replacement behavior
+- the official `weavert-scenario-coding` package for `coding-planner` / `reviewer` / `verifier` and the core coding-loop skills
+- the shared `weavert-shared-git` and `weavert-shared-workspace-intelligence` packages for the `git_*` and `workspace_*` tool families
+
+The deterministic `run --deterministic --auto-approve` smoke keeps that same split stack and durable artifact layout while avoiding live credentials. Both `run` modes report stable package-manifest, tool-family, definition-owner, transcript, child-run, task-list, and workflow-ledger anchors. Missing planning, inspection, verification, or review coverage stays blocking as `workflow gaps`, while planner degradation that still leaves a usable shared plan remains a non-blocking `workflow advisories` entry.
 
 If you want an automated check that these commands still work, run `pytest tests/test_runtime_extension_demos.py`.

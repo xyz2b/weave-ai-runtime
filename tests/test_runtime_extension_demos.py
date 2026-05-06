@@ -532,6 +532,10 @@ def test_runtime_extension_readme_lists_layered_validation_story() -> None:
     assert "python3 -B -m examples.projects.coding_workflow_demo" in readme
     assert "python3 -B -m examples.projects.coding_workflow_demo --live" in readme
     assert "python3 -B -m examples.apps.code_assistant shell" in readme
+    assert "python3 -B -m examples.apps.code_assistant run --deterministic --auto-approve" in readme
+    assert "weavert-scenario-coding" in readme
+    assert "weavert-shared-git" in readme
+    assert "weavert-shared-workspace-intelligence" in readme
     assert "sys.path.insert(0, str(project_root / \"packages\" / \"core\" / \"src\"))" in readme
     assert "pytest tests/test_runtime_extension_demos.py" in readme
     assert "test_runtime_extension_examples.py" not in readme

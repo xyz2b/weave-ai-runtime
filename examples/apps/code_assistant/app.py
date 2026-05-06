@@ -30,10 +30,28 @@ from .builtin_overrides import (
     build_code_assistant_bash_replacement,
     reconcile_background_shell_jobs,
 )
+from .deterministic_demo import build_deterministic_model_client
 from .host import ApprovalRecord, CodeAssistantHost
 
 DEFAULT_SESSION_PREFIX = "code-assistant"
 CODE_ASSISTANT_STATE_ROOT_ENV = "WEAVERT_CODE_ASSISTANT_STATE_ROOT"
+_VALIDATION_PACKAGE_MANIFESTS = (
+    "weavert-scenario-coding",
+    "weavert-shared-git",
+    "weavert-shared-workspace-intelligence",
+)
+_VALIDATION_TOOL_FAMILIES = (
+    ("git_*", ("git_status", "git_diff", "git_history")),
+    (
+        "workspace_*",
+        (
+            "workspace_symbols",
+            "workspace_references",
+            "workspace_outline",
+            "workspace_test_targets",
+        ),
+    ),
+)
 DEFAULT_PROMPT = """Work in the current mini repo.
 
 Goal:
@@ -64,6 +82,15 @@ class CodeAssistantLayout:
 
 
 @dataclass(frozen=True, slots=True)
+class AssemblyAnchors:
+    package_manifests: tuple[str, ...]
+    tool_family_owners: tuple[tuple[str, str], ...]
+    definition_owners: tuple[tuple[str, str], ...]
+    bash_builtin_owner: str
+    bash_replacement_active: bool
+
+
+@dataclass(frozen=True, slots=True)
 class RunReport:
     session_id: str
     workspace_root: Path
@@ -89,6 +116,8 @@ class RunReport:
     workflow_warnings: tuple[str, ...]
     ok: bool
     error_message: str | None = None
+    mode: str = "live"
+    assembly_anchors: "AssemblyAnchors | None" = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -137,6 +166,7 @@ class InspectReport:
     memory_documents: int
     highlighted_session_id: str | None = None
     highlighted_task_list_id: str | None = None
+    assembly_anchors: "AssemblyAnchors | None" = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -276,12 +306,17 @@ async def run_demo(
     validate_workflow: bool = True,
     layout: CodeAssistantLayout | None = None,
     model_client: Any = None,
+    deterministic: bool = False,
     input_reader=input,
     output_writer=print,
 ) -> RunReport:
     resolved_layout = layout or default_layout()
     workspace_root = ensure_demo_state(layout=resolved_layout)
-    runtime = assemble_demo_runtime(layout=resolved_layout, model_client=model_client)
+    resolved_mode = "deterministic" if deterministic else "live"
+    resolved_model_client = model_client
+    if resolved_model_client is None and deterministic:
+        resolved_model_client = build_deterministic_model_client()
+    runtime = assemble_demo_runtime(layout=resolved_layout, model_client=resolved_model_client)
     host = CodeAssistantHost(
         name="code-assistant-host",
         auto_approve=auto_approve,
@@ -320,6 +355,7 @@ async def run_demo(
     session_child_runs = _project_child_runs(child_run_records, session_id=resolved_session_id)
     final_text = _last_assistant_text(list(outcome.messages))
     error_message = _terminal_error_message(outcome.terminal_metadata)
+    assembly_anchors = _collect_assembly_anchors(runtime)
     workflow_ledger = await _workflow_ledger_for_session(
         runtime=runtime,
         session_id=resolved_session_id,
@@ -368,6 +404,8 @@ async def run_demo(
         workflow_warnings=workflow_warnings,
         ok=error_message is None and not workflow_gaps,
         error_message=error_message or _workflow_error_message(workflow_gaps),
+        mode=resolved_mode,
+        assembly_anchors=assembly_anchors,
     )
 
 
@@ -623,6 +661,7 @@ async def _inspect_demo_async(*, layout: CodeAssistantLayout | None = None) -> I
             workflow_ledger=None,
             memory_root=None,
             memory_documents=0,
+            assembly_anchors=None,
         )
 
     runtime = assemble_demo_runtime(layout=resolved_layout)
@@ -715,6 +754,7 @@ async def _inspect_runtime_state(
         memory_documents=memory_documents,
         highlighted_session_id=current_session_id,
         highlighted_task_list_id=highlighted_task_list_id,
+        assembly_anchors=_collect_assembly_anchors(runtime),
     )
 
 
@@ -1050,16 +1090,25 @@ def _coerce_datetime(value: Any) -> datetime | None:
         return None
 
 
+def _is_semantic_workspace_file(*, root: Path, path: Path) -> bool:
+    relative = path.relative_to(root)
+    if any(part in {".weavert", "__pycache__"} for part in relative.parts):
+        return False
+    if path.suffix in {".pyc", ".pyo"}:
+        return False
+    return True
+
+
 def _changed_files(*, workspace_root: Path, fixture_root: Path) -> list[str]:
     workspace_files = {
         str(path.relative_to(workspace_root))
         for path in workspace_root.rglob("*")
-        if path.is_file() and ".weavert" not in path.relative_to(workspace_root).parts
+        if path.is_file() and _is_semantic_workspace_file(root=workspace_root, path=path)
     }
     fixture_files = {
         str(path.relative_to(fixture_root))
         for path in fixture_root.rglob("*")
-        if path.is_file() and ".weavert" not in path.relative_to(fixture_root).parts
+        if path.is_file() and _is_semantic_workspace_file(root=fixture_root, path=path)
     }
     changed: list[str] = []
     for relative in sorted(workspace_files | fixture_files):
@@ -1271,6 +1320,8 @@ def _print_inspect_report(
             f"verified={report.workflow_ledger.verified_revision}, "
             f"reviewed={report.workflow_ledger.reviewed_revision})"
         )
+    for line in _assembly_anchor_lines(report.assembly_anchors):
+        output_writer(line)
     output_writer(f"changed files: {len(report.changed_files)}")
     for file_path in report.changed_files[:10]:
         output_writer(f"- changed {file_path}")
@@ -1898,7 +1949,99 @@ def _session_child_runs(records: list[dict[str, Any]], *, session_id: str) -> li
     return [record for record in records if str(record.get("session_id") or "") == session_id]
 
 
+def _collect_assembly_anchors(runtime) -> AssemblyAnchors:
+    package_manifest_names = {manifest.name for manifest in runtime.kernel.package_manifests}
+    tool_family_owners = tuple(
+        (
+            family_name,
+            _tool_family_owner(runtime=runtime, tool_names=tool_names),
+        )
+        for family_name, tool_names in _VALIDATION_TOOL_FAMILIES
+    )
+    definition_owners = (
+        ("code-assistant", _definition_owner(runtime.kernel.agent_registry.get("code-assistant"))),
+        ("coding-planner", _definition_owner(runtime.kernel.agent_registry.get("coding-planner"))),
+        ("reviewer", _definition_owner(runtime.kernel.agent_registry.get("reviewer"))),
+        ("verifier", _definition_owner(runtime.kernel.agent_registry.get("verifier"))),
+        ("coding-loop", _definition_owner(runtime.kernel.skill_registry.get("coding-loop"))),
+        ("review-change", _definition_owner(runtime.kernel.skill_registry.get("review-change"))),
+        ("verify-change", _definition_owner(runtime.kernel.skill_registry.get("verify-change"))),
+        ("bash", _definition_owner(runtime.kernel.tool_registry.get("bash"))),
+    )
+    bash_tool = runtime.kernel.tool_registry.get("bash")
+    return AssemblyAnchors(
+        package_manifests=tuple(
+            package_name for package_name in _VALIDATION_PACKAGE_MANIFESTS if package_name in package_manifest_names
+        ),
+        tool_family_owners=tool_family_owners,
+        definition_owners=definition_owners,
+        bash_builtin_owner=_definition_owner(bash_tool),
+        bash_replacement_active=_bash_replacement_active(bash_tool),
+    )
+
+
+def _definition_owner(definition: Any) -> str:
+    if definition is None:
+        return "<missing>"
+    metadata = getattr(definition, "metadata", None)
+    if not isinstance(metadata, dict):
+        return "app"
+    owner = str(metadata.get("builtin_owner") or "").strip()
+    return owner or "app"
+
+
+def _tool_family_owner(*, runtime, tool_names: tuple[str, ...]) -> str:
+    owners = {
+        _definition_owner(runtime.kernel.tool_registry.get(tool_name))
+        for tool_name in tool_names
+        if runtime.kernel.tool_registry.get(tool_name) is not None
+    }
+    if not owners:
+        return "<missing>"
+    if len(owners) == 1:
+        return next(iter(owners))
+    return ", ".join(sorted(owners))
+
+
+def _bash_replacement_active(bash_tool: Any) -> bool:
+    if bash_tool is None:
+        return False
+    input_schema = getattr(bash_tool, "input_schema", None)
+    if not isinstance(input_schema, dict):
+        return False
+    properties = input_schema.get("properties")
+    if not isinstance(properties, dict):
+        return False
+    return {
+        "action",
+        "run_in_background",
+        "shell_session_id",
+        "stdin",
+        "after_sequence",
+        "max_output_chars",
+    }.issubset(set(properties))
+
+
+def _assembly_anchor_lines(anchors: AssemblyAnchors | None) -> tuple[str, ...]:
+    if anchors is None:
+        return ()
+    package_line = "package manifests: " + ", ".join(anchors.package_manifests)
+    tool_line = "tool families: " + ", ".join(
+        f"{family}={owner}" for family, owner in anchors.tool_family_owners
+    )
+    owner_line = "definition owners: " + ", ".join(
+        f"{surface}={owner}" for surface, owner in anchors.definition_owners
+    )
+    bash_line = (
+        f"bash replacement: app-configured v2 over {anchors.bash_builtin_owner}"
+        if anchors.bash_replacement_active
+        else f"bash replacement: inactive over {anchors.bash_builtin_owner}"
+    )
+    return (package_line, tool_line, owner_line, bash_line)
+
+
 __all__ = [
+    "AssemblyAnchors",
     "CODE_ASSISTANT_STATE_ROOT_ENV",
     "CodeAssistantLayout",
     "DEFAULT_PROMPT",

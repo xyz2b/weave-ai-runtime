@@ -36,6 +36,7 @@ from weavert.tool_runtime import ToolContext
 
 PYTHON = sys.executable
 ROOT = Path(__file__).resolve().parents[1]
+CODE_ASSISTANT_README = ROOT / "examples" / "apps" / "code_assistant" / "README.md"
 OFFICIAL_SHARED_GIT_TOOLS = {"git_status", "git_diff", "git_history"}
 OFFICIAL_SHARED_WORKSPACE_TOOLS = {
     "workspace_symbols",
@@ -96,211 +97,12 @@ def _run_code_assistant_cli(
 def _scripted_run_report(tmp_path: Path):
     layout = _layout(tmp_path)
     reset_demo_state(layout=layout)
-
-    def _assert_main_request(request) -> None:
-        assert request.agent is not None
-        assert request.agent.name == "code-assistant"
-        assert {
-            "read",
-            "glob",
-            "grep",
-            "edit",
-            "write",
-            "bash",
-            "git_status",
-            "workspace_symbols",
-            "agent",
-            "skill",
-        }.issubset(
-            set(request.turn_context.available_tools)
-        )
-        assert {"coding-loop", "review-change", "verify-change", "task-discipline", "repo-onboard"}.issubset(
-            set(request.turn_context.available_skills)
-        )
-
-    def _coding_loop_batch(request):
-        _assert_main_request(request)
-        return tool_call_batch(
-            request_id="req-code-1",
-            tool_name="skill",
-            tool_input={"skill": "coding-loop"},
-            call_id="call-skill",
-        )
-
-    def _planner_batch(request):
-        _assert_main_request(request)
-        return tool_call_batch(
-            request_id="req-code-2",
-            tool_name="agent",
-            tool_input={
-                "agent": "coding-planner",
-                "max_turns": 8,
-                "prompt": (
-                    "Inspect the current task list plus only the test and source files needed for this task. "
-                    "Leave a short shared task plan and return a concise planning summary."
-                ),
-            },
-            call_id="call-planner",
-        )
-
-    def _planner_task_list_batch(request):
-        assert request.agent is not None
-        assert request.agent.name == "coding-planner"
-        assert {"read", "glob", "grep", "workspace_symbols", "workspace_test_targets", "task_create", "task_list"}.issubset(
-            set(request.turn_context.available_tools)
-        )
-        return tool_call_batch(
-            request_id="req-planner-1",
-            tool_name="task_list",
-            tool_input={},
-            call_id="call-planner-task-list",
-        )
-
-    def _planner_grep_batch(request):
-        assert request.agent is not None
-        assert request.agent.name == "coding-planner"
-        return tool_call_batch(
-            request_id="req-planner-2",
-            tool_name="grep",
-            tool_input={"pattern": "DEFAULT_NAME", "path": "src"},
-            call_id="call-planner-grep",
-        )
-
-    def _planner_task_one_batch(request):
-        assert request.agent is not None
-        assert request.agent.name == "coding-planner"
-        return tool_call_batch(
-            request_id="req-planner-3",
-            tool_name="task_create",
-            tool_input={"subject": "Inspect the failing greeting flow"},
-            call_id="call-planner-task-one",
-        )
-
-    def _planner_task_two_batch(request):
-        assert request.agent is not None
-        assert request.agent.name == "coding-planner"
-        return tool_call_batch(
-            request_id="req-planner-4",
-            tool_name="task_create",
-            tool_input={"subject": "Fix greeting and add live note"},
-            call_id="call-planner-task-two",
-        )
-
-    def _planner_summary_batch(request):
-        assert request.agent is not None
-        assert request.agent.name == "coding-planner"
-        return text_batch(request_id="req-planner-5", text="plan: inspect the greeting flow, update the default name, add the note, then verify")
-
-    def _task_list_batch(request):
-        _assert_main_request(request)
-        return tool_call_batch(
-            request_id="req-code-3",
-            tool_name="task_list",
-            tool_input={},
-            call_id="call-task-list",
-        )
-
-    def _edit_batch(request):
-        _assert_main_request(request)
-        return tool_call_batch(
-            request_id="req-code-4",
-            tool_name="edit",
-            tool_input={
-                "file_path": "src/demo_service/greeting.py",
-                "old_string": 'DEFAULT_NAME = "runtime"',
-                "new_string": 'DEFAULT_NAME = "WeaveRT"',
-            },
-            call_id="call-edit",
-        )
-
-    def _write_batch(request):
-        _assert_main_request(request)
-        return tool_call_batch(
-            request_id="req-code-5",
-            tool_name="write",
-            tool_input={
-                "file_path": "notes/live_demo.md",
-                "content": "The coding shell MVP updated the greeting fixture.\n",
-            },
-            call_id="call-write",
-        )
-
-    def _bash_batch(request):
-        _assert_main_request(request)
-        return tool_call_batch(
-            request_id="req-code-6",
-            tool_name="bash",
-            tool_input={
-                "command": "python3 -m unittest discover -s tests",
-                "description": "Run unit tests",
-            },
-            call_id="call-bash",
-        )
-
-    def _reviewer_batch(request):
-        _assert_main_request(request)
-        return tool_call_batch(
-            request_id="req-code-7",
-            tool_name="agent",
-            tool_input={"agent": "reviewer", "prompt": "Review the greeting change and note."},
-            call_id="call-reviewer",
-        )
-
-    def _reviewer_child_batch(request):
-        assert request.agent is not None
-        assert request.agent.name == "reviewer"
-        assert {"read", "glob", "grep", "git_status", "git_diff", "task_list"} == set(
-            request.turn_context.available_tools
-        )
-        return text_batch(request_id="req-reviewer-1", text="review: pass")
-
-    def _verifier_batch(request):
-        _assert_main_request(request)
-        return tool_call_batch(
-            request_id="req-code-8",
-            tool_name="agent",
-            tool_input={"agent": "verifier", "prompt": "Confirm the verification result."},
-            call_id="call-verifier",
-        )
-
-    def _verifier_child_batch(request):
-        assert request.agent is not None
-        assert request.agent.name == "verifier"
-        assert {"read", "glob", "grep", "bash", "git_status", "git_diff", "workspace_test_targets", "task_list", "job_get", "job_list", "job_stop"} == set(
-            request.turn_context.available_tools
-        )
-        return text_batch(request_id="req-verifier-1", text="verification: pass")
-
-    def _final_batch(request):
-        _assert_main_request(request)
-        return text_batch(request_id="req-code-9", text="completed coding shell workflow")
-
-    client = ScriptedModelClient(
-        [
-            _coding_loop_batch,
-            _planner_batch,
-            _planner_task_list_batch,
-            _planner_grep_batch,
-            _planner_task_one_batch,
-            _planner_task_two_batch,
-            _planner_summary_batch,
-            _task_list_batch,
-            _edit_batch,
-            _write_batch,
-            _bash_batch,
-            _reviewer_batch,
-            _reviewer_child_batch,
-            _verifier_batch,
-            _verifier_child_batch,
-            _final_batch,
-        ]
-    )
     report = asyncio.run(
         run_demo(
             prompt="Use the default coding workflow.",
             auto_approve=True,
             layout=layout,
-            model_client=client,
+            deterministic=True,
             output_writer=lambda _line: None,
         )
     )
@@ -471,6 +273,7 @@ def test_run_demo_with_scripted_model_exercises_shell_agents_tools_and_child_run
     report, layout = _scripted_run_report(tmp_path)
 
     assert report.ok is True
+    assert report.mode == "deterministic"
     assert report.workflow_gaps == ()
     assert report.workflow_advisories == ()
     assert report.workflow_ledger.current_state == "ready_to_summarize"
@@ -487,6 +290,24 @@ def test_run_demo_with_scripted_model_exercises_shell_agents_tools_and_child_run
     assert report.transcript_path.exists()
     assert report.child_run_index_path.exists()
     assert report.memory_root == layout.workspace_root / ".weavert" / "memory"
+    assert report.assembly_anchors is not None
+    assert report.assembly_anchors.package_manifests == (
+        "weavert-scenario-coding",
+        "weavert-shared-git",
+        "weavert-shared-workspace-intelligence",
+    )
+    assert dict(report.assembly_anchors.tool_family_owners) == {
+        "git_*": "weavert-shared-git",
+        "workspace_*": "weavert-shared-workspace-intelligence",
+    }
+    assert dict(report.assembly_anchors.definition_owners)["code-assistant"] == "app"
+    assert dict(report.assembly_anchors.definition_owners)["coding-planner"] == "weavert-scenario-coding"
+    assert dict(report.assembly_anchors.definition_owners)["reviewer"] == "weavert-scenario-coding"
+    assert dict(report.assembly_anchors.definition_owners)["verifier"] == "weavert-scenario-coding"
+    assert dict(report.assembly_anchors.definition_owners)["coding-loop"] == "weavert-scenario-coding"
+    assert dict(report.assembly_anchors.definition_owners)["bash"] == "weavert-devtools"
+    assert report.assembly_anchors.bash_builtin_owner == "weavert-devtools"
+    assert report.assembly_anchors.bash_replacement_active is True
     assert (layout.workspace_root / "notes" / "live_demo.md").read_text(encoding="utf-8").strip() == (
         "The coding shell MVP updated the greeting fixture."
     )
@@ -2029,6 +1850,24 @@ def test_inspect_demo_reports_durable_state_and_reset_clears_generated_outputs(t
     assert any(record["summary"] == "review: pass" for record in inspect_before.child_run_records)
     assert inspect_before.task_lists[0]["tasks"][0]["subject"] == "Inspect the failing greeting flow"
     assert inspect_before.memory_root == layout.workspace_root / ".weavert" / "memory"
+    assert inspect_before.assembly_anchors is not None
+    assert inspect_before.assembly_anchors.package_manifests == (
+        "weavert-scenario-coding",
+        "weavert-shared-git",
+        "weavert-shared-workspace-intelligence",
+    )
+    assert dict(inspect_before.assembly_anchors.tool_family_owners) == {
+        "git_*": "weavert-shared-git",
+        "workspace_*": "weavert-shared-workspace-intelligence",
+    }
+    assert set(inspect_before.changed_files) == {
+        "notes/live_demo.md",
+        "src/demo_service/greeting.py",
+    }
+    assert not any(
+        "__pycache__" in path or path.endswith((".pyc", ".pyo")) or path.startswith(".weavert/")
+        for path in inspect_before.changed_files
+    )
 
     reset_demo_state(layout=layout)
     inspect_after = inspect_demo(layout=layout)
@@ -2062,9 +1901,53 @@ def test_code_assistant_cli_respects_state_root_override_and_runs_shell_commands
         input_text="/inspect\n/tasks\n/jobs\n/exit\n",
     )
     assert shell.returncode == 0
+    assert "code assistant demo shell" in shell.stdout
     assert "current transcript: cli-shell" in shell.stdout
     assert "current task list: session:cli-shell" in shell.stdout
     assert "jobs: 0" in shell.stdout
+    assert "workflow: clean (change=0, verified=0, reviewed=0)" in shell.stdout
+    assert f"transcript: {state_root / 'mini_repo' / '.weavert' / 'transcripts' / 'cli-shell.jsonl'}" in shell.stdout
+    assert "status: ok" in shell.stdout
+
+
+def test_code_assistant_cli_deterministic_run_succeeds_without_provider_credentials(tmp_path: Path) -> None:
+    env = _cli_env(tmp_path)
+    state_root = tmp_path / "cli-state"
+
+    completed = _run_code_assistant_cli(
+        "run",
+        "--deterministic",
+        "--session-id",
+        "cli-deterministic",
+        "--auto-approve",
+        env=env,
+    )
+
+    assert completed.returncode == 0
+    assert "code assistant demo run" in completed.stdout
+    assert "mode: deterministic" in completed.stdout
+    assert "task list: session:cli-deterministic" in completed.stdout
+    assert "workflow: ready_to_summarize (change=2, verified=2, reviewed=2)" in completed.stdout
+    assert (
+        "package manifests: weavert-scenario-coding, weavert-shared-git, "
+        "weavert-shared-workspace-intelligence"
+    ) in completed.stdout
+    assert "tool families: git_*=weavert-shared-git, workspace_*=weavert-shared-workspace-intelligence" in completed.stdout
+    assert "definition owners: code-assistant=app" in completed.stdout
+    assert "coding-planner=weavert-scenario-coding" in completed.stdout
+    assert "reviewer=weavert-scenario-coding" in completed.stdout
+    assert "verifier=weavert-scenario-coding" in completed.stdout
+    assert "coding-loop=weavert-scenario-coding" in completed.stdout
+    assert "bash replacement: app-configured v2 over weavert-devtools" in completed.stdout
+    assert (
+        f"transcript: {state_root / 'mini_repo' / '.weavert' / 'transcripts' / 'cli-deterministic.jsonl'}"
+        in completed.stdout
+    )
+    assert (
+        f"child run index: {state_root / 'mini_repo' / '.weavert' / 'child_runs' / 'sessions' / 'cli-deterministic.json'}"
+        in completed.stdout
+    )
+    assert "status: ok" in completed.stdout
 
 
 def test_code_assistant_cli_run_surfaces_auth_failure_in_subprocess(
@@ -2150,3 +2033,16 @@ def test_code_assistant_cli_run_prints_workflow_advisories(
     assert exit_code == 0
     assert "workflow advisories: 1" in output
     assert "planner degraded: the coding-planner child run ended with status 'max_turns'" in output
+
+
+def test_code_assistant_readme_documents_live_deterministic_and_shell_smoke_paths() -> None:
+    readme = CODE_ASSISTANT_README.read_text(encoding="utf-8")
+
+    assert "## Split ownership model" in readme
+    assert "python3 -B -m examples.apps.code_assistant run \\" in readme
+    assert "--deterministic \\" in readme
+    assert "python3 -B -m examples.apps.code_assistant shell --session-id local-shell --auto-approve" in readme
+    assert "`mode: live` or `mode: deterministic`" in readme
+    assert "package manifests: weavert-scenario-coding, weavert-shared-git, weavert-shared-workspace-intelligence" in readme
+    assert "tool families: git_*=weavert-shared-git, workspace_*=weavert-shared-workspace-intelligence" in readme
+    assert "bash replacement: app-configured v2 over weavert-devtools" in readme

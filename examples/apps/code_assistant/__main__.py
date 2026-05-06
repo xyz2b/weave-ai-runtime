@@ -4,7 +4,15 @@ import argparse
 import asyncio
 from pathlib import Path
 
-from .app import DEFAULT_PROMPT, default_layout, inspect_demo, reset_demo_state, run_demo, shell_demo
+from .app import (
+    DEFAULT_PROMPT,
+    _assembly_anchor_lines,
+    default_layout,
+    inspect_demo,
+    reset_demo_state,
+    run_demo,
+    shell_demo,
+)
 
 
 def _display_path(path: Path) -> str:
@@ -26,13 +34,21 @@ def main() -> int:
         help="Auto-approve edit, write, and bash actions during the shell session.",
     )
 
-    run_parser = subparsers.add_parser("run", help="Run the live code assistant workflow.")
+    run_parser = subparsers.add_parser(
+        "run",
+        help="Run the code assistant workflow. Live by default; use --deterministic for the scripted validation path.",
+    )
     run_parser.add_argument("--prompt", default=DEFAULT_PROMPT, help="Prompt to give the code assistant.")
     run_parser.add_argument("--session-id", default=None, help="Optional stable session id.")
     run_parser.add_argument(
         "--auto-approve",
         action="store_true",
         help="Auto-approve edit, write, and bash actions for harness-style runs.",
+    )
+    run_parser.add_argument(
+        "--deterministic",
+        action="store_true",
+        help="Replay the repository-local scripted validation path instead of the live provider route.",
     )
 
     subparsers.add_parser("reset", help="Restore the mutable workspace from the pristine fixture.")
@@ -61,6 +77,8 @@ def main() -> int:
         print(f"workspace: {_display_path(report.workspace_root)}")
         print(f"distribution: {report.distribution}")
         print(f"default route: {report.default_model_route}")
+        for line in _assembly_anchor_lines(report.assembly_anchors):
+            print(line)
         print(
             "persistence profile: "
             f"{report.persistence_profile.get('profile_kind', 'unknown')}"
@@ -153,9 +171,11 @@ def main() -> int:
             session_id=args.session_id,
             auto_approve=args.auto_approve,
             layout=layout,
+            deterministic=args.deterministic,
         )
     )
     print("code assistant demo run")
+    print(f"mode: {'deterministic' if args.deterministic else 'live'}")
     print(f"session: {report.session_id}")
     print(f"workspace: {_display_path(report.workspace_root)}")
     print(f"distribution: {report.distribution}")
@@ -168,6 +188,8 @@ def main() -> int:
     print(f"child runs: {len(report.child_runs)}")
     for child in report.child_runs:
         print(f"- child {child['agent']}: {child['status']} -> {child['summary']}")
+    for line in _assembly_anchor_lines(report.assembly_anchors):
+        print(line)
     print(f"transcript: {_display_path(report.transcript_path)}")
     print(f"child run index: {_display_path(report.child_run_index_path)}")
     print(f"memory root: {_display_path(report.memory_root)}")

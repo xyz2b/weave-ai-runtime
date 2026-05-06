@@ -23,16 +23,18 @@ This app keeps the durable live-runtime path from the earlier demo, but combines
 
 ## Prerequisites
 
-Required:
+Live workflow turns require:
 
 - `OPENAI_API_KEY`
+
+The deterministic validation path and the shell local-command smoke path do not require provider credentials.
 
 Optional overrides:
 
 - `OPENAI_BASE_URL`
 - `OPENAI_MODEL`
 
-If `OPENAI_API_KEY` is missing, the app still uses the bundled live route and surfaces the provider auth failure directly.
+If `OPENAI_API_KEY` is missing and you use the live `run` path or spend a model turn in `shell`, the app still uses the bundled live route and surfaces the provider auth failure directly.
 
 ## Mutable state model
 
@@ -46,7 +48,18 @@ The live app edits a generated mutable workspace:
 
 The mutable workspace also stores durable runtime artifacts under `.local/examples/code_assistant/mini_repo/.weavert/`, including transcripts, child runs, task lists, jobs, and memory.
 
-## Primary shell path
+## Split ownership model
+
+This sample intentionally keeps the advanced app split across four physical parts:
+
+- app-owned shell layer under `examples/apps/code_assistant/`, including the host loop, local commands, approvals, workflow ledger, and the app-configured `bash` replacement behavior
+- the official coding scenario pack, which owns `coding-planner`, `reviewer`, `verifier`, and the core coding-loop skills
+- the shared git package, which owns the `git_*` tool family
+- the shared workspace-intelligence package, which owns the `workspace_*` tool family
+
+Both the live and deterministic validation paths should report the same package-manifest, tool-family, and definition-owner anchors for that split stack.
+
+## Shell mode
 
 Reset the mutable workspace first:
 
@@ -84,29 +97,70 @@ The app-local `bash` replacement keeps the public tool name `bash`, but the V2 c
 - shared job visibility and structured shell-session metadata
 - explicit unsupported outcomes for full-screen terminal UIs such as `vim`, `less`, or `top`
 
-## Scripted smoke path
+### Local-command smoke path
 
-The deterministic smoke path still exists and uses the same workspace layout, runtime config, and durable-state conventions as the shell:
+For startup, snapshot, transcript, and shutdown smoke coverage, you can validate the shell without a model turn:
 
 ```bash
-python3 -B -m examples.apps.code_assistant run
+python3 -B -m examples.apps.code_assistant reset
+python3 -B -m examples.apps.code_assistant shell --session-id local-shell --auto-approve
 ```
 
-Harness mode:
+At the prompt, run:
 
-```bash
-python3 -B -m examples.apps.code_assistant run --auto-approve
+```text
+/inspect
+/tasks
+/jobs
+/exit
 ```
 
-Stable session id:
+Success anchors for this local shell smoke are:
+
+- startup lines such as `code assistant shell`, `session: local-shell`, and `workspace: ...`
+- `/inspect` output that includes `current transcript: local-shell`, `current task list: session:local-shell`, and at least one `workflow:` snapshot line
+- a final shell report with `transcript: ...`, `child run index: ...`, and `status: ok`
+
+## Run modes
+
+### Live workflow run
+
+Use the live bundled provider route when you want the real planner -> edit -> verify -> review -> summarize loop against provider-backed model turns:
 
 ```bash
+export OPENAI_API_KEY=your-key
 python3 -B -m examples.apps.code_assistant run \
   --session-id live-smoke \
   --auto-approve
 ```
 
-The live `run` path now succeeds when the workflow leaves a real planning outcome, inspects the repo before the first material edit, verifies the latest revision, reviews the latest revision, and returns a final summary. If the planner degrades after leaving a usable shared plan, the command still succeeds and prints that condition as a non-blocking `workflow advisories` entry.
+### Deterministic validation run
+
+Use the deterministic replay when you want the same split runtime assembly and durable artifact layout without live provider credentials:
+
+```bash
+python3 -B -m examples.apps.code_assistant run \
+  --deterministic \
+  --session-id deterministic-smoke \
+  --auto-approve
+```
+
+The deterministic path replays repository-local scripted model support, but it still uses the same app-owned shell layer, package-backed workflow surfaces, approval handling, task list, workflow ledger, transcript store, child-run store, and `bash` replacement contract as the live path.
+
+Success anchors for both `run` modes are:
+
+- `mode: live` or `mode: deterministic`
+- `status: ok`
+- `task list: session:<session-id>`
+- `workflow: ready_to_summarize (change=2, verified=2, reviewed=2)`
+- `package manifests: weavert-scenario-coding, weavert-shared-git, weavert-shared-workspace-intelligence`
+- `tool families: git_*=weavert-shared-git, workspace_*=weavert-shared-workspace-intelligence`
+- `definition owners: code-assistant=app, coding-planner=weavert-scenario-coding, reviewer=weavert-scenario-coding, verifier=weavert-scenario-coding, coding-loop=weavert-scenario-coding`
+- `bash replacement: app-configured v2 over weavert-devtools`
+- `transcript: .../.weavert/transcripts/<session-id>.jsonl`
+- `child run index: .../.weavert/child_runs/sessions/<session-id>.json`
+
+The `run` path succeeds when the workflow leaves a real planning outcome, inspects the repo before the first material edit, verifies the latest revision, reviews the latest revision, and returns a final summary. If the planner degrades after leaving a usable shared plan, the command still succeeds and prints that condition as a non-blocking `workflow advisories` entry.
 
 ## Approval behavior
 
@@ -174,32 +228,11 @@ python3 -B -m examples.apps.code_assistant inspect
 - transcript sessions
 - child-run state
 - shared task lists
+- package manifests, tool-family owners, and definition owners for the split app/package assembly
+- semantic changed files, with `.weavert`, `__pycache__`, `*.pyc`, and `*.pyo` filtered out
 - memory root and document count
 
 `reset` deletes the mutable workspace and recreates it from the pristine fixture. That clears live edits and durable runtime artifacts together.
-
-## Manual live smoke path
-
-A manual V2 smoke run that preserves the bundled live model route is:
-
-```bash
-export OPENAI_API_KEY=your-key
-python3 -B -m examples.apps.code_assistant reset
-python3 -B -m examples.apps.code_assistant shell --session-id live-smoke --auto-approve
-python3 -B -m examples.apps.code_assistant inspect
-```
-
-You should see all of the following:
-
-- host approval handling, unless `--auto-approve` is used
-- reactive task or job updates while the shell is live
-- workflow state lines such as `pending_verification` or `pending_review`
-- `workflow advisories` only when the workflow materially succeeds but the planner still degraded
-- a durable transcript at `.local/examples/code_assistant/mini_repo/.weavert/transcripts/live-smoke.jsonl`
-- child-run records for `coding-planner`, `reviewer`, and `verifier`
-- a shared task list whose id starts with `session:live-smoke`
-- structured `bash` verification results and shell-session metadata
-- `notes/live_demo.md` created inside the mutable workspace
 
 ## Acceptance checklist
 
