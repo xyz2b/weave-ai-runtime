@@ -10,8 +10,8 @@ from weavert.isolation import (
     IsolationLease,
     IsolationManager,
     IsolationPreparationError,
-    WorktreeIsolationAdapter,
 )
+from weavert_isolation import WorktreeIsolationAdapter
 
 
 @dataclass(slots=True)

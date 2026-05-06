@@ -14,7 +14,7 @@ from ..hosts.base import CallbackHostAdapter, HostRuntime, NullHostAdapter
 from ..isolation import IsolationManager
 from ..jobs import DefaultJobService
 from ..permissions import PermissionEngine
-from ..runtime_package_protocols import (
+from ..package_system.protocols import (
     CapabilityBinding,
     CapabilityRegistry,
     ContextContributorBinding,

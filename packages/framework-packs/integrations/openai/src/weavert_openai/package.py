@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from weavert.runtime_kernel.config import ModelProviderBinding, ModelRouteBinding
-from weavert.runtime_package_protocols import (
+from weavert.package_system.protocols import (
     ModelProviderContribution,
     ModelRouteContribution,
     PackageAssemblyStage,

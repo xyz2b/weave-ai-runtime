@@ -24,14 +24,19 @@ from ..definitions import (
 )
 from ..hosts.base import HostFactory
 from ..jobs import JobExecutorBinding
-from ..package_profiles import (
+from ..extension_contracts.package_profiles import (
     DEFAULT_RUNTIME_DISTRIBUTION,
     RuntimeDistribution,
     normalize_runtime_distribution,
     resolve_first_party_package_names,
 )
-from ..public_contract import ensure_canonical_workspace_root
-from ..runtime_package_manifests import RuntimePackageRegistrationSource
+from ..extension_contracts.public_contract import ensure_canonical_workspace_root
+from ..package_system.manifests import (
+    RuntimePackageRegistrationSource,
+    official_runtime_package_manifest_catalog,
+    official_runtime_package_manifests,
+)
+from ..package_system.protocols import PackageAssemblyStage, PackageContext
 from ..team_config import TeammateOrchestrationConfig
 from ..turn_engine.models import ModelClient, NormalizedModelCapabilities, TranscriptStore
 
@@ -449,16 +454,10 @@ class RuntimeConfig:
             distribution=preset_definition.recommended_distribution,
         )
         if preset_definition.name == RuntimeAssemblyPresetName.HEADLESS_LIVE:
-            from ..openai_client import (
-                OPENAI_PROVIDER_NAME,
-                OPENAI_ROUTE_NAME,
-                bundled_openai_provider_binding,
-                bundled_openai_route_binding,
+            config = _with_package_manifest_model_bindings(
+                config,
+                package_names=("weavert-openai",),
             )
-
-            config.model_providers[OPENAI_PROVIDER_NAME] = bundled_openai_provider_binding()
-            config.model_routes[OPENAI_ROUTE_NAME] = bundled_openai_route_binding()
-            config.default_model_route = OPENAI_ROUTE_NAME
         return _with_runtime_assembly_preset(config, preset_definition)
 
     @classmethod
@@ -575,6 +574,82 @@ def _runtime_assembly_preset_snapshot(config: RuntimeConfig) -> dict[str, Any]:
         )
     snapshot["selected_first_party_packages"] = list(config.selected_first_party_packages())
     return snapshot
+
+
+def _with_package_manifest_model_bindings(
+    config: RuntimeConfig,
+    *,
+    package_names: tuple[str, ...],
+) -> RuntimeConfig:
+    selected_packages = config.selected_first_party_packages()
+    requested_packages = tuple(
+        package_name for package_name in package_names if package_name in selected_packages
+    )
+    if not requested_packages:
+        return config
+
+    manifest_catalog = official_runtime_package_manifest_catalog()
+    selected_package_set = set(selected_packages)
+    dependency_closure: list[str] = []
+    visiting: set[str] = set()
+    visited: set[str] = set()
+
+    def visit(package_name: str) -> None:
+        if package_name in visited:
+            return
+        if package_name in visiting:
+            raise ValueError(f"Cyclic package dependency detected at '{package_name}'")
+        manifest = manifest_catalog[package_name]
+        visiting.add(package_name)
+        for dependency in manifest.dependencies:
+            if dependency not in selected_package_set:
+                raise ValueError(
+                    f"Package '{package_name}' requires dependency '{dependency}' to be selected"
+                )
+            visit(dependency)
+        visiting.remove(package_name)
+        visited.add(package_name)
+        dependency_closure.append(package_name)
+
+    for package_name in requested_packages:
+        visit(package_name)
+
+    manifests = official_runtime_package_manifests(dependency_closure)
+    model_providers = dict(config.model_providers)
+    model_routes = dict(config.model_routes)
+    default_route_candidate: str | None = None
+
+    for manifest in manifests:
+        contribution = manifest.assemble(
+            PackageContext(
+                manifest=manifest,
+                stage=PackageAssemblyStage.SERVICES,
+                distribution=config.resolved_distribution().value,
+                selected_packages=selected_packages,
+                working_directory=config.working_directory,
+            )
+        )
+        for provider in contribution.model_providers:
+            model_providers.setdefault(provider.name, provider.binding)
+        for route in contribution.model_routes:
+            model_routes.setdefault(route.name, route.binding)
+            if default_route_candidate is None:
+                default_route_candidate = route.name
+
+    default_model_route = config.default_model_route
+    if (
+        default_model_route is None
+        and not config.model_routes
+        and default_route_candidate is not None
+    ):
+        default_model_route = default_route_candidate
+
+    return replace(
+        config,
+        model_providers=model_providers,
+        model_routes=model_routes,
+        default_model_route=default_model_route,
+    )
 
 
 def _with_runtime_assembly_preset(

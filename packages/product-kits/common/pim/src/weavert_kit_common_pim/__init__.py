@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from weavert.runtime_package_protocols import RuntimePackageManifest
-from weavert.scenario_runtime_pack_support import (
+from weavert.package_system.protocols import RuntimePackageManifest
+from weavert.extension_contracts.scenario_runtime_packs import (
     ReferenceSharedPackageShape,
     build_reference_shared_package_manifest,
 )

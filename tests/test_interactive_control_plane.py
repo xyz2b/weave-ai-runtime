@@ -15,7 +15,7 @@ from weavert.definitions import (
 )
 from weavert.elicitation import ElicitationRequest
 from weavert.hooks import HookBus, RuntimeHookPhase
-from weavert.hosts import SdkHostRuntime
+from weavert_hosts_reference import SdkHostRuntime
 from weavert.permissions import PermissionContext
 from weavert.registries import ToolRegistry
 from weavert.runtime_kernel import RuntimeConfig, assemble_runtime

@@ -19,6 +19,12 @@
 - 做平台化时，再进入 `TranscriptStore`、`ChildRunStore`、`MemoryProvider`、`InvocationProvider`、teammate orchestration 这一层。
 - 不建议把 `TurnEngine`、`SessionController`、tool orchestration 主状态机当作普通扩展点。
 
+还要额外记住一个 public import boundary：
+
+- `weavert` 是 runtime core-only package surface
+- non-core first-party family 统一使用各自的 package root，例如 `weavert_openai`、`weavert_memory`、`weavert_team`、`weavert_hosts_reference`
+- 需要启用这些 add-on 时，优先走 distribution、`enabled_packages`、manifest registration 这些 package seam，而不是依赖 `weavert.*` projection
+
 推荐学习顺序：
 
 - 先跑 `examples/README.md` 里的 seam-basics demos，理解最小稳定扩展面。
@@ -1156,7 +1162,7 @@ Capability-only 示例：
 
 ```python
 from weavert.runtime_kernel import RuntimeConfig, assemble_runtime
-from weavert.runtime_package_protocols import (
+from weavert.package_system.protocols import (
     CapabilityPackageBindingSpec,
     build_capability_only_package_manifest,
 )
@@ -1182,7 +1188,7 @@ weavert = assemble_runtime(
 Context-contributor-only 示例：
 
 ```python
-from weavert.runtime_package_protocols import (
+from weavert.package_system.protocols import (
     ContextContributorPackageBindingSpec,
     ContextContributorStage,
     build_context_contributor_only_package_manifest,
@@ -1218,14 +1224,14 @@ Invocation catalog 不只接 skill。
 用户视角怎么扩：
 
 1. 把自定义 provider 包装成 ordinary provider-only runtime package，并通过 `PackageContribution.invocation_providers` 注册。
-2. 最小 manifest shape 可以直接复用 `weavert.runtime_package_protocols.build_provider_only_invocation_package_manifest()`；它现在是同一组 ordinary package builders 的 provider-only 成员。默认 role 是 `provider`，普通 baseline dependency 是 `weavert-core`。
+2. 最小 manifest shape 可以直接复用 `weavert.package_system.protocols.build_provider_only_invocation_package_manifest()`；它现在是同一组 ordinary package builders 的 provider-only 成员。默认 role 是 `provider`，普通 baseline dependency 是 `weavert-core`。
 3. 用 `RuntimeConfig.extra_package_manifests` + `RuntimeConfig.requested_packages` 把这个 manifest 接入当前 runtime。
 4. 用 `resolve_invocations()` / `visible_invocations()` / `invocation_diagnostics()` 给 UI 提供统一能力图。
 
 ```python
 from weavert.invocation_catalog import StaticInvocationProvider
 from weavert.runtime_kernel import RuntimeConfig, assemble_runtime
-from weavert.runtime_package_protocols import build_provider_only_invocation_package_manifest
+from weavert.package_system.protocols import build_provider_only_invocation_package_manifest
 
 provider_manifest = build_provider_only_invocation_package_manifest(
     name="weavert-provider-only",
@@ -1710,12 +1716,11 @@ from pathlib import Path
 
 from weavert.definitions import MemoryScope
 from weavert.memory import (
-    LongTermMemoryService,
     MemoryDocument,
     MemoryEntry,
-    MemoryProvider,
 )
 from weavert.runtime_kernel import RuntimeConfig, assemble_runtime
+from weavert_memory import LongTermMemoryService, MemoryProvider
 
 
 class InMemoryMemoryProvider:

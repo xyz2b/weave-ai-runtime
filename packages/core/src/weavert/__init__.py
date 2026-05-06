@@ -165,12 +165,12 @@ from .permissions import (
     selective_auto_approve_permissions,
     selective_auto_approve_policy,
 )
-from .runtime_package_catalog import (
+from .package_system.catalog import (
     official_runtime_distribution_catalog,
     official_runtime_package_catalog,
 )
-from .runtime_package_manifests import official_runtime_package_manifests, package_manifest
-from .runtime_package_resolution import (
+from .package_system.manifests import official_runtime_package_manifests, package_manifest
+from .package_system.resolution import (
     PACKAGE_CANDIDATE_METADATA_KEY,
     REQUESTED_PACKAGES_PATH,
     RuntimePackageCandidateDescriptor,
@@ -184,7 +184,7 @@ from .runtime_package_resolution import (
     build_runtime_package_request,
     resolve_runtime_package_graph,
 )
-from .runtime_package_protocols import (
+from .package_system.protocols import (
     CapabilityBinding,
     CapabilityPackageBindingSpec,
     CapabilityRegistry,
@@ -418,20 +418,6 @@ from .turn_engine import (
     TurnStreamEvent,
     TurnStreamEventType,
 )
-
-
-def __getattr__(name: str):
-    if name in {"CliHostRuntime", "SdkHostRuntime"}:
-        from .hosts import CliHostRuntime, SdkHostRuntime
-
-        mapping = {
-            "CliHostRuntime": CliHostRuntime,
-            "SdkHostRuntime": SdkHostRuntime,
-        }
-        return mapping[name]
-    raise AttributeError(name)
-
-
 __all__ = [
     "AgentDefinition",
     "AgentExecutionSpec",
@@ -645,8 +631,6 @@ __all__ = [
     "MailboxTerminalState",
     "PersistentTeammateHostBridge",
     "PersistentTeammateOrchestrator",
-    "SdkHostRuntime",
-    "CliHostRuntime",
     "ChildResultProjectionMode",
     "SessionCommand",
     "SessionCommandType",

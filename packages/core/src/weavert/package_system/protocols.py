@@ -5,11 +5,11 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any, Callable, Mapping, Protocol, Sequence
 
-from .definitions import AgentDefinition, InvocationProvider, SkillDefinition, ToolDefinition
-from .diagnostics import Diagnostic
-from .first_party_loading import load_object
-from .jobs import JobExecutorBinding
-from .public_contract import (
+from ..definitions import AgentDefinition, InvocationProvider, SkillDefinition, ToolDefinition
+from ..diagnostics import Diagnostic
+from .loading import load_object
+from ..jobs import JobExecutorBinding
+from ..extension_contracts.public_contract import (
     canonical_distribution_name,
     canonical_first_party_name,
     canonical_public_namespace,
@@ -44,7 +44,7 @@ class RuntimeCapabilityKey(StrEnum):
     MEMORY_SERVICE = "weavert.memory.service"
     COMPACTION_MANAGER = "weavert.compaction.manager"
     ISOLATION_MANAGER = "weavert.isolation.manager"
-    REFERENCE_HOST_TYPES = "weavert.hosts.reference_types"
+    REFERENCE_HOST_TYPES = "weavert_hosts_reference.reference_types"
     TEAMMATES = "weavert.team.teammates"
     TEAM_CONTROL_PLANE = "weavert.team.control_plane"
     TEAM_MESSAGE_BUS = "weavert.team.message_bus"

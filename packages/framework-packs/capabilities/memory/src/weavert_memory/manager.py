@@ -16,7 +16,7 @@ from uuid import uuid4
 from weavert.contracts import MessageRole, RuntimeMessage
 from weavert.definitions import AgentDefinition, MemoryScope
 from weavert.jobs import DefaultJobService, task_status_to_job_status
-from weavert.public_contract import ensure_canonical_workspace_root
+from weavert.extension_contracts.public_contract import ensure_canonical_workspace_root
 from weavert.runtime_services import SidecarContributionResult
 from weavert.tasking import TaskManager, TaskStatus
 from .config import (

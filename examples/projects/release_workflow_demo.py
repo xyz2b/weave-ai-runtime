@@ -16,7 +16,7 @@ from weavert_testing import (
 )
 from weavert.result_projections import final_assistant_text, latest_skill_outcome
 from weavert.runtime_kernel import BuiltinPackConfig, RuntimeConfig, RuntimeDistribution, assemble_runtime
-from weavert.runtime_package_protocols import (
+from weavert.package_system.protocols import (
     CapabilityBinding,
     ContextContributorBinding,
     ContextContributorStage,

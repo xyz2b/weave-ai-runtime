@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, Mapping
 
-from .runtime_package_protocols import PackageOwnership, RuntimeCapabilityKey
+from .package_system.protocols import PackageOwnership, RuntimeCapabilityKey
 
 CORE_PROTOCOL_CATALOG_SCHEMA_VERSION = "1.0"
 

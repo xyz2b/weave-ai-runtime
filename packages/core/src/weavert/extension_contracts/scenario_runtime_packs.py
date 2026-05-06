@@ -4,8 +4,8 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import Any
 
-from .diagnostics import Diagnostic, DiagnosticSeverity
-from .runtime_package_protocols import (
+from ..diagnostics import Diagnostic, DiagnosticSeverity
+from ..package_system.protocols import (
     CapabilityBinding,
     ContextContributorBinding,
     ContextContributorStage,

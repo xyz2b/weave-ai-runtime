@@ -13,7 +13,7 @@ from weavert.contracts import (
 from weavert.definitions import AgentDefinition, ToolDefinition, ToolTraits
 from weavert.hooks import RuntimeHookPhase
 from weavert.registries import ToolRegistry
-from weavert.runtime_package_protocols import (
+from weavert.package_system.protocols import (
     IngressReceiptHandlerBinding,
     PackageLifecycleParticipant,
     PackageLifecyclePhase,

@@ -6,7 +6,7 @@ from weavert.agent_execution_service import AgentExecutionService
 from weavert.agent_runtime import AgentInvocation
 from weavert.child_result_projection import project_child_run_record
 from weavert.definitions import AgentDefinition
-from weavert.hosts import SdkHostRuntime
+from weavert_hosts_reference import SdkHostRuntime
 from weavert.registries import AgentRegistry, SkillRegistry, ToolRegistry
 from weavert.result_projections import child_summary, terminal_failure
 from weavert.runtime_kernel import RuntimeConfig, assemble_runtime

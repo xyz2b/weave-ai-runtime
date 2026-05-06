@@ -4,10 +4,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ..definitions import AgentDefinition, SkillDefinition, ToolDefinition
-from ..package_profiles import DEFAULT_RUNTIME_DISTRIBUTION, resolve_first_party_package_names
-from ..runtime_package_catalog import official_runtime_package_names
-from ..runtime_package_manifests import official_runtime_package_manifests
-from ..runtime_package_protocols import PackageAssemblyStage, PackageContext
+from ..extension_contracts.package_profiles import DEFAULT_RUNTIME_DISTRIBUTION, resolve_first_party_package_names
+from ..package_system.catalog import official_runtime_package_names
+from ..package_system.manifests import official_runtime_package_manifests
+from ..package_system.protocols import PackageAssemblyStage, PackageContext
 
 
 @dataclass(frozen=True, slots=True)

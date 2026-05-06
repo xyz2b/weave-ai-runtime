@@ -9,12 +9,12 @@ from weavert import (
     RuntimeCapabilityKey,
     RuntimeConfig,
     SessionStatus,
-    SdkHostRuntime,
     TeamControlError,
     TeamMessageKind,
     TeammateOrchestrationConfig,
     assemble_runtime,
 )
+from weavert_hosts_reference import SdkHostRuntime
 from weavert.tool_runtime import ToolCall, ToolCallStatus, ToolContext, ToolScheduler
 from weavert.turn_engine import ModelRequest, ModelStreamEvent, ModelStreamEventType
 

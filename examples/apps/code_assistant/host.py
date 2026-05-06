@@ -8,7 +8,7 @@ from typing import Any, Callable
 from weavert.child_result_projection import project_child_run_record
 from weavert.contracts import MessageRole, ToolResultBlock
 from weavert.definitions import ToolCallStatus
-from weavert.hosts import SdkHostRuntime
+from weavert_hosts_reference import SdkHostRuntime
 from weavert.permissions import PermissionOutcome, PermissionRequest
 from weavert.definitions import PermissionBehavior
 from weavert.turn_engine.engine import TurnStreamEventType

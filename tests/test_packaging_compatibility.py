@@ -58,61 +58,87 @@ def _run_python(venv_python: Path, script: str) -> subprocess.CompletedProcess[s
     )
 
 
-def test_core_compatibility_shims_import_without_optional_packages_installed(tmp_path: Path) -> None:
+def test_core_package_surface_stays_core_only_without_optional_packages_installed(tmp_path: Path) -> None:
     venv_python = _create_virtualenv(tmp_path)
     _pip_install(venv_python, ROOT / "packages" / "core")
 
     completed = _run_python(
         venv_python,
         """
+        import importlib
+
+        import weavert
         import weavert.compaction as compaction
+        import weavert.extension_contracts as extension_contracts
         import weavert.isolation as isolation
-        import weavert.reference_chat_builtins
-        import weavert.reference_chat_tool_impls
-        import weavert.reference_coding_builtins
-        import weavert.reference_coding_tool_impls
-        import weavert.reference_local_assistant_builtins
-        import weavert.scenario_runtime_packs as scenario_runtime_packs
-        import weavert.starter_scaffolds as starter_scaffolds
-        import weavert.stores_file as stores_file
-        import weavert.testing as testing
-        import weavert.testing.assertions
-        import weavert.testing.fixtures
-        import weavert.testing.harness
-        import weavert.testing.scripted
+        import weavert.memory as memory
+        import weavert.package_system as package_system
 
         print("imports-ok")
+        print("canonical-import-root", extension_contracts.CANONICAL_IMPORT_ROOT)
+        print("package-manifest-type", package_system.RuntimePackageManifest.__name__)
+        print("core-memory-model", memory.MemoryTurnResult().__class__.__name__)
         print("core-isolation-worktree", isolation.IsolationManager().describe_modes()["worktree"]["status"])
         assert compaction.CompactionPolicy().enabled is True
+        assert weavert.RuntimePackageManifest is package_system.RuntimePackageManifest
 
-        checks = {
-            "scenario": lambda: scenario_runtime_packs.reference_scenario_pack_manifests(),
-            "starter": lambda: starter_scaffolds.generate_starter_scaffold("minimal-project", "unused"),
-            "testing": lambda: testing.run_workflow_test,
-            "compaction_manager": lambda: compaction.CompactionManager,
-            "stores_file": lambda: stores_file.FileChildRunStore,
-            "isolation_worktree": lambda: isolation.WorktreeIsolationAdapter,
-        }
-
-        for name, thunk in checks.items():
+        removed_modules = (
+            "weavert.compaction.manager",
+            "weavert.compaction.package",
+            "weavert.memory.manager",
+            "weavert.memory.package",
+            "weavert.openai_client",
+            "weavert.openai_package",
+            "weavert.stores_file",
+            "weavert.hosts.reference",
+            "weavert.hosts.package",
+            "weavert.team.assembly",
+            "weavert.team.builtins",
+            "weavert.team.tool_impls",
+            "weavert.devtools.builtins",
+            "weavert.devtools.tool_impls",
+            "weavert.planning.builtins",
+            "weavert.builtin_workflows.builtins",
+            "weavert.testing",
+            "weavert.starter_scaffolds",
+            "weavert.scenario_runtime_packs",
+            "weavert.reference_chat_builtins",
+            "weavert.reference_chat_tool_impls",
+            "weavert.reference_coding_builtins",
+            "weavert.reference_coding_tool_impls",
+            "weavert.reference_local_assistant_builtins",
+            "weavert.isolation_package",
+        )
+        for module_name in removed_modules:
             try:
-                thunk()
-            except ModuleNotFoundError as exc:
-                print(name, str(exc))
+                importlib.import_module(module_name)
+            except ModuleNotFoundError:
+                print("missing", module_name)
             else:
-                raise SystemExit(f"{name} should require an optional package")
+                raise SystemExit(f"{module_name} should not be available from weavert-core")
+
+        trimmed_attrs = (
+            ("weavert.compaction", "CompactionManager"),
+            ("weavert.memory", "MemoryManager"),
+            ("weavert.isolation", "WorktreeIsolationAdapter"),
+            ("weavert.hosts", "SdkHostRuntime"),
+        )
+        for module_name, attr_name in trimmed_attrs:
+            module = importlib.import_module(module_name)
+            if hasattr(module, attr_name):
+                raise SystemExit(f"{module_name}.{attr_name} should not be exposed by weavert-core")
+            print("trimmed", f"{module_name}.{attr_name}")
         """,
     )
 
     assert completed.returncode == 0, completed.stderr
     assert "imports-ok" in completed.stdout
+    assert "canonical-import-root weavert" in completed.stdout
+    assert "package-manifest-type RuntimePackageManifest" in completed.stdout
+    assert "core-memory-model MemoryTurnResult" in completed.stdout
     assert "core-isolation-worktree not_available" in completed.stdout
-    assert "packages/product-kits/chat" in completed.stdout
-    assert "packages/toolchain/starter" in completed.stdout
-    assert "packages/toolchain/testing" in completed.stdout
-    assert "packages/framework-packs/mechanisms/compaction" in completed.stdout
-    assert "packages/framework-packs/mechanisms/isolation" in completed.stdout
-    assert "packages/framework-packs/integrations/stores-file" in completed.stdout
+    assert "missing weavert.openai_client" in completed.stdout
+    assert "trimmed weavert.compaction.CompactionManager" in completed.stdout
 
 
 def test_toolchain_scripts_package_installs_editably_and_exposes_modules(tmp_path: Path) -> None:

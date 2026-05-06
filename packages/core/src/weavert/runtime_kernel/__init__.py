@@ -1,4 +1,4 @@
-from ..package_profiles import (
+from ..extension_contracts.package_profiles import (
     DEFAULT_RUNTIME_DISTRIBUTION,
     FIRST_PARTY_PACKAGE_SPECS,
     FirstPartyPackageRole,
@@ -10,7 +10,7 @@ from ..package_profiles import (
     normalize_runtime_distribution,
     resolve_first_party_package_names,
 )
-from ..runtime_package_catalog import (
+from ..package_system.catalog import (
     official_runtime_distribution_catalog,
     official_runtime_package_catalog,
 )

@@ -11,7 +11,7 @@ from weavert.definitions import (
     PermissionDecision,
     SkillDefinition,
 )
-from weavert.devtools.tool_impls import _GLOB_TOOL_MAX_MATCHES
+from weavert_devtools.tool_impls import _GLOB_TOOL_MAX_MATCHES
 from weavert.registries import AgentRegistry, SkillRegistry, ToolRegistry
 from weavert.runtime_services import RuntimeServices
 from weavert.tasking import TaskManager, TaskStatus

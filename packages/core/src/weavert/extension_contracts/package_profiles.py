@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 from .public_contract import canonical_distribution_name, canonical_first_party_name
-from .runtime_package_catalog import (
+from ..package_system.catalog import (
     official_runtime_distribution_catalog,
     official_runtime_package_catalog,
     official_runtime_package_names,

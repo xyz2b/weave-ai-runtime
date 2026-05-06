@@ -5,7 +5,7 @@ from typing import Any, Mapping, Sequence
 
 from ..diagnostics import Diagnostic, DiagnosticSeverity
 from ..definitions import InvocationDefinition, InvocationProvider, InvocationResolutionContext, ResolvedInvocationCatalog
-from ..runtime_package_protocols import PackageOwnership
+from ..package_system.protocols import PackageOwnership
 
 
 @dataclass(frozen=True, slots=True)

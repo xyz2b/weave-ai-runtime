@@ -13,8 +13,8 @@ from weavert.contracts import MessageRole
 from weavert.definitions import ToolRiskLevel
 from weavert.memory.models import MemoryEntry
 from weavert.runtime_kernel import RuntimeConfig, assemble_runtime
-from weavert.runtime_package_protocols import HostFacetBinding, PackageOwnership
-from weavert.runtime_package_resolution import PACKAGE_CANDIDATE_METADATA_KEY
+from weavert.package_system.protocols import HostFacetBinding, PackageOwnership
+from weavert.package_system.resolution import PACKAGE_CANDIDATE_METADATA_KEY
 from weavert.tool_runtime import ToolContext
 from weavert_testing import ScriptedModelClient, text_batch, tool_call_batch
 import weavert_kit_common_web._tool_impls as reference_chat_tool_impls

@@ -25,6 +25,21 @@
 - `weavert-full` 会自动装配它们，`weavert-default` 不会
 - 现有的只读 planning helper `plan` 仍然保留在 `weavert-devtools`
 
+## 1.5 Canonical Import Root Boundary
+
+现在需要把 “canonical import” 和 “selected package” 彻底分开理解：
+
+- `weavert` 保留给 runtime core surface
+- extracted first-party family 改为使用各自的 package root，例如 `weavert_openai`、`weavert_memory`、`weavert_team`、`weavert_hosts_reference`
+- distribution / `enabled_packages` / `disabled_packages` 负责决定这些 add-on 是否参与 runtime assembly
+
+这意味着旧的 core-namespace projection 不再是推荐兼容路径；如果你还在使用下面这类导入，需要迁移：
+
+- `weavert.openai_client` -> `weavert_openai.openai_client`
+- `weavert.memory.manager` -> `weavert_memory.manager`
+- `weavert.hosts.reference` -> `weavert_hosts_reference`
+- `weavert.team.assembly` -> `weavert_team.assembly`
+
 ## 2. Workspace / Devtools Built-ins
 
 旧版本里经常被当作“默认总会在”的 workspace-oriented tools 和 coding agents，现在归到 `weavert-devtools`，并且只会在 `weavert-full` 中自动启用。
@@ -340,7 +355,7 @@ weavert = assemble_runtime(
 现在应直接改成 provider-only runtime package：
 
 ```python
-from weavert.runtime_package_protocols import build_provider_only_invocation_package_manifest
+from weavert.package_system.protocols import build_provider_only_invocation_package_manifest
 
 provider_manifest = build_provider_only_invocation_package_manifest(
     name="weavert-provider-only",

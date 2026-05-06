@@ -3,14 +3,14 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from typing import Any, Iterable, Mapping, Sequence
 
-from .diagnostics import Diagnostic, DiagnosticSeverity
-from .first_party_loading import load_object
-from .runtime_package_catalog import (
+from ..diagnostics import Diagnostic, DiagnosticSeverity
+from .loading import load_object
+from .catalog import (
     official_runtime_package_catalog_entry,
     official_runtime_package_manifest_catalog as _official_runtime_package_manifest_catalog,
     official_runtime_package_names,
 )
-from .runtime_package_protocols import (
+from .protocols import (
     CapabilityBinding,
     ContextContributorBinding,
     ContextContributorStage,
@@ -89,7 +89,7 @@ class TeamWorkflowHostFacet:
         team_id: str | None,
         session_id: str | None,
     ) -> tuple[str | None, str | None]:
-        from .team_workflows import TeamWorkflowError
+        from ..team_workflows import TeamWorkflowError
 
         resolved_team_id = str(team_id).strip() if team_id is not None and str(team_id).strip() else None
         resolved_session_id = (
@@ -128,7 +128,7 @@ class TeamWorkflowHostFacet:
         team_id: str | None,
         session_id: str | None,
     ) -> Any:
-        from .team_workflows import TeamWorkflowError
+        from ..team_workflows import TeamWorkflowError
 
         normalized_workflow_id = str(workflow_id).strip()
         for record in self.workflows.list_workflows(team_id=team_id, pending_only=None):
@@ -460,7 +460,7 @@ def assemble_runtime_core_package(context: PackageContext) -> PackageContributio
         )
     if context.stage != PackageAssemblyStage.RUNTIME:
         return PackageContribution()
-    from .runtime_services import NoopHookService
+    from ..runtime_services import NoopHookService
 
     services = context.require_resource("runtime_services")
     contributors: list[ContextContributorBinding] = []

@@ -78,7 +78,7 @@ from ..jobs import DefaultJobService
 from ..permissions import PermissionContext
 from ..registries import AgentRegistry, InvocationRegistry, SkillRegistry, ToolRegistry
 from ..runtime_services import RuntimeServices, SidecarContributionResult
-from ..runtime_package_protocols import (
+from ..package_system.protocols import (
     ContextContributorExecutionEntry,
     ContextContributorPromptChannel,
 )

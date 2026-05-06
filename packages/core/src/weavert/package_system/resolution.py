@@ -6,10 +6,10 @@ from itertools import zip_longest
 import re
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
-from .diagnostics import Diagnostic, DiagnosticSeverity
-from .public_contract import canonical_distribution_name, canonical_first_party_name
-from .runtime_package_manifests import RuntimePackageRegistrationReport
-from .runtime_package_protocols import (
+from ..diagnostics import Diagnostic, DiagnosticSeverity
+from ..extension_contracts.public_contract import canonical_distribution_name, canonical_first_party_name
+from .manifests import RuntimePackageRegistrationReport
+from .protocols import (
     RuntimePackageManifest,
     order_package_manifests,
     project_runtime_package_surface_contract_metadata,
@@ -443,7 +443,7 @@ def build_runtime_package_catalog(
                     "origin": "first_party",
                     "source_kind": "official-catalog",
                     "source_ref": (
-                        "weavert.runtime_package_catalog:"
+                        "weavert.package_system.catalog:"
                         f"OFFICIAL_RUNTIME_PACKAGE_CATALOG['{manifest.name}']"
                     ),
                 },

@@ -3,7 +3,7 @@ from __future__ import annotations
 from examples._shared.common import print_json, temporary_workspace
 
 from weavert.runtime_kernel import RuntimeConfig, RuntimeDistribution, assemble_runtime
-from weavert.runtime_package_protocols import (
+from weavert.package_system.protocols import (
     CapabilityPackageBindingSpec,
     build_capability_only_package_manifest,
 )

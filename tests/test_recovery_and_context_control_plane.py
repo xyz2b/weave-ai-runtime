@@ -18,7 +18,7 @@ from weavert.contracts import (
     ToolUseBlock,
     merge_request_override_state,
 )
-from weavert.compaction import CompactionManager
+from weavert_compaction import CompactionManager
 from weavert.definitions import AgentDefinition
 from weavert.hooks import HookBus, HookStopDisposition, RuntimeHookPhase
 from weavert.registries import ToolRegistry

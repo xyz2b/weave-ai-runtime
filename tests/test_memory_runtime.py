@@ -26,8 +26,6 @@ from weavert.jobs import (
 )
 from weavert.memory import (
     MemoryEntry,
-    MemoryManager,
-    MemoryManagerService,
     MemoryRetrievalCandidate,
     MemoryRetrievalPolicy,
     MemoryRetrievalRankedHit,
@@ -55,6 +53,7 @@ from weavert.turn_engine import (
     ModelStreamEventType,
     TurnEngine,
 )
+from weavert_memory import MemoryManager, MemoryManagerService
 
 
 class FakeModelClient:

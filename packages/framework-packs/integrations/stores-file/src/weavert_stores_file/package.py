@@ -12,8 +12,8 @@ from weavert.team_control_plane import FileBackedTeamStore
 from weavert.team_message_bus import FileBackedTeamMessageBus
 from weavert.team_workflows import FileBackedTeamWorkflowStore
 from weavert.teammate_orchestration import FileBackedTeammateMailbox
-from weavert.public_contract import ensure_canonical_workspace_root
-from weavert.runtime_package_protocols import (
+from weavert.extension_contracts.public_contract import ensure_canonical_workspace_root
+from weavert.package_system.protocols import (
     PackageAssemblyStage,
     PackageContext,
     PackageContribution,

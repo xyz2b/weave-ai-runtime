@@ -14,16 +14,16 @@ from weavert.contracts import (
     TurnContext,
 )
 from weavert.definitions import ToolDefinition, ToolTraits
-from weavert.devtools.builtins import devtools_builtin_tools
-from weavert.devtools.tool_impls import _GLOB_TOOL_MAX_MATCHES
-from weavert.openai_client import (
+from weavert_devtools.builtins import devtools_builtin_tools
+from weavert_devtools.tool_impls import _GLOB_TOOL_MAX_MATCHES
+from weavert_openai.openai_client import (
     BundledOpenAIModelClient,
     OPENAI_ROUTE_NAME,
     _build_responses_request_payload,
     _tool_definition_to_function_tool,
 )
 from weavert.runtime_kernel import BuiltinPackConfig, RuntimeConfig, assemble_runtime
-from weavert.team.builtins import team_builtin_tools
+from weavert_team.builtins import team_builtin_tools
 from weavert.turn_engine import ModelRequest
 
 
@@ -414,7 +414,7 @@ def test_complete_serializes_responses_payload_with_tools_and_tool_results(monke
 
     monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
-    monkeypatch.setattr("weavert.openai_client._post_json", fake_post_json)
+    monkeypatch.setattr("weavert_openai.openai_client._post_json", fake_post_json)
 
     response = asyncio.run(BundledOpenAIModelClient().complete(request))
 
@@ -515,7 +515,7 @@ def test_complete_serializes_responses_payload_without_route_policy_falls_back_t
 
     monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
-    monkeypatch.setattr("weavert.openai_client._post_json", fake_post_json)
+    monkeypatch.setattr("weavert_openai.openai_client._post_json", fake_post_json)
 
     response = asyncio.run(BundledOpenAIModelClient().complete(request))
 
@@ -557,7 +557,7 @@ def test_complete_parses_function_calls_into_runtime_blocks(monkeypatch) -> None
     )
 
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
-    monkeypatch.setattr("weavert.openai_client._post_json", fake_post_json)
+    monkeypatch.setattr("weavert_openai.openai_client._post_json", fake_post_json)
 
     response = asyncio.run(BundledOpenAIModelClient().complete(request))
 
@@ -607,7 +607,7 @@ def test_complete_restores_optional_builtin_devtool_fields(monkeypatch) -> None:
     )
 
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
-    monkeypatch.setattr("weavert.openai_client._post_json", fake_post_json)
+    monkeypatch.setattr("weavert_openai.openai_client._post_json", fake_post_json)
 
     response = asyncio.run(BundledOpenAIModelClient().complete(request))
 
@@ -673,7 +673,7 @@ def test_complete_restores_nested_and_array_tool_fields(monkeypatch) -> None:
     )
 
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
-    monkeypatch.setattr("weavert.openai_client._post_json", fake_post_json)
+    monkeypatch.setattr("weavert_openai.openai_client._post_json", fake_post_json)
 
     response = asyncio.run(BundledOpenAIModelClient().complete(request))
 
@@ -741,7 +741,7 @@ def test_complete_omits_hidden_thinking_from_request_payload(monkeypatch) -> Non
     )
 
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
-    monkeypatch.setattr("weavert.openai_client._post_json", fake_post_json)
+    monkeypatch.setattr("weavert_openai.openai_client._post_json", fake_post_json)
 
     response = asyncio.run(BundledOpenAIModelClient().complete(request))
 
@@ -803,7 +803,7 @@ def test_complete_maps_open_object_arguments_through_json_string_surrogates(monk
         }
 
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
-    monkeypatch.setattr("weavert.openai_client._post_json", fake_post_json)
+    monkeypatch.setattr("weavert_openai.openai_client._post_json", fake_post_json)
 
     response = asyncio.run(BundledOpenAIModelClient().complete(request))
 
@@ -906,7 +906,7 @@ def test_stream_maps_text_and_function_call_events(monkeypatch) -> None:
     )
 
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
-    monkeypatch.setattr("weavert.openai_client._post_json_stream", fake_post_json_stream)
+    monkeypatch.setattr("weavert_openai.openai_client._post_json_stream", fake_post_json_stream)
 
     async def collect_events():
         return [event async for event in BundledOpenAIModelClient().stream(request)]
@@ -981,7 +981,7 @@ def test_stream_preserves_single_tool_use_when_completed_output_is_empty(monkeyp
     )
 
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
-    monkeypatch.setattr("weavert.openai_client._post_json_stream", fake_post_json_stream)
+    monkeypatch.setattr("weavert_openai.openai_client._post_json_stream", fake_post_json_stream)
 
     async def collect_events():
         return [event async for event in BundledOpenAIModelClient().stream(request)]
@@ -1086,7 +1086,7 @@ def test_stream_restores_nested_and_array_tool_fields(monkeypatch) -> None:
     )
 
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
-    monkeypatch.setattr("weavert.openai_client._post_json_stream", fake_post_json_stream)
+    monkeypatch.setattr("weavert_openai.openai_client._post_json_stream", fake_post_json_stream)
 
     async def collect_events():
         return [event async for event in BundledOpenAIModelClient().stream(request)]
@@ -1159,7 +1159,7 @@ def test_stream_replays_completed_only_blocks_when_no_prior_deltas(monkeypatch) 
     )
 
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
-    monkeypatch.setattr("weavert.openai_client._post_json_stream", fake_post_json_stream)
+    monkeypatch.setattr("weavert_openai.openai_client._post_json_stream", fake_post_json_stream)
 
     async def collect_events():
         return [event async for event in BundledOpenAIModelClient().stream(request)]
@@ -1220,7 +1220,7 @@ def test_stream_completed_only_restores_builtin_optional_devtool_fields(monkeypa
     )
 
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
-    monkeypatch.setattr("weavert.openai_client._post_json_stream", fake_post_json_stream)
+    monkeypatch.setattr("weavert_openai.openai_client._post_json_stream", fake_post_json_stream)
 
     async def collect_events():
         return [event async for event in BundledOpenAIModelClient().stream(request)]
@@ -1290,7 +1290,7 @@ def test_stream_ignores_empty_output_fallback_when_completed_output_has_items(mo
     )
 
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
-    monkeypatch.setattr("weavert.openai_client._post_json_stream", fake_post_json_stream)
+    monkeypatch.setattr("weavert_openai.openai_client._post_json_stream", fake_post_json_stream)
 
     async def collect_events():
         return [event async for event in BundledOpenAIModelClient().stream(request)]
@@ -1427,7 +1427,7 @@ def test_runtime_default_openai_route_preserves_ordered_multi_tool_continuations
     )
 
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
-    monkeypatch.setattr("weavert.openai_client._post_json_stream", fake_post_json_stream)
+    monkeypatch.setattr("weavert_openai.openai_client._post_json_stream", fake_post_json_stream)
 
     runtime = assemble_runtime(
         RuntimeConfig(
@@ -1534,7 +1534,7 @@ def test_runtime_default_openai_route_replays_single_tool_when_completed_output_
     )
 
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
-    monkeypatch.setattr("weavert.openai_client._post_json_stream", fake_post_json_stream)
+    monkeypatch.setattr("weavert_openai.openai_client._post_json_stream", fake_post_json_stream)
 
     runtime = assemble_runtime(
         RuntimeConfig(
@@ -1675,7 +1675,7 @@ def test_runtime_default_openai_route_replays_multi_tool_when_completed_output_i
     )
 
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
-    monkeypatch.setattr("weavert.openai_client._post_json_stream", fake_post_json_stream)
+    monkeypatch.setattr("weavert_openai.openai_client._post_json_stream", fake_post_json_stream)
 
     runtime = assemble_runtime(
         RuntimeConfig(
@@ -1774,7 +1774,7 @@ def test_runtime_default_openai_route_restores_builtin_optional_devtool_fields_d
         return iter(scripted_batches.pop(0))
 
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
-    monkeypatch.setattr("weavert.openai_client._post_json_stream", fake_post_json_stream)
+    monkeypatch.setattr("weavert_openai.openai_client._post_json_stream", fake_post_json_stream)
 
     runtime = assemble_runtime(RuntimeConfig(working_directory=tmp_path))
     produced = asyncio.run(
@@ -1845,7 +1845,7 @@ def test_runtime_default_openai_route_handles_completed_only_stream_blocks(monke
     )
 
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
-    monkeypatch.setattr("weavert.openai_client._post_json_stream", fake_post_json_stream)
+    monkeypatch.setattr("weavert_openai.openai_client._post_json_stream", fake_post_json_stream)
 
     runtime = assemble_runtime(
         RuntimeConfig(
@@ -1912,7 +1912,7 @@ def test_runtime_default_openai_route_bounds_large_builtin_glob_results(
         (tmp_path / f"file-{index:03}.txt").write_text("payload", encoding="utf-8")
 
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
-    monkeypatch.setattr("weavert.openai_client._post_json_stream", fake_post_json_stream)
+    monkeypatch.setattr("weavert_openai.openai_client._post_json_stream", fake_post_json_stream)
 
     runtime = assemble_runtime(RuntimeConfig(working_directory=tmp_path))
     produced = asyncio.run(

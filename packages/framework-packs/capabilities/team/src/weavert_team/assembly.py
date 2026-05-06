@@ -4,8 +4,8 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
-from weavert.runtime_package_manifests import _load_builtin_tool_contribution
-from weavert.runtime_package_protocols import (
+from weavert.package_system.manifests import _load_builtin_tool_contribution
+from weavert.package_system.protocols import (
     CapabilityBinding,
     HostFacetBinding,
     IngressReceiptHandlerBinding,

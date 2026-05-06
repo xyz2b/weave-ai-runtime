@@ -9,7 +9,7 @@ from pathlib import PurePosixPath
 import re
 from textwrap import dedent
 
-from weavert.public_contract import CANONICAL_WORKSPACE_ROOT
+from weavert.extension_contracts.public_contract import CANONICAL_WORKSPACE_ROOT
 from weavert.runtime_kernel import RuntimeAssemblyPresetName
 
 

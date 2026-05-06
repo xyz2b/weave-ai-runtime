@@ -1,4 +1,4 @@
-from weavert._isolation_contracts import (
+from weavert.extension_contracts.isolation import (
     BaseIsolationAdapter,
     IsolationAdapter,
     IsolationLease,

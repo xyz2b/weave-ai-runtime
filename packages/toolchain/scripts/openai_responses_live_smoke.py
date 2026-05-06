@@ -16,7 +16,7 @@ for src_root in sorted(PROJECT_ROOT.glob("packages/**/src")):
 from weavert.contracts import MessageRole, ToolResultBlock, ToolUseBlock
 from weavert.runtime_kernel import RuntimeConfig, assemble_runtime
 from weavert.turn_engine.engine import TurnStreamEventType
-import weavert.openai_client as openai_client
+import weavert_openai.openai_client as openai_client
 
 PROMPT = "Summarize this repository and use tools when needed."
 

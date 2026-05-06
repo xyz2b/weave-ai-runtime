@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from weavert._isolation_contracts import (
+from weavert.extension_contracts.isolation import (
     BaseIsolationAdapter,
     IsolationAdapter,
     IsolationLease,
@@ -15,7 +15,7 @@ from weavert._isolation_contracts import (
     _lease_identifier,
 )
 from weavert.definitions import IsolationMode
-from weavert.public_contract import ensure_canonical_workspace_root
+from weavert.extension_contracts.public_contract import ensure_canonical_workspace_root
 
 
 @dataclass(slots=True)

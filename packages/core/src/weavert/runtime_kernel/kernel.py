@@ -48,7 +48,7 @@ from ..definitions import (
 )
 from ..diagnostics import Diagnostic, DiagnosticSeverity
 from ..errors import RegistryConflictError
-from ..first_party_loading import load_object
+from ..package_system.loading import load_object
 from ..hosts.base import BoundHostRuntime, HostAdapter, NullHostAdapter
 from ..hooks import (
     ADVANCED_HOOK_HANDLER_KINDS,
@@ -66,20 +66,20 @@ from ..hooks import (
 )
 from ..invocation_catalog import SkillInvocationProvider
 from ..jobs import DefaultJobService, FileJobStore, InMemoryJobStore, JobScopeFilter, job_record_to_payload
-from ..memory import FileMemoryProvider, MemoryTurnResult
-from ..package_profiles import FIRST_PARTY_PACKAGE_SPECS, distribution_spec
-from ..runtime_package_catalog import (
+from ..memory import MemoryTurnResult
+from ..extension_contracts.package_profiles import FIRST_PARTY_PACKAGE_SPECS, distribution_spec
+from ..package_system.catalog import (
     official_runtime_distribution_catalog,
     official_runtime_package_catalog_metadata,
     official_runtime_package_catalog_provenance,
     official_runtime_package_names,
 )
-from ..runtime_package_manifests import (
+from ..package_system.manifests import (
     RuntimePackageRegistrationReport,
     official_runtime_package_manifests,
     register_external_runtime_package_manifests,
 )
-from ..runtime_package_resolution import (
+from ..package_system.resolution import (
     RuntimePackageResolutionError,
     RuntimePackageResolutionReport,
     build_runtime_package_catalog,
@@ -92,7 +92,7 @@ from ..runtime_core_protocol_catalog import (
     core_protocol_invocation_provider_paths_metadata,
     core_protocol_package_lookup_sections,
 )
-from ..runtime_package_protocols import (
+from ..package_system.protocols import (
     InvocationProviderContribution,
     InvocationProviderFactoryContext,
     PackageAssemblyStage,
@@ -114,7 +114,7 @@ from ..registries import (
     ToolRegistry,
 )
 from ..runtime_services import DefaultTranscriptService, NoopCompactionService, NoopMemoryService, RuntimeServices
-from ..public_contract import workspace_skill_root_candidates
+from ..extension_contracts.public_contract import workspace_skill_root_candidates
 from ..task_discipline import TaskDisciplineSidecar
 from ..task_lists import (
     DefaultTaskListService,
@@ -3387,7 +3387,7 @@ def _memory_durability_entry(memory_service: Any) -> dict[str, Any]:
     if memory_service is None or isinstance(memory_service, NoopMemoryService):
         return _durability_entry(PersistenceDurabilityState.NON_DURABLE, available=False)
     provider = getattr(getattr(memory_service, "manager", None), "provider", None)
-    if isinstance(provider, FileMemoryProvider):
+    if _matches_named_runtime_type(provider, "weavert_memory.providers", "FileMemoryProvider"):
         return _durability_entry(PersistenceDurabilityState.DURABLE, component=provider)
     if provider is None:
         return _durability_entry(PersistenceDurabilityState.HOST_PROVIDED, component=memory_service)
@@ -3881,12 +3881,12 @@ def _kernel_assembly_findings(
         if not str(entry.get("assembly_entrypoint") or "")
     ]
     legacy_helper_retired = (
-        "weavert.runtime_package_manifests.assembly_function_name" in retired_helpers
+        "weavert.package_system.manifests.assembly_function_name" in retired_helpers
     )
     status = (
         "pass"
         if provider_kind == "manifest-backed"
-        and provider_path == "weavert.runtime_package_catalog:official_runtime_package_catalog"
+        and provider_path == "weavert.package_system.catalog:official_runtime_package_catalog"
         and legacy_helper_retired
         and not missing_catalog_entries
         and not missing_entrypoints
@@ -3897,7 +3897,7 @@ def _kernel_assembly_findings(
         "family": "kernel-assembly",
         "status": status,
         "distribution": distribution,
-        "canonical_path": "weavert.runtime_package_catalog:official_runtime_package_catalog",
+        "canonical_path": "weavert.package_system.catalog:official_runtime_package_catalog",
         "replacement_path": "RuntimePackageManifest.assembly_entrypoint",
         "evidence": evidence,
     }

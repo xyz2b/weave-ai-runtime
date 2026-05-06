@@ -14,7 +14,7 @@ from ..definitions import IsolationMode, PermissionBehavior, PermissionMode
 from ..hosts.base import HostRuntime
 from ..jobs import JobScopeFilter, task_status_to_job_status
 from ..permissions import PermissionContext, PermissionOutcome, PermissionRequest
-from ..public_contract import ensure_canonical_workspace_root
+from ..extension_contracts.public_contract import ensure_canonical_workspace_root
 from ..team_control_plane import TeamRole
 from ..team_workflows import (
     RuntimeTeamWorkflowService,

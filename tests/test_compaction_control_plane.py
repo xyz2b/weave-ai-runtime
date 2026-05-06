@@ -3,7 +3,6 @@ from pathlib import Path
 
 from weavert.agent_runtime import AgentInvocation, AgentRuntime
 from weavert.compaction import (
-    CompactionManager,
     CompactionStepResult,
     ContextPressure,
 )
@@ -20,6 +19,7 @@ from weavert.turn_engine import (
     TurnEngine,
     TurnStreamEventType,
 )
+from weavert_compaction import CompactionManager
 
 
 class CaptureModelClient:

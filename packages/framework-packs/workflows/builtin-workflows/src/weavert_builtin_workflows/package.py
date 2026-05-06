@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from weavert.runtime_package_manifests import _load_builtin_skill_contribution
-from weavert.runtime_package_protocols import PackageAssemblyStage, PackageContext, PackageContribution
+from weavert.package_system.manifests import _load_builtin_skill_contribution
+from weavert.package_system.protocols import PackageAssemblyStage, PackageContext, PackageContribution
 
 
 def assemble_runtime_builtin_workflows_package(context: PackageContext) -> PackageContribution:

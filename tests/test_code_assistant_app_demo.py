@@ -29,7 +29,7 @@ from examples.apps.code_assistant.app import (
 from examples.apps.code_assistant.builtin_overrides import _classify_command
 from examples.apps.code_assistant.host import ApprovalRecord
 from weavert.agent_execution import AgentRunRecord, AgentRunStatus, SpawnMode
-from weavert.openai_client import OPENAI_ROUTE_NAME
+from weavert_openai.openai_client import OPENAI_ROUTE_NAME
 from weavert.contracts import MessageRole, RuntimeMessage, ToolResultBlock
 from weavert.runtime_kernel import RuntimeDistribution
 from weavert.tool_runtime import ToolContext
@@ -1962,7 +1962,7 @@ def test_run_demo_succeeds_through_bundled_openai_route_when_stream_is_stubbed(
         )
 
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
-    monkeypatch.setattr("weavert.openai_client._post_json_stream", fake_post_json_stream)
+    monkeypatch.setattr("weavert_openai.openai_client._post_json_stream", fake_post_json_stream)
 
     report = asyncio.run(
         run_demo(

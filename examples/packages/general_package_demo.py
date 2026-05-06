@@ -5,7 +5,7 @@ from weavert_testing import ScriptedModelClient, text_batch
 
 from weavert import AgentDefinition
 from weavert.runtime_kernel import BuiltinPackConfig, RuntimeConfig, RuntimeDistribution, assemble_runtime
-from weavert.runtime_package_protocols import (
+from weavert.package_system.protocols import (
     CapabilityBinding,
     ContextContributorBinding,
     ContextContributorStage,

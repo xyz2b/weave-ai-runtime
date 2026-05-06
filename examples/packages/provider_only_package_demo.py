@@ -15,7 +15,7 @@ from weavert import (
     StaticInvocationProvider,
 )
 from weavert.runtime_kernel import RuntimeConfig, RuntimeDistribution, assemble_runtime
-from weavert.runtime_package_protocols import build_provider_only_invocation_package_manifest
+from weavert.package_system.protocols import build_provider_only_invocation_package_manifest
 
 
 def _provider() -> StaticInvocationProvider:

@@ -4,7 +4,7 @@ from pathlib import Path
 
 from examples._shared.common import run_async, temporary_workspace
 
-from weavert.hosts import SdkHostRuntime
+from weavert_hosts_reference import SdkHostRuntime
 from weavert.runtime_kernel import RuntimeConfig, RuntimeDistribution, assemble_runtime
 from weavert_testing import ScriptedModelClient, text_batch
 

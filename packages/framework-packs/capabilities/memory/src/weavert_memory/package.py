@@ -5,8 +5,8 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from weavert.definitions import MemoryScope
-from weavert.runtime_package_manifests import _load_builtin_skill_contribution
-from weavert.runtime_package_protocols import (
+from weavert.package_system.manifests import _load_builtin_skill_contribution
+from weavert.package_system.protocols import (
     CapabilityBinding,
     ContextContributorBinding,
     ContextContributorStage,

@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from weavert.runtime_package_manifests import (
+from weavert.package_system.manifests import (
     _load_builtin_agent_contribution,
     _load_builtin_tool_contribution,
 )
-from weavert.runtime_package_protocols import PackageAssemblyStage, PackageContext, PackageContribution
+from weavert.package_system.protocols import PackageAssemblyStage, PackageContext, PackageContribution
 
 
 def assemble_runtime_devtools_package(context: PackageContext) -> PackageContribution:

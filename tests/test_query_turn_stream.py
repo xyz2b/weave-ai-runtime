@@ -4,7 +4,7 @@ from weavert.compaction import CompactionPolicy, CompactionResult, evaluate_cont
 from weavert.contracts import MessageRole, PromptContextEnvelope, RuntimePrivateContext, TextBlock, ToolResultBlock
 from weavert.definitions import AgentDefinition, ToolDefinition, ToolTraits
 from weavert.registries import ToolRegistry
-from weavert.runtime_package_protocols import (
+from weavert.package_system.protocols import (
     CapabilityBinding,
     ContextContributorBinding,
     ContextContributorStage,

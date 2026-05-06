@@ -11,7 +11,7 @@ from weavert.hooks import (
     match_tool,
     rewrite_input,
 )
-from weavert.hosts import SdkHostRuntime
+from weavert_hosts_reference import SdkHostRuntime
 from weavert.permissions import AllowAllPermissionService
 from weavert.runtime_kernel import (
     BuiltinPackConfig,

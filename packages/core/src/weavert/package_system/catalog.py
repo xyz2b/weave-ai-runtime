@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from .runtime_package_protocols import (
+from .protocols import (
     RuntimePackageManifest,
     project_runtime_package_surface_contract_metadata,
 )
@@ -40,7 +40,7 @@ class OfficialRuntimePackageCatalogEntry:
                 self,
                 "source_ref",
                 (
-                    "weavert.runtime_package_catalog:"
+                    "weavert.package_system.catalog:"
                     f"OFFICIAL_RUNTIME_PACKAGE_CATALOG['{self.manifest.name}']"
                 ),
             )
@@ -103,7 +103,7 @@ class OfficialRuntimeDistributionCatalogEntry:
                 self,
                 "source_ref",
                 (
-                    "weavert.runtime_package_catalog:"
+                    "weavert.package_system.catalog:"
                     f"OFFICIAL_RUNTIME_DISTRIBUTIONS['{self.name}']"
                 ),
             )
@@ -158,7 +158,7 @@ OFFICIAL_RUNTIME_PACKAGE_CATALOG: dict[str, OfficialRuntimePackageCatalogEntry] 
         name="weavert-core",
         role="core",
         description="Kernel assembly, root boot path, runtime control surfaces, and core built-ins.",
-        assembly_entrypoint="weavert.runtime_package_manifests:assemble_runtime_core_package",
+        assembly_entrypoint="weavert.package_system.manifests:assemble_runtime_core_package",
         builtin_tools=(
             "agent",
             "skill",
@@ -349,7 +349,7 @@ def official_runtime_package_catalog_provenance() -> dict[str, Any]:
     return {
         "schema_version": OFFICIAL_RUNTIME_PACKAGE_CATALOG_SCHEMA_VERSION,
         "provider_kind": "manifest-backed",
-        "provider_path": "weavert.runtime_package_catalog:official_runtime_package_catalog",
+        "provider_path": "weavert.package_system.catalog:official_runtime_package_catalog",
         "published_metadata_paths": [
             "weavert.services.metadata['official_package_catalog_provenance']",
             "weavert.metadata['official_package_catalog_provenance']",
@@ -363,12 +363,12 @@ def official_runtime_package_catalog_provenance() -> dict[str, Any]:
             for name, entry in OFFICIAL_RUNTIME_DISTRIBUTIONS.items()
         },
         "retired_kernel_helpers": [
-            "weavert.runtime_package_manifests.assembly_function_name",
+            "weavert.package_system.manifests.assembly_function_name",
             "weavert.runtime_kernel.kernel._first_party_package_catalog",
         ],
         "retired_compatibility_views": [
-            "weavert.package_profiles.FIRST_PARTY_PACKAGE_SPECS",
-            "weavert.package_profiles.RUNTIME_DISTRIBUTION_SPECS",
+            "weavert.extension_contracts.package_profiles.FIRST_PARTY_PACKAGE_SPECS",
+            "weavert.extension_contracts.package_profiles.RUNTIME_DISTRIBUTION_SPECS",
         ],
     }
 

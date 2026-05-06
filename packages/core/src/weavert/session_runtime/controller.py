@@ -39,8 +39,8 @@ from ..hooks import (
     is_advanced_phase,
 )
 from ..permissions import PermissionContext
-from ..public_contract import workspace_skill_root_candidates
-from ..runtime_package_protocols import PackageLifecyclePhase
+from ..extension_contracts.public_contract import workspace_skill_root_candidates
+from ..package_system.protocols import PackageLifecyclePhase
 from ..runtime_services import DefaultTranscriptService, RuntimeServices
 from ..tool_runtime import SessionScope
 from ..turn_engine.engine import TurnEngine, TurnStreamEvent, TurnStreamEventType

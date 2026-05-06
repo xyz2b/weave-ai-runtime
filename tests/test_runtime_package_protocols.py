@@ -12,7 +12,7 @@ import pytest
 import weavert
 import weavert.runtime_kernel.kernel as runtime_kernel_module
 from weavert.contracts import MessageRole, RuntimeMessage
-from weavert.devtools.builtins import devtools_builtin_tools
+from weavert_devtools.builtins import devtools_builtin_tools
 from weavert.diagnostics import Diagnostic, DiagnosticSeverity
 from weavert.definitions import (
     AgentDefinition,
@@ -35,16 +35,16 @@ from weavert.runtime_kernel import (
     build_runtime_kernel,
 )
 from weavert.runtime_core_protocol_catalog import CORE_PROTOCOL_CATALOG_SCHEMA_VERSION
-from weavert.runtime_package_catalog import (
+from weavert.package_system.catalog import (
     official_runtime_distribution_catalog,
     official_runtime_package_catalog,
 )
-from weavert.runtime_package_manifests import official_runtime_package_manifests
-from weavert.runtime_package_resolution import (
+from weavert.package_system.manifests import official_runtime_package_manifests
+from weavert.package_system.resolution import (
     PACKAGE_CANDIDATE_METADATA_KEY,
     RuntimePackageResolutionError,
 )
-from weavert.runtime_package_protocols import (
+from weavert.package_system.protocols import (
     CapabilityBinding,
     CapabilityPackageBindingSpec,
     ContextContributorBinding,
@@ -68,7 +68,7 @@ from weavert.runtime_package_protocols import (
 )
 from weavert.runtime_services import RuntimeServices
 from weavert.session_runtime import FileTranscriptStore
-from weavert.stores_file import FileChildRunStore
+from weavert_stores_file import FileChildRunStore
 from weavert.task_lists import FileTaskListStore
 from weavert.turn_engine import ModelStreamEvent, ModelStreamEventType
 
@@ -600,7 +600,7 @@ def test_external_package_registration_reports_trust_boundary_diagnostics(tmp_pa
         RuntimeConfig(
             working_directory=tmp_path,
             distribution=RuntimeDistribution.CORE,
-            extra_package_manifests=("weavert.devtools.builtins:devtools_builtin_tools",),
+            extra_package_manifests=("weavert_devtools.builtins:devtools_builtin_tools",),
         )
     )
 
@@ -1369,13 +1369,13 @@ def test_runtime_publishes_official_catalog_and_resolved_graph_provenance(tmp_pa
     assert catalog_provenance["schema_version"] == "1.0"
     assert catalog_provenance["provider_kind"] == "manifest-backed"
     assert catalog_provenance["provider_path"] == (
-        "weavert.runtime_package_catalog:official_runtime_package_catalog"
+        "weavert.package_system.catalog:official_runtime_package_catalog"
     )
-    assert "weavert.runtime_package_manifests.assembly_function_name" in (
+    assert "weavert.package_system.manifests.assembly_function_name" in (
         catalog_provenance["retired_kernel_helpers"]
     )
     assert catalog_provenance["entries"]["weavert-core"]["assembly_entrypoint"] == (
-        "weavert.runtime_package_manifests:assemble_runtime_core_package"
+        "weavert.package_system.manifests:assemble_runtime_core_package"
     )
     assert catalog_provenance["distributions"]["weavert-full"]["packages"] == list(
         runtime.kernel.first_party_packages
@@ -1393,7 +1393,7 @@ def test_runtime_publishes_official_catalog_and_resolved_graph_provenance(tmp_pa
         for entry in resolved_graph_provenance["resolved_packages"]
     )
     assert resolved_graph_provenance["resolved_packages"][0]["assembly_entrypoint"] == (
-        "weavert.runtime_package_manifests:assemble_runtime_core_package"
+        "weavert.package_system.manifests:assemble_runtime_core_package"
     )
 
     assembly_view = runtime.query_assembly_view()
@@ -1455,10 +1455,10 @@ def test_protocol_only_conformance_publishes_kernel_assembly_sources_and_gate(
         "family": "kernel-assembly",
         "status": "pass",
         "distribution": RuntimeDistribution.DEFAULT.value,
-        "canonical_path": "weavert.runtime_package_catalog:official_runtime_package_catalog",
+        "canonical_path": "weavert.package_system.catalog:official_runtime_package_catalog",
         "replacement_path": "RuntimePackageManifest.assembly_entrypoint",
         "evidence": [
-            "weavert-core@weavert.runtime_package_manifests:assemble_runtime_core_package",
+            "weavert-core@weavert.package_system.manifests:assemble_runtime_core_package",
             "weavert-memory@weavert_memory.package:assemble_runtime_memory_package",
             "weavert-team@weavert_team.assembly:assemble_runtime_team_package",
         ],
@@ -1820,7 +1820,7 @@ def test_protocol_only_conformance_fails_without_published_service_family_metada
         "family": "kernel-assembly",
         "status": "fail",
         "distribution": RuntimeDistribution.DEFAULT.value,
-        "canonical_path": "weavert.runtime_package_catalog:official_runtime_package_catalog",
+        "canonical_path": "weavert.package_system.catalog:official_runtime_package_catalog",
         "replacement_path": "RuntimePackageManifest.assembly_entrypoint",
         "evidence": [],
     }
@@ -2459,6 +2459,51 @@ def test_manifest_backed_core_runtime_still_boots_without_optional_packages(tmp_
     assert runtime.kernel.first_party_packages == ("weavert-core",)
 
 
+def test_optional_packages_are_admitted_through_package_selection_seams(
+    tmp_path: Path,
+) -> None:
+    runtime = assemble_runtime(
+        RuntimeConfig(
+            working_directory=tmp_path,
+            distribution=RuntimeDistribution.CORE,
+            enabled_packages={"weavert-openai", "weavert-stores-file"},
+        )
+    )
+
+    assert runtime.kernel.first_party_packages == (
+        "weavert-core",
+        "weavert-openai",
+        "weavert-stores-file",
+    )
+    assert runtime.kernel.config.default_model_route == "openai_default"
+    assert tuple(runtime.kernel.config.model_providers) == ("openai-prod",)
+    assert tuple(runtime.kernel.config.model_routes) == ("openai_default",)
+    assert isinstance(runtime.services.transcript_store, FileTranscriptStore)
+    assert isinstance(runtime.agent_runtime.run_store, FileChildRunStore)
+    assert isinstance(runtime.services.job_service.store, FileJobStore)
+    assert isinstance(runtime.services.task_list_service.store, FileTaskListStore)
+    assert runtime.services.metadata["package_resolution"]["resolved_graph"]["order"] == [
+        "weavert-core",
+        "weavert-openai",
+        "weavert-stores-file",
+    ]
+    assert runtime.services.metadata["package_service_contributions"] == [
+        "weavert-core",
+        "weavert-openai",
+        "weavert-stores-file",
+    ]
+    assert runtime.services.metadata["package_store_bindings"] == {
+        "transcript_store": "weavert-stores-file",
+        "child_run_store": "weavert-stores-file",
+        "job_store": "weavert-stores-file",
+        "task_list_store": "weavert-stores-file",
+        "team_store": "weavert-stores-file",
+        "team_message_store": "weavert-stores-file",
+        "team_workflow_store": "weavert-stores-file",
+        "teammate_mailbox": "weavert-stores-file",
+    }
+
+
 def test_manifest_backed_openai_and_store_bindings_preserve_full_distribution_defaults(tmp_path: Path) -> None:
     runtime = assemble_runtime(
         RuntimeConfig(
@@ -2508,7 +2553,7 @@ def test_official_catalog_entrypoints_point_to_package_local_framework_pack_modu
         manifest = catalog[package_name].manifest
         assert manifest.assembly_entrypoint == entrypoint
         assert not manifest.assembly_entrypoint.startswith(
-            "weavert.runtime_package_manifests:"
+            "weavert.package_system.manifests:"
         )
 
 

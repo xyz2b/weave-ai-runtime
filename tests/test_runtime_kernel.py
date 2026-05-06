@@ -12,7 +12,7 @@ from urllib.error import HTTPError
 import weavert
 from weavert.builtins import load_builtin_pack
 from weavert.builtins.tools import builtin_tools
-from weavert.devtools.builtins import devtools_builtin_tools
+from weavert_devtools.builtins import devtools_builtin_tools
 from weavert.context_window import ModelContextWindowProfile, RouteContextWindowPolicy
 from weavert.contracts import MessageRole, RuntimeMessage, TextBlock
 from weavert.execution_policy import _narrow_tool_pool
@@ -27,7 +27,7 @@ from weavert.hooks import (
     HookScopeLifetime,
     RuntimeHookPhase,
 )
-from weavert.openai_client import (
+from weavert_openai.openai_client import (
     OPENAI_PROVIDER_NAME,
     OPENAI_ROUTE_NAME,
     _http_error_response,
@@ -63,10 +63,10 @@ from weavert.runtime_kernel import (
     build_runtime_kernel,
 )
 from weavert.runtime_core_protocol_catalog import CORE_PROTOCOL_CATALOG_SCHEMA_VERSION
-from weavert.runtime_package_protocols import RuntimeCapabilityKey
+from weavert.package_system.protocols import RuntimeCapabilityKey
 from weavert.runtime_services import NoopCompactionService, NoopMemoryService
 from weavert.session_runtime import FileTranscriptStore, InMemoryTranscriptStore
-from weavert.stores_file import FileChildRunStore
+from weavert_stores_file import FileChildRunStore
 from weavert.tasking import TaskManager
 from weavert.task_lists import FileTaskListStore, InMemoryTaskListStore
 from weavert.team_control_plane import InMemoryTeamStore
@@ -518,7 +518,7 @@ def test_runtime_core_build_does_not_import_optional_package_modules(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    first_party_loading = importlib.import_module("weavert.first_party_loading")
+    first_party_loading = importlib.import_module("weavert.package_system.loading")
     original_import_module = first_party_loading.import_module
     blocked_modules = {
         "weavert_compaction.package",
@@ -1119,7 +1119,7 @@ def test_runtime_core_import_surface_does_not_eagerly_load_reference_hosts(tmp_p
         [
             sys.executable,
             "-c",
-            "import sys; import weavert.runtime_kernel; print('weavert.hosts.reference' in sys.modules)",
+            "import sys; import weavert.runtime_kernel; print('weavert_hosts_reference.reference' in sys.modules)",
         ],
         cwd=repo_root,
         env=env,
@@ -3168,7 +3168,7 @@ def test_runtime_bundled_openai_route_honors_openai_model_override(
 
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     monkeypatch.setenv("OPENAI_MODEL", "gpt-env-override")
-    monkeypatch.setattr("weavert.openai_client._post_json_stream", fake_post_json_stream)
+    monkeypatch.setattr("weavert_openai.openai_client._post_json_stream", fake_post_json_stream)
 
     runtime = assemble_runtime(RuntimeConfig(working_directory=tmp_path))
     produced = asyncio.run(runtime.run_prompt("Hello runtime", session_id="openai-env"))

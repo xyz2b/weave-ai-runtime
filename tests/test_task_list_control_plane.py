@@ -8,7 +8,7 @@ from weavert.contracts import ExecutionResult, ExecutionStatus, MessageRole, Run
 from weavert.definitions import AgentDefinition, PermissionBehavior, PermissionDecision
 from weavert.execution_policy import ExecutionPolicy, ExecutionPolicyState
 from weavert.hosts.base import NullHostAdapter
-from weavert.memory.manager import LongTermMemory
+from weavert_memory.manager import LongTermMemory
 from weavert.permissions import PermissionContext
 from weavert.registries import SkillRegistry, ToolRegistry
 from weavert.runtime_kernel.config import RuntimeConfig
