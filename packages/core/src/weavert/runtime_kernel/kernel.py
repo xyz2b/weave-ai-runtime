@@ -66,8 +66,7 @@ from ..hooks import (
 )
 from ..invocation_catalog import SkillInvocationProvider
 from ..jobs import DefaultJobService, FileJobStore, InMemoryJobStore, JobScopeFilter, job_record_to_payload
-from ..memory.models import MemoryTurnResult
-from ..memory.providers import FileMemoryProvider
+from ..memory import FileMemoryProvider, MemoryTurnResult
 from ..package_profiles import FIRST_PARTY_PACKAGE_SPECS, distribution_spec
 from ..runtime_package_catalog import (
     official_runtime_distribution_catalog,

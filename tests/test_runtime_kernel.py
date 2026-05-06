@@ -521,18 +521,18 @@ def test_runtime_core_build_does_not_import_optional_package_modules(
     first_party_loading = importlib.import_module("weavert.first_party_loading")
     original_import_module = first_party_loading.import_module
     blocked_modules = {
-        "weavert.compaction.package",
-        "weavert.devtools.builtins",
-        "weavert.hosts.package",
-        "weavert.isolation_package",
-        "weavert.memory.builtins",
-        "weavert.memory.package",
-        "weavert.openai_package",
-        "weavert.planning.builtins",
-        "weavert.stores_file.package",
-        "weavert.team.builtins",
-        "weavert.team.assembly",
-        "weavert.builtin_workflows.builtins",
+        "weavert_compaction.package",
+        "weavert_devtools.builtins",
+        "weavert_hosts_reference.package",
+        "weavert_isolation.package",
+        "weavert_memory.builtins",
+        "weavert_memory.package",
+        "weavert_openai.package",
+        "weavert_planning.builtins",
+        "weavert_stores_file.package",
+        "weavert_team.builtins",
+        "weavert_team.assembly",
+        "weavert_builtin_workflows.builtins",
     }
 
     def guarded_import_module(name: str, package: str | None = None):

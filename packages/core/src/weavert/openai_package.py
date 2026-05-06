@@ -1,38 +1,13 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+import sys
 
-from .openai_client import (
-    OPENAI_PROVIDER_NAME,
-    OPENAI_ROUTE_NAME,
-    bundled_openai_provider_binding,
-    bundled_openai_route_binding,
+from ._optional_compat import load_optional_module
+
+_module = load_optional_module(
+    "weavert_openai.package",
+    surface="weavert.openai_package",
+    distribution_names=("weavert-openai",),
+    source_paths=("packages/framework-packs/integrations/openai",),
 )
-from .runtime_kernel.config import ModelProviderBinding, ModelRouteBinding
-
-
-@dataclass(frozen=True, slots=True)
-class OpenAIPackageComponents:
-    provider_name: str
-    route_name: str
-    provider_binding: ModelProviderBinding
-    route_binding: ModelRouteBinding
-
-
-def assemble_openai_package(
-    *,
-    provider_binding: ModelProviderBinding | None = None,
-    route_binding: ModelRouteBinding | None = None,
-) -> OpenAIPackageComponents:
-    return OpenAIPackageComponents(
-        provider_name=OPENAI_PROVIDER_NAME,
-        route_name=OPENAI_ROUTE_NAME,
-        provider_binding=provider_binding or bundled_openai_provider_binding(),
-        route_binding=route_binding or bundled_openai_route_binding(),
-    )
-
-
-__all__ = [
-    "OpenAIPackageComponents",
-    "assemble_openai_package",
-]
+sys.modules[__name__] = _module

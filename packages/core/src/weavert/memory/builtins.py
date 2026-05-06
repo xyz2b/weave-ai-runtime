@@ -1,18 +1,13 @@
 from __future__ import annotations
 
-from ..definitions import DefinitionOrigin, DefinitionSource, SkillDefinition
+import sys
 
+from .._optional_compat import load_optional_module
 
-def memory_builtin_skills() -> tuple[SkillDefinition, ...]:
-    origin = DefinitionOrigin(DefinitionSource.BUNDLED)
-    return (
-        SkillDefinition(
-            name="remember",
-            description="Capture durable information for future turns or sessions.",
-            content="Extract the stable facts worth remembering and record them in the runtime memory system.",
-            origin=origin,
-        ),
-    )
-
-
-__all__ = ["memory_builtin_skills"]
+_module = load_optional_module(
+    "weavert_memory.builtins",
+    surface="weavert.memory.builtins",
+    distribution_names=("weavert-memory",),
+    source_paths=("packages/framework-packs/capabilities/memory",),
+)
+sys.modules[__name__] = _module

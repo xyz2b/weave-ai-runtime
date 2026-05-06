@@ -510,292 +510,45 @@ def assemble_runtime_core_package(context: PackageContext) -> PackageContributio
 
 
 def assemble_runtime_memory_package(context: PackageContext) -> PackageContribution:
-    if context.stage == PackageAssemblyStage.BUILTINS:
-        return PackageContribution(
-            builtin_skills=_load_builtin_skill_contribution(context, "weavert.memory.builtins:memory_builtin_skills")
-        )
-    if context.stage != PackageAssemblyStage.SERVICES:
-        return PackageContribution()
-    components = load_object("weavert.memory.package:assemble_memory_capability")(
-        project_root=context.working_directory,
-        memory_config=getattr(context.config, "memory_config", None),
-    )
-    return PackageContribution(
-        context_contributors=(
-            ContextContributorBinding(
-                name="weavert-memory.collect",
-                stage=ContextContributorStage.MEMORY,
-                contributor=components.service,
-                owner=context.ownership(
-                    "context_contributor",
-                    component="collect",
-                    stage=ContextContributorStage.MEMORY.value,
-                ),
-                metadata={
-                    "compatibility_surface": "RuntimeServices.memory.collect",
-                },
-            ),
-        ),
-        capabilities=(
-            CapabilityBinding(
-                key=RuntimeCapabilityKey.MEMORY_SERVICE.value,
-                value=components.service,
-                owner=context.ownership("capability", component="service"),
-            ),
-        )
-    )
+    return load_object("weavert_memory.package:assemble_runtime_memory_package")(context)
 
 
 def assemble_runtime_team_package(context: PackageContext) -> PackageContribution:
-    if context.stage == PackageAssemblyStage.BUILTINS:
-        return PackageContribution(
-            builtin_tools=_load_builtin_tool_contribution(context, "weavert.team.builtins:team_builtin_tools")
-        )
-    if context.stage != PackageAssemblyStage.RUNTIME:
-        return PackageContribution()
-    services = context.require_resource("runtime_services")
-    execution_core = context.require_resource("execution_core")
-    store_bindings = dict(context.resource("store_bindings", {}))
-    teammate_config = _resolve_team_config(context)
-    components = load_object("weavert.team.assembly:assemble_team_capability")(
-        config=teammate_config,
-        project_root=context.working_directory,
-        runtime_services=services,
-        execution_core=execution_core,
-        bind_runtime_services=False,
-        team_store=store_bindings.get("team_store"),
-        message_store=store_bindings.get("team_message_store"),
-        workflow_store=store_bindings.get("team_workflow_store"),
-        mailbox=store_bindings.get("teammate_mailbox"),
-    )
-    workflow_facet = TeamWorkflowHostFacet(
-        control_plane=components.control_plane,
-        workflows=components.workflows,
-    )
-
-    async def recover_team_workflows(*, services: Any = None, **_kwargs: Any) -> None:
-        _ = services
-        await components.workflows.recover_pending()
-
-    async def replay_pending_leader_messages(
-        *,
-        session: Any = None,
-        services: Any = None,
-        **_kwargs: Any,
-    ) -> None:
-        if session is None or getattr(getattr(session, "state", None), "queued_commands", None):
-            return
-        runtime_services = services or context.require_resource("runtime_services")
-        message_bus = runtime_services.resolve_capability(RuntimeCapabilityKey.TEAM_MESSAGE_BUS.value)
-        if message_bus is None or not hasattr(message_bus, "replay_pending_leader_messages"):
-            return
-        await message_bus.replay_pending_leader_messages(
-            session_id=session.state.session_id,
-            session=session,
-        )
-
-    async def acknowledge_team_delivery(
-        *,
-        receipt: Any,
-        services: Any = None,
-        **_kwargs: Any,
-    ) -> None:
-        runtime_services = services or context.require_resource("runtime_services")
-        message_bus = runtime_services.resolve_capability(RuntimeCapabilityKey.TEAM_MESSAGE_BUS.value)
-        if message_bus is None or not hasattr(message_bus, "acknowledge_delivery"):
-            return
-        payload = getattr(receipt, "payload", None)
-        if not isinstance(payload, dict):
-            return
-        team_id = str(payload.get("team_id") or "").strip()
-        message_id = str(payload.get("message_id") or "").strip()
-        delivery_id = str(payload.get("delivery_id") or "").strip()
-        if not team_id or not message_id or not delivery_id:
-            return
-        await message_bus.acknowledge_delivery(
-            team_id=team_id,
-            message_id=message_id,
-            delivery_id=delivery_id,
-        )
-
-    return PackageContribution(
-        capabilities=(
-            CapabilityBinding(
-                key=RuntimeCapabilityKey.TEAMMATES.value,
-                value=components.teammates,
-                owner=context.ownership("capability", component="teammates"),
-            ),
-            CapabilityBinding(
-                key=RuntimeCapabilityKey.TEAM_CONTROL_PLANE.value,
-                value=components.control_plane,
-                owner=context.ownership("capability", component="control_plane"),
-            ),
-            CapabilityBinding(
-                key=RuntimeCapabilityKey.TEAM_MESSAGE_BUS.value,
-                value=components.message_bus,
-                owner=context.ownership("capability", component="message_bus"),
-            ),
-            CapabilityBinding(
-                key=RuntimeCapabilityKey.TEAM_WORKFLOWS.value,
-                value=components.workflows,
-                owner=context.ownership("capability", component="workflows"),
-            ),
-        ),
-        host_facets=(
-            HostFacetBinding(
-                name=RuntimeHostFacetKey.TEAM_WORKFLOWS.value,
-                facet=workflow_facet,
-                owner=context.ownership("host_facet", facet=RuntimeHostFacetKey.TEAM_WORKFLOWS.value),
-            ),
-        ),
-        ingress_receipt_handlers=(
-            IngressReceiptHandlerBinding(
-                kind="weavert.team.delivery_ack",
-                handler=acknowledge_team_delivery,
-                owner=context.ownership("ingress_receipt", kind="weavert.team.delivery_ack"),
-            ),
-        ),
-        lifecycle_participants=(
-            PackageLifecycleParticipant(
-                phase=PackageLifecyclePhase.RUNTIME_RECOVERY,
-                name="weavert-team-recover-pending-workflows",
-                handler=recover_team_workflows,
-                owner=context.ownership("lifecycle", phase=PackageLifecyclePhase.RUNTIME_RECOVERY.value),
-            ),
-            PackageLifecycleParticipant(
-                phase=PackageLifecyclePhase.SESSION_OPEN,
-                name="weavert-team-replay-pending-leader-messages",
-                handler=replay_pending_leader_messages,
-                owner=context.ownership("lifecycle", phase=PackageLifecyclePhase.SESSION_OPEN.value),
-            ),
-        ),
-    )
+    return load_object("weavert_team.assembly:assemble_runtime_team_package")(context)
 
 
 def assemble_runtime_compaction_package(context: PackageContext) -> PackageContribution:
-    if context.stage != PackageAssemblyStage.SERVICES:
-        return PackageContribution()
-    components = load_object("weavert.compaction.package:assemble_compaction_package")()
-    return PackageContribution(
-        capabilities=(
-            CapabilityBinding(
-                key=RuntimeCapabilityKey.COMPACTION_MANAGER.value,
-                value=components.manager,
-                owner=context.ownership("capability", component="manager"),
-            ),
-        )
-    )
+    return load_object("weavert_compaction.package:assemble_runtime_compaction_package")(context)
 
 
 def assemble_runtime_isolation_package(context: PackageContext) -> PackageContribution:
-    if context.stage != PackageAssemblyStage.SERVICES:
-        return PackageContribution()
-    components = load_object("weavert.isolation_package:assemble_isolation_package")()
-    return PackageContribution(
-        capabilities=(
-            CapabilityBinding(
-                key=RuntimeCapabilityKey.ISOLATION_MANAGER.value,
-                value=components.manager,
-                owner=context.ownership("capability", component="manager"),
-            ),
-        )
-    )
+    return load_object("weavert_isolation.package:assemble_runtime_isolation_package")(context)
 
 
 def assemble_runtime_openai_package(context: PackageContext) -> PackageContribution:
-    if context.stage != PackageAssemblyStage.SERVICES:
-        return PackageContribution()
-    components = load_object("weavert.openai_package:assemble_openai_package")()
-    return PackageContribution(
-        model_providers=(
-            ModelProviderContribution(
-                name=components.provider_name,
-                binding=components.provider_binding,
-                owner=context.ownership("model_provider", provider_name=components.provider_name),
-            ),
-        ),
-        model_routes=(
-            ModelRouteContribution(
-                name=components.route_name,
-                binding=components.route_binding,
-                owner=context.ownership("model_route", route_name=components.route_name),
-            ),
-        ),
-    )
+    return load_object("weavert_openai.package:assemble_runtime_openai_package")(context)
 
 
 def assemble_runtime_hosts_reference_package(context: PackageContext) -> PackageContribution:
-    if context.stage != PackageAssemblyStage.SERVICES:
-        return PackageContribution()
-    components = load_object("weavert.hosts.package:assemble_reference_host_package")()
-    return PackageContribution(
-        capabilities=(
-            CapabilityBinding(
-                key=RuntimeCapabilityKey.REFERENCE_HOST_TYPES.value,
-                value=components.host_types,
-                owner=context.ownership("capability", component="host_types"),
-            ),
-        )
-    )
+    return load_object("weavert_hosts_reference.package:assemble_runtime_hosts_reference_package")(context)
 
 
 def assemble_runtime_stores_file_package(context: PackageContext) -> PackageContribution:
-    if context.stage != PackageAssemblyStage.SERVICES:
-        return PackageContribution()
-    components = load_object("weavert.stores_file.package:assemble_file_store_bundle")(
-        project_root=context.working_directory,
-        teammate_config=getattr(context.config, "teammate_orchestration", None),
-    )
-    owner = context.ownership("store_binding")
-    return PackageContribution(
-        store_bindings=(
-            StoreBinding(slot="transcript_store", store=components.transcript_store, owner=owner),
-            StoreBinding(slot="child_run_store", store=components.child_run_store, owner=owner),
-            StoreBinding(slot="job_store", store=components.job_store, owner=owner),
-            StoreBinding(slot="task_list_store", store=components.task_list_store, owner=owner),
-            StoreBinding(slot="team_store", store=components.team_store, owner=owner),
-            StoreBinding(slot="team_message_store", store=components.team_message_store, owner=owner),
-            StoreBinding(slot="team_workflow_store", store=components.team_workflow_store, owner=owner),
-            StoreBinding(slot="teammate_mailbox", store=components.teammate_mailbox, owner=owner),
-        )
-    )
+    return load_object("weavert_stores_file.package:assemble_runtime_stores_file_package")(context)
 
 
 def assemble_runtime_builtin_workflows_package(context: PackageContext) -> PackageContribution:
-    if context.stage != PackageAssemblyStage.BUILTINS:
-        return PackageContribution()
-    return PackageContribution(
-        builtin_skills=_load_builtin_skill_contribution(
-            context,
-            "weavert.builtin_workflows.builtins:builtin_workflow_skills",
-        )
-    )
+    return load_object(
+        "weavert_builtin_workflows.package:assemble_runtime_builtin_workflows_package"
+    )(context)
 
 
 def assemble_runtime_planning_package(context: PackageContext) -> PackageContribution:
-    if context.stage != PackageAssemblyStage.BUILTINS:
-        return PackageContribution()
-    return PackageContribution(
-        builtin_agents=_load_builtin_agent_contribution(
-            context,
-            "weavert.planning.builtins:planning_builtin_agents",
-        )
-    )
+    return load_object("weavert_planning.package:assemble_runtime_planning_package")(context)
 
 
 def assemble_runtime_devtools_package(context: PackageContext) -> PackageContribution:
-    if context.stage != PackageAssemblyStage.BUILTINS:
-        return PackageContribution()
-    return PackageContribution(
-        builtin_tools=_load_builtin_tool_contribution(
-            context,
-            "weavert.devtools.builtins:devtools_builtin_tools",
-        ),
-        builtin_agents=_load_builtin_agent_contribution(
-            context,
-            "weavert.devtools.builtins:devtools_builtin_agents",
-        ),
-    )
+    return load_object("weavert_devtools.package:assemble_runtime_devtools_package")(context)
 
 
 def _resolve_team_config(context: PackageContext) -> Any:

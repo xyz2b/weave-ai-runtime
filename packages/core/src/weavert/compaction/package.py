@@ -1,31 +1,13 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Sequence
+import sys
 
-from .manager import CompactionManager, OrderedCompactionStrategy
-from .models import CompactionPolicy
+from .._optional_compat import load_optional_module
 
-
-@dataclass(frozen=True, slots=True)
-class CompactionPackageComponents:
-    manager: CompactionManager
-
-
-def assemble_compaction_package(
-    *,
-    strategies: Sequence[OrderedCompactionStrategy] | None = None,
-    default_policy: CompactionPolicy | None = None,
-    manager: CompactionManager | None = None,
-) -> CompactionPackageComponents:
-    resolved_manager = manager or CompactionManager(
-        strategies=strategies,
-        default_policy=default_policy,
-    )
-    return CompactionPackageComponents(manager=resolved_manager)
-
-
-__all__ = [
-    "CompactionPackageComponents",
-    "assemble_compaction_package",
-]
+_module = load_optional_module(
+    "weavert_compaction.package",
+    surface="weavert.compaction.package",
+    distribution_names=("weavert-compaction",),
+    source_paths=("packages/framework-packs/mechanisms/compaction",),
+)
+sys.modules[__name__] = _module

@@ -1,0 +1,13 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "weavert-devtools"
+version = "0.1.0"
+description = "First-party developer tooling workflow package for WeaveRT."
+requires-python = ">=3.11"
+dependencies = ["weavert"]
+
+[tool.setuptools.packages.find]
+where = ["src"]

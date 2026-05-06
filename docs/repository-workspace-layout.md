@@ -1,11 +1,11 @@
 # Repository Workspace Layout
 
-This repository now uses a workspace layout with multiple concrete package roots plus one remaining placeholder family.
+This repository now uses a workspace layout with multiple concrete package roots grouped under family indexes.
 
 ## Canonical roots
 
 - `packages/core/`: concrete runtime package metadata and current `weavert` implementation code
-- `packages/framework-packs/`: placeholder root for first-party add-on packs
+- `packages/framework-packs/`: family root for concrete first-party add-on packs
 - `packages/product-kits/`: family root for concrete product-kit and common-kit packages
 - `packages/toolchain/`: family root for concrete developer tooling packages
 - `docs/`: repository-owned guidance and architecture notes
@@ -20,6 +20,7 @@ The repository root `pyproject.toml` is a workspace coordinator only. Concrete p
 
 - root `pyproject.toml`: workspace metadata, shared developer configuration, and family declarations
 - `packages/core/pyproject.toml`: the `weavert` runtime package metadata
+- each concrete package under `packages/framework-packs/` owns its own local metadata
 - `packages/toolchain/starter/pyproject.toml`: the `weavert-starter` CLI metadata
 - each concrete package under `packages/product-kits/` and `packages/toolchain/` owns its own local metadata
 

@@ -1459,8 +1459,8 @@ def test_protocol_only_conformance_publishes_kernel_assembly_sources_and_gate(
         "replacement_path": "RuntimePackageManifest.assembly_entrypoint",
         "evidence": [
             "weavert-core@weavert.runtime_package_manifests:assemble_runtime_core_package",
-            "weavert-memory@weavert.runtime_package_manifests:assemble_runtime_memory_package",
-            "weavert-team@weavert.runtime_package_manifests:assemble_runtime_team_package",
+            "weavert-memory@weavert_memory.package:assemble_runtime_memory_package",
+            "weavert-team@weavert_team.assembly:assemble_runtime_team_package",
         ],
     }
 
@@ -2484,6 +2484,32 @@ def test_manifest_backed_openai_and_store_bindings_preserve_full_distribution_de
         "team_workflow_store": "weavert-stores-file",
         "teammate_mailbox": "weavert-stores-file",
     }
+
+
+def test_official_catalog_entrypoints_point_to_package_local_framework_pack_modules() -> None:
+    catalog = official_runtime_package_catalog()
+
+    expected = {
+        "weavert-memory": "weavert_memory.package:assemble_runtime_memory_package",
+        "weavert-team": "weavert_team.assembly:assemble_runtime_team_package",
+        "weavert-compaction": "weavert_compaction.package:assemble_runtime_compaction_package",
+        "weavert-isolation": "weavert_isolation.package:assemble_runtime_isolation_package",
+        "weavert-openai": "weavert_openai.package:assemble_runtime_openai_package",
+        "weavert-hosts-reference": "weavert_hosts_reference.package:assemble_runtime_hosts_reference_package",
+        "weavert-stores-file": "weavert_stores_file.package:assemble_runtime_stores_file_package",
+        "weavert-builtin-workflows": (
+            "weavert_builtin_workflows.package:assemble_runtime_builtin_workflows_package"
+        ),
+        "weavert-planning": "weavert_planning.package:assemble_runtime_planning_package",
+        "weavert-devtools": "weavert_devtools.package:assemble_runtime_devtools_package",
+    }
+
+    for package_name, entrypoint in expected.items():
+        manifest = catalog[package_name].manifest
+        assert manifest.assembly_entrypoint == entrypoint
+        assert not manifest.assembly_entrypoint.startswith(
+            "weavert.runtime_package_manifests:"
+        )
 
 
 def test_builtin_replacements_preserve_manifest_owned_builtin_metadata(tmp_path: Path) -> None:

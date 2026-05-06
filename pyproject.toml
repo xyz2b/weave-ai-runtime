@@ -21,6 +21,16 @@ addopts = "-q"
 [tool.weavert_workspace]
 concrete_package_roots = [
   "packages/core",
+  "packages/framework-packs/capabilities/memory",
+  "packages/framework-packs/capabilities/team",
+  "packages/framework-packs/mechanisms/compaction",
+  "packages/framework-packs/mechanisms/isolation",
+  "packages/framework-packs/integrations/openai",
+  "packages/framework-packs/integrations/hosts-reference",
+  "packages/framework-packs/integrations/stores-file",
+  "packages/framework-packs/workflows/planning",
+  "packages/framework-packs/workflows/devtools",
+  "packages/framework-packs/workflows/builtin-workflows",
   "packages/product-kits/chat",
   "packages/product-kits/coding",
   "packages/product-kits/common/browser",

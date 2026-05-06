@@ -165,6 +165,16 @@ def main() -> int:
 
     expected_concrete = [
         "packages/core",
+        "packages/framework-packs/capabilities/memory",
+        "packages/framework-packs/capabilities/team",
+        "packages/framework-packs/mechanisms/compaction",
+        "packages/framework-packs/mechanisms/isolation",
+        "packages/framework-packs/integrations/openai",
+        "packages/framework-packs/integrations/hosts-reference",
+        "packages/framework-packs/integrations/stores-file",
+        "packages/framework-packs/workflows/planning",
+        "packages/framework-packs/workflows/devtools",
+        "packages/framework-packs/workflows/builtin-workflows",
         "packages/product-kits/chat",
         "packages/product-kits/coding",
         "packages/product-kits/common/browser",
@@ -183,7 +193,7 @@ def main() -> int:
         errors.append("workspace metadata must list every concrete package root")
     expected_placeholders = ["packages/framework-packs"]
     if workspace_meta.get("family_placeholder_roots") != expected_placeholders:
-        errors.append("workspace metadata must only list framework-packs as a placeholder family")
+        errors.append("workspace metadata must only list packages/framework-packs as the family root")
 
     if not CORE_PACKAGE.is_dir():
         errors.append("packages/core/src/weavert is missing")
@@ -220,7 +230,7 @@ def main() -> int:
     print("root package role: coordinator")
     print("core package role: runtime kernel metadata owner")
     print("toolchain starter entrypoint owner: packages/toolchain/starter")
-    print("placeholder families: framework-packs")
+    print("framework-pack family root: packages/framework-packs")
     print("support roots: docs, tests, examples, upstreams, .local")
     print("top-level code guardrail: ok")
     return 0

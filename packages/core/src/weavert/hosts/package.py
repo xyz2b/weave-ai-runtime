@@ -1,31 +1,13 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+import sys
 
-from .reference import CliHostRuntime, SdkHostRuntime
+from .._optional_compat import load_optional_module
 
-
-@dataclass(frozen=True, slots=True)
-class ReferenceHostPackageComponents:
-    cli_host_type: type[CliHostRuntime]
-    sdk_host_type: type[SdkHostRuntime]
-
-    @property
-    def host_types(self) -> dict[str, type[object]]:
-        return {
-            "cli": self.cli_host_type,
-            "sdk": self.sdk_host_type,
-        }
-
-
-def assemble_reference_host_package() -> ReferenceHostPackageComponents:
-    return ReferenceHostPackageComponents(
-        cli_host_type=CliHostRuntime,
-        sdk_host_type=SdkHostRuntime,
-    )
-
-
-__all__ = [
-    "ReferenceHostPackageComponents",
-    "assemble_reference_host_package",
-]
+_module = load_optional_module(
+    "weavert_hosts_reference.package",
+    surface="weavert.hosts.package",
+    distribution_names=("weavert-hosts-reference",),
+    source_paths=("packages/framework-packs/integrations/hosts-reference",),
+)
+sys.modules[__name__] = _module
