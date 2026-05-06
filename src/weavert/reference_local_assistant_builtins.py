@@ -20,7 +20,7 @@ from .definitions import (
     ToolUsePresentation,
     ValidationOutcome,
 )
-from .tool_runtime import ToolContext
+from .tool_runtime import ToolContext, maybe_await
 
 LOCAL_ASSISTANT_BROWSER_TOOLS = (
     "browser_snapshot",
@@ -83,6 +83,7 @@ def local_assistant_browser_bridge_builtin_tools() -> tuple[ToolDefinition, ...]
             execute=_host_bridge_required_executor(
                 bridge_family="browser",
                 action="snapshot",
+                tool_name="browser_snapshot",
                 expected_host_facet=LOCAL_ASSISTANT_BROWSER_HOST_FACET,
             ),
             metadata=_bridge_tool_metadata(
@@ -117,6 +118,7 @@ def local_assistant_browser_bridge_builtin_tools() -> tuple[ToolDefinition, ...]
             execute=_staged_bridge_executor(
                 bridge_family="browser",
                 action="navigation",
+                tool_name="browser_stage_navigation",
                 expected_host_facet=LOCAL_ASSISTANT_BROWSER_HOST_FACET,
             ),
             metadata=_bridge_tool_metadata(
@@ -152,6 +154,7 @@ def local_assistant_browser_bridge_builtin_tools() -> tuple[ToolDefinition, ...]
             execute=_staged_bridge_executor(
                 bridge_family="browser",
                 action="interaction",
+                tool_name="browser_stage_interaction",
                 expected_host_facet=LOCAL_ASSISTANT_BROWSER_HOST_FACET,
             ),
             metadata=_bridge_tool_metadata(
@@ -193,6 +196,7 @@ def local_assistant_local_os_bridge_builtin_tools() -> tuple[ToolDefinition, ...
             execute=_host_bridge_required_executor(
                 bridge_family="local_os",
                 action="snapshot",
+                tool_name="local_os_snapshot",
                 expected_host_facet=LOCAL_ASSISTANT_LOCAL_OS_HOST_FACET,
             ),
             metadata=_bridge_tool_metadata(
@@ -232,6 +236,7 @@ def local_assistant_local_os_bridge_builtin_tools() -> tuple[ToolDefinition, ...
             execute=_staged_bridge_executor(
                 bridge_family="local_os",
                 action="file_change",
+                tool_name="local_os_stage_file_change",
                 expected_host_facet=LOCAL_ASSISTANT_LOCAL_OS_HOST_FACET,
             ),
             metadata=_bridge_tool_metadata(
@@ -266,6 +271,7 @@ def local_assistant_local_os_bridge_builtin_tools() -> tuple[ToolDefinition, ...
             execute=_staged_bridge_executor(
                 bridge_family="local_os",
                 action="process_launch",
+                tool_name="local_os_stage_process_launch",
                 expected_host_facet=LOCAL_ASSISTANT_LOCAL_OS_HOST_FACET,
             ),
             metadata=_bridge_tool_metadata(
@@ -300,6 +306,7 @@ def local_assistant_local_os_bridge_builtin_tools() -> tuple[ToolDefinition, ...
             execute=_staged_bridge_executor(
                 bridge_family="local_os",
                 action="notification",
+                tool_name="local_os_stage_notification",
                 expected_host_facet=LOCAL_ASSISTANT_LOCAL_OS_HOST_FACET,
             ),
             metadata=_bridge_tool_metadata(
@@ -337,6 +344,7 @@ def local_assistant_pim_bridge_builtin_tools() -> tuple[ToolDefinition, ...]:
             execute=_host_bridge_required_executor(
                 bridge_family="pim",
                 action="agenda",
+                tool_name="pim_list_agenda",
                 expected_host_facet=LOCAL_ASSISTANT_PIM_HOST_FACET,
             ),
             metadata=_bridge_tool_metadata(
@@ -369,6 +377,7 @@ def local_assistant_pim_bridge_builtin_tools() -> tuple[ToolDefinition, ...]:
             execute=_host_bridge_required_executor(
                 bridge_family="pim",
                 action="contact_lookup",
+                tool_name="pim_lookup_contacts",
                 expected_host_facet=LOCAL_ASSISTANT_PIM_HOST_FACET,
             ),
             metadata=_bridge_tool_metadata(
@@ -404,6 +413,7 @@ def local_assistant_pim_bridge_builtin_tools() -> tuple[ToolDefinition, ...]:
             execute=_staged_bridge_executor(
                 bridge_family="pim",
                 action="calendar_event",
+                tool_name="pim_stage_calendar_event",
                 expected_host_facet=LOCAL_ASSISTANT_PIM_HOST_FACET,
             ),
             metadata=_bridge_tool_metadata(
@@ -438,6 +448,7 @@ def local_assistant_pim_bridge_builtin_tools() -> tuple[ToolDefinition, ...]:
             execute=_staged_bridge_executor(
                 bridge_family="pim",
                 action="reminder",
+                tool_name="pim_stage_reminder",
                 expected_host_facet=LOCAL_ASSISTANT_PIM_HOST_FACET,
             ),
             metadata=_bridge_tool_metadata(
@@ -473,6 +484,7 @@ def local_assistant_pim_bridge_builtin_tools() -> tuple[ToolDefinition, ...]:
             execute=_staged_bridge_executor(
                 bridge_family="pim",
                 action="task",
+                tool_name="pim_stage_task",
                 expected_host_facet=LOCAL_ASSISTANT_PIM_HOST_FACET,
             ),
             metadata=_bridge_tool_metadata(
@@ -500,6 +512,7 @@ def local_assistant_scenario_builtin_agents() -> tuple[AgentDefinition, ...]:
                 "5. Never imply silent automation or direct ownership of browser, OS, or account bindings."
             ),
             tools=(
+                "skill",
                 "retrieve_context",
                 "prepare_citations",
                 "browser_snapshot",
@@ -508,7 +521,7 @@ def local_assistant_scenario_builtin_agents() -> tuple[AgentDefinition, ...]:
                 "pim_lookup_contacts",
                 "ask_user",
             ),
-            skills=("safe-action-check", "daily-brief", "remember"),
+            skills=("safe-action-check", "remember"),
             permission_mode=PermissionMode.DEFAULT,
             max_turns=6,
             memory=MemoryScope.PROJECT,
@@ -527,6 +540,7 @@ def local_assistant_scenario_builtin_agents() -> tuple[AgentDefinition, ...]:
                 "5. Leave enough context for the recovery agent to resume interrupted work."
             ),
             tools=(
+                "skill",
                 "retrieve_context",
                 "prepare_citations",
                 *LOCAL_ASSISTANT_BROWSER_TOOLS,
@@ -534,7 +548,7 @@ def local_assistant_scenario_builtin_agents() -> tuple[AgentDefinition, ...]:
                 *LOCAL_ASSISTANT_PIM_TOOLS,
                 "ask_user",
             ),
-            skills=("safe-action-check", "research-and-act", "resume-interrupted-task", "remember"),
+            skills=("safe-action-check", "remember"),
             permission_mode=PermissionMode.DEFAULT,
             max_turns=6,
             memory=MemoryScope.PROJECT,
@@ -552,6 +566,7 @@ def local_assistant_scenario_builtin_agents() -> tuple[AgentDefinition, ...]:
                 "4. Return the next safe step, missing approval, or missing host binding explicitly."
             ),
             tools=(
+                "skill",
                 "retrieve_context",
                 "prepare_citations",
                 "browser_snapshot",
@@ -560,7 +575,7 @@ def local_assistant_scenario_builtin_agents() -> tuple[AgentDefinition, ...]:
                 "pim_lookup_contacts",
                 "ask_user",
             ),
-            skills=("safe-action-check", "resume-interrupted-task", "daily-brief", "remember"),
+            skills=("safe-action-check", "remember"),
             permission_mode=PermissionMode.DEFAULT,
             max_turns=5,
             memory=MemoryScope.PROJECT,
@@ -633,44 +648,192 @@ def _bridge_tool_metadata(*, bridge_family: str, expected_host_facet: str) -> di
     }
 
 
-def _host_bridge_required_executor(*, bridge_family: str, action: str, expected_host_facet: str):
+def _host_bridge_required_executor(
+    *,
+    bridge_family: str,
+    action: str,
+    tool_name: str,
+    expected_host_facet: str,
+):
     async def _execute(tool_input: dict[str, Any], _context: ToolContext) -> dict[str, Any]:
+        bound_host_facet, host_facet_operation_supported, payload = await _call_bound_host_bridge(
+            context=_context,
+            bridge_family=bridge_family,
+            action=action,
+            tool_name=tool_name,
+            expected_host_facet=expected_host_facet,
+            tool_input=tool_input,
+            staged=False,
+        )
+        if bound_host_facet and host_facet_operation_supported:
+            return {
+                **_bridge_result_metadata(
+                    bridge_family=bridge_family,
+                    action=action,
+                    expected_host_facet=expected_host_facet,
+                    tool_input=tool_input,
+                    approval_required=False,
+                    bound_host_facet=True,
+                    host_facet_operation_supported=True,
+                ),
+                "status": "available",
+                "bridge_state": payload,
+            }
         return {
+            **_bridge_result_metadata(
+                bridge_family=bridge_family,
+                action=action,
+                expected_host_facet=expected_host_facet,
+                tool_input=tool_input,
+                approval_required=False,
+                bound_host_facet=bound_host_facet,
+                host_facet_operation_supported=host_facet_operation_supported,
+            ),
             "status": "host_bridge_required",
-            "bridge_family": bridge_family,
-            "action": action,
-            "approval_required": False,
-            "host_binding_owner": "app",
-            "allowlist_owner": "app",
-            "audit_sink_owner": "app",
-            "expected_host_facet": expected_host_facet,
-            "request": _snapshot_value(tool_input),
             "app_owned_next_step": (
-                "Bind an app-owned host facet before exposing live browser, OS, or PIM state to this package."
+                "Extend the bound app-owned host facet to expose live browser, OS, or PIM state for this operation."
+                if bound_host_facet
+                else "Bind an app-owned host facet before exposing live browser, OS, or PIM state to this package."
             ),
         }
 
     return _execute
 
 
-def _staged_bridge_executor(*, bridge_family: str, action: str, expected_host_facet: str):
+def _staged_bridge_executor(
+    *,
+    bridge_family: str,
+    action: str,
+    tool_name: str,
+    expected_host_facet: str,
+):
     async def _execute(tool_input: dict[str, Any], _context: ToolContext) -> dict[str, Any]:
+        bound_host_facet, host_facet_operation_supported, payload = await _call_bound_host_bridge(
+            context=_context,
+            bridge_family=bridge_family,
+            action=action,
+            tool_name=tool_name,
+            expected_host_facet=expected_host_facet,
+            tool_input=tool_input,
+            staged=True,
+        )
+        if bound_host_facet and host_facet_operation_supported:
+            return {
+                **_bridge_result_metadata(
+                    bridge_family=bridge_family,
+                    action=action,
+                    expected_host_facet=expected_host_facet,
+                    tool_input=tool_input,
+                    approval_required=True,
+                    bound_host_facet=True,
+                    host_facet_operation_supported=True,
+                ),
+                "status": "staged",
+                "receipt": payload,
+            }
         return {
+            **_bridge_result_metadata(
+                bridge_family=bridge_family,
+                action=action,
+                expected_host_facet=expected_host_facet,
+                tool_input=tool_input,
+                approval_required=True,
+                bound_host_facet=bound_host_facet,
+                host_facet_operation_supported=host_facet_operation_supported,
+            ),
             "status": "staged",
-            "bridge_family": bridge_family,
-            "action": action,
-            "approval_required": True,
-            "host_binding_owner": "app",
-            "allowlist_owner": "app",
-            "audit_sink_owner": "app",
-            "expected_host_facet": expected_host_facet,
-            "request": _snapshot_value(tool_input),
             "app_owned_next_step": (
                 "The app-owned host reviews the staged request, applies final allowlists and audit policy, and decides whether to execute it."
+                if not bound_host_facet
+                else "The app-owned host can keep reviewing this staged request directly, or extend the bound host facet to attach a host-specific staged receipt for this operation."
             ),
         }
 
     return _execute
+
+
+def _bridge_result_metadata(
+    *,
+    bridge_family: str,
+    action: str,
+    expected_host_facet: str,
+    tool_input: Mapping[str, Any],
+    approval_required: bool,
+    bound_host_facet: bool,
+    host_facet_operation_supported: bool,
+) -> dict[str, Any]:
+    return {
+        "bridge_family": bridge_family,
+        "action": action,
+        "approval_required": approval_required,
+        "host_binding_owner": "app",
+        "allowlist_owner": "app",
+        "audit_sink_owner": "app",
+        "expected_host_facet": expected_host_facet,
+        "bound_host_facet": bound_host_facet,
+        "host_facet_operation_supported": host_facet_operation_supported,
+        "request": _snapshot_value(tool_input),
+    }
+
+
+async def _call_bound_host_bridge(
+    *,
+    context: ToolContext,
+    bridge_family: str,
+    action: str,
+    tool_name: str,
+    expected_host_facet: str,
+    tool_input: Mapping[str, Any],
+    staged: bool,
+) -> tuple[bool, bool, Any | None]:
+    if context.runtime_services is None:
+        return False, False, None
+    resolution = context.runtime_services.resolve_host_facet(expected_host_facet)
+    if not resolution.available or resolution.facet is None:
+        return False, False, None
+    facet = resolution.facet
+    if not staged and isinstance(facet, Mapping):
+        return True, True, _snapshot_value(facet)
+    handler, generic = _resolve_host_bridge_handler(
+        facet,
+        tool_name=tool_name,
+        action=action,
+        staged=staged,
+    )
+    if handler is None:
+        return True, False, None
+    request = _snapshot_value(tool_input)
+    if generic:
+        payload = await maybe_await(
+            handler(
+                bridge_family=bridge_family,
+                action=action,
+                tool_name=tool_name,
+                request=request,
+                context=context,
+            )
+        )
+    else:
+        payload = await maybe_await(handler(request=request, context=context))
+    return True, True, _snapshot_value(payload)
+
+
+def _resolve_host_bridge_handler(
+    facet: Any,
+    *,
+    tool_name: str,
+    action: str,
+    staged: bool,
+) -> tuple[Any | None, bool]:
+    candidate_names = [tool_name]
+    if staged:
+        candidate_names.append(f"stage_{action}")
+    candidate_names.extend((action, "handle_bridge_request", "handle_request"))
+    for name in candidate_names:
+        handler = getattr(facet, name, None)
+        if callable(handler):
+            return handler, name in {"handle_bridge_request", "handle_request"}
+    return None, False
 
 
 def _require_non_empty_string(tool_input: Mapping[str, Any], field_name: str) -> ValidationOutcome:

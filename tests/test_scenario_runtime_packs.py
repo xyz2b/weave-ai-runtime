@@ -8,6 +8,7 @@ from typing import Any
 
 import pytest
 
+from weavert.contracts import MessageRole
 from weavert.definitions import ToolRiskLevel
 from weavert.memory.models import MemoryEntry
 from weavert.reference_chat_builtins import (
@@ -28,6 +29,7 @@ from weavert.reference_local_assistant_builtins import (
 )
 from weavert.reference_chat_tool_impls import validate_grounding_web_fetch
 from weavert.runtime_kernel import RuntimeConfig, assemble_runtime
+from weavert.runtime_package_protocols import HostFacetBinding, PackageOwnership
 from weavert.runtime_package_resolution import PACKAGE_CANDIDATE_METADATA_KEY
 from weavert.scenario_runtime_packs import (
     reference_scenario_pack_manifests,
@@ -38,7 +40,7 @@ from weavert.scenario_runtime_packs import (
     reference_shared_package_shape,
     reference_shared_package_shapes,
 )
-from weavert.testing import ScriptedModelClient, text_batch
+from weavert.testing import ScriptedModelClient, text_batch, tool_call_batch
 from weavert.tool_runtime import ToolContext
 
 
@@ -913,6 +915,145 @@ def test_local_assistant_bridge_tools_keep_host_mediation_allowlists_and_audit_a
     assert result["audit_sink_owner"] == "app"
     assert result["approval_required"] is (not expected_read_only)
     assert result["request"] == tool_input
+
+
+def test_local_assistant_bridge_tools_use_bound_host_facets_for_live_state_and_staged_receipts(
+    tmp_path: Path,
+) -> None:
+    class BrowserHostFacet:
+        async def browser_snapshot(self, *, request, context):
+            assert request == {"include_recent_tabs": True}
+            assert context.agent_name == "tester"
+            return {
+                "focused_url": "https://assistant.example.test/home",
+                "recent_tabs": ["https://assistant.example.test/home"],
+            }
+
+        async def browser_stage_navigation(self, *, request, context):
+            assert request["url"] == "https://assistant.example.test/briefing"
+            assert context.agent_name == "tester"
+            return {
+                "receipt_id": "nav-1",
+                "review_state": "pending",
+                "target_url": request["url"],
+            }
+
+    runtime, _shape, runtime_root = _assemble_reference_runtime(tmp_path, "weavert-scenario-local-assistant")
+    runtime.services.register_host_facet(
+        HostFacetBinding(
+            name=LOCAL_ASSISTANT_BROWSER_HOST_FACET,
+            facet=BrowserHostFacet(),
+            owner=PackageOwnership(
+                package_name="assistant-host",
+                package_role="host",
+                surface="host_facet",
+            ),
+        )
+    )
+
+    snapshot_tool = runtime.kernel.tool_registry.get("browser_snapshot")
+    snapshot = asyncio.run(
+        snapshot_tool.execute(
+            {"include_recent_tabs": True},
+            _tool_context(runtime, runtime_root),
+        )
+    )
+    assert snapshot["status"] == "available"
+    assert snapshot["bound_host_facet"] is True
+    assert snapshot["host_facet_operation_supported"] is True
+    assert snapshot["approval_required"] is False
+    assert snapshot["bridge_state"] == {
+        "focused_url": "https://assistant.example.test/home",
+        "recent_tabs": ["https://assistant.example.test/home"],
+    }
+
+    stage_tool = runtime.kernel.tool_registry.get("browser_stage_navigation")
+    staged = asyncio.run(
+        stage_tool.execute(
+            {"url": "https://assistant.example.test/briefing"},
+            _tool_context(runtime, runtime_root),
+        )
+    )
+    assert staged["status"] == "staged"
+    assert staged["bound_host_facet"] is True
+    assert staged["host_facet_operation_supported"] is True
+    assert staged["approval_required"] is True
+    assert staged["receipt"] == {
+        "receipt_id": "nav-1",
+        "review_state": "pending",
+        "target_url": "https://assistant.example.test/briefing",
+    }
+
+
+def test_local_assistant_daily_brief_skill_fork_exposes_skill_tool_to_assistant_agents(
+    tmp_path: Path,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def _parent_request(request):
+        return tool_call_batch(
+            request_id="req-local-assistant-root-1",
+            tool_name="skill",
+            tool_input={"skill": "daily-brief"},
+            call_id="call-daily-brief",
+        )
+
+    def _planner_request(request):
+        captured["planner_tools"] = set(request.turn_context.available_tools)
+        captured["planner_skills"] = set(request.turn_context.available_skills)
+        assert request.agent is not None
+        assert request.agent.name == "assistant-planner"
+        return tool_call_batch(
+            request_id="req-local-assistant-planner-1",
+            tool_name="skill",
+            tool_input={"skill": "safe-action-check"},
+            call_id="call-safe-action-check",
+        )
+
+    def _planner_followup(request):
+        captured["planner_inline_skill_applied"] = any(
+            message.role == MessageRole.SYSTEM and message.metadata.get("skill") == "safe-action-check"
+            for message in request.messages
+        )
+        return text_batch(
+            request_id="req-local-assistant-planner-2",
+            text="planner finished with safe check",
+        )
+
+    def _parent_followup(request):
+        return text_batch(
+            request_id="req-local-assistant-root-2",
+            text="daily brief completed",
+        )
+
+    runtime, _shape, _runtime_root = _assemble_reference_runtime(
+        tmp_path,
+        "weavert-scenario-local-assistant",
+        model_client=ScriptedModelClient(
+            [_parent_request, _planner_request, _planner_followup, _parent_followup]
+        ),
+    )
+
+    messages = asyncio.run(
+        runtime.run_prompt(
+            "Start the local assistant daily brief.",
+            session_id="local-assistant-daily-brief",
+        )
+    )
+
+    assert captured["planner_tools"] == {
+        "ask_user",
+        "browser_snapshot",
+        "local_os_snapshot",
+        "pim_list_agenda",
+        "pim_lookup_contacts",
+        "prepare_citations",
+        "retrieve_context",
+        "skill",
+    }
+    assert captured["planner_skills"] == {"remember", "safe-action-check"}
+    assert captured["planner_inline_skill_applied"] is True
+    assert messages[-1].text == "daily brief completed"
 
 
 def test_reference_scenario_pack_capabilities_preserve_distinct_default_boundaries(
