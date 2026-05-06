@@ -235,7 +235,7 @@ product-profile layer，而不是新的 kernel mode。
 特别要注意：
 
 - scenario pack 可以推荐 provider、store、host、permission posture
-- scenario pack capability 里列出的 `expected_tools` / `expected_agents` / `expected_skills`，表示“把推荐 first-party package 也一起打开后，这个 profile 期望出现什么”
+- scenario pack capability 里列出的 `expected_tools` / `expected_agents` / `expected_skills`，表示“把推荐 first-party package 也一起打开后，这个 profile 期望出现什么”，其中 `expected_tools` 也可以包含 profile-owned workflow 直接依赖的 control-plane primitive
 - `workflow_agent_ids` / `workflow_skill_ids` 用来单独标出 scenario-pack-own 的高层 workflow surfaces
 - 单独 request scenario pack 本身，不会自动 materialize 依赖 recommended first-party package 的那部分 generic tools / agents / skills
 - 但 scenario pack 自己拥有的 workflow agents / skills 仍然会随 package 一起出现
@@ -321,7 +321,7 @@ grounded chat 这类 profile 最值得明确写出来的 ownership split 是：
   - 例如 `weavert-bridge-web` 发布 `grounding_web_search` / `grounding_web_fetch`
 - scenario pack
   - 拥有 profile-specific workflow agents / skills
-  - 同时把 shared package tool inventory 扁平地镜像进 `expected_tools`
+  - 同时把 shared package tool inventory，以及 workflow 直接依赖的 control-plane tools，扁平地镜像进 `expected_tools`
   - 这样 caller inspect capability payload 时，能同时看到 shared grounding surface 和 scenario-owned workflow role
 
 scenario pack 示例：
@@ -351,6 +351,23 @@ manifest_metadata = {
         "edit",
         "write",
         "bash",
+        "agent",
+        "skill",
+        "task_archive",
+        "task_assign_next",
+        "task_block",
+        "task_claim",
+        "task_create",
+        "task_delete",
+        "task_get",
+        "task_list",
+        "task_release",
+        "task_unarchive",
+        "task_unblock",
+        "task_update",
+        "job_get",
+        "job_list",
+        "job_stop",
         "git_status",
         "git_diff",
         "git_history",

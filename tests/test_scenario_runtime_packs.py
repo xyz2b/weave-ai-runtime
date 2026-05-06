@@ -3,11 +3,13 @@ from __future__ import annotations
 import asyncio
 from email.message import Message
 from pathlib import Path
+import socket
 import subprocess
 from typing import Any
 
 import pytest
 
+import weavert.reference_chat_tool_impls as reference_chat_tool_impls
 from weavert.contracts import MessageRole
 from weavert.definitions import ToolRiskLevel
 from weavert.memory.models import MemoryEntry
@@ -54,7 +56,30 @@ CODING_SHARED_WORKSPACE_TOOLS = {
     "workspace_outline",
     "workspace_test_targets",
 }
-CODING_PROFILE_TOOLS = CODING_WORKSPACE_TOOLS | CODING_SHARED_GIT_TOOLS | CODING_SHARED_WORKSPACE_TOOLS
+CODING_WORKFLOW_CONTROL_TOOLS = {
+    "agent",
+    "skill",
+    "task_archive",
+    "task_assign_next",
+    "task_block",
+    "task_claim",
+    "task_create",
+    "task_delete",
+    "task_get",
+    "task_list",
+    "task_release",
+    "task_unarchive",
+    "task_unblock",
+    "task_update",
+    "job_get",
+    "job_list",
+    "job_stop",
+}
+CODING_SPECIALIZED_TOOLS = CODING_WORKSPACE_TOOLS | CODING_SHARED_GIT_TOOLS | CODING_SHARED_WORKSPACE_TOOLS
+CODING_PROFILE_TOOLS = (
+    CODING_SPECIALIZED_TOOLS
+    | CODING_WORKFLOW_CONTROL_TOOLS
+)
 CODING_SCENARIO_AGENTS = {"coding-planner", "reviewer", "verifier"}
 CODING_GENERIC_AGENTS = {"plan", "verification", "planner", "coordinator", "worker"}
 CODING_PROFILE_AGENTS = CODING_SCENARIO_AGENTS | CODING_GENERIC_AGENTS
@@ -69,7 +94,8 @@ CODING_GENERIC_SKILLS = {"verify", "debug", "stuck", "batch", "simplify"}
 CODING_PROFILE_SKILLS = CODING_SCENARIO_SKILLS | CODING_GENERIC_SKILLS
 CHAT_RETRIEVAL_TOOL_SET = set(CHAT_RETRIEVAL_TOOLS)
 CHAT_WEB_TOOL_SET = set(CHAT_WEB_TOOLS)
-CHAT_PROFILE_TOOLS = CHAT_RETRIEVAL_TOOL_SET | CHAT_WEB_TOOL_SET
+CHAT_WORKFLOW_CONTROL_TOOLS = {"ask_user"}
+CHAT_PROFILE_TOOLS = CHAT_RETRIEVAL_TOOL_SET | CHAT_WEB_TOOL_SET | CHAT_WORKFLOW_CONTROL_TOOLS
 CHAT_SCENARIO_AGENTS = set(CHAT_SCENARIO_AGENT_NAMES)
 CHAT_SCENARIO_SKILLS = set(CHAT_SCENARIO_SKILL_NAMES)
 CHAT_PROFILE_SKILLS = CHAT_SCENARIO_SKILLS | {"remember"}
@@ -78,7 +104,12 @@ LOCAL_ASSISTANT_BRIDGE_TOOL_SET = (
     | set(LOCAL_ASSISTANT_LOCAL_OS_TOOLS)
     | set(LOCAL_ASSISTANT_PIM_TOOLS)
 )
-LOCAL_ASSISTANT_PROFILE_TOOLS = CHAT_RETRIEVAL_TOOL_SET | LOCAL_ASSISTANT_BRIDGE_TOOL_SET
+LOCAL_ASSISTANT_WORKFLOW_CONTROL_TOOLS = {"ask_user", "skill"}
+LOCAL_ASSISTANT_PROFILE_TOOLS = (
+    CHAT_RETRIEVAL_TOOL_SET
+    | LOCAL_ASSISTANT_WORKFLOW_CONTROL_TOOLS
+    | LOCAL_ASSISTANT_BRIDGE_TOOL_SET
+)
 LOCAL_ASSISTANT_SCENARIO_AGENTS = set(LOCAL_ASSISTANT_SCENARIO_AGENT_NAMES)
 LOCAL_ASSISTANT_SCENARIO_SKILLS = set(LOCAL_ASSISTANT_SCENARIO_SKILL_NAMES)
 LOCAL_ASSISTANT_PROFILE_SKILLS = LOCAL_ASSISTANT_SCENARIO_SKILLS | {"remember"}
@@ -468,7 +499,7 @@ def test_local_assistant_reference_shared_bridge_packages_can_be_admitted_select
             CHAT_PROFILE_TOOLS,
             CHAT_SCENARIO_AGENTS,
             CHAT_PROFILE_SKILLS,
-            CODING_PROFILE_TOOLS,
+            CODING_SPECIALIZED_TOOLS,
             CODING_PROFILE_AGENTS,
             CODING_PROFILE_SKILLS,
         ),
@@ -477,7 +508,7 @@ def test_local_assistant_reference_shared_bridge_packages_can_be_admitted_select
             LOCAL_ASSISTANT_PROFILE_TOOLS,
             LOCAL_ASSISTANT_SCENARIO_AGENTS,
             LOCAL_ASSISTANT_PROFILE_SKILLS,
-            CODING_PROFILE_TOOLS,
+            CODING_SPECIALIZED_TOOLS,
             CODING_PROFILE_AGENTS,
             CODING_PROFILE_SKILLS,
         ),
@@ -563,7 +594,7 @@ def test_reference_scenario_pack_shapes_activate_through_existing_runtime_packag
     (
         (
             "weavert-scenario-coding",
-            CODING_SHARED_GIT_TOOLS | CODING_SHARED_WORKSPACE_TOOLS,
+            CODING_WORKFLOW_CONTROL_TOOLS | CODING_SHARED_GIT_TOOLS | CODING_SHARED_WORKSPACE_TOOLS,
             CODING_SCENARIO_AGENTS,
             CODING_SCENARIO_SKILLS,
             CODING_WORKSPACE_TOOLS,
@@ -734,6 +765,48 @@ def test_grounding_web_fetch_validation_rejects_non_public_hosts(url: str) -> No
     assert outcome.message == "Grounding fetch only supports public web hosts"
 
 
+def test_grounding_web_fetch_validation_rejects_hostnames_that_resolve_to_non_public_addresses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reference_chat_tool_impls._grounding_hostname_resolves_publicly.cache_clear()
+
+    def _fake_getaddrinfo(hostname: str, *_args, **_kwargs):
+        if hostname == "loopback-proxy.example":
+            return [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("127.0.0.1", 443))]
+        if hostname == "metadata-proxy.example":
+            return [
+                (
+                    socket.AF_INET,
+                    socket.SOCK_STREAM,
+                    socket.IPPROTO_TCP,
+                    "",
+                    ("169.254.169.254", 443),
+                )
+            ]
+        raise socket.gaierror(-2, "Name or service not known")
+
+    monkeypatch.setattr(reference_chat_tool_impls.socket, "getaddrinfo", _fake_getaddrinfo)
+
+    try:
+        for url in (
+            "https://loopback-proxy.example/",
+            "https://metadata-proxy.example/latest/meta-data/",
+        ):
+            outcome = validate_grounding_web_fetch(
+                {"url": url},
+                ToolContext(
+                    session_id="grounding-validation",
+                    turn_id="turn-1",
+                    agent_name="tester",
+                    cwd=Path.cwd(),
+                ),
+            )
+            assert outcome.valid is False
+            assert outcome.message == "Grounding fetch only supports public web hosts"
+    finally:
+        reference_chat_tool_impls._grounding_hostname_resolves_publicly.cache_clear()
+
+
 def test_grounded_chat_reference_stack_exercises_retrieval_web_and_memory_surfaces(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -741,7 +814,7 @@ def test_grounded_chat_reference_stack_exercises_retrieval_web_and_memory_surfac
     monkeypatch.setattr("weavert.reference_chat_tool_impls._grounding_urlopen", _grounding_urlopen)
 
     runtime, shape, runtime_root = _assemble_reference_runtime(tmp_path, "weavert-scenario-chat")
-    assert shape.expected_tools == CHAT_RETRIEVAL_TOOLS + CHAT_WEB_TOOLS
+    assert shape.expected_tools == CHAT_RETRIEVAL_TOOLS + CHAT_WEB_TOOLS + ("ask_user",)
     assert set(shape.workflow_agent_ids) == CHAT_SCENARIO_AGENTS
     assert set(shape.workflow_skill_ids) == CHAT_SCENARIO_SKILLS
 
@@ -886,7 +959,13 @@ def test_local_assistant_bridge_tools_keep_host_mediation_allowlists_and_audit_a
 ) -> None:
     runtime, shape, runtime_root = _assemble_reference_runtime(tmp_path, "weavert-scenario-local-assistant")
 
-    assert shape.expected_tools == CHAT_RETRIEVAL_TOOLS + LOCAL_ASSISTANT_BROWSER_TOOLS + LOCAL_ASSISTANT_LOCAL_OS_TOOLS + LOCAL_ASSISTANT_PIM_TOOLS
+    assert shape.expected_tools == (
+        CHAT_RETRIEVAL_TOOLS
+        + ("ask_user", "skill")
+        + LOCAL_ASSISTANT_BROWSER_TOOLS
+        + LOCAL_ASSISTANT_LOCAL_OS_TOOLS
+        + LOCAL_ASSISTANT_PIM_TOOLS
+    )
     assert set(shape.workflow_agent_ids) == LOCAL_ASSISTANT_SCENARIO_AGENTS
     assert set(shape.workflow_skill_ids) == LOCAL_ASSISTANT_SCENARIO_SKILLS
     assert LOCAL_ASSISTANT_PROFILE_TOOLS <= _tool_names(runtime)
@@ -983,6 +1062,39 @@ def test_local_assistant_bridge_tools_use_bound_host_facets_for_live_state_and_s
         "review_state": "pending",
         "target_url": "https://assistant.example.test/briefing",
     }
+
+
+def test_local_assistant_mapping_host_facets_only_satisfy_supported_read_only_operations(
+    tmp_path: Path,
+) -> None:
+    runtime, _shape, runtime_root = _assemble_reference_runtime(tmp_path, "weavert-scenario-local-assistant")
+    runtime.services.register_host_facet(
+        HostFacetBinding(
+            name=LOCAL_ASSISTANT_PIM_HOST_FACET,
+            facet={"events": [{"title": "Team sync"}]},
+            owner=PackageOwnership(
+                package_name="assistant-host",
+                package_role="host",
+                surface="host_facet",
+            ),
+        )
+    )
+
+    agenda_tool = runtime.kernel.tool_registry.get("pim_list_agenda")
+    agenda = asyncio.run(agenda_tool.execute({}, _tool_context(runtime, runtime_root)))
+    assert agenda["status"] == "available"
+    assert agenda["bound_host_facet"] is True
+    assert agenda["host_facet_operation_supported"] is True
+    assert agenda["bridge_state"] == {"events": [{"title": "Team sync"}]}
+
+    contacts_tool = runtime.kernel.tool_registry.get("pim_lookup_contacts")
+    contacts = asyncio.run(
+        contacts_tool.execute({"query": "Alice"}, _tool_context(runtime, runtime_root))
+    )
+    assert contacts["status"] == "host_bridge_required"
+    assert contacts["bound_host_facet"] is True
+    assert contacts["host_facet_operation_supported"] is False
+    assert "bridge_state" not in contacts
 
 
 def test_local_assistant_daily_brief_skill_fork_exposes_skill_tool_to_assistant_agents(

@@ -4,11 +4,13 @@ import asyncio
 import html
 import ipaddress
 import re
+import socket
 import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -410,10 +412,38 @@ def _grounding_url_validation_error(url: str) -> str | None:
     except ValueError:
         if "." not in hostname:
             return "Grounding fetch only supports public web hosts"
+        resolution_is_public = _grounding_hostname_resolves_publicly(hostname)
+        if resolution_is_public is False:
+            return "Grounding fetch only supports public web hosts"
         return None
     if not address.is_global:
         return "Grounding fetch only supports public web hosts"
     return None
+
+
+@lru_cache(maxsize=256)
+def _grounding_hostname_resolves_publicly(hostname: str) -> bool | None:
+    try:
+        resolutions = socket.getaddrinfo(
+            hostname,
+            None,
+            type=socket.SOCK_STREAM,
+            proto=socket.IPPROTO_TCP,
+        )
+    except OSError:
+        return None
+    saw_address = False
+    for _family, _kind, _proto, _canonname, sockaddr in resolutions:
+        if not sockaddr:
+            continue
+        try:
+            address = ipaddress.ip_address(str(sockaddr[0]).strip())
+        except ValueError:
+            continue
+        saw_address = True
+        if not address.is_global:
+            return False
+    return True if saw_address else None
 
 
 class _SafeGroundingRedirectHandler(urllib.request.HTTPRedirectHandler):

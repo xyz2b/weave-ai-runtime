@@ -99,6 +99,25 @@ CODING_SHARED_GIT_TOOLS = (
     "git_diff",
     "git_history",
 )
+CODING_WORKFLOW_CONTROL_TOOLS = (
+    "agent",
+    "skill",
+    "task_archive",
+    "task_assign_next",
+    "task_block",
+    "task_claim",
+    "task_create",
+    "task_delete",
+    "task_get",
+    "task_list",
+    "task_release",
+    "task_unarchive",
+    "task_unblock",
+    "task_update",
+    "job_get",
+    "job_list",
+    "job_stop",
+)
 CODING_SHARED_WORKSPACE_TOOLS = (
     "workspace_symbols",
     "workspace_references",
@@ -130,6 +149,11 @@ CODING_GENERIC_SKILLS = (
     "stuck",
     "batch",
     "simplify",
+)
+CHAT_WORKFLOW_CONTROL_TOOLS = ("ask_user",)
+LOCAL_ASSISTANT_WORKFLOW_CONTROL_TOOLS = (
+    "ask_user",
+    "skill",
 )
 
 
@@ -313,6 +337,7 @@ REFERENCE_SCENARIO_PACK_SHAPES: tuple[ReferenceScenarioPackShape, ...] = (
             "edit",
             "write",
             "bash",
+            *CODING_WORKFLOW_CONTROL_TOOLS,
             *CODING_SHARED_GIT_TOOLS,
             *CODING_SHARED_WORKSPACE_TOOLS,
         ),
@@ -359,7 +384,7 @@ REFERENCE_SCENARIO_PACK_SHAPES: tuple[ReferenceScenarioPackShape, ...] = (
             "weavert-shared-retrieval",
             "weavert-bridge-web",
         ),
-        expected_tools=(*CHAT_RETRIEVAL_TOOLS, *CHAT_WEB_TOOLS),
+        expected_tools=(*CHAT_RETRIEVAL_TOOLS, *CHAT_WEB_TOOLS, *CHAT_WORKFLOW_CONTROL_TOOLS),
         expected_agents=CHAT_SCENARIO_AGENTS,
         expected_skills=("remember", *CHAT_SCENARIO_SKILLS),
         default_boundaries=(
@@ -406,6 +431,7 @@ REFERENCE_SCENARIO_PACK_SHAPES: tuple[ReferenceScenarioPackShape, ...] = (
         ),
         expected_tools=(
             *CHAT_RETRIEVAL_TOOLS,
+            *LOCAL_ASSISTANT_WORKFLOW_CONTROL_TOOLS,
             *LOCAL_ASSISTANT_BROWSER_TOOLS,
             *LOCAL_ASSISTANT_LOCAL_OS_TOOLS,
             *LOCAL_ASSISTANT_PIM_TOOLS,

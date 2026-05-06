@@ -55,6 +55,13 @@ LOCAL_ASSISTANT_SCENARIO_SKILLS = (
 LOCAL_ASSISTANT_BROWSER_HOST_FACET = "weavert.local_assistant.bridge.browser"
 LOCAL_ASSISTANT_LOCAL_OS_HOST_FACET = "weavert.local_assistant.bridge.local_os"
 LOCAL_ASSISTANT_PIM_HOST_FACET = "weavert.local_assistant.bridge.pim"
+_WHOLE_FACET_MAPPING_ACTIONS = frozenset(
+    {
+        ("browser", "snapshot"),
+        ("local_os", "snapshot"),
+        ("pim", "agenda"),
+    }
+)
 
 
 def local_assistant_browser_bridge_builtin_tools() -> tuple[ToolDefinition, ...]:
@@ -793,7 +800,13 @@ async def _call_bound_host_bridge(
         return False, False, None
     facet = resolution.facet
     if not staged and isinstance(facet, Mapping):
-        return True, True, _snapshot_value(facet)
+        supported, payload = _mapping_bridge_payload(
+            facet,
+            bridge_family=bridge_family,
+            action=action,
+            tool_name=tool_name,
+        )
+        return True, supported, payload
     handler, generic = _resolve_host_bridge_handler(
         facet,
         tool_name=tool_name,
@@ -816,6 +829,26 @@ async def _call_bound_host_bridge(
     else:
         payload = await maybe_await(handler(request=request, context=context))
     return True, True, _snapshot_value(payload)
+
+
+def _mapping_bridge_payload(
+    facet: Mapping[str, Any],
+    *,
+    bridge_family: str,
+    action: str,
+    tool_name: str,
+) -> tuple[bool, Any | None]:
+    operations = facet.get("operations")
+    candidate_mappings = [facet]
+    if isinstance(operations, Mapping):
+        candidate_mappings.append(operations)
+    for mapping in candidate_mappings:
+        for key in (tool_name, action):
+            if key in mapping:
+                return True, _snapshot_value(mapping[key])
+    if (bridge_family, action) in _WHOLE_FACET_MAPPING_ACTIONS:
+        return True, _snapshot_value(facet)
+    return False, None
 
 
 def _resolve_host_bridge_handler(

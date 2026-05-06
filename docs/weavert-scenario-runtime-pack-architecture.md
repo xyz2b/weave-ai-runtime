@@ -189,6 +189,9 @@ expected profile tools / agents / skills
 
 - tools:
   - baseline first-party: `read`, `glob`, `grep`, `edit`, `write`, `bash`
+  - workflow control: `agent`, `skill`, `task_archive`, `task_assign_next`, `task_block`,
+    `task_claim`, `task_create`, `task_delete`, `task_get`, `task_list`, `task_release`,
+    `task_unarchive`, `task_unblock`, `task_update`, `job_get`, `job_list`, `job_stop`
   - shared git: `git_status`, `git_diff`, `git_history`
   - shared workspace intelligence: `workspace_symbols`, `workspace_references`, `workspace_outline`, `workspace_test_targets`
 - agents:
@@ -227,6 +230,7 @@ expected profile tools / agents / skills
 - tools:
   - shared retrieval: `retrieve_context`, `prepare_citations`
   - shared web grounding: `grounding_web_search`, `grounding_web_fetch`
+  - workflow control: `ask_user`
 - agents:
   - scenario-pack-owned workflow roles: `researcher`, `support-agent`, `memory-curator`
 - skills:
@@ -264,6 +268,7 @@ expected profile tools / agents / skills
 
 - tools:
   - shared retrieval: `retrieve_context`, `prepare_citations`
+  - workflow control: `ask_user`, `skill`
   - browser bridge: `browser_snapshot`, `browser_stage_navigation`, `browser_stage_interaction`
   - local OS bridge: `local_os_snapshot`, `local_os_stage_file_change`,
     `local_os_stage_process_launch`, `local_os_stage_notification`
