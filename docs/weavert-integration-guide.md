@@ -1490,7 +1490,7 @@ workflow authority 和 transport 现在也已经拆开：
   - 继续负责 envelope transport 与 correlation
   - raw workflow payload 默认不作为 transcript-visible API surface
 - protocol helper
-  - request / response schema 的构造、解析、summary 统一收口在 `packages/core/src/weavert/team_workflows.py`
+  - request / response schema 的构造、解析、summary 统一收口在 `packages/framework-core/src/weavert/team_workflows.py`
 
 ### 8.6 Leader Ingress Default
 

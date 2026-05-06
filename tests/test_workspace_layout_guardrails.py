@@ -21,7 +21,7 @@ def test_unknown_top_level_code_root_is_flagged() -> None:
     module = _load_module()
 
     visible = (
-        "packages/core/src/weavert/__init__.py",
+        "packages/framework-core/src/weavert/__init__.py",
         "docs/README.md",
         "rogue-addon/src/rogue_addon/__init__.py",
     )

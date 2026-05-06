@@ -60,7 +60,7 @@ def _run_python(venv_python: Path, script: str) -> subprocess.CompletedProcess[s
 
 def test_core_package_surface_stays_core_only_without_optional_packages_installed(tmp_path: Path) -> None:
     venv_python = _create_virtualenv(tmp_path)
-    _pip_install(venv_python, ROOT / "packages" / "core")
+    _pip_install(venv_python, ROOT / "packages" / "framework-core")
 
     completed = _run_python(
         venv_python,
@@ -143,7 +143,7 @@ def test_core_package_surface_stays_core_only_without_optional_packages_installe
 
 def test_toolchain_scripts_package_installs_editably_and_exposes_modules(tmp_path: Path) -> None:
     venv_python = _create_virtualenv(tmp_path)
-    _pip_install(venv_python, ROOT / "packages" / "core")
+    _pip_install(venv_python, ROOT / "packages" / "framework-core")
     _pip_install(venv_python, ROOT / "packages" / "toolchain" / "scripts")
 
     completed = _run_python(

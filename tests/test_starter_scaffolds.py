@@ -75,7 +75,7 @@ def test_generate_starter_scaffold_uses_canonical_layout_and_public_imports(tmp_
 
     readme = (result.destination / "README.md").read_text(encoding="utf-8")
     assert "python3 -m venv .venv" in readme
-    assert "python -m pip install -e /path/to/weave-ai-runtime/packages/core" in readme
+    assert "python -m pip install -e /path/to/weave-ai-runtime/packages/framework-core" in readme
     if shape != "live-smoke":
         assert "python -m pip install -e /path/to/weave-ai-runtime/packages/toolchain/testing" in readme
 
@@ -187,7 +187,7 @@ def test_generated_minimal_starter_runs_in_a_fresh_virtualenv_after_installing_l
 
     venv_python = virtualenv / "bin" / "python"
     install_runtime = subprocess.run(
-        [str(venv_python), "-m", "pip", "install", "-q", "-e", str(ROOT / "packages" / "core")],
+        [str(venv_python), "-m", "pip", "install", "-q", "-e", str(ROOT / "packages" / "framework-core")],
         cwd=tmp_path,
         check=False,
         capture_output=True,

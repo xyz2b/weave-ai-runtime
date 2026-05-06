@@ -20,7 +20,7 @@ addopts = "-q"
 
 [tool.weavert_workspace]
 concrete_package_roots = [
-  "packages/core",
+  "packages/framework-core",
   "packages/framework-packs/capabilities/memory",
   "packages/framework-packs/capabilities/team",
   "packages/framework-packs/mechanisms/compaction",

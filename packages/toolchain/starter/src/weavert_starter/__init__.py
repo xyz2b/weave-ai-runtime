@@ -755,7 +755,7 @@ def _minimal_readme(context: _TemplateContext) -> str:
 
         1. `python3 -m venv .venv`
         2. `source .venv/bin/activate`
-        3. `python -m pip install -e /path/to/weave-ai-runtime/packages/core`
+        3. `python -m pip install -e /path/to/weave-ai-runtime/packages/framework-core`
         4. `python -m pip install -e /path/to/weave-ai-runtime/packages/toolchain/testing`
         5. `python -m pip install -e .`
         6. `python app.py`
@@ -794,7 +794,7 @@ def _headless_readme(context: _TemplateContext) -> str:
 
         1. `python3 -m venv .venv`
         2. `source .venv/bin/activate`
-        3. `python -m pip install -e /path/to/weave-ai-runtime/packages/core`
+        3. `python -m pip install -e /path/to/weave-ai-runtime/packages/framework-core`
         4. `python -m pip install -e /path/to/weave-ai-runtime/packages/toolchain/testing`
         5. `python -m pip install -e .`
         6. `python workflow_runner.py`
@@ -838,7 +838,7 @@ def _live_readme(context: _TemplateContext) -> str:
 
         1. `python3 -m venv .venv`
         2. `source .venv/bin/activate`
-        3. `python -m pip install -e /path/to/weave-ai-runtime/packages/core`
+        3. `python -m pip install -e /path/to/weave-ai-runtime/packages/framework-core`
         4. `python -m pip install -e .`
         5. `export OPENAI_API_KEY=your-key`
         6. `python live_smoke.py`

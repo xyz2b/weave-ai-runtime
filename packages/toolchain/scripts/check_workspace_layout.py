@@ -7,9 +7,9 @@ from pathlib import Path, PurePosixPath
 
 ROOT = Path(__file__).resolve().parents[3]
 ROOT_PYPROJECT = ROOT / "pyproject.toml"
-CORE_PYPROJECT = ROOT / "packages" / "core" / "pyproject.toml"
+FRAMEWORK_CORE_PYPROJECT = ROOT / "packages" / "framework-core" / "pyproject.toml"
 STARTER_PYPROJECT = ROOT / "packages" / "toolchain" / "starter" / "pyproject.toml"
-CORE_PACKAGE = ROOT / "packages" / "core" / "src" / "weavert"
+FRAMEWORK_CORE_PACKAGE = ROOT / "packages" / "framework-core" / "src" / "weavert"
 FAMILY_INDEXES = (
     ROOT / "packages" / "framework-packs" / "README.md",
     ROOT / "packages" / "product-kits" / "README.md",
@@ -144,11 +144,11 @@ def main() -> int:
     errors: list[str] = []
 
     root_data = _load_toml(ROOT_PYPROJECT)
-    core_data = _load_toml(CORE_PYPROJECT)
+    framework_core_data = _load_toml(FRAMEWORK_CORE_PYPROJECT)
     starter_data = _load_toml(STARTER_PYPROJECT)
 
     root_project = root_data.get("project", {})
-    core_project = core_data.get("project", {})
+    framework_core_project = framework_core_data.get("project", {})
     starter_project = starter_data.get("project", {})
     workspace_meta = root_data.get("tool", {}).get("weavert_workspace", {})
 
@@ -156,15 +156,15 @@ def main() -> int:
         errors.append("root pyproject must identify the workspace coordinator")
     if root_project.get("scripts"):
         errors.append("root pyproject should not publish console entrypoints")
-    if core_project.get("name") != "weavert":
-        errors.append("packages/core must own the concrete weavert package metadata")
+    if framework_core_project.get("name") != "weavert":
+        errors.append("packages/framework-core must own the concrete weavert package metadata")
     if starter_project.get("name") != "weavert-starter":
         errors.append("packages/toolchain/starter must own the weavert-starter package metadata")
     if starter_project.get("scripts", {}).get("weavert-starter") != "weavert_starter:main":
         errors.append("packages/toolchain/starter must own the weavert-starter entrypoint")
 
     expected_concrete = [
-        "packages/core",
+        "packages/framework-core",
         "packages/framework-packs/capabilities/memory",
         "packages/framework-packs/capabilities/team",
         "packages/framework-packs/mechanisms/compaction",
@@ -195,8 +195,8 @@ def main() -> int:
     if workspace_meta.get("family_placeholder_roots") != expected_placeholders:
         errors.append("workspace metadata must only list packages/framework-packs as the family root")
 
-    if not CORE_PACKAGE.is_dir():
-        errors.append("packages/core/src/weavert is missing")
+    if not FRAMEWORK_CORE_PACKAGE.is_dir():
+        errors.append("packages/framework-core/src/weavert is missing")
     for package_root in expected_concrete:
         if not (ROOT / package_root).exists():
             errors.append(f"missing concrete package root: {package_root}")
@@ -228,7 +228,7 @@ def main() -> int:
 
     print("workspace layout: ok")
     print("root package role: coordinator")
-    print("core package role: runtime kernel metadata owner")
+    print("framework-core package role: runtime kernel metadata owner")
     print("toolchain starter entrypoint owner: packages/toolchain/starter")
     print("framework-pack family root: packages/framework-packs")
     print("support roots: docs, tests, examples, upstreams, .local")

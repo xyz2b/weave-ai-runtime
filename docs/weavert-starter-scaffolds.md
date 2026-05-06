@@ -86,7 +86,7 @@ weavert-starter generate minimal-project ./my-weavert-app --force
 - 一个对应 shape 的 runnable entrypoint
 
 生成出来的项目要求运行它的那个 Python 环境里已经安装了 `weavert`；offline starter 还要求 `weavert_testing`。
-如果你切到一个全新的 virtualenv，先把 `weavert` source checkout 的 `packages/core/` 装进去；如果是 `minimal-project` 或 `headless-workflow`，再把 `packages/toolchain/testing/` 装进去，最后再执行 scaffold 自己的 `pip install -e .`。
+如果你切到一个全新的 virtualenv，先把 `weavert` source checkout 的 `packages/framework-core/` 装进去；如果是 `minimal-project` 或 `headless-workflow`，再把 `packages/toolchain/testing/` 装进去，最后再执行 scaffold 自己的 `pip install -e .`。
 
 推荐顺序：
 

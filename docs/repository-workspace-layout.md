@@ -4,7 +4,7 @@ This repository now uses a workspace layout with multiple concrete package roots
 
 ## Canonical roots
 
-- `packages/core/`: concrete runtime package metadata and current `weavert` implementation code
+- `packages/framework-core/`: concrete runtime package metadata and current `weavert` implementation code
 - `packages/framework-packs/`: family root for concrete first-party add-on packs
 - `packages/product-kits/`: family root for concrete product-kit and common-kit packages
 - `packages/toolchain/`: family root for concrete developer tooling packages
@@ -19,14 +19,14 @@ This repository now uses a workspace layout with multiple concrete package roots
 The repository root `pyproject.toml` is a workspace coordinator only. Concrete packages own their own package-local metadata:
 
 - root `pyproject.toml`: workspace metadata, shared developer configuration, and family declarations
-- `packages/core/pyproject.toml`: the `weavert` runtime package metadata
+- `packages/framework-core/pyproject.toml`: the `weavert` runtime package metadata
 - each concrete package under `packages/framework-packs/` owns its own local metadata
 - `packages/toolchain/starter/pyproject.toml`: the `weavert-starter` CLI metadata
 - each concrete package under `packages/product-kits/` and `packages/toolchain/` owns its own local metadata
 
 ## Follow-on extraction rule
 
-Follow-on extraction changes MUST place code into the workspace families instead of restoring new non-core modules under `packages/core/src/weavert/`.
+Follow-on extraction changes MUST place code into the workspace families instead of restoring new non-core modules under `packages/framework-core/src/weavert/`.
 
 Use this checklist before landing an extraction change:
 

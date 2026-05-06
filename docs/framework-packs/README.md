@@ -1,6 +1,6 @@
 # Framework Packs
 
-First-party add-on packages now assemble from concrete framework-pack projects instead of relying on co-located implementation under `packages/core/src/weavert`.
+First-party add-on packages now assemble from concrete framework-pack projects instead of relying on co-located implementation under `packages/framework-core/src/weavert`.
 
 Role map:
 
