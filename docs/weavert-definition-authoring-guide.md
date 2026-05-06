@@ -11,7 +11,7 @@
 
 如果把 `docs/weavert-integration-guide.md` 看作“Runtime 怎么接进来”，那本文就是“能力怎么接进去”。
 
-如果你要先看可执行例子，先跑 `demos/README.md`。  
+如果你要先看可执行例子，先跑 `examples/README.md`。  
 那套 demo 负责给出 repo-root 可运行的最小工作流；本文负责说明 definition authoring contract。尤其在 hook 相关字段上，当前推荐 surface 仍然是 skill hooks 和 public hook registration API，agent frontmatter 的 `hooks` 默认不应当被当作普通 v1 扩展面。
 
 ## 1. 先说结论

@@ -26,7 +26,7 @@ Runtime 核心流转本身由框架收口，用户通常不应该改 `TurnEngine
 本文基于截至 `2026-04-27` 的仓库实现、`openspec/changes/archive/` 的演化轨迹，以及 `docs/current-system-architecture.md`、`docs/weavert-control-plane-extension-guide.md`、`docs/layered-memory-weavert-v2.md` 和对应 OpenSpec 规格中已经收敛的契约整理。
 
 如果你要新建一个自己的项目，先从 `docs/weavert-starter-scaffolds.md` 里的官方 starter scaffold 开始。  
-如果你想跑仓库自带的 validation path，再看 `demos/README.md`。  
+如果你想跑仓库自带的 validation path，再看 `examples/README.md`。  
 demo suite 负责验证端到端工作流；starter scaffold 才是普通接入方的推荐起点。  
 本文继续保留为装配语义、接入边界和运行时流转的规范说明。
 
@@ -332,7 +332,7 @@ from weavert.testing import (
     tool_call_batch,
 )
 
-FIXTURE_ROOT = Path("demos/projects/workspaces/coding_workflow")
+FIXTURE_ROOT = Path("examples/projects/workspaces/coding_workflow")
 
 client = ScriptedModelClient(
     [
@@ -365,7 +365,7 @@ asyncio.run(main())
 
 这层 surface 的目标不是替代 `pytest`，而是把 runtime 自己最常见的 workflow-level test glue 收敛成正式 API：
 
-- 不再要求用户复制 `demos/_shared/*`
+- 不再要求用户复制 `examples/_shared/*`
 - 不再要求用户自己拼 temporary workspace + `.weavert/` discovery
 - 不再要求用户自己写 `assemble_runtime(...) + run_prompt_report(...) + transcript scraping` glue
 - harness 返回的 `WorkflowTestReport` 直接包裹 canonical `WorkflowRunReport`，所以 shared lifecycle 语义不会和普通 headless run 漂移
@@ -1479,7 +1479,7 @@ workflow authority 和 transport 现在也已经拆开：
   - 继续负责 envelope transport 与 correlation
   - raw workflow payload 默认不作为 transcript-visible API surface
 - protocol helper
-  - request / response schema 的构造、解析、summary 统一收口在 `src/weavert/team_workflows.py`
+  - request / response schema 的构造、解析、summary 统一收口在 `packages/core/src/weavert/team_workflows.py`
 
 ### 8.6 Leader Ingress Default
 
@@ -1551,7 +1551,7 @@ leader 接收 teammate collaboration message 时，默认策略是：
 3. 用同一 working directory 和同一持久化 surface 重新 assemble 一份新的 runtime
 4. 用相同 `session_id` 创建 session，并显式调用 `resume()`
 
-省掉其中任一步，都不应把结果解读成 durable-resume contract 已经成立。要看 repo-owned proof，可直接跑 `python3 -B -m demos.runtime.durable_resume_demo`。
+省掉其中任一步，都不应把结果解读成 durable-resume contract 已经成立。要看 repo-owned proof，可直接跑 `python3 -B -m examples.runtime.durable_resume_demo`。
 
 如果你的产品需要比当前 distribution 更强或不同的持久化 contract，再显式接自己的
 `TranscriptStore` / `ChildRunStore` / 相关 store。

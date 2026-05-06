@@ -3,21 +3,30 @@ requires = ["setuptools>=69", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "weavert"
+name = "weavert-workspace"
 version = "0.1.0"
-description = "A Python runtime kernel for configurable agents, tools, and skills."
+description = "Workspace aggregator for WeaveRT packages and repository-level tooling."
 requires-python = ">=3.11"
-dependencies = ["PyYAML>=6.0"]
-
-[project.scripts]
-weavert-starter = "weavert.starter_scaffolds:main"
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
 
-[tool.setuptools.packages.find]
-where = ["src"]
+[tool.setuptools]
+py-modules = []
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+
+[tool.weavert_workspace]
+concrete_package_roots = ["packages/core"]
+family_placeholder_roots = [
+  "packages/framework-packs",
+  "packages/product-kits",
+  "packages/toolchain",
+]
+docs_root = "docs"
+tests_root = "tests"
+examples_root = "examples"
+upstreams_root = "upstreams"
+local_state_root = ".local"

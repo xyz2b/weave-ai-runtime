@@ -1,6 +1,6 @@
 # Demo Validation Findings
 
-This ledger keeps the current follow-up items exposed while authoring the user-centric runtime demos.
+This ledger keeps the current follow-up items exposed while authoring the user-centric runtime examples.
 It is repo-owned validation evidence, not an implied roadmap commitment.
 
 ## Entry template
@@ -72,7 +72,7 @@ It is repo-owned validation evidence, not an implied roadmap commitment.
 ### durable_resume_demo
 
 - demo: `durable_resume_demo`
-- observed issue: Durable resume works on the full distribution, but the minimum proof still requires a re-assembly plus explicit `resume()` call that is more procedural than the lighter-weight demos.
+- observed issue: Durable resume works on the full distribution, but the minimum proof still requires a re-assembly plus explicit `resume()` call that is more procedural than the lighter-weight examples.
 - user impact: Adopters can validate persistence, yet they may not immediately understand which distribution and resume steps are required for the guarantee they want.
 - suggested follow-up area: Durable-session docs and preset guidance for persistence expectations.
 - status: documented

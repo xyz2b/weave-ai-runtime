@@ -94,7 +94,7 @@ runtime = assemble_runtime(
 
 如果你想看一个完整 app wiring，可以直接参考：
 
-- `demos/apps/code_assistant/app.py`
+- `examples/apps/code_assistant/app.py`
 
 ## 4. Recipe B: AI chat
 
@@ -299,4 +299,4 @@ coding_capability = runtime.services.require_capability(
 - 想看 package-surface contract / authoring 约定
   - `docs/weavert-user-extension-guide.md`
 - 想看 coding 场景完整 app 示例
-  - `demos/apps/code_assistant/app.py`
+  - `examples/apps/code_assistant/app.py`

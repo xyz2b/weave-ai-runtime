@@ -49,12 +49,12 @@
 
 | Demo 层级 | 代表 demo | 主要验证的 runtime 能力 | 结论 |
 | --- | --- | --- | --- |
-| Seam basics | `demos.tools.file_backed_tool_demo`、`demos.agents.file_backed_agent_demo`、`demos.skills.file_backed_skill_demo` | `.weavert/` discovery、definition 装配、单个 tool/agent/skill 执行 | 成立 |
-| Hook demos | `demos.hooks.session_register_hook_demo`、`demos.hooks.runtime_config_hook_demo`、`demos.skills.inline_skill_hook_demo` | public hook registration、skill hooks、runtime-default hooks | 成立 |
-| Package demos | `demos.packages.provider_only_package_demo`、`demos.packages.general_package_demo`、`demos.packages.package_activation_demo` | manifest admission、requested activation、capability binding、context contributor、invocation provider | 成立 |
-| Project demos | `demos.projects.release_workflow_demo`、`demos.projects.coding_workflow_demo` | 多个 public seams 的组合能力；ordinary extension path 是否足以完成真实 workflow | 成立 |
-| Workflow-level live smoke | `demos.projects.coding_workflow_demo --live` | 同一 workflow 是否能在不引入 host/builtin replacement 的前提下切到真实 provider，并在执行前做正式 preflight | 已成立 |
-| Advanced integration sample | `demos.apps.code_assistant` | host binding、durable state、approvals、builtin replacement、task/job integration | 成立，但属于 advanced path |
+| Seam basics | `examples.tools.file_backed_tool_demo`、`examples.agents.file_backed_agent_demo`、`examples.skills.file_backed_skill_demo` | `.weavert/` discovery、definition 装配、单个 tool/agent/skill 执行 | 成立 |
+| Hook demos | `examples.hooks.session_register_hook_demo`、`examples.hooks.runtime_config_hook_demo`、`examples.skills.inline_skill_hook_demo` | public hook registration、skill hooks、runtime-default hooks | 成立 |
+| Package demos | `examples.packages.provider_only_package_demo`、`examples.packages.general_package_demo`、`examples.packages.package_activation_demo` | manifest admission、requested activation、capability binding、context contributor、invocation provider | 成立 |
+| Project demos | `examples.projects.release_workflow_demo`、`examples.projects.coding_workflow_demo` | 多个 public seams 的组合能力；ordinary extension path 是否足以完成真实 workflow | 成立 |
+| Workflow-level live smoke | `examples.projects.coding_workflow_demo --live` | 同一 workflow 是否能在不引入 host/builtin replacement 的前提下切到真实 provider，并在执行前做正式 preflight | 已成立 |
+| Advanced integration sample | `examples.apps.code_assistant` | host binding、durable state、approvals、builtin replacement、task/job integration | 成立，但属于 advanced path |
 
 ## 2.2 已经被证明成立的 runtime 能力
 
@@ -142,7 +142,7 @@ package demo 证明了下面这些都不是概念：
 
 原文指出：
 
-- deterministic workflow validation 依赖 `demos/_shared/*`
+- deterministic workflow validation 依赖 `examples/_shared/*`
 - 用户要自己复制 scripted model、temp workspace、fixture runner
 
 当前状态：
@@ -155,7 +155,7 @@ package demo 证明了下面这些都不是概念：
 - `WorkflowTestReport` 直接包裹 canonical `WorkflowRunReport`
 
 因此，“如何测试一个 runtime workflow”已经从 demo 私有技巧变成了正式公共能力。  
-`demos/_shared/scripted_model.py` 目前更多只是兼容 re-export，而不是用户必须依赖的主路径。
+`examples/_shared/scripted_model.py` 目前更多只是兼容 re-export，而不是用户必须依赖的主路径。
 
 ### 3.2 更高层 session / workflow 生命周期 helper：基本补齐
 
@@ -299,7 +299,7 @@ package demo 证明了下面这些都不是概念：
 
 ### 4.2 仓库内部 demo/private wrapper 仍有清理空间
 
-仓库里仍保留少量 `demos/_shared/*` 包装层，例如：
+仓库里仍保留少量 `examples/_shared/*` 包装层，例如：
 
 - `run_async(...)`
 - `demo_workspace(...)`

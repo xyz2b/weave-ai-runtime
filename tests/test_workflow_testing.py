@@ -24,7 +24,7 @@ from weavert.testing import (
 from weavert.turn_engine import ModelRequest
 
 ROOT = Path(__file__).resolve().parents[1]
-CODING_FIXTURE = ROOT / "demos" / "projects" / "workspaces" / "coding_workflow"
+CODING_FIXTURE = ROOT / "examples" / "projects" / "workspaces" / "coding_workflow"
 VERIFICATION_COMMAND = "python3 -m unittest discover -s tests"
 
 

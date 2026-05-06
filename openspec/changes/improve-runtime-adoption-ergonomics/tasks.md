@@ -18,4 +18,4 @@
 
 - [x] 4.1 Add or update projection coverage in `tests/test_result_projections.py` so parent-visible and child-run-backed child summaries both preserve the new `scope_summary` contract.
 - [x] 4.2 Add or update assembly posture coverage in `tests/test_runtime_kernel.py` or a focused equivalent test module so preset provenance, posture snapshots, and missing-environment preflight failure are asserted together.
-- [x] 4.3 Update `tests/test_runtime_extension_demos.py` and re-run the affected demo/test paths, including `demos.agents.scoped_agent_delegation_demo`, `demos.runtime.assembly_diagnostics_demo`, `tests/test_result_projections.py`, and the new assembly posture coverage path.
+- [x] 4.3 Update `tests/test_runtime_extension_examples.py` and re-run the affected demo/test paths, including `examples.agents.scoped_agent_delegation_demo`, `examples.runtime.assembly_diagnostics_demo`, `tests/test_result_projections.py`, and the new assembly posture coverage path.

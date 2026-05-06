@@ -15,7 +15,7 @@ from weavert import (
 from weavert.starter_scaffolds import main as starter_main
 
 ROOT = Path(__file__).resolve().parents[1]
-SRC = ROOT / "src"
+SRC = ROOT / "packages" / "core" / "src"
 PYTHON = sys.executable
 
 
@@ -79,12 +79,14 @@ def test_generate_starter_scaffold_uses_canonical_layout_and_public_imports(tmp_
 
     readme = (result.destination / "README.md").read_text(encoding="utf-8")
     assert "python3 -m venv .venv" in readme
-    assert "python -m pip install -e /path/to/weave-ai-runtime" in readme
+    assert "python -m pip install -e /path/to/weave-ai-runtime/packages/core" in readme
 
     python_files = sorted(result.destination.rglob("*.py"))
     assert python_files
     for source_file in python_files:
         contents = source_file.read_text(encoding="utf-8")
+        assert "examples." not in contents
+        assert "examples/" not in contents
         assert "demos." not in contents
         assert "demos/" not in contents
         assert "from weavert" in contents
@@ -187,7 +189,7 @@ def test_generated_minimal_starter_runs_in_a_fresh_virtualenv_after_installing_l
 
     venv_python = virtualenv / "bin" / "python"
     install_runtime = subprocess.run(
-        [str(venv_python), "-m", "pip", "install", "-q", "-e", str(ROOT)],
+        [str(venv_python), "-m", "pip", "install", "-q", "-e", str(ROOT / "packages" / "core")],
         cwd=tmp_path,
         check=False,
         capture_output=True,

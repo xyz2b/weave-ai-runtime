@@ -1114,7 +1114,7 @@ def test_runtime_core_preserves_task_and_job_primitives_without_planning_package
 def test_runtime_core_import_surface_does_not_eagerly_load_reference_hosts(tmp_path: Path) -> None:
     repo_root = Path(__file__).resolve().parents[1]
     env = dict(os.environ)
-    env["PYTHONPATH"] = str(repo_root / "src")
+    env["PYTHONPATH"] = str(repo_root / "packages" / "core" / "src")
     result = subprocess.run(
         [
             sys.executable,

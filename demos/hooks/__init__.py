@@ -1,1 +1,0 @@
-"""Stable hook surface demos."""

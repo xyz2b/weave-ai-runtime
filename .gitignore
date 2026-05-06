@@ -1,7 +1,16 @@
 # Project-specific exclusions
 /cc-src/
+/.local/*
+!/.local/README.md
+!/.local/examples/
+/.local/examples/*
+!/.local/examples/code_assistant/
+/.local/examples/code_assistant/*
+!/.local/examples/code_assistant/.gitignore
 /.runtime/
 /.weavert/
+/tmp/
+/tmp-*/
 /.codex/
 /openspec/
 /docs/cc/
@@ -47,8 +56,6 @@ dist/
 build/
 *.egg-info/
 out/
-tmp/
-tmp-*/
 temp/
 .cache/
 coverage/

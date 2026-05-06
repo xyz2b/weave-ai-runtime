@@ -7,20 +7,20 @@ from pathlib import Path
 
 import pytest
 
-import demos.projects.coding_workflow_demo as coding_workflow_demo
-from demos._shared.common import run_async
-from demos.projects.coding_workflow_demo import run_demo as run_coding_workflow_demo
+import examples.projects.coding_workflow_demo as coding_workflow_demo
+from examples._shared.common import run_async
+from examples.projects.coding_workflow_demo import run_demo as run_coding_workflow_demo
 from weavert.contracts import MessageRole, RuntimeMessage, TextBlock, ToolResultBlock, ToolUseBlock
 
 ROOT = Path(__file__).resolve().parents[1]
-README = ROOT / "demos" / "README.md"
+README = ROOT / "examples" / "README.md"
 GUIDE = ROOT / "docs" / "weavert-user-extension-guide.md"
 FINDINGS_LEDGER = ROOT / "docs" / "weavert-demo-validation-findings.md"
 PYTHON = sys.executable
 
 DEMO_CASES = (
     (
-        "demos.tools.file_backed_tool_demo",
+        "examples.tools.file_backed_tool_demo",
         (
             "demo: file-backed tool",
             "available tools: report_status",
@@ -28,7 +28,7 @@ DEMO_CASES = (
         ),
     ),
     (
-        "demos.agents.file_backed_agent_demo",
+        "examples.agents.file_backed_agent_demo",
         (
             "demo: file-backed agent",
             "agent: release-reviewer",
@@ -36,7 +36,7 @@ DEMO_CASES = (
         ),
     ),
     (
-        "demos.skills.file_backed_skill_demo",
+        "examples.skills.file_backed_skill_demo",
         (
             "demo: file-backed skill",
             "mode: fork",
@@ -44,7 +44,7 @@ DEMO_CASES = (
         ),
     ),
     (
-        "demos.tools.guarded_tool_demo",
+        "examples.tools.guarded_tool_demo",
         (
             "demo: guarded tool",
             "schema validation: rejected invalid input",
@@ -55,7 +55,7 @@ DEMO_CASES = (
         ),
     ),
     (
-        "demos.agents.scoped_agent_delegation_demo",
+        "examples.agents.scoped_agent_delegation_demo",
         (
             "demo: scoped agent delegation",
             "visible tools: collect_scope",
@@ -66,7 +66,7 @@ DEMO_CASES = (
         ),
     ),
     (
-        "demos.skills.inline_vs_fork_skill_demo",
+        "examples.skills.inline_vs_fork_skill_demo",
         (
             "demo: inline vs fork skill",
             "inline result: inline note for demo-user",
@@ -75,7 +75,7 @@ DEMO_CASES = (
         ),
     ),
     (
-        "demos.skills.inline_skill_hook_demo",
+        "examples.skills.inline_skill_hook_demo",
         (
             "demo: inline skill hooks",
             "first turn result: rewritten",
@@ -84,7 +84,7 @@ DEMO_CASES = (
         ),
     ),
     (
-        "demos.hooks.session_register_hook_demo",
+        "examples.hooks.session_register_hook_demo",
         (
             "demo: session.hooks.on_pre_tool_use",
             "hook activation: active",
@@ -92,7 +92,7 @@ DEMO_CASES = (
         ),
     ),
     (
-        "demos.hooks.runtime_config_hook_demo",
+        "examples.hooks.runtime_config_hook_demo",
         (
             "demo: RuntimeConfig(hooks=...)",
             "hook source: runtime_config",
@@ -102,7 +102,7 @@ DEMO_CASES = (
         ),
     ),
     (
-        "demos.hooks.host_registered_hook_demo",
+        "examples.hooks.host_registered_hook_demo",
         (
             "demo: bound.hooks.on_pre_tool_use",
             "hook source: host",
@@ -112,7 +112,7 @@ DEMO_CASES = (
         ),
     ),
     (
-        "demos.packages.provider_only_package_demo",
+        "examples.packages.provider_only_package_demo",
         (
             "demo: provider-only package",
             "visible invocations: package-release-check",
@@ -120,7 +120,7 @@ DEMO_CASES = (
         ),
     ),
     (
-        "demos.packages.package_activation_demo",
+        "examples.packages.package_activation_demo",
         (
             "demo: package activation",
             "inactive visible invocations: none",
@@ -129,7 +129,7 @@ DEMO_CASES = (
         ),
     ),
     (
-        "demos.packages.general_package_demo",
+        "examples.packages.general_package_demo",
         (
             "demo: general RuntimePackageManifest",
             "package context: release-freeze is active",
@@ -137,7 +137,7 @@ DEMO_CASES = (
         ),
     ),
     (
-        "demos.projects.release_workflow_demo",
+        "examples.projects.release_workflow_demo",
         (
             "demo: release workflow",
             "workspace: release-fixture",
@@ -150,7 +150,7 @@ DEMO_CASES = (
         ),
     ),
     (
-        "demos.projects.coding_workflow_demo",
+        "examples.projects.coding_workflow_demo",
         (
             "demo: coding workflow",
             "workspace: coding-workflow-fixture",
@@ -163,7 +163,7 @@ DEMO_CASES = (
         ),
     ),
     (
-        "demos.hosts.minimal_host_bound_demo",
+        "examples.hosts.minimal_host_bound_demo",
         (
             "demo: minimal host-bound",
             "host lifecycle: startup, ready, shutdown",
@@ -172,7 +172,7 @@ DEMO_CASES = (
         ),
     ),
     (
-        "demos.runtime.stream_report_session_demo",
+        "examples.runtime.stream_report_session_demo",
         (
             "demo: stream/report session",
             "helper-owned report: completed",
@@ -181,7 +181,7 @@ DEMO_CASES = (
         ),
     ),
     (
-        "demos.runtime.assembly_diagnostics_demo",
+        "examples.runtime.assembly_diagnostics_demo",
         (
             "demo: assembly diagnostics",
             "posture helper: session.query_assembly_posture()",
@@ -192,7 +192,7 @@ DEMO_CASES = (
         ),
     ),
     (
-        "demos.runtime.durable_resume_demo",
+        "examples.runtime.durable_resume_demo",
         (
             "demo: durable resume",
             "turn one persisted: true",
@@ -204,7 +204,7 @@ DEMO_CASES = (
 
 README_USER_CENTRIC_SNIPPETS = (
     (
-        "demos.tools.guarded_tool_demo",
+        "examples.tools.guarded_tool_demo",
         "How do I validate custom input guards, schema errors, permission denial, and a successful guarded tool path before I wire the tool into a larger workflow?",
         (
             "demo: guarded tool",
@@ -217,7 +217,7 @@ README_USER_CENTRIC_SNIPPETS = (
         "It isolates the tool contract before the same behavior is hidden inside a multi-step agent loop.",
     ),
     (
-        "demos.agents.scoped_agent_delegation_demo",
+        "examples.agents.scoped_agent_delegation_demo",
         "What actually changes when I delegate to a child agent with a narrower tool pool?",
         (
             "demo: scoped agent delegation",
@@ -231,7 +231,7 @@ README_USER_CENTRIC_SNIPPETS = (
         "It proves the request-time tool narrowing and the parent-visible `scope_summary` for tool/skill/permission/memory/isolation posture before delegation is mixed into a project workflow.",
     ),
     (
-        "demos.skills.inline_vs_fork_skill_demo",
+        "examples.skills.inline_vs_fork_skill_demo",
         "When should I keep a skill inline versus forking it to a child agent?",
         (
             "demo: inline vs fork skill",
@@ -242,7 +242,7 @@ README_USER_CENTRIC_SNIPPETS = (
         "It makes the execution-mode tradeoff visible before skills become one step in a larger composition.",
     ),
     (
-        "demos.hooks.host_registered_hook_demo",
+        "examples.hooks.host_registered_hook_demo",
         "How do I attach a hook from host-owned integration code through the layered registrar, confirm that it materialized as an active session hook, and prove that it actually fired?",
         (
             "demo: bound.hooks.on_pre_tool_use",
@@ -254,7 +254,7 @@ README_USER_CENTRIC_SNIPPETS = (
         "It keeps host-owned hook attachment smaller than a full product shell, while showing the canonical bound-host in-session report path.",
     ),
     (
-        "demos.hosts.minimal_host_bound_demo",
+        "examples.hosts.minimal_host_bound_demo",
         "What is the smallest stable `RuntimeAssembly.bind_host()` path that still shows lifecycle and turn events?",
         (
             "demo: minimal host-bound",
@@ -265,7 +265,7 @@ README_USER_CENTRIC_SNIPPETS = (
         "It proves the host seam without immediately pulling in approvals, durable state, or builtin replacement.",
     ),
     (
-        "demos.runtime.stream_report_session_demo",
+        "examples.runtime.stream_report_session_demo",
         "Which helper owns the session, and how do I prove a caller-owned session remains reusable?",
         (
             "demo: stream/report session",
@@ -276,7 +276,7 @@ README_USER_CENTRIC_SNIPPETS = (
         "It answers helper-lifecycle questions directly instead of burying them in workflow orchestration.",
     ),
     (
-        "demos.runtime.assembly_diagnostics_demo",
+        "examples.runtime.assembly_diagnostics_demo",
         "How do I inspect assembly posture, visible invocations, and a predictable model-route failure through one official helper without product UX?",
         (
             "demo: assembly diagnostics",
@@ -289,7 +289,7 @@ README_USER_CENTRIC_SNIPPETS = (
         "It keeps assembly and route diagnostics below host binding and app-specific presentation, while using the same consolidated posture helper that docs and tests can assert directly.",
     ),
     (
-        "demos.runtime.durable_resume_demo",
+        "examples.runtime.durable_resume_demo",
         "What does the minimum durable transcript and resume proof look like before I build custom product UX around it?",
         (
             "demo: durable resume",
@@ -488,7 +488,7 @@ def test_coding_workflow_demo_live_cli_documents_the_same_boundary_without_netwo
         env.pop(name, None)
 
     completed = subprocess.run(
-        [PYTHON, "-B", "-m", "demos.projects.coding_workflow_demo", "--live"],
+        [PYTHON, "-B", "-m", "examples.projects.coding_workflow_demo", "--live"],
         cwd=ROOT,
         env=env,
         capture_output=True,
@@ -513,6 +513,6 @@ def test_runtime_extension_readme_lists_layered_validation_story() -> None:
     assert "ordinary extension path" in readme
     assert "workflow-level live smoke fail" in readme
     assert "advanced integration sample" in readme
-    assert "python3 -B -m demos.projects.coding_workflow_demo" in readme
-    assert "python3 -B -m demos.projects.coding_workflow_demo --live" in readme
-    assert "python3 -B -m demos.apps.code_assistant shell" in readme
+    assert "python3 -B -m examples.projects.coding_workflow_demo" in readme
+    assert "python3 -B -m examples.projects.coding_workflow_demo --live" in readme
+    assert "python3 -B -m examples.apps.code_assistant shell" in readme

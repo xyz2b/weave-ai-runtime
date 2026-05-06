@@ -10,8 +10,8 @@ from pathlib import Path
 import pytest
 
 from weavert.testing import ScriptedModelClient, extract_tool_result, text_batch, tool_call_batch
-import demos.apps.code_assistant.__main__ as code_assistant_main
-from demos.apps.code_assistant.app import (
+import examples.apps.code_assistant.__main__ as code_assistant_main
+from examples.apps.code_assistant.app import (
     CODE_ASSISTANT_STATE_ROOT_ENV,
     _inspection_outcome,
     _print_task_list,
@@ -26,8 +26,8 @@ from demos.apps.code_assistant.app import (
     run_demo,
     shell_demo,
 )
-from demos.apps.code_assistant.builtin_overrides import _classify_command
-from demos.apps.code_assistant.host import ApprovalRecord
+from examples.apps.code_assistant.builtin_overrides import _classify_command
+from examples.apps.code_assistant.host import ApprovalRecord
 from weavert.agent_execution import AgentRunRecord, AgentRunStatus, SpawnMode
 from weavert.openai_client import OPENAI_ROUTE_NAME
 from weavert.contracts import MessageRole, RuntimeMessage, ToolResultBlock
@@ -84,7 +84,7 @@ def _run_code_assistant_cli(
     input_text: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        [PYTHON, "-B", "-m", "demos.apps.code_assistant", *args],
+        [PYTHON, "-B", "-m", "examples.apps.code_assistant", *args],
         cwd=ROOT,
         env=env,
         input=input_text,
