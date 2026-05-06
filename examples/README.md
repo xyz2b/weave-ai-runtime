@@ -143,6 +143,7 @@ It still stays below custom host binding and builtin replacement.
 If you only want the lower-level provider smoke instead of the workflow-level live smoke above, use the bundled live OpenAI path below.
 This validates the Responses transport layer, not the coding-workflow fixture itself.
 The snippet starts from the official `for_headless_live(...)` preset so the live route choice is explicit before assembly.
+Because the inline snippet does not run through an example-module bootstrap, it adds `packages/core/src/` to `sys.path` explicitly.
 
 Minimal live check from the repo root:
 
@@ -151,11 +152,15 @@ export OPENAI_API_KEY=your-key
 export OPENAI_MODEL=gpt-4.1-mini
 python3 - <<'PY'
 import asyncio
+import sys
 from pathlib import Path
+
+project_root = Path.cwd()
+sys.path.insert(0, str(project_root / "packages" / "core" / "src"))
 
 from weavert.runtime_kernel import RuntimeConfig, assemble_runtime
 
-runtime = assemble_runtime(RuntimeConfig.for_headless_live(Path.cwd()))
+runtime = assemble_runtime(RuntimeConfig.for_headless_live(project_root))
 preflight = asyncio.run(runtime.preflight_default_model_route())
 if not preflight.ready:
     raise SystemExit(preflight.to_dict())
@@ -205,4 +210,4 @@ python3 -B -m examples.apps.code_assistant run --auto-approve
 
 That `run --auto-approve` smoke keeps the main `code-assistant` shell agent and `bash` replacement app-owned, while pulling `coding-planner` / `reviewer` / `verifier` plus the core coding-loop skills from the official coding scenario pack. It treats missing planning, inspection, verification, or review coverage as blocking `workflow gaps`, while surfacing planner degradation that still left a usable shared plan as non-blocking `workflow advisories`.
 
-If you want an automated check that these commands still work, run `pytest tests/test_runtime_extension_examples.py`.
+If you want an automated check that these commands still work, run `pytest tests/test_runtime_extension_demos.py`.

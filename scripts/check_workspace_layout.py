@@ -4,7 +4,7 @@ from __future__ import annotations
 import subprocess
 import sys
 import tomllib
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 ROOT = Path(__file__).resolve().parents[1]
 ROOT_PYPROJECT = ROOT / "pyproject.toml"
@@ -22,6 +22,63 @@ SUPPORT_ROOTS = (
     ROOT / "upstreams",
     ROOT / ".local",
 )
+ALLOWED_TOP_LEVEL_DIRS = frozenset(
+    {
+        ".local",
+        "docs",
+        "examples",
+        "openspec",
+        "packages",
+        "scripts",
+        "tests",
+        "upstreams",
+    }
+)
+ALLOWED_TOP_LEVEL_FILES = frozenset(
+    {
+        ".gitignore",
+        "LICENSE",
+        "LICENSE.txt",
+        "LICENSE.md",
+        "pyproject.toml",
+        "README.md",
+        "uv.lock",
+    }
+)
+CODELIKE_EXTENSIONS = frozenset(
+    {
+        ".c",
+        ".cc",
+        ".cpp",
+        ".go",
+        ".h",
+        ".hpp",
+        ".java",
+        ".js",
+        ".jsx",
+        ".kt",
+        ".mjs",
+        ".py",
+        ".pyi",
+        ".rb",
+        ".rs",
+        ".sh",
+        ".swift",
+        ".ts",
+        ".tsx",
+    }
+)
+CODELIKE_FILENAMES = frozenset(
+    {
+        "Cargo.toml",
+        "go.mod",
+        "package.json",
+        "pyproject.toml",
+        "setup.cfg",
+        "setup.py",
+    }
+)
+SOURCE_LIKE_SEGMENTS = frozenset({"src", "lib", "bin"})
 
 
 def _load_toml(path: Path) -> dict[str, object]:
@@ -44,6 +101,43 @@ def _visible_paths() -> tuple[str, ...]:
         if (ROOT / normalized).exists():
             visible.append(normalized)
     return tuple(visible)
+
+
+def _is_code_like_filename(name: str) -> bool:
+    pure_name = PurePosixPath(name).name
+    if pure_name in CODELIKE_FILENAMES:
+        return True
+    return PurePosixPath(pure_name).suffix in CODELIKE_EXTENSIONS
+
+
+def _is_disallowed_top_level_code_path(path: str) -> bool:
+    parts = PurePosixPath(path).parts
+    if not parts:
+        return False
+
+    if len(parts) == 1:
+        name = parts[0]
+        if name in ALLOWED_TOP_LEVEL_FILES or name.startswith("."):
+            return False
+        return _is_code_like_filename(name)
+
+    top_level = parts[0]
+    if top_level in ALLOWED_TOP_LEVEL_DIRS:
+        return False
+
+    if any(segment in SOURCE_LIKE_SEGMENTS for segment in parts[1:-1]):
+        return True
+    return _is_code_like_filename(parts[-1])
+
+
+def _unexpected_top_level_code_roots(visible_paths: tuple[str, ...]) -> tuple[str, ...]:
+    unexpected: set[str] = set()
+    for path in visible_paths:
+        if not _is_disallowed_top_level_code_path(path):
+            continue
+        parts = PurePosixPath(path).parts
+        unexpected.add(parts[0] if len(parts) > 1 else path)
+    return tuple(sorted(unexpected))
 
 
 def main() -> int:
@@ -90,6 +184,12 @@ def main() -> int:
         errors.append("tracked implementation files must not remain under src/weavert/")
     if any(path.startswith("demos/") for path in visible):
         errors.append("tracked runnable examples must not remain under demos/")
+    unexpected_roots = _unexpected_top_level_code_roots(visible)
+    if unexpected_roots:
+        errors.append(
+            "tracked top-level add-on code must stay within the workspace or support roots; "
+            f"found: {', '.join(unexpected_roots)}"
+        )
 
     if errors:
         for error in errors:
@@ -101,6 +201,7 @@ def main() -> int:
     print("core package role: concrete package metadata owner")
     print("placeholder families: framework-packs, product-kits, toolchain")
     print("support roots: docs, tests, examples, upstreams, .local")
+    print("top-level code guardrail: ok")
     return 0
 
 
