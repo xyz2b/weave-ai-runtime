@@ -1,5 +1,6 @@
 # Project-specific exclusions
 /cc-src/
+# Keep only the shared .local skeleton under version control.
 /.local/*
 !/.local/README.md
 !/.local/examples/
@@ -15,7 +16,6 @@
 /openspec/
 /docs/cc/
 /.claude/
-/.local/
 
 # macOS / Windows
 .DS_Store
