@@ -15,6 +15,7 @@
 /openspec/
 /docs/cc/
 /.claude/
+/.local/
 
 # macOS / Windows
 .DS_Store
