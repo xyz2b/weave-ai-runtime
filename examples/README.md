@@ -1,5 +1,7 @@
 # Runtime Examples
 
+[English](README.md) | [简体中文](README.zh-CN.md)
+
 This page is the repository's examples index and validation path.
 Run every command from the repository root. The example modules bootstrap every workspace `packages/**/src/` root automatically, so they do not require an editable install.
 

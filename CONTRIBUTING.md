@@ -1,5 +1,7 @@
 # Contributing to WeaveRT
 
+[English](CONTRIBUTING.md) | [简体中文](CONTRIBUTING.zh-CN.md)
+
 Thanks for contributing.
 This repository is organized as a runtime framework workspace, so small, well-scoped changes are easier to review and safer to validate.
 

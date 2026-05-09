@@ -2,6 +2,8 @@
   <img src="docs/logo.png" alt="WeaveRT logo" width="160">
 </p>
 
+English | [简体中文](README.zh-CN.md)
+
 # WeaveRT
 
 Composable AI runtime framework for building agent systems with tools, agents, skills, hosts, memory, workflow packages, and scenario packs.

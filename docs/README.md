@@ -1,5 +1,7 @@
 # WeaveRT Documentation
 
+[English](README.md) | [简体中文](zh-CN/README.md)
+
 This page is the docs home after the root [README.md](../README.md).
 Treat the documentation as a layered journey, not one landing page plus a pile of long files.
 
