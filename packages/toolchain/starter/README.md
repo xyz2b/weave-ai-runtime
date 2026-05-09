@@ -2,4 +2,18 @@
 
 Canonical import root: `weavert_starter`
 
-This package owns the developer-facing starter scaffold catalog and the `weavert-starter` CLI entrypoint.
+## What this package owns
+
+- the developer-facing adoption-path starter scaffold catalog
+- the `weavert-starter` CLI entrypoint
+
+## Canonical names
+
+- install name: `weavert-starter`
+- import root: `weavert_starter`
+
+## See also
+
+- `../README.md`
+- `../../../docs/getting-started/starter-scaffolds.md`
+- `../../../docs/getting-started/quickstart.md`

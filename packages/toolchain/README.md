@@ -1,11 +1,27 @@
 # Toolchain
 
-Concrete developer-side toolchain packages now live under this family root.
+This family root indexes concrete developer-side toolchain packages.
 
-Available packages:
+## What this family owns
 
-- `starter/` -> canonical import root `weavert_starter`
-- `testing/` -> canonical import root `weavert_testing`
+- developer-side tooling that stays outside runtime package selection
+- the adoption-path starter generator, validation-path testing kit, and repository support scripts
+
+## Concrete packages
+
+- `starter/` -> canonical import root `weavert_starter`, owns the adoption-path starter generator
+- `testing/` -> canonical import root `weavert_testing`, owns the validation-path testing kit
 - `scripts/` -> repository support scripts
 
-These packages remain outside runtime package selection and are only reached through developer workflows, imports, or CLI entrypoints.
+## Ownership rule
+
+- These packages remain outside runtime package selection.
+- Reach them through developer workflows, imports, or CLI entrypoints rather than runtime package activation.
+
+## See also
+
+- `../README.md`
+- `starter/README.md`
+- `testing/README.md`
+- `../../docs/getting-started/starter-scaffolds.md`
+- `../../examples/README.md`

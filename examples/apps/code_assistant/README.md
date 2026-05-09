@@ -5,6 +5,20 @@ Run every command from the repository root.
 ## Positioning
 
 This app is the repository's advanced integration sample for AI coding, not the default getting-started path for ordinary framework users.
+Starter remains the adoption path. This app sits at the end of the validation path.
+
+## What this example proves
+
+- host-owned shell UX layered on top of the runtime
+- durable runtime state, approvals, and reactive workflow rendering
+- app-owned customization on top of the official coding scenario pack and shared coding packages
+
+## Use this when
+
+- the ordinary coding workflow demo already makes sense
+- you need host-owned UX, durable state, approvals, or builtin replacement behavior
+- you want to inspect an advanced sample without treating it as the default starter path
+
 If you want the layered validation path first, use this order:
 
 1. `examples/README.md` seam-basics and semantic demos
@@ -240,3 +254,14 @@ python3 -B -m examples.apps.code_assistant inspect
 - asynchronous job or task updates leave a readable prompt boundary in the interactive shell
 - `/tasks`, `/jobs`, and `/inspect` still work as fallback snapshot commands
 - summarize or exit while the ledger is still pending verification or pending review surfaces an advisory warning
+
+## See also
+
+- `../../README.md`
+- `../../projects/workspaces/coding_workflow/README.md`
+- `../../../docs/guides/use-scenario-packs.md`
+- `../../../packages/product-kits/coding/README.md`
+- `fixtures/mini_repo/README.md`
+- `../../../docs/guides/use-scenario-packs.md`
+- `../../../packages/product-kits/coding/README.md`
+- `fixtures/mini_repo/README.md`

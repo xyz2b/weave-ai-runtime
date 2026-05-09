@@ -14,8 +14,8 @@ from weavert.contracts import MessageRole, RuntimeMessage, TextBlock, ToolResult
 
 ROOT = Path(__file__).resolve().parents[1]
 README = ROOT / "examples" / "README.md"
-GUIDE = ROOT / "docs" / "weavert-user-extension-guide.md"
-FINDINGS_LEDGER = ROOT / "docs" / "weavert-demo-validation-findings.md"
+GUIDE = ROOT / "docs" / "deep-dives" / "weavert-user-extension-guide.md"
+FINDINGS_LEDGER = ROOT / "docs" / "maintainers" / "demo-validation-findings.md"
 PYTHON = sys.executable
 
 DEMO_CASES = (
@@ -353,7 +353,7 @@ def test_demo_docs_expose_user_centric_validation_and_findings_ledger() -> None:
     contents = README.read_text(encoding="utf-8")
 
     assert "## User-centric validation" in contents
-    assert "docs/weavert-demo-validation-findings.md" in contents
+    assert "docs/maintainers/demo-validation-findings.md" in contents
     for module_name, question, anchors, why in README_USER_CENTRIC_SNIPPETS:
         assert f"python3 -B -m {module_name}" in contents
         assert question in contents
@@ -366,7 +366,7 @@ def test_user_extension_guide_links_the_demo_findings_ledger() -> None:
     contents = GUIDE.read_text(encoding="utf-8")
 
     assert "user-centric validation layer" in contents
-    assert "docs/weavert-demo-validation-findings.md" in contents
+    assert "docs/maintainers/demo-validation-findings.md" in contents
 
 
 def test_demo_findings_ledger_tracks_each_user_centric_demo() -> None:

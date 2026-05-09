@@ -1,14 +1,27 @@
 # Runtime Examples
 
+This page is the repository's examples index and validation path.
 Run every command from the repository root. The example modules bootstrap every workspace `packages/**/src/` root automatically, so they do not require an editable install.
 
-The public offline workflow testing kit now lives under `weavert_testing`. The seam, skill, and project demos use that shared toolchain-owned surface so the default validation story stays deterministic and does not require external model credentials.
+The public offline workflow testing kit now lives under `weavert_testing`. The seam, skill, and project demos use that shared toolchain surface so the default validation path stays deterministic and does not require external model credentials.
 
-If you are starting a brand-new WeaveRT project, begin with the official starter scaffolds in `docs/weavert-starter-scaffolds.md`. The demos in this folder are the validation story, not the primary copy-paste adoption path.
+If you are starting a brand-new WeaveRT project, begin with the official starter scaffolds in `docs/getting-started/starter-scaffolds.md`. The demos in this folder are the validation path, not the primary adoption path.
+
+## What this page is for
+
+- choose the smallest useful validation step after the starter works
+- validate one runtime seam at a time before moving into broader workflows
+- find the repository's advanced integration samples only after the ordinary path is understood
+
+## Use this when
+
+- you already have a starter-generated or otherwise working runtime baseline
+- you want repo-owned validation evidence instead of a new-project scaffold
+- you need to prove one seam, workflow layer, or app-integration boundary with a runnable command
 
 ## Layered validation path
 
-This repository now presents the runnable demos as a layered framework-validation path instead of a flat catalog:
+This repository presents runnable demos as a layered validation path instead of a flat catalog:
 
 1. `Seam basics` validate one stable extension surface at a time.
 2. `User-centric validation` answers the adopter questions that usually come next: guarded tools, scoped delegation, host binding, report ownership, diagnostics, and durable resume.
@@ -24,18 +37,18 @@ Every demo entry below now carries two navigation cues:
 
 Recommended starting path:
 
-- If you are an ordinary framework user building a new project, generate a starter scaffold first, then come back here to validate the public seams.
+- If you are an ordinary framework user building a new project, generate a starter first, then come back here to validate the public seams.
 - If you want repo-owned validation after that, start with `Seam basics`, then move into `User-centric validation` so you can answer one adopter question at a time before composing a broader workflow.
 - If you want hook- or package-shaped contract changes after that, run the `Semantic demos`.
 - Then run `python3 -B -m examples.projects.coding_workflow_demo`.
 - If that offline coding workflow passes and you want provider-backed evidence for the same workflow, run `python3 -B -m examples.projects.coding_workflow_demo --live`.
 - If you need host-owned UX, durable runtime state, or builtin replacement, move on to the advanced integration sample under `examples/apps/code_assistant/`.
 
-Post-starter path, in one sentence:
+Post-starter path:
 
 1. Boot the generated starter entrypoint first.
 2. Use the user-centric demos to validate guarded tools, delegated scope, report ownership, and assembly posture on isolated seams.
-3. Only move to minimal host-bound or advanced app demos when you actually need host-owned UX, durable state, or builtin replacement.
+3. Only move to minimal host-binding or advanced app demos when you actually need host-owned UX, durable state, or builtin replacement.
 
 How to interpret failures across the layers:
 
@@ -72,7 +85,7 @@ If you want to exercise the live validation layers, set:
 
 ## User-centric validation
 
-These demos sit between seam basics and broader workflow samples. They answer focused adopter questions, keep each validation boundary narrow, and pair cleanly with the repo-owned findings ledger at `docs/weavert-demo-validation-findings.md`.
+These demos sit between seam basics and broader workflow samples. They answer focused adopter questions, keep each validation boundary narrow, and pair cleanly with the repo-owned findings ledger at `docs/maintainers/demo-validation-findings.md`. For the maintainer-facing validation index, see `docs/maintainers/validation-findings.md`.
 
 ### Focused seam questions
 
@@ -131,7 +144,7 @@ The offline demos in this folder now use the official `AllowAllPermissionService
 
 ## Workflow-level live smoke
 
-This layer reuses the same `examples.projects.coding_workflow_demo` task, fixture, and success criteria, but switches from the scripted helper to the bundled live provider route.
+This layer reuses the same `examples.projects.coding_workflow_demo` task, fixture, and success criteria, but swaps the scripted helper for the bundled live provider route.
 It still stays below custom host binding and builtin replacement.
 
 | Demo | Integration posture | Use this when | Run command | Expected output |
@@ -140,7 +153,7 @@ It still stays below custom host binding and builtin replacement.
 
 ## Lower-level bundled live OpenAI path
 
-If you only want the lower-level provider smoke instead of the workflow-level live smoke above, use the bundled live OpenAI path below.
+If you want a lower-level provider smoke instead of the workflow-level live smoke above, use the bundled live OpenAI path below.
 This validates the Responses transport layer, not the coding-workflow fixture itself.
 The snippet starts from the official `for_headless_live(...)` preset so the live route choice is explicit before assembly.
 Because the inline snippet does not run through an example-module bootstrap, it adds every workspace `packages/**/src/` root to `sys.path` explicitly.
@@ -222,3 +235,10 @@ The advanced sample keeps the split ownership model visible in all three validat
 The deterministic `run --deterministic --auto-approve` smoke keeps that same split stack and durable artifact layout while avoiding live credentials. Both `run` modes report stable package-manifest, tool-family, definition-owner, transcript, child-run, task-list, and workflow-ledger anchors. Missing planning, inspection, verification, or review coverage stays blocking as `workflow gaps`, while planner degradation that still leaves a usable shared plan remains a non-blocking `workflow advisories` entry.
 
 If you want an automated check that these commands still work, run `pytest tests/test_runtime_extension_demos.py`.
+
+## See also
+
+- `../docs/getting-started/starter-scaffolds.md`
+- `../docs/guides/testing-and-observability.md`
+- `../docs/maintainers/validation-findings.md`
+- `apps/code_assistant/README.md`

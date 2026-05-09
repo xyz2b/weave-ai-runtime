@@ -2,4 +2,19 @@
 
 Canonical import root: `weavert_kit_common_retrieval`
 
-This package owns the reusable retrieval and citation surfaces shared by the chat and local-assistant product kits.
+## What this package owns
+
+- reusable retrieval and citation surfaces
+- shared grounding tooling used by chat and local-assistant product-kit composition
+
+## Canonical names
+
+- install name: `weavert-kit-common-retrieval`
+- import root: `weavert_kit_common_retrieval`
+
+## See also
+
+- `../README.md`
+- `../../chat/README.md`
+- `../../local-assistant/README.md`
+- `../../../../docs/concepts/memory-model.md`
