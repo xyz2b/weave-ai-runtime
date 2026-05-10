@@ -28,7 +28,7 @@ If you want the layered validation path first, use this order:
 
 Move to this app when you specifically need host-owned UX, durable runtime state, approvals, or builtin replacement behavior.
 
-This app keeps the durable live-runtime path from the earlier demo, but combines an interactive `bash v2` surface, reactive runtime observability, and an app-owned workflow ledger on top of the same host, agent, tool, and skill composition:
+This app keeps the durable live-runtime path from the earlier demo, but combines a durable coding-shell `bash` surface, reactive runtime observability, and an app-owned workflow ledger on top of the same host, agent, tool, and skill composition:
 
 - `host`: shell loop, local commands, approvals, reactive job or task rendering, workflow warnings and advisories
 - `tool`: bundled coding tools plus the app-specific `bash v2` replacement
@@ -104,11 +104,13 @@ The shell keeps one runtime session alive across multiple prompts, reactively re
 - `/verify`
 - `/exit`
 
-The app-local `bash` replacement keeps the public tool name `bash`, but the V2 contract now supports:
+The app-local `bash` replacement keeps the public tool name `bash`, but the coding-shell contract now supports:
 
 - one-shot `exec` behavior for existing short commands
-- `start`, `send`, `read`, `interrupt`, and `stop` actions for longer-lived shell sessions
-- shared job visibility and structured shell-session metadata
+- broker-backed `start`, `send`, `read`, `interrupt`, and `stop` actions for longer-lived shell sessions
+- explicit `line_session` and `pty_session` profiles, with honest fallback when PTY mode is unavailable
+- shared job visibility plus durable shell sidecars under `.weavert/shell/`
+- structured command-policy, recovery-state, and `command_failed` result metadata
 - explicit unsupported outcomes for full-screen terminal UIs such as `vim`, `less`, or `top`
 
 ### Local-command smoke path
@@ -132,7 +134,7 @@ At the prompt, run:
 Success anchors for this local shell smoke are:
 
 - startup lines such as `code assistant shell`, `session: local-shell`, and `workspace: ...`
-- `/inspect` output that includes `current transcript: local-shell`, `current task list: session:local-shell`, and at least one `workflow:` snapshot line
+- `/inspect` output that includes `current transcript: local-shell`, `current task list: session:local-shell`, `shell sidecars:`, and at least one `workflow:` snapshot line
 - a final shell report with `transcript: ...`, `child run index: ...`, and `status: ok`
 
 ## Run modes
@@ -178,9 +180,10 @@ The `run` path succeeds when the workflow leaves a real planning outcome, inspec
 
 ## Approval behavior
 
-The host uses the ordinary permission path for `edit`, `write`, and `bash`.
+The host uses the ordinary permission path for `edit`, `write`, and `bash`, but the app-local shell policy now makes the approval summaries more explicit:
 
 - default mode: prompts on each write or shell action
+- opaque or not-confinable shell commands surface explicit policy outcomes instead of relying on blacklist-only blocking
 - `--auto-approve`: keeps the same runtime assembly and provider path, but pre-answers host approvals for harness-style runs
 
 ## Coding surfaces
@@ -191,13 +194,15 @@ The app reuses bundled runtime tools for the main coding loop:
 - `agent`, `skill`
 - `task_*`, `job_*`
 
-Only `bash` is replaced locally for this app. The V2 replacement keeps the public tool name `bash`, while adding:
+Only `bash` is replaced locally for this app. The coding-shell replacement keeps the public tool name `bash`, while adding:
 
-- command classification for coding-oriented shell work
-- workspace-aware guardrails and clearer high-risk summaries
+- wrapper-aware command policy for coding-oriented shell work such as `uv run`, `poetry run`, `npm run`, `pnpm run`, and `yarn run`
+- workspace-aware guardrails, explicit `blocked` or `not_confinable` outcomes, and clearer high-risk summaries
 - structured stdout or stderr previews
-- background or session-oriented job projection for longer-lived commands
-- line-oriented shell-session lifecycle support through `start`, `send`, `read`, `interrupt`, and `stop`
+- broker-backed background or session-oriented job projection for longer-lived commands
+- durable shell sidecars, recovery-state rendering, and sidecar-backed output previews
+- line-session and PTY-session lifecycle support through `start`, `send`, `read`, `interrupt`, and `stop`
+- non-zero one-shot failures reported as `command_failed` without collapsing the rest of the coding session
 
 ## Workflow ledger
 

@@ -1346,6 +1346,7 @@ def test_replacement_bash_returns_structured_results_and_background_jobs(tmp_pat
     foreground, background, jobs, stopped = asyncio.run(scenario())
 
     assert foreground["classification"] == "other"
+    assert foreground["command_policy"] == "requires_high_risk_approval"
     assert foreground["status"] == "completed"
     assert foreground["stdout"] == "hi"
     assert foreground["stdout_preview"] == "hi"
@@ -1354,6 +1355,9 @@ def test_replacement_bash_returns_structured_results_and_background_jobs(tmp_pat
     assert background["status"] == "running"
     assert background["job_id"] is not None
     assert background["background_reason"] == "requested"
+    assert background["session_profile"] == "background"
+    assert background["recovery_state"] == "attached"
+    assert background["sidecar_dir"]
 
     assert any(job["job_id"] == background["job_id"] for job in jobs)
     assert stopped["status"] == "stopped"
@@ -1428,18 +1432,21 @@ def test_replacement_bash_v2_session_lifecycle_and_unsupported_tui(tmp_path: Pat
 
     assert start["action"] == "start"
     assert start["session_mode"] == "session"
+    assert start["session_profile"] == "line_session"
     assert start["session_status"] == "running"
+    assert start["recovery_state"] == "attached"
+    assert start["sidecar_dir"]
     assert start["session_output_complete"] is False
     assert send["action"] == "send"
     assert "hello from session" in str(read["session_output"])
     assert read["shell_session_id"] == start["shell_session_id"]
-    assert stop_payload["status"] in {"stopped", "completed", "failed"}
+    assert stop_payload["status"] in {"stopped", "completed", "command_failed"}
     assert interrupt["action"] == "interrupt"
     assert interrupt["shell_session_id"] == interrupt_stop_payload["shell_session_id"]
-    assert interrupt_stop_payload["status"] in {"stopped", "completed", "failed"}
+    assert interrupt_stop_payload["status"] in {"stopped", "completed", "command_failed"}
     assert unsupported_payload["status"] == "unsupported"
     assert unsupported_payload["unsupported_shell"] is True
-    assert "line-oriented" in str(unsupported_payload["unsupported_reason"])
+    assert "intentionally unsupported" in str(unsupported_payload["unsupported_reason"])
     assert any(job["metadata"].get("shell_session_id") == start["shell_session_id"] for job in jobs)
 
 
@@ -1477,6 +1484,51 @@ def test_replacement_bash_session_stop_falls_back_to_kill_when_term_is_ignored(t
 
     assert stop_payload["status"] == "stopped"
     assert stop_payload["session_status"] == "stopped"
+
+
+def test_replacement_bash_interrupt_projects_as_stopped_job(tmp_path: Path) -> None:
+    layout = _layout(tmp_path)
+    reset_demo_state(layout=layout)
+    runtime = assemble_demo_runtime(layout=layout)
+    bash_tool = runtime.kernel.tool_registry.get("bash")
+    assert bash_tool is not None
+
+    context = ToolContext(
+        session_id="shell-test",
+        turn_id="turn-1",
+        agent_name="code-assistant",
+        cwd=layout.workspace_root,
+        tool_registry=runtime.kernel.tool_registry,
+        runtime_services=runtime.services,
+    )
+
+    async def scenario():
+        start = await bash_tool.execute(
+            {"action": "start", "command": "cat", "description": "Interruptible session"},
+            context,
+        )
+        shell_session_id = start["shell_session_id"]
+        await bash_tool.execute(
+            {"action": "interrupt", "shell_session_id": shell_session_id},
+            context,
+        )
+        await asyncio.sleep(0.2)
+        read = await bash_tool.execute(
+            {"action": "read", "shell_session_id": shell_session_id},
+            context,
+        )
+        jobs = await runtime.list_jobs(session_id="shell-test")
+        return read, jobs
+
+    read, jobs = asyncio.run(scenario())
+
+    assert read["status"] == "interrupted"
+    assert read["session_output_complete"] is True
+    assert "is interrupted" in read["output_summary"]
+    assert len(jobs) == 1
+    assert jobs[0]["status"] == "stopped"
+    assert jobs[0]["error"] is None
+    assert jobs[0]["result"]["status"] == "interrupted"
 
 
 def test_replacement_bash_background_stop_falls_back_to_kill_when_term_is_ignored(tmp_path: Path) -> None:
@@ -1555,16 +1607,237 @@ def test_replacement_bash_blocks_workspace_escapes(tmp_path: Path) -> None:
 
     assert absolute_payload["status"] == "blocked"
     assert "outside the workspace" in str(absolute_payload["stderr"])
-    assert inline_payload["status"] == "blocked"
+    assert inline_payload["status"] == "not_confinable"
+    assert inline_payload["command_policy"] == "not_confinable"
     assert "inline interpreter command" in str(inline_payload["stderr"])
     assert not outside_path.exists()
 
 
 def test_replacement_bash_classifies_common_test_commands() -> None:
     assert _classify_command("python3 -m pytest -q").name == "test"
+    assert _classify_command("uv run pytest -q").name == "test"
+    assert _classify_command("poetry run pytest -q").name == "test"
+    assert _classify_command("npm run build").name == "build"
+    assert _classify_command("pnpm run lint").name == "lint"
     assert _classify_command("make test").name == "test"
     assert _classify_command("cargo test").name == "test"
     assert _classify_command("go test ./...").name == "test"
+
+
+def test_replacement_bash_reports_command_failed_without_hiding_payload(tmp_path: Path) -> None:
+    layout = _layout(tmp_path)
+    reset_demo_state(layout=layout)
+    runtime = assemble_demo_runtime(layout=layout)
+    bash_tool = runtime.kernel.tool_registry.get("bash")
+    assert bash_tool is not None
+
+    context = ToolContext(
+        session_id="shell-test",
+        turn_id="turn-1",
+        agent_name="code-assistant",
+        cwd=layout.workspace_root,
+        tool_registry=runtime.kernel.tool_registry,
+        runtime_services=runtime.services,
+    )
+
+    async def scenario():
+        return await bash_tool.execute(
+            {"command": "ls definitely-missing"},
+            context,
+        )
+
+    result = asyncio.run(scenario())
+    payload = _result_payload(result)
+
+    assert payload["status"] == "command_failed"
+    assert payload["error_kind"] == "command_failed"
+    assert payload["exit_code"] != 0
+    assert "definitely-missing" in payload["stderr"]
+
+
+def test_replacement_bash_reconnects_to_broker_backed_session_after_runtime_restart(tmp_path: Path) -> None:
+    layout = _layout(tmp_path)
+    reset_demo_state(layout=layout)
+    runtime = assemble_demo_runtime(layout=layout)
+    bash_tool = runtime.kernel.tool_registry.get("bash")
+    assert bash_tool is not None
+
+    context = ToolContext(
+        session_id="shell-test",
+        turn_id="turn-1",
+        agent_name="code-assistant",
+        cwd=layout.workspace_root,
+        tool_registry=runtime.kernel.tool_registry,
+        runtime_services=runtime.services,
+    )
+
+    async def scenario():
+        start = await bash_tool.execute(
+            {"action": "start", "command": "cat", "description": "Restart-aware session"},
+            context,
+        )
+        await bash_tool.execute(
+            {
+                "action": "send",
+                "shell_session_id": start["shell_session_id"],
+                "stdin": "after restart\n",
+            },
+            context,
+        )
+        await asyncio.sleep(0.1)
+        restarted_runtime = assemble_demo_runtime(layout=layout)
+        restarted_tool = restarted_runtime.kernel.tool_registry.get("bash")
+        restarted_context = ToolContext(
+            session_id="shell-test",
+            turn_id="turn-2",
+            agent_name="code-assistant",
+            cwd=layout.workspace_root,
+            tool_registry=restarted_runtime.kernel.tool_registry,
+            runtime_services=restarted_runtime.services,
+        )
+        read = await restarted_tool.execute(
+            {"action": "read", "shell_session_id": start["shell_session_id"]},
+            restarted_context,
+        )
+        stop = await restarted_tool.execute(
+            {"action": "stop", "shell_session_id": start["shell_session_id"]},
+            restarted_context,
+        )
+        return start, read, stop
+
+    start, read, stop = asyncio.run(scenario())
+    stop_payload = _result_payload(stop)
+
+    assert start["recovery_state"] == "attached"
+    assert "after restart" in str(read["session_output"])
+    assert read["session_profile"] == "line_session"
+    assert stop_payload["status"] in {"stopped", "completed", "command_failed"}
+
+
+def test_replacement_bash_sync_restart_reconciles_running_background_shell(tmp_path: Path) -> None:
+    layout = _layout(tmp_path)
+    reset_demo_state(layout=layout)
+    runtime = assemble_demo_runtime(layout=layout)
+    bash_tool = runtime.kernel.tool_registry.get("bash")
+    assert bash_tool is not None
+
+    context = ToolContext(
+        session_id="shell-test",
+        turn_id="turn-1",
+        agent_name="code-assistant",
+        cwd=layout.workspace_root,
+        tool_registry=runtime.kernel.tool_registry,
+        runtime_services=runtime.services,
+    )
+
+    async def scenario():
+        background = await bash_tool.execute(
+            {
+                "command": "sleep 30",
+                "description": "Restart-aware background shell",
+                "run_in_background": True,
+            },
+            context,
+        )
+        return background["job_id"]
+
+    job_id = asyncio.run(scenario())
+
+    restarted_runtime = assemble_demo_runtime(layout=layout)
+    record = restarted_runtime.services.job_service.get_sync(job_id)
+
+    assert record is not None
+    assert record.status.value == "running"
+    assert record.metadata["recovery_state"] == "reattached"
+    assert restarted_runtime.services.job_service.compat_stop_handler(job_id) is not None
+
+    async def stop_after_restart():
+        return await restarted_runtime.stop_job(job_id, session_id="shell-test")
+
+    stopped = asyncio.run(stop_after_restart())
+
+    assert stopped["status"] == "stopped"
+    assert stopped["result"]["status"] == "stopped"
+
+
+def test_replacement_bash_marks_background_shell_orphaned_when_broker_dies_before_restart(tmp_path: Path) -> None:
+    layout = _layout(tmp_path)
+    reset_demo_state(layout=layout)
+    runtime = assemble_demo_runtime(layout=layout)
+    bash_tool = runtime.kernel.tool_registry.get("bash")
+    assert bash_tool is not None
+
+    context = ToolContext(
+        session_id="shell-test",
+        turn_id="turn-1",
+        agent_name="code-assistant",
+        cwd=layout.workspace_root,
+        tool_registry=runtime.kernel.tool_registry,
+        runtime_services=runtime.services,
+    )
+
+    async def scenario():
+        background = await bash_tool.execute(
+            {
+                "command": "sleep 30",
+                "description": "Broker-loss background shell",
+                "run_in_background": True,
+            },
+            context,
+        )
+        record = runtime.services.job_service.get_sync(background["job_id"])
+        assert record is not None
+        return background["job_id"], int(background["broker_pid"]), int(record.metadata["pid"])
+
+    job_id, broker_pid, process_pid = asyncio.run(scenario())
+    os.kill(process_pid, 0)
+    os.kill(broker_pid, signal.SIGKILL)
+    asyncio.run(asyncio.sleep(0.1))
+
+    restarted_runtime = assemble_demo_runtime(layout=layout)
+    record = restarted_runtime.services.job_service.get_sync(job_id)
+
+    assert record is not None
+    assert record.status.value == "failed"
+    assert record.result["status"] == "orphaned"
+    assert record.result["recovery_state"] == "orphaned"
+    assert "reconciled explicitly after runtime restart" in str(record.error)
+
+
+def test_inspect_demo_reports_shell_sidecars_and_reset_clears_them(tmp_path: Path) -> None:
+    layout = _layout(tmp_path)
+    reset_demo_state(layout=layout)
+    runtime = assemble_demo_runtime(layout=layout)
+    bash_tool = runtime.kernel.tool_registry.get("bash")
+    assert bash_tool is not None
+
+    context = ToolContext(
+        session_id="shell-test",
+        turn_id="turn-1",
+        agent_name="code-assistant",
+        cwd=layout.workspace_root,
+        tool_registry=runtime.kernel.tool_registry,
+        runtime_services=runtime.services,
+    )
+
+    async def scenario():
+        start = await bash_tool.execute({"action": "start", "command": "cat"}, context)
+        await bash_tool.execute(
+            {"action": "stop", "shell_session_id": start["shell_session_id"]},
+            context,
+        )
+        return start
+
+    start = asyncio.run(scenario())
+    inspect_before = inspect_demo(layout=layout)
+
+    assert inspect_before.shell_sidecars
+    assert any(sidecar.get("shell_session_id") == start["shell_session_id"] for sidecar in inspect_before.shell_sidecars)
+
+    reset_demo_state(layout=layout)
+    inspect_after = inspect_demo(layout=layout)
+
+    assert inspect_after.shell_sidecars == ()
 
 
 def test_shell_demo_renders_reactive_session_and_watcher_updates(tmp_path: Path) -> None:
@@ -2046,3 +2319,6 @@ def test_code_assistant_readme_documents_live_deterministic_and_shell_smoke_path
     assert "package manifests: weavert-scenario-coding, weavert-shared-git, weavert-shared-workspace-intelligence" in readme
     assert "tool families: git_*=weavert-shared-git, workspace_*=weavert-shared-workspace-intelligence" in readme
     assert "bash replacement: app-configured v2 over weavert-devtools" in readme
+    assert "durable shell sidecars under `.weavert/shell/`" in readme
+    assert "wrapper-aware command policy" in readme
+    assert "`command_failed`" in readme

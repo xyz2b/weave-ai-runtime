@@ -289,34 +289,58 @@ class CodeAssistantHost(SdkHostRuntime):
         action = str(content.get("action") or "exec")
         command = str(content.get("command") or "").strip()
         classification = str(content.get("classification") or "other")
+        command_policy = str(content.get("command_policy") or "allowed")
         output_summary = str(content.get("output_summary") or "").strip()
         job_id = str(content.get("job_id") or "").strip() or None
         shell_session_id = str(content.get("shell_session_id") or "").strip() or None
         session_mode = str(content.get("session_mode") or "oneshot")
+        session_profile = str(content.get("session_profile") or "oneshot")
+        terminal_mode = str(content.get("terminal_mode") or "none")
+        recovery_state = str(content.get("recovery_state") or "").strip()
         session_output = str(content.get("session_output") or "")
+        sidecar_dir = str(content.get("sidecar_dir") or "").strip()
         exit_code = content.get("exit_code")
         shell_status = str(content.get("status") or status)
         prefix = "ok"
         if shell_status == "running":
             prefix = "running"
-        elif shell_status in {"failed", "blocked"} or status == ToolCallStatus.ERROR.value:
+        elif shell_status in {
+            "command_failed",
+            "blocked",
+            "not_confinable",
+            "broker_failed",
+            "spawn_failed",
+            "timed_out",
+            "orphaned",
+            "recovery_unavailable",
+        } or status == ToolCallStatus.ERROR.value:
             prefix = "failed"
-        elif shell_status == "stopped":
+        elif shell_status in {"stopped", "interrupted"}:
             prefix = "stopped"
         elif shell_status == "unsupported":
             prefix = "unsupported"
         exit_suffix = f", exit={exit_code}" if isinstance(exit_code, int) else ""
         job_suffix = f", job={job_id}" if job_id is not None else ""
+        policy_suffix = f", policy={command_policy}" if command_policy else ""
+        recovery_suffix = f", recovery={recovery_state}" if recovery_state else ""
         lines: list[str] = []
         if session_mode == "session" and shell_session_id is not None:
             lines.append(
-                f"[bash:{prefix}:{action}] session={shell_session_id}{exit_suffix}{job_suffix} {command}".rstrip()
+                (
+                    f"[bash:{prefix}:{action}] session={shell_session_id}, profile={session_profile}, "
+                    f"terminal={terminal_mode}{exit_suffix}{job_suffix}{policy_suffix}{recovery_suffix} {command}"
+                ).rstrip()
             )
             lines.extend(f"[shell:output] {line}" for line in _preview_output_lines(session_output))
         else:
             lines.append(
-                f"[bash:{prefix}] {classification}{exit_suffix}{job_suffix} {command}".rstrip()
+                (
+                    f"[bash:{prefix}] {classification}, profile={session_profile}{exit_suffix}{job_suffix}"
+                    f"{policy_suffix}{recovery_suffix} {command}"
+                ).rstrip()
             )
+        if sidecar_dir:
+            lines.append(f"[shell:sidecar] {sidecar_dir}")
         if output_summary:
             lines.append(f"[bash:summary] {output_summary}")
         self._write_lines(lines)
@@ -360,6 +384,9 @@ def _job_signature(job: dict[str, Any]) -> tuple[Any, ...]:
     return (
         str(job.get("status") or "unknown"),
         str(metadata.get("session_status") or ""),
+        str(metadata.get("recovery_state") or ""),
+        str(metadata.get("session_profile") or ""),
+        str(metadata.get("command_policy") or ""),
         str(metadata.get("output_sequence") or ""),
         str(metadata.get("recent_output_preview") or ""),
         str(result.get("output_summary") or ""),
@@ -374,7 +401,13 @@ def _job_event_lines(event: dict[str, Any]) -> list[str]:
     summary = str(event.get("summary") or "<job>")
     kind = str(metadata.get("kind") or "").strip()
     shell_session_id = str(metadata.get("shell_session_id") or "").strip()
-    lines = [f"[job:{status}] {shell_session_id or job_id}: {summary}"]
+    profile = str(metadata.get("session_profile") or "oneshot").strip()
+    policy = str(metadata.get("command_policy") or "allowed").strip()
+    recovery = str(metadata.get("recovery_state") or "").strip()
+    profile_suffix = f", profile={profile}" if profile else ""
+    policy_suffix = f", policy={policy}" if policy else ""
+    recovery_suffix = f", recovery={recovery}" if recovery else ""
+    lines = [f"[job:{status}] {shell_session_id or job_id}{profile_suffix}{policy_suffix}{recovery_suffix}: {summary}"]
     recent_output = str(metadata.get("recent_output_preview") or "").strip()
     recent_stream = str(metadata.get("recent_output_stream") or "output")
     if recent_output and kind == "shell_session":

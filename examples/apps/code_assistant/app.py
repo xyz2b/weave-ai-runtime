@@ -32,6 +32,7 @@ from .builtin_overrides import (
 )
 from .deterministic_demo import build_deterministic_model_client
 from .host import ApprovalRecord, CodeAssistantHost
+from .shell_broker import list_shell_sidecars, stop_shell_broker
 
 DEFAULT_SESSION_PREFIX = "code-assistant"
 CODE_ASSISTANT_STATE_ROOT_ENV = "WEAVERT_CODE_ASSISTANT_STATE_ROOT"
@@ -160,6 +161,7 @@ class InspectReport:
     child_run_sessions: tuple[dict[str, Any], ...]
     child_run_records: tuple[dict[str, Any], ...]
     task_lists: tuple[dict[str, Any], ...]
+    shell_sidecars: tuple[dict[str, Any], ...]
     changed_files: tuple[str, ...]
     workflow_ledger: "WorkflowLedger | None"
     memory_root: Path | None
@@ -262,6 +264,10 @@ def reset_demo_state(*, layout: CodeAssistantLayout | None = None) -> Path:
     workspace_root = resolved_layout.workspace_root
     workspace_root.parent.mkdir(parents=True, exist_ok=True)
     if workspace_root.exists():
+        try:
+            asyncio.run(stop_shell_broker(workspace_root))
+        except RuntimeError:
+            pass
         shutil.rmtree(workspace_root)
     shutil.copytree(resolved_layout.fixture_root, workspace_root)
     return workspace_root
@@ -294,7 +300,7 @@ def assemble_demo_runtime(
     )
     config.model_client = model_client
     runtime = assemble_runtime(config)
-    reconcile_background_shell_jobs(runtime.services.job_service)
+    reconcile_background_shell_jobs(runtime.services.job_service, workspace_root)
     return runtime
 
 
@@ -657,6 +663,7 @@ async def _inspect_demo_async(*, layout: CodeAssistantLayout | None = None) -> I
             child_run_sessions=(),
             child_run_records=(),
             task_lists=(),
+            shell_sidecars=(),
             changed_files=(),
             workflow_ledger=None,
             memory_root=None,
@@ -688,6 +695,7 @@ async def _inspect_runtime_state(
     child_run_records = await _child_run_records(runtime=runtime, session_ids=_session_ids(workspace_root))
     child_run_sessions = _summarize_child_run_sessions(child_run_records)
     task_lists = list(await runtime.list_task_lists())
+    shell_sidecars = list_shell_sidecars(workspace_root)
     changed_files = tuple(_changed_files(workspace_root=workspace_root, fixture_root=fixture_root))
     memory_root = None
     memory_documents = 0
@@ -748,6 +756,7 @@ async def _inspect_runtime_state(
         child_run_sessions=tuple(child_run_sessions),
         child_run_records=tuple(child_run_records),
         task_lists=tuple(task_lists),
+        shell_sidecars=shell_sidecars,
         changed_files=changed_files,
         workflow_ledger=workflow_ledger,
         memory_root=memory_root,
@@ -1037,7 +1046,7 @@ def _tool_result_materially_changed(*, tool_name: str, content: dict[str, Any]) 
 
 def _is_verification_shell_result(content: dict[str, Any]) -> bool:
     classification = str(content.get("classification") or "").strip()
-    if classification in {"test", "build"}:
+    if classification in {"test", "build", "lint"}:
         return True
     command = str(content.get("command") or "").lower()
     description = str(content.get("description") or "").lower()
@@ -1147,9 +1156,14 @@ def _latest_shell_outcome_lines(jobs: tuple[dict[str, Any], ...] | list[dict[str
         if not isinstance(job, dict):
             continue
         result = job.get("result") if isinstance(job.get("result"), dict) else {}
+        metadata = job.get("metadata") if isinstance(job.get("metadata"), dict) else {}
         summary = str(result.get("output_summary") or job.get("summary") or "<job>")
         status = str(job.get("status") or "unknown")
-        lines.append(f"- {job.get('job_id', '<job>')} [{status}] {summary}")
+        profile = str(metadata.get("session_profile") or result.get("session_profile") or "oneshot")
+        policy = str(metadata.get("command_policy") or result.get("command_policy") or "allowed")
+        recovery = str(metadata.get("recovery_state") or result.get("recovery_state") or "").strip()
+        recovery_suffix = f", recovery={recovery}" if recovery else ""
+        lines.append(f"- {job.get('job_id', '<job>')} [{status}, profile={profile}, policy={policy}{recovery_suffix}] {summary}")
     return lines or ["- no visible shell jobs"]
 
 
@@ -1310,6 +1324,7 @@ def _print_inspect_report(
         output_writer(_format_transcript_session_line(label="latest transcript", session=report.transcript_sessions[0]))
     output_writer(f"child run sessions: {len(report.child_run_sessions)}")
     output_writer(f"task lists: {len(report.task_lists)}")
+    output_writer(f"shell sidecars: {len(report.shell_sidecars)}")
     if report.highlighted_task_list_id is not None:
         output_writer(f"current task list: {report.highlighted_task_list_id}")
     if report.workflow_ledger is not None:
@@ -1322,6 +1337,12 @@ def _print_inspect_report(
         )
     for line in _assembly_anchor_lines(report.assembly_anchors):
         output_writer(line)
+    for sidecar in report.shell_sidecars[:5]:
+        identifier = str(sidecar.get("shell_session_id") or sidecar.get("job_id") or sidecar.get("entry_id") or "<shell>")
+        profile = str(sidecar.get("session_profile") or "unknown")
+        recovery = str(sidecar.get("recovery_state") or "unknown")
+        status = str(sidecar.get("status") or "unknown")
+        output_writer(f"shell: {identifier} [{status}, profile={profile}, recovery={recovery}]")
     output_writer(f"changed files: {len(report.changed_files)}")
     for file_path in report.changed_files[:10]:
         output_writer(f"- changed {file_path}")
@@ -1361,11 +1382,17 @@ def _print_jobs(*, jobs: tuple[dict[str, Any], ...], output_writer) -> None:
         if isinstance(metadata, dict):
             classification = str(metadata.get("classification") or "").strip()
             kind = str(metadata.get("kind") or "").strip()
+        profile = str(metadata.get("session_profile") or "oneshot").strip()
+        policy = str(metadata.get("command_policy") or "allowed").strip()
+        recovery = str(metadata.get("recovery_state") or "").strip()
         summary = str(job.get("summary") or "<job>")
         status = str(job.get("status") or "unknown")
         classification_suffix = f", {classification}" if classification else ""
+        profile_suffix = f", profile={profile}" if profile else ""
+        policy_suffix = f", policy={policy}" if policy else ""
+        recovery_suffix = f", recovery={recovery}" if recovery else ""
         output_writer(
-            f"- {job.get('job_id', '<job>')} [{status}{classification_suffix}] {summary}"
+            f"- {job.get('job_id', '<job>')} [{status}{classification_suffix}{profile_suffix}{policy_suffix}{recovery_suffix}] {summary}"
         )
         if kind in {"background_shell", "shell_session"} and status in {"pending", "running"}:
             command = str(metadata.get("command") or "").strip()
@@ -1374,7 +1401,7 @@ def _print_jobs(*, jobs: tuple[dict[str, Any], ...], output_writer) -> None:
             shell_session_id = str(metadata.get("shell_session_id") or "").strip()
             session_suffix = f", session={shell_session_id}" if shell_session_id else ""
             output_writer(
-                f"[bash:running] {classification}{job_suffix}{session_suffix} {command}".rstrip()
+                f"[bash:running] {classification}{job_suffix}{session_suffix}, profile={profile}, policy={policy}{recovery_suffix} {command}".rstrip()
             )
         if isinstance(result, dict) and isinstance(result.get("output_summary"), str):
             output_writer(f"  {result['output_summary']}")
@@ -1925,7 +1952,7 @@ def _has_successful_verification_shell(
     events: tuple[ToolResultEvent, ...] | list[ToolResultEvent],
 ) -> bool:
     for event in events:
-        if event.status != "success" or event.tool_name != "bash":
+        if event.tool_name != "bash":
             continue
         if _is_verification_shell_result(event.content):
             return True
