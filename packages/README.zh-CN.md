@@ -8,6 +8,7 @@
 ## 这里有什么
 
 - `framework-core/` 拥有具体的 `weavert` runtime package。
+- `distributions/` 拥有像 `weavert-full` 这样的可安装 baseline bundles。
 - `framework-packs/` 拥有脱离 core import root 的 first-party add-on packages。
 - `product-kits/` 拥有 scenario packs 与共享 product-kit packages。
 - `toolchain/` 拥有开发者工具，例如采纳路径的 starter generator 和验证路径的 testing kit。
@@ -21,6 +22,7 @@
 ## 如何阅读这棵树
 
 - 当问题是 runtime kernel 或公开 `weavert` 表面时，从 `framework-core/` 开始。
+- 当问题是可安装 baseline bundles，例如完整 ordinary-workflow package set 时，用 `distributions/`。
 - 当问题是 first-party add-on capabilities、mechanisms、integrations 或 workflows 时，用 `framework-packs/`。
 - 当问题是 scenario packs 或共享 product-kit 组合时，用 `product-kits/`。
 - 当问题是采纳或验证工具，而不是 runtime assembly 时，用 `toolchain/`。这个 family 同时包含公开 developer tooling 与仓库绑定维护者工具。

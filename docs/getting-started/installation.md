@@ -15,29 +15,45 @@ It is the safest way to understand the repo because examples and starter scaffol
 
 ## Base install
 
-Create a virtual environment and install the runtime core plus starter toolchain:
+Create a virtual environment and install the full ordinary-workflow baseline plus starter and testing in one command:
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-python -m pip install -e packages/framework-core
-python -m pip install -e packages/toolchain/starter
-python -m pip install -e packages/toolchain/testing
+python -m pip install \
+  -e packages/framework-core \
+  -e packages/framework-packs/capabilities/memory \
+  -e packages/framework-packs/capabilities/team \
+  -e packages/framework-packs/mechanisms/compaction \
+  -e packages/framework-packs/mechanisms/isolation \
+  -e packages/framework-packs/integrations/openai \
+  -e packages/framework-packs/integrations/hosts-reference \
+  -e packages/framework-packs/integrations/stores-file \
+  -e packages/framework-packs/workflows/builtin-workflows \
+  -e packages/framework-packs/workflows/planning \
+  -e packages/framework-packs/workflows/devtools \
+  -e packages/distributions/full \
+  -e packages/toolchain/starter \
+  -e packages/toolchain/testing
 ```
+
+If you are installing from published packages instead of editable local roots, the matching one-command baseline is:
+
+```bash
+python -m pip install weavert-starter weavert-testing
+```
+
+`weavert-starter` now depends on `weavert-full`, so the published starter path pulls the documented ordinary-workflow runtime baseline automatically.
 
 ## Optional first-party packages
 
-Install additional packages only when you need them:
+Install additional scenario or product-kit packages only when you need them:
 
-- OpenAI integration: `packages/framework-packs/integrations/openai`
-- reference hosts: `packages/framework-packs/integrations/hosts-reference`
-- file stores: `packages/framework-packs/integrations/stores-file`
 - product kits: `packages/product-kits/*`
 
 Example:
 
 ```bash
-python -m pip install -e packages/framework-packs/integrations/openai
 python -m pip install -e packages/product-kits/coding
 ```
 

@@ -3,18 +3,27 @@ requires = ["setuptools>=69", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "weavert-toolchain-scripts"
+name = "weavert-full"
 version = "0.1.0"
-description = "Repository support scripts for the WeaveRT toolchain family."
+description = "Installable full first-party runtime baseline bundle for WeaveRT."
 readme = "README.md"
 license = "Apache-2.0"
 authors = [{ name = "WeaveRT Maintainers" }]
 requires-python = ">=3.11"
 dependencies = [
   "weavert>=0.1.0,<0.2.0",
+  "weavert-memory>=0.1.0,<0.2.0",
+  "weavert-team>=0.1.0,<0.2.0",
+  "weavert-compaction>=0.1.0,<0.2.0",
+  "weavert-isolation>=0.1.0,<0.2.0",
   "weavert-openai>=0.1.0,<0.2.0",
+  "weavert-hosts-reference>=0.1.0,<0.2.0",
+  "weavert-stores-file>=0.1.0,<0.2.0",
+  "weavert-builtin-workflows>=0.1.0,<0.2.0",
+  "weavert-planning>=0.1.0,<0.2.0",
+  "weavert-devtools>=0.1.0,<0.2.0",
 ]
-keywords = ["weavert", "agents", "ai", "toolchain", "maintainer"]
+keywords = ["weavert", "agents", "ai", "runtime", "distribution"]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Intended Audience :: Developers",
@@ -33,4 +42,4 @@ Repository = "https://github.com/xyz2b/weave-ai-runtime"
 Issues = "https://github.com/xyz2b/weave-ai-runtime/issues"
 
 [tool.setuptools]
-py-modules = ["check_workspace_layout", "openai_responses_live_smoke", "publish_workspace_packages"]
+py-modules = []

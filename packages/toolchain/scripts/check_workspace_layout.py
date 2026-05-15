@@ -11,6 +11,7 @@ FRAMEWORK_CORE_PYPROJECT = ROOT / "packages" / "framework-core" / "pyproject.tom
 STARTER_PYPROJECT = ROOT / "packages" / "toolchain" / "starter" / "pyproject.toml"
 FRAMEWORK_CORE_PACKAGE = ROOT / "packages" / "framework-core" / "src" / "weavert"
 FAMILY_INDEXES = (
+    ROOT / "packages" / "distributions" / "README.md",
     ROOT / "packages" / "framework-packs" / "README.md",
     ROOT / "packages" / "product-kits" / "README.md",
     ROOT / "packages" / "toolchain" / "README.md",
@@ -175,6 +176,7 @@ def main() -> int:
         "packages/framework-packs/workflows/planning",
         "packages/framework-packs/workflows/devtools",
         "packages/framework-packs/workflows/builtin-workflows",
+        "packages/distributions/full",
         "packages/product-kits/chat",
         "packages/product-kits/coding",
         "packages/product-kits/common/browser",
@@ -191,9 +193,11 @@ def main() -> int:
     ]
     if workspace_meta.get("concrete_package_roots") != expected_concrete:
         errors.append("workspace metadata must list every concrete package root")
-    expected_placeholders = ["packages/framework-packs"]
+    expected_placeholders = ["packages/distributions", "packages/framework-packs"]
     if workspace_meta.get("family_placeholder_roots") != expected_placeholders:
-        errors.append("workspace metadata must only list packages/framework-packs as the family root")
+        errors.append(
+            "workspace metadata must list packages/distributions and packages/framework-packs as family roots"
+        )
 
     if not FRAMEWORK_CORE_PACKAGE.is_dir():
         errors.append("packages/framework-core/src/weavert is missing")

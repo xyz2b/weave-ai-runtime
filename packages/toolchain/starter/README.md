@@ -15,6 +15,14 @@ Canonical import root: `weavert_starter`
 
 This package stays outside runtime package selection and is reached through the `weavert-starter` CLI or direct imports.
 
+## Published quick install
+
+```bash
+python -m pip install weavert-starter weavert-testing
+```
+
+`weavert-starter` depends on `weavert-full`, so the published starter path already installs the documented ordinary-workflow runtime baseline used by the official starter scaffolds.
+
 ## See also
 
 - `../README.md`

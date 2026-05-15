@@ -726,7 +726,7 @@ def _common_pyproject(context: _TemplateContext, description: str) -> str:
         version = "0.1.0"
         description = {description!r}
         requires-python = ">=3.11"
-        dependencies = ["weavert"]
+        dependencies = ["weavert-full>=0.1.0,<0.2.0"]
 
         [tool.setuptools]
         py-modules = []
@@ -751,17 +751,16 @@ def _minimal_readme(context: _TemplateContext) -> str:
 
         Quick start:
 
-        This scaffold expects both `weavert` and `weavert_testing` to be installed in the same environment that runs the entrypoint.
+        This scaffold expects both `weavert-full` and `weavert_testing` to be installed in the same environment that runs the entrypoint.
 
         1. `python3 -m venv .venv`
         2. `source .venv/bin/activate`
-        3. `python -m pip install -e /path/to/weave-ai-runtime/packages/framework-core`
-        4. `python -m pip install -e /path/to/weave-ai-runtime/packages/toolchain/testing`
-        5. `python -m pip install -e .`
-        6. `python app.py`
+        3. `python -m pip install weavert-full weavert-testing`
+        4. `python -m pip install -e .`
+        5. `python app.py`
 
-        If step 3 points at a local source checkout, `app.py` can discover sibling framework packs from that same checkout automatically.
-        If you are using published packages instead of a source checkout, install the matching first-party distribution or extracted framework packs alongside the runtime and testing packages in steps 3 and 4.
+        If you are using a local source checkout of `weave-ai-runtime` instead of published packages, install the repository quickstart baseline first and then continue from step 4.
+        If step 3 points at published packages, `app.py` can run without a sibling checkout because the ordinary-workflow baseline already arrived through `weavert-full`.
 
         Extension points:
 
@@ -790,17 +789,16 @@ def _headless_readme(context: _TemplateContext) -> str:
 
         Quick start:
 
-        This scaffold expects both `weavert` and `weavert_testing` to be installed in the same environment that runs the entrypoint.
+        This scaffold expects both `weavert-full` and `weavert_testing` to be installed in the same environment that runs the entrypoint.
 
         1. `python3 -m venv .venv`
         2. `source .venv/bin/activate`
-        3. `python -m pip install -e /path/to/weave-ai-runtime/packages/framework-core`
-        4. `python -m pip install -e /path/to/weave-ai-runtime/packages/toolchain/testing`
-        5. `python -m pip install -e .`
-        6. `python workflow_runner.py`
+        3. `python -m pip install weavert-full weavert-testing`
+        4. `python -m pip install -e .`
+        5. `python workflow_runner.py`
 
-        If step 3 points at a local source checkout, `workflow_runner.py` can discover sibling framework packs from that same checkout automatically.
-        If you are using published packages instead of a source checkout, install the matching first-party distribution or extracted framework packs alongside the runtime and testing packages in steps 3 and 4.
+        If you are using a local source checkout of `weave-ai-runtime` instead of published packages, install the repository quickstart baseline first and then continue from step 4.
+        If step 3 points at published packages, `workflow_runner.py` can run without a sibling checkout because the ordinary-workflow baseline already arrived through `weavert-full`.
 
         Extension points:
 
@@ -834,17 +832,17 @@ def _live_readme(context: _TemplateContext) -> str:
 
         Quick start:
 
-        This scaffold expects `weavert` to be installed in the same environment that runs the entrypoint.
+        This scaffold expects `weavert-full` to be installed in the same environment that runs the entrypoint.
 
         1. `python3 -m venv .venv`
         2. `source .venv/bin/activate`
-        3. `python -m pip install -e /path/to/weave-ai-runtime/packages/framework-core`
+        3. `python -m pip install weavert-full`
         4. `python -m pip install -e .`
         5. `export OPENAI_API_KEY=your-key`
         6. `python live_smoke.py`
 
-        If step 3 points at a local source checkout, `live_smoke.py` can discover sibling framework packs from that same checkout automatically.
-        If you are using published packages instead of a source checkout, install the matching first-party distribution or extracted framework packs in step 3.
+        If you are using a local source checkout of `weave-ai-runtime` instead of published packages, install the repository quickstart baseline first and then continue from step 4.
+        If step 3 points at published packages, `live_smoke.py` can run without a sibling checkout because the headless-live baseline already arrived through `weavert-full`.
 
         If preflight fails, fix the reported environment or route issue first. The scaffold does not silently drop back to an offline path.
         '''

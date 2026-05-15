@@ -28,18 +28,38 @@ WeaveRT 推荐 starter-first 的旅程：
 `examples/` 是仓库的验证路径。
 它适合在 starter 成功之后使用，但不是默认的 copy-paste 采纳路径。
 
-## 第 1 步：安装本地工具链
+## 第 1 步：安装本地 baseline 与工具链
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-python -m pip install -e packages/framework-core
-python -m pip install -e packages/toolchain/starter
-python -m pip install -e packages/toolchain/testing
+python -m pip install \
+  -e packages/framework-core \
+  -e packages/framework-packs/capabilities/memory \
+  -e packages/framework-packs/capabilities/team \
+  -e packages/framework-packs/mechanisms/compaction \
+  -e packages/framework-packs/mechanisms/isolation \
+  -e packages/framework-packs/integrations/openai \
+  -e packages/framework-packs/integrations/hosts-reference \
+  -e packages/framework-packs/integrations/stores-file \
+  -e packages/framework-packs/workflows/builtin-workflows \
+  -e packages/framework-packs/workflows/planning \
+  -e packages/framework-packs/workflows/devtools \
+  -e packages/distributions/full \
+  -e packages/toolchain/starter \
+  -e packages/toolchain/testing
 ```
 
-可选的 first-party packages 以后再按需安装。
-例如 live OpenAI 集成位于 `packages/framework-packs/integrations/openai`。
+如果你不是从本地 editable roots 安装，而是直接从已发布包安装，对应的一条命令基线是：
+
+```bash
+python -m pip install weavert-starter weavert-testing
+```
+
+`weavert-starter` 依赖 `weavert-full`，所以公开 starter 路径已经与生成项目使用的 `ordinary-workflow` preset 对齐。
+
+可选的 scenario kits 可以以后再按需安装。
+例如面向编码场景的 product defaults 位于 `packages/product-kits/coding`。
 
 ## 第 2 步：生成 starter 项目
 

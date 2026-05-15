@@ -28,18 +28,38 @@ WeaveRT recommends a starter-first journey:
 `examples/` is the validation path for the repository.
 It is useful after the starter works, but it is not the default copy-paste adoption path.
 
-## Step 1: Install the local toolchain
+## Step 1: Install the local baseline and toolchain
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-python -m pip install -e packages/framework-core
-python -m pip install -e packages/toolchain/starter
-python -m pip install -e packages/toolchain/testing
+python -m pip install \
+  -e packages/framework-core \
+  -e packages/framework-packs/capabilities/memory \
+  -e packages/framework-packs/capabilities/team \
+  -e packages/framework-packs/mechanisms/compaction \
+  -e packages/framework-packs/mechanisms/isolation \
+  -e packages/framework-packs/integrations/openai \
+  -e packages/framework-packs/integrations/hosts-reference \
+  -e packages/framework-packs/integrations/stores-file \
+  -e packages/framework-packs/workflows/builtin-workflows \
+  -e packages/framework-packs/workflows/planning \
+  -e packages/framework-packs/workflows/devtools \
+  -e packages/distributions/full \
+  -e packages/toolchain/starter \
+  -e packages/toolchain/testing
 ```
 
-Optional first-party packages can be installed later when you need them.
-For example, live OpenAI integration lives under `packages/framework-packs/integrations/openai`.
+If you are installing from published packages instead of editable local roots, the matching one-command baseline is:
+
+```bash
+python -m pip install weavert-starter weavert-testing
+```
+
+`weavert-starter` depends on `weavert-full`, so the published starter path already matches the `ordinary-workflow` preset used by the generated project.
+
+Optional scenario kits can be installed later when you need them.
+For example, coding-oriented product defaults live under `packages/product-kits/coding`.
 
 ## Step 2: Generate the starter project
 

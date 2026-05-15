@@ -11,6 +11,7 @@ The repository root `pyproject.toml` stays unpublished as a workspace coordinato
 ## What lives here
 
 - `framework-core/` owns the concrete `weavert` runtime package.
+- `distributions/` owns installable baseline bundles such as `weavert-full`.
 - `framework-packs/` owns first-party add-on packages that extend the runtime outside the core import root.
 - `product-kits/` owns scenario packs plus shared product-kit packages.
 - `toolchain/` owns developer tooling such as the adoption-path starter generator and the validation-path testing kit.
@@ -24,6 +25,7 @@ The repository root `pyproject.toml` stays unpublished as a workspace coordinato
 ## Exposure tiers
 
 - `framework-core/` is the primary public runtime entrypoint.
+- `distributions/` publish installable first-party baseline bundles that match documented runtime distribution names.
 - `framework-packs/` are direct public add-ons whose runtime activation names either match or closely track their install names.
 - `product-kits/common/` packages are lower-layer shared kits with distinct install, import, and runtime activation identities.
 - `product-kits/` scenario kits are higher-layer profile entrypoints that compose the lower-layer kits.
@@ -32,6 +34,7 @@ The repository root `pyproject.toml` stays unpublished as a workspace coordinato
 ## How to read this tree
 
 - Start with `framework-core/` when the question is about the runtime kernel or public `weavert` surface.
+- Use `distributions/` when the question is about installable baseline bundles such as the full ordinary-workflow package set.
 - Use `framework-packs/` when the question is about first-party add-on capabilities, mechanisms, integrations, or workflows.
 - Use `product-kits/` when the question is about scenario packs or shared product-kit composition.
 - Use `toolchain/` when the question is about adoption or validation tooling rather than runtime assembly.

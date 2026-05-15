@@ -17,6 +17,12 @@ This guide is the maintainer-facing release contract for the first public PyPI t
 | --- | --- | --- | --- | --- |
 | `packages/framework-core` | `weavert` | `weavert` | `weavert-core` | Primary public runtime |
 
+### Distribution bundles
+
+| Package root | PyPI distribution | Import root | Runtime activation | Exposure tier |
+| --- | --- | --- | --- | --- |
+| `packages/distributions/full` | `weavert-full` | none | none | Installable full first-party baseline |
+
 ### Framework packs
 
 | Package root | PyPI distribution | Import root | Runtime activation | Exposure tier |
@@ -94,7 +100,21 @@ python -m pip install --upgrade pip build twine
 
 ### 2. Build and metadata-check every public package
 
-Run the build from each public package directory, not from the repository root:
+Run the build from each public package directory, not from the repository root.
+The canonical helper is `publish_workspace_packages.py`:
+
+```bash
+python3 packages/toolchain/scripts/publish_workspace_packages.py build-check --wave all
+```
+
+The helper can also restrict work to one wave or one package:
+
+```bash
+python3 packages/toolchain/scripts/publish_workspace_packages.py build-check --wave 1
+python3 packages/toolchain/scripts/publish_workspace_packages.py build-check --wave 3 --package weavert-kit-coding
+```
+
+If you need the raw loop for debugging, this is the equivalent manual flow:
 
 ```bash
 rg --files packages -g 'pyproject.toml' | while read -r manifest; do
@@ -119,6 +139,7 @@ Create a second empty environment and install only the public package artifacts 
 Smoke checks must cover:
 
 - `weavert` import and a minimal runtime boot path
+- `pip install weavert-starter weavert-testing` followed by the official `minimal-project` starter smoke
 - one import per framework-pack family
 - one import per common-kit and scenario-kit package
 - `weavert-starter --help`
@@ -131,6 +152,61 @@ Do not add `weavert-toolchain-scripts` to this public smoke-install matrix. Veri
 - Upload only the public wheel and sdist artifacts to TestPyPI first.
 - Repeat the clean-environment smoke checks against TestPyPI installs for that same public package set.
 - Treat production PyPI as blocked until the TestPyPI rehearsal passes for all public release waves.
+
+The canonical upload helper is:
+
+```bash
+python3 packages/toolchain/scripts/publish_workspace_packages.py release --repository testpypi --wave 1 --yes
+python3 packages/toolchain/scripts/publish_workspace_packages.py release --repository testpypi --wave 2 --yes
+python3 packages/toolchain/scripts/publish_workspace_packages.py release --repository testpypi --wave 3 --yes
+```
+
+For an upload-only retry after a successful local build:
+
+```bash
+python3 packages/toolchain/scripts/publish_workspace_packages.py upload --repository testpypi --wave 2 --skip-existing --yes
+```
+
+The helper delegates credentials to `twine`, so use a maintainer `.pypirc` or the standard environment variables:
+
+```bash
+export TWINE_USERNAME=__token__
+export TWINE_PASSWORD=<token>
+```
+
+Use a TestPyPI token for TestPyPI and a separate PyPI token for production uploads.
+
+## Trusted Publisher registration
+
+Trusted Publishing is wired through `.github/workflows/publish-public-packages.yml`.
+
+For every public package in the matrix above:
+
+- add a pending publisher on PyPI that points at:
+  - repository owner: `xyz2b`
+  - repository name: `weave-ai-runtime`
+  - workflow file: `.github/workflows/publish-public-packages.yml`
+  - GitHub environment: `pypi`
+- add a matching pending publisher on TestPyPI with the same repository/workflow and the `testpypi` environment
+
+Use each package's PyPI distribution name as the project name when you create pending publishers for packages that do not yet exist. PyPI and TestPyPI accounts are separate, and pending publishers do not reserve names before the first successful publish, so configure and use them promptly.
+
+Create the matching GitHub Environments before the first run:
+
+- `pypi`: require maintainer approval
+- `testpypi`: approval optional
+
+The workflow is manual by design. Run one wave at a time:
+
+```text
+repository=testpypi, wave=1
+repository=testpypi, wave=2
+repository=testpypi, wave=3
+
+repository=pypi, wave=1
+repository=pypi, wave=2
+repository=pypi, wave=3
+```
 
 ### 5. Verify repository-bound maintainer utilities separately
 
@@ -160,7 +236,7 @@ Use `OPENAI_API_KEY=... python -m openai_responses_live_smoke` only when you wan
 Publish public packages in dependency-aware waves:
 
 1. Wave 1: `weavert`
-2. Wave 2: lower-layer packages that depend only on `weavert`
+2. Wave 2: lower-layer packages that depend only on `weavert`, including the `weavert-full` install bundle
 3. Wave 3: higher-layer scenario kits that depend on lower-layer common kits
 
 ### Wave 2 package set
@@ -175,6 +251,7 @@ Publish public packages in dependency-aware waves:
 - `weavert-planning`
 - `weavert-devtools`
 - `weavert-builtin-workflows`
+- `weavert-full`
 - `weavert-kit-common-retrieval`
 - `weavert-kit-common-web`
 - `weavert-kit-common-git`
@@ -196,6 +273,7 @@ Publish public packages in dependency-aware waves:
 Future GitHub Actions and PyPI automation must implement this manual contract rather than inventing a second release process:
 
 - use GitHub OIDC Trusted Publishing for both TestPyPI and PyPI
+- use `.github/workflows/publish-public-packages.yml` as the authorized public publishing workflow
 - drive publication from an explicit matrix of public concrete package roots
 - run build, metadata check, and smoke-install gates before any publish step
 - publish in the same dependency-aware waves documented above

@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "weavert-starter"
-version = "0.1.0"
+version = "0.1.1"
 description = "Developer-facing starter scaffold generator for WeaveRT."
 readme = "README.md"
 license = "Apache-2.0"
 authors = [{ name = "WeaveRT Maintainers" }]
 requires-python = ">=3.11"
-dependencies = ["weavert>=0.1.0,<0.2.0"]
+dependencies = ["weavert-full>=0.1.0,<0.2.0"]
 keywords = ["weavert", "agents", "ai", "toolchain", "starter"]
 classifiers = [
   "Development Status :: 3 - Alpha",

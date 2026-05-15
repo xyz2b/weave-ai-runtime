@@ -31,6 +31,7 @@ concrete_package_roots = [
   "packages/framework-packs/workflows/planning",
   "packages/framework-packs/workflows/devtools",
   "packages/framework-packs/workflows/builtin-workflows",
+  "packages/distributions/full",
   "packages/product-kits/chat",
   "packages/product-kits/coding",
   "packages/product-kits/common/browser",
@@ -45,7 +46,7 @@ concrete_package_roots = [
   "packages/toolchain/starter",
   "packages/toolchain/testing",
 ]
-family_placeholder_roots = ["packages/framework-packs"]
+family_placeholder_roots = ["packages/distributions", "packages/framework-packs"]
 docs_root = "docs"
 tests_root = "tests"
 examples_root = "examples"

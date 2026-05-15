@@ -1,0 +1,133 @@
+name: Publish Public Packages
+
+on:
+  workflow_dispatch:
+    inputs:
+      repository:
+        description: Package index target
+        required: true
+        type: choice
+        default: testpypi
+        options:
+          - testpypi
+          - pypi
+      wave:
+        description: Dependency-aware publication wave
+        required: true
+        type: choice
+        default: "1"
+        options:
+          - "1"
+          - "2"
+          - "3"
+      skip_existing:
+        description: Skip duplicate files when retrying an upload
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-public-packages-${{ inputs.repository }}-wave-${{ inputs.wave }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Prepare publish matrix
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+      package_count: ${{ steps.matrix.outputs.package_count }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Resolve selected package wave
+        id: matrix
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 packages/toolchain/scripts/publish_workspace_packages.py matrix --wave "${{ inputs.wave }}" > matrix.json
+          package_count="$(python3 -c 'import json; print(len(json.load(open("matrix.json", "r", encoding="utf-8"))))')"
+          echo "matrix=$(cat matrix.json)" >> "$GITHUB_OUTPUT"
+          echo "package_count=$package_count" >> "$GITHUB_OUTPUT"
+          python3 - <<'PY'
+          import json
+          with open('matrix.json', 'r', encoding='utf-8') as fh:
+              for item in json.load(fh):
+                  print(f"wave {item['wave']}: {item['name']} -> {item['rel_root']}")
+          PY
+
+  build:
+    name: Build and validate ${{ matrix.package.name }}
+    needs: prepare
+    if: needs.prepare.outputs.package_count != '0'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        package: ${{ fromJson(needs.prepare.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install build tooling
+        run: python3 -m pip install --upgrade build twine
+      - name: Build and metadata-check package
+        run: >-
+          python3 packages/toolchain/scripts/publish_workspace_packages.py
+          build-check
+          --package "${{ matrix.package.name }}"
+      - name: Upload package distributions
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.package.name }}
+          path: ${{ matrix.package.rel_root }}/dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish ${{ matrix.package.name }} to ${{ inputs.repository }}
+    needs:
+      - prepare
+      - build
+    if: needs.prepare.outputs.package_count != '0'
+    runs-on: ubuntu-latest
+    environment:
+      name: ${{ inputs.repository }}
+    permissions:
+      contents: read
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        package: ${{ fromJson(needs.prepare.outputs.matrix) }}
+    steps:
+      - name: Download package distributions
+        uses: actions/download-artifact@v4
+        with:
+          name: dist-${{ matrix.package.name }}
+          path: dist/
+      - name: Publish distribution to TestPyPI
+        if: inputs.repository == 'testpypi'
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          packages-dir: dist/
+          skip-existing: ${{ inputs.skip_existing }}
+      - name: Publish distribution to PyPI
+        if: inputs.repository == 'pypi'
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
+          skip-existing: ${{ inputs.skip_existing }}

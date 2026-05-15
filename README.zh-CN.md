@@ -33,14 +33,28 @@ Starter 是采纳路径，examples 是验证路径。
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-python -m pip install -e packages/framework-core
-python -m pip install -e packages/toolchain/starter
-python -m pip install -e packages/toolchain/testing
+python -m pip install \
+  -e packages/framework-core \
+  -e packages/framework-packs/capabilities/memory \
+  -e packages/framework-packs/capabilities/team \
+  -e packages/framework-packs/mechanisms/compaction \
+  -e packages/framework-packs/mechanisms/isolation \
+  -e packages/framework-packs/integrations/openai \
+  -e packages/framework-packs/integrations/hosts-reference \
+  -e packages/framework-packs/integrations/stores-file \
+  -e packages/framework-packs/workflows/builtin-workflows \
+  -e packages/framework-packs/workflows/planning \
+  -e packages/framework-packs/workflows/devtools \
+  -e packages/distributions/full \
+  -e packages/toolchain/starter \
+  -e packages/toolchain/testing
 weavert-starter generate minimal-project ./my-weavert-app
 cd my-weavert-app
 python -m pip install -e .
 python app.py
 ```
+
+如果是从已发布包安装，对应的一条 starter-first 命令是 `python -m pip install weavert-starter weavert-testing`。
 
 首轮运行应看到这些锚点：
 

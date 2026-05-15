@@ -15,29 +15,45 @@
 
 ## 基础安装
 
-创建虚拟环境，并安装 runtime core 与 starter toolchain：
+创建虚拟环境，并用一条命令安装完整 ordinary-workflow baseline、starter 与 testing：
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-python -m pip install -e packages/framework-core
-python -m pip install -e packages/toolchain/starter
-python -m pip install -e packages/toolchain/testing
+python -m pip install \
+  -e packages/framework-core \
+  -e packages/framework-packs/capabilities/memory \
+  -e packages/framework-packs/capabilities/team \
+  -e packages/framework-packs/mechanisms/compaction \
+  -e packages/framework-packs/mechanisms/isolation \
+  -e packages/framework-packs/integrations/openai \
+  -e packages/framework-packs/integrations/hosts-reference \
+  -e packages/framework-packs/integrations/stores-file \
+  -e packages/framework-packs/workflows/builtin-workflows \
+  -e packages/framework-packs/workflows/planning \
+  -e packages/framework-packs/workflows/devtools \
+  -e packages/distributions/full \
+  -e packages/toolchain/starter \
+  -e packages/toolchain/testing
 ```
+
+如果你不是从本地 editable roots 安装，而是直接从已发布包安装，对应的一条命令基线是：
+
+```bash
+python -m pip install weavert-starter weavert-testing
+```
+
+`weavert-starter` 现在依赖 `weavert-full`，所以公开 starter 路径会自动拉起文档里的 ordinary-workflow runtime baseline。
 
 ## 可选 first-party packages
 
-只有在需要时再安装其他包：
+只有在需要时再安装额外的 scenario 或 product-kit packages：
 
-- OpenAI 集成：`packages/framework-packs/integrations/openai`
-- reference hosts：`packages/framework-packs/integrations/hosts-reference`
-- file stores：`packages/framework-packs/integrations/stores-file`
 - product kits：`packages/product-kits/*`
 
 示例：
 
 ```bash
-python -m pip install -e packages/framework-packs/integrations/openai
 python -m pip install -e packages/product-kits/coding
 ```
 
