@@ -60,6 +60,10 @@ python -m pip install weavert-starter weavert-testing
 
 可选的 scenario kits 可以以后再按需安装。
 例如面向编码场景的 product defaults 位于 `packages/product-kits/coding`。
+如果你想先看公开包地图或按场景选包建议，再继续往下，请读：
+
+- `../reference/public-package-catalog.md`
+- `../guides/choose-package-combinations.md`
 
 ## 第 2 步：生成 starter 项目
 
@@ -139,5 +143,7 @@ Starter 跑通后，大多数用户会基于这四个表面继续扩展：
 
 - `installation.md`
 - `starter-scaffolds.md`
+- `../reference/public-package-catalog.md`
+- `../guides/choose-package-combinations.md`
 - `../concepts/runtime-model.md`
 - `../../../examples/README.zh-CN.md`

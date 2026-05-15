@@ -60,6 +60,10 @@ python -m pip install weavert-starter weavert-testing
 
 Optional scenario kits can be installed later when you need them.
 For example, coding-oriented product defaults live under `packages/product-kits/coding`.
+If you need the published package map or scenario-based install recommendations before going further, read:
+
+- `../reference/public-package-catalog.md`
+- `../guides/choose-package-combinations.md`
 
 ## Step 2: Generate the starter project
 
@@ -139,5 +143,7 @@ Once the starter works, most users build on four surfaces:
 
 - `installation.md`
 - `starter-scaffolds.md`
+- `../reference/public-package-catalog.md`
+- `../guides/choose-package-combinations.md`
 - `../concepts/runtime-model.md`
 - `../../examples/README.md`

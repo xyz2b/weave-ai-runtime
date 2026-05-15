@@ -46,6 +46,7 @@ Examples 是验证路径。
 ### 4. Guides
 
 - [guides/build-your-first-project.md](guides/build-your-first-project.md)
+- [guides/choose-package-combinations.md](guides/choose-package-combinations.md)
 - [guides/add-a-tool.md](guides/add-a-tool.md)
 - [guides/add-an-agent.md](guides/add-an-agent.md)
 - [guides/add-a-skill.md](guides/add-a-skill.md)
@@ -65,6 +66,7 @@ Examples 是验证路径。
 
 ### 6. Reference
 
+- [reference/public-package-catalog.md](reference/public-package-catalog.md)
 - [reference/runtime-config.md](reference/runtime-config.md)
 - [reference/workspace-layout.md](reference/workspace-layout.md)
 - [reference/memory-configuration.md](reference/memory-configuration.md)
@@ -82,6 +84,8 @@ Examples 是验证路径。
 
 - 我想先跑通最小成功项目 -> [getting-started/starter-scaffolds.md](getting-started/starter-scaffolds.md)
 - 我想做第一个真实项目 -> [guides/build-your-first-project.md](guides/build-your-first-project.md)
+- 我需要公开包目录 -> [reference/public-package-catalog.md](reference/public-package-catalog.md)
+- 我需要按场景选包建议 -> [guides/choose-package-combinations.md](guides/choose-package-combinations.md)
 - 我想理解运行时模型 -> [concepts/runtime-model.md](concepts/runtime-model.md)
 - 我想理解记忆行为 -> [concepts/memory-model.md](concepts/memory-model.md)
 - 我想扩展工具、智能体或技能 -> [guides/add-a-tool.md](guides/add-a-tool.md)、[guides/add-an-agent.md](guides/add-an-agent.md)、[guides/add-a-skill.md](guides/add-a-skill.md)

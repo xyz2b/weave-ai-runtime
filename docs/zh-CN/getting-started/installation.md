@@ -45,6 +45,11 @@ python -m pip install weavert-starter weavert-testing
 
 `weavert-starter` 现在依赖 `weavert-full`，所以公开 starter 路径会自动拉起文档里的 ordinary-workflow runtime baseline。
 
+如果你需要判断该选 `weavert`、`weavert-full`、scenario kits 还是 shared kits，请继续看：
+
+- `../reference/public-package-catalog.md`
+- `../guides/choose-package-combinations.md`
+
 ## 可选 first-party packages
 
 只有在需要时再安装额外的 scenario 或 product-kit packages：
@@ -80,5 +85,7 @@ weavert-starter list
 
 - `quickstart.md`
 - `starter-scaffolds.md`
+- `../reference/public-package-catalog.md`
+- `../guides/choose-package-combinations.md`
 - `../guides/build-your-first-project.md`
 - `../../../examples/README.zh-CN.md`
