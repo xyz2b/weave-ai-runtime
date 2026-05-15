@@ -1,6 +1,9 @@
 # Package 工作区
 
-这个页面索引 `packages/` 下可发布的实现代码。
+这个页面索引 `packages/` 下的 first-party 实现代码。
+
+大多数拥有自己 `pyproject.toml` 的具体 package 都在官方 first-party PyPI 发布范围内。
+像 `packages/toolchain/scripts` 这样的仓库绑定维护者工具会保留 package-local metadata，但不进入公开发布列车。
 
 ## 这里有什么
 
@@ -20,7 +23,7 @@
 - 当问题是 runtime kernel 或公开 `weavert` 表面时，从 `framework-core/` 开始。
 - 当问题是 first-party add-on capabilities、mechanisms、integrations 或 workflows 时，用 `framework-packs/`。
 - 当问题是 scenario packs 或共享 product-kit 组合时，用 `product-kits/`。
-- 当问题是采纳或验证工具，而不是 runtime assembly 时，用 `toolchain/`。
+- 当问题是采纳或验证工具，而不是 runtime assembly 时，用 `toolchain/`。这个 family 同时包含公开 developer tooling 与仓库绑定维护者工具。
 
 ## 另见
 

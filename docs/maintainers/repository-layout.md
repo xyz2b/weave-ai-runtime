@@ -15,7 +15,7 @@ This page is for maintainers and contributors working on the repository itself.
 
 - `docs/` -> public docs, deep dives, and maintainer notes
 - `examples/` -> runnable validation path and advanced integration samples
-- `packages/` -> publishable package workspace
+- `packages/` -> first-party package workspace for both public distributions and repository-bound maintainer utilities
 - `tests/` -> repo-level validation
 - `openspec/` -> change proposals, specs, and archived design work
 - `upstreams/` -> imported upstream source trees and provenance notes
@@ -43,7 +43,7 @@ For the current framework-pack role map, see `../framework-packs/README.md`.
 
 ## Packaging ownership
 
-The repository root `pyproject.toml` is a workspace coordinator only. Concrete packages own their own package-local metadata:
+The repository root `pyproject.toml` is a workspace coordinator only. Concrete packages own their own package-local metadata, even when a package stays outside the public PyPI train:
 
 - root `pyproject.toml` -> workspace metadata, shared developer configuration, and family declarations
 - `packages/framework-core/pyproject.toml` -> `weavert` runtime package metadata
@@ -51,7 +51,7 @@ The repository root `pyproject.toml` is a workspace coordinator only. Concrete p
 - `packages/toolchain/starter/pyproject.toml` -> `weavert-starter` CLI metadata
 - each concrete package under `packages/product-kits/` and `packages/toolchain/` owns its own local metadata
 
-The authoritative public-release contract for those concrete packages lives in `pypi-release-readiness.md`.
+The authoritative public-release contract for the public concrete packages lives in `pypi-release-readiness.md`. Repository-bound maintainer utilities such as `packages/toolchain/scripts` keep package-local metadata but stay on a separate repo-local verification path.
 
 ## Follow-on extraction guardrail
 

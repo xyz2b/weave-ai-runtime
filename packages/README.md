@@ -2,9 +2,10 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-This page indexes the publishable implementation code under `packages/`.
+This page indexes the first-party implementation code under `packages/`.
 
-Every concrete package directory with its own `pyproject.toml` is in the official first-party PyPI publication scope.
+Most concrete package directories with their own `pyproject.toml` are in the official first-party PyPI publication scope.
+Repository-bound maintainer utilities such as `packages/toolchain/scripts` keep package-local metadata but stay outside the public release train.
 The repository root `pyproject.toml` stays unpublished as a workspace coordinator.
 
 ## What lives here
@@ -26,7 +27,7 @@ The repository root `pyproject.toml` stays unpublished as a workspace coordinato
 - `framework-packs/` are direct public add-ons whose runtime activation names either match or closely track their install names.
 - `product-kits/common/` packages are lower-layer shared kits with distinct install, import, and runtime activation identities.
 - `product-kits/` scenario kits are higher-layer profile entrypoints that compose the lower-layer kits.
-- `toolchain/` packages are public developer tooling, except `weavert-toolchain-scripts`, which remains maintainer-oriented.
+- `toolchain/` packages include public developer tooling plus workspace-owned maintainer utilities such as `weavert-toolchain-scripts`, which stays outside the public PyPI train.
 
 ## How to read this tree
 

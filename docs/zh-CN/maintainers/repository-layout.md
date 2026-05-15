@@ -15,7 +15,7 @@
 
 - `docs/` -> 公开文档、deep dives 与 maintainer notes
 - `examples/` -> 可运行验证路径与高级 integration samples
-- `packages/` -> 可发布 package 工作区
+- `packages/` -> first-party package 工作区，同时承载公开分发 package 与仓库绑定维护者工具
 - `tests/` -> 仓库级验证
 - `openspec/` -> 变更提案、specs 与归档设计工作
 - `upstreams/` -> 上游导入源码树与来源说明
@@ -43,13 +43,15 @@
 
 ## Packaging 所有权
 
-仓库根目录的 `pyproject.toml` 只是 workspace coordinator。具体 packages 拥有自己的 package-local metadata：
+仓库根目录的 `pyproject.toml` 只是 workspace coordinator。具体 packages 拥有自己的 package-local metadata，即使某些 package 不进入公开 PyPI train：
 
 - 根 `pyproject.toml` -> workspace metadata、共享开发者配置与 family 声明
 - `packages/framework-core/pyproject.toml` -> `weavert` runtime package metadata
 - `packages/framework-packs/` 下每个具体 package 都拥有自己的 local metadata
 - `packages/toolchain/starter/pyproject.toml` -> `weavert-starter` CLI metadata
 - `packages/product-kits/` 与 `packages/toolchain/` 下每个具体 package 都拥有自己的 local metadata
+
+公开 concrete packages 的发布契约见 `pypi-release-readiness.md`。像 `packages/toolchain/scripts` 这样的仓库绑定维护者工具会保留 package-local metadata，但走单独的 repo-local 验证路径。
 
 ## 后续抽取 guardrail
 
@@ -73,6 +75,7 @@
 ## 下一步
 
 - 如果仓库迁移会改变公开边界或打包假设，读 `migration-notes.md`
+- 如果改动会影响具体 package metadata、依赖边界或公开发布顺序，读 `pypi-release-readiness.md`
 - 如果仓库改动还需要证据链或 follow-up ledger，进入 `validation-findings.md`
 - 在把布局规则变成 contributor workflow 变更前，先打开 `../../../CONTRIBUTING.zh-CN.md`
 

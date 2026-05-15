@@ -1,6 +1,6 @@
 # Toolchain
 
-This family root indexes concrete developer-side toolchain packages.
+This family root indexes concrete developer-side toolchain packages, including both public tooling and workspace-owned maintainer utilities.
 
 ## What this family owns
 
@@ -9,9 +9,9 @@ This family root indexes concrete developer-side toolchain packages.
 
 ## Public release scope
 
-- Every concrete package under this family is a public PyPI project.
+- `starter/` and `testing/` are public PyPI projects.
+- `scripts/` keeps package-local metadata for repository-checkout and local maintainer installs, but stays outside the public PyPI train.
 - None of these packages are runtime activation targets.
-- `weavert-toolchain-scripts` stays published for maintainers, not as a recommended end-user entrypoint.
 
 ## Concrete packages
 
@@ -19,7 +19,7 @@ This family root indexes concrete developer-side toolchain packages.
 | --- | --- | --- | --- | --- |
 | `starter/` | `weavert-starter` | `weavert_starter` | none | Developer entrypoint |
 | `testing/` | `weavert-testing` | `weavert_testing` | none | Developer entrypoint |
-| `scripts/` | `weavert-toolchain-scripts` | none | none | Maintainer-only utility |
+| `scripts/` | `weavert-toolchain-scripts` | none | none | Workspace-owned maintainer utility outside the public PyPI train |
 
 ## Ownership rule
 
