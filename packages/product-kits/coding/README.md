@@ -11,7 +11,9 @@ Canonical import root: `weavert_kit_coding`
 
 - install name: `weavert-kit-coding`
 - import root: `weavert_kit_coding`
-- scenario pack: `weavert-scenario-coding`
+- runtime activation: `weavert-scenario-coding`
+
+The public install name stays separate from the runtime scenario-pack activation name.
 
 ## Shared packages it composes
 

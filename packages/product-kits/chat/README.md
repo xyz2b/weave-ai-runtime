@@ -11,7 +11,9 @@ Canonical import root: `weavert_kit_chat`
 
 - install name: `weavert-kit-chat`
 - import root: `weavert_kit_chat`
-- scenario pack: `weavert-scenario-chat`
+- runtime activation: `weavert-scenario-chat`
+
+The public install name stays separate from the runtime scenario-pack activation name.
 
 ## Shared packages it composes
 

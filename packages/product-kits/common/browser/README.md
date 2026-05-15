@@ -11,6 +11,9 @@ Canonical import root: `weavert_kit_common_browser`
 
 - install name: `weavert-kit-common-browser`
 - import root: `weavert_kit_common_browser`
+- runtime activation: `weavert-bridge-browser`
+
+The public install name stays separate from the lower-layer runtime package activation name.
 
 ## See also
 

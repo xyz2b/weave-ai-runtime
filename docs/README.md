@@ -75,6 +75,7 @@ Examples are the validation path.
 ### 7. Maintainers
 
 - [maintainers/repository-layout.md](maintainers/repository-layout.md)
+- [maintainers/pypi-release-readiness.md](maintainers/pypi-release-readiness.md)
 - [maintainers/migration-notes.md](maintainers/migration-notes.md)
 - [maintainers/validation-findings.md](maintainers/validation-findings.md)
 
@@ -87,7 +88,7 @@ Examples are the validation path.
 - I want to extend tools, agents, or skills -> [guides/add-a-tool.md](guides/add-a-tool.md), [guides/add-an-agent.md](guides/add-an-agent.md), and [guides/add-a-skill.md](guides/add-a-skill.md)
 - I want host, hook, or control-plane behavior -> [guides/bind-a-host.md](guides/bind-a-host.md), [guides/extend-the-control-plane.md](guides/extend-the-control-plane.md), and [guides/register-hooks.md](guides/register-hooks.md)
 - I want to validate real workflows -> [../examples/README.md](../examples/README.md)
-- I maintain the repository -> [maintainers/repository-layout.md](maintainers/repository-layout.md)
+- I maintain the repository -> [maintainers/repository-layout.md](maintainers/repository-layout.md) and [maintainers/pypi-release-readiness.md](maintainers/pypi-release-readiness.md)
 
 ## Deep Dives
 
@@ -110,3 +111,4 @@ Maintainer-only evidence trails and migration ledgers live under:
 - [maintainers/validation-findings.md](maintainers/validation-findings.md)
 - [maintainers/migration-notes.md](maintainers/migration-notes.md)
 - [maintainers/repository-layout.md](maintainers/repository-layout.md)
+- [maintainers/pypi-release-readiness.md](maintainers/pypi-release-readiness.md)

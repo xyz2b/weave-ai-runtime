@@ -9,8 +9,12 @@ Mechanism-owned first-party add-ons now live under this workspace family.
 
 ## Concrete packages
 
-- `compaction/`: `weavert-compaction` via the `weavert_compaction` import root
-- `isolation/`: `weavert-isolation` via the `weavert_isolation` import root
+- `compaction/`: install `weavert-compaction`, import `weavert_compaction`, runtime activation `weavert-compaction`
+- `isolation/`: install `weavert-isolation`, import `weavert_isolation`, runtime activation `weavert-isolation`
+
+## Exposure tier
+
+- These are direct public runtime-mechanism add-ons rather than scenario-pack entrypoints.
 
 ## Ownership rule
 
@@ -22,4 +26,5 @@ Mechanism-owned first-party add-ons now live under this workspace family.
 - `../README.md`
 - `compaction/README.md`
 - `isolation/README.md`
+- `../../../docs/maintainers/pypi-release-readiness.md`
 - `../../../docs/architecture/request-lifecycle.md`

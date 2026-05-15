@@ -11,7 +11,9 @@ Canonical import root: `weavert_kit_local_assistant`
 
 - install name: `weavert-kit-local-assistant`
 - import root: `weavert_kit_local_assistant`
-- scenario pack: `weavert-scenario-local-assistant`
+- runtime activation: `weavert-scenario-local-assistant`
+
+The public install name stays separate from the runtime scenario-pack activation name.
 
 ## Shared packages it composes
 

@@ -9,8 +9,12 @@ Capability-owned first-party add-ons now live under this workspace family.
 
 ## Concrete packages
 
-- `memory/`: `weavert-memory` via the `weavert_memory` import root
-- `team/`: `weavert-team` via the `weavert_team` import root
+- `memory/`: install `weavert-memory`, import `weavert_memory`, runtime activation `weavert-memory`
+- `team/`: install `weavert-team`, import `weavert_team`, runtime activation `weavert-team`
+
+## Exposure tier
+
+- These are direct public capability add-ons rather than scenario-pack entrypoints.
 
 ## Ownership rule
 
@@ -22,4 +26,5 @@ Capability-owned first-party add-ons now live under this workspace family.
 - `../README.md`
 - `memory/README.md`
 - `team/README.md`
+- `../../../docs/maintainers/pypi-release-readiness.md`
 - `../../../docs/README.md`

@@ -11,6 +11,9 @@ Canonical import root: `weavert_kit_common_pim`
 
 - install name: `weavert-kit-common-pim`
 - import root: `weavert_kit_common_pim`
+- runtime activation: `weavert-bridge-pim`
+
+The public install name stays separate from the lower-layer runtime package activation name.
 
 ## See also
 

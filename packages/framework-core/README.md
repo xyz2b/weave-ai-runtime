@@ -12,6 +12,12 @@ This page indexes `packages/framework-core/`, which owns the runtime kernel and 
 
 - install name: `weavert`
 - import root: `weavert`
+- runtime activation: `weavert-core`
+
+## Exposure tier
+
+- This is the primary public runtime package.
+- The install and import name stay `weavert`, while runtime package selection refers to `weavert-core`.
 
 ## Adjacent families
 
@@ -22,6 +28,7 @@ This page indexes `packages/framework-core/`, which owns the runtime kernel and 
 ## See also
 
 - `../README.md`
+- `../../docs/maintainers/pypi-release-readiness.md`
 - `../framework-packs/README.md`
 - `../product-kits/README.md`
 - `../../docs/concepts/runtime-model.md`

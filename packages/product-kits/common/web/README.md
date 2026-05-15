@@ -11,6 +11,9 @@ Canonical import root: `weavert_kit_common_web`
 
 - install name: `weavert-kit-common-web`
 - import root: `weavert_kit_common_web`
+- runtime activation: `weavert-bridge-web`
+
+The public install name stays separate from the lower-layer runtime package activation name.
 
 ## See also
 

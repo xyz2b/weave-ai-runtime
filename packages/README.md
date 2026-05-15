@@ -4,6 +4,9 @@
 
 This page indexes the publishable implementation code under `packages/`.
 
+Every concrete package directory with its own `pyproject.toml` is in the official first-party PyPI publication scope.
+The repository root `pyproject.toml` stays unpublished as a workspace coordinator.
+
 ## What lives here
 
 - `framework-core/` owns the concrete `weavert` runtime package.
@@ -17,6 +20,14 @@ This page indexes the publishable implementation code under `packages/`.
 - Family roots stay as documented indexes while their concrete packages own package-local metadata.
 - New code should land in the family that owns it instead of drifting back into the core package by default.
 
+## Exposure tiers
+
+- `framework-core/` is the primary public runtime entrypoint.
+- `framework-packs/` are direct public add-ons whose runtime activation names either match or closely track their install names.
+- `product-kits/common/` packages are lower-layer shared kits with distinct install, import, and runtime activation identities.
+- `product-kits/` scenario kits are higher-layer profile entrypoints that compose the lower-layer kits.
+- `toolchain/` packages are public developer tooling, except `weavert-toolchain-scripts`, which remains maintainer-oriented.
+
 ## How to read this tree
 
 - Start with `framework-core/` when the question is about the runtime kernel or public `weavert` surface.
@@ -28,6 +39,7 @@ This page indexes the publishable implementation code under `packages/`.
 
 - `../README.md`
 - `../docs/README.md`
+- `../docs/maintainers/pypi-release-readiness.md`
 - `framework-core/README.md`
 - `product-kits/README.md`
 - `toolchain/README.md`

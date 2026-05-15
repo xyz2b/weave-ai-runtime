@@ -11,6 +11,9 @@ Canonical import root: `weavert_kit_common_workspace_intelligence`
 
 - install name: `weavert-kit-common-workspace-intelligence`
 - import root: `weavert_kit_common_workspace_intelligence`
+- runtime activation: `weavert-shared-workspace-intelligence`
+
+The public install name stays separate from the lower-layer runtime package activation name.
 
 ## See also
 

@@ -6,12 +6,32 @@ build-backend = "setuptools.build_meta"
 name = "weavert-kit-coding"
 version = "0.1.0"
 description = "Coding-oriented product kit for extracted WeaveRT scenario packs."
+readme = "README.md"
+license = "Apache-2.0"
+authors = [{ name = "WeaveRT Maintainers" }]
 requires-python = ">=3.11"
 dependencies = [
-  "weavert",
-  "weavert-kit-common-git",
-  "weavert-kit-common-workspace-intelligence",
+  "weavert>=0.1.0,<0.2.0",
+  "weavert-kit-common-git>=0.1.0,<0.2.0",
+  "weavert-kit-common-workspace-intelligence>=0.1.0,<0.2.0",
 ]
+keywords = ["weavert", "agents", "ai", "product-kit", "scenario-pack"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+]
+
+[project.urls]
+Homepage = "https://github.com/xyz2b/weave-ai-runtime"
+Documentation = "https://github.com/xyz2b/weave-ai-runtime/tree/main/docs"
+Repository = "https://github.com/xyz2b/weave-ai-runtime"
+Issues = "https://github.com/xyz2b/weave-ai-runtime/issues"
 
 [tool.setuptools.packages.find]
 where = ["src"]

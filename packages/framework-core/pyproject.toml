@@ -6,8 +6,28 @@ build-backend = "setuptools.build_meta"
 name = "weavert"
 version = "0.1.0"
 description = "A Python runtime kernel for configurable agents, tools, and skills."
+readme = "README.md"
+license = "Apache-2.0"
+authors = [{ name = "WeaveRT Maintainers" }]
 requires-python = ">=3.11"
 dependencies = ["PyYAML>=6.0"]
+keywords = ["weavert", "agents", "ai", "runtime", "framework"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+]
+
+[project.urls]
+Homepage = "https://github.com/xyz2b/weave-ai-runtime"
+Documentation = "https://github.com/xyz2b/weave-ai-runtime/tree/main/docs"
+Repository = "https://github.com/xyz2b/weave-ai-runtime"
+Issues = "https://github.com/xyz2b/weave-ai-runtime/issues"
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]

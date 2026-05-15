@@ -11,6 +11,9 @@ Canonical import root: `weavert_kit_common_retrieval`
 
 - install name: `weavert-kit-common-retrieval`
 - import root: `weavert_kit_common_retrieval`
+- runtime activation: `weavert-shared-retrieval`
+
+The public install name stays separate from the lower-layer runtime package activation name.
 
 ## See also
 

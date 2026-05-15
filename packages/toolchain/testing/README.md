@@ -11,6 +11,9 @@ Canonical import root: `weavert_testing`
 
 - install name: `weavert-testing`
 - import root: `weavert_testing`
+- runtime activation: none
+
+This package stays outside runtime package selection and is reached through direct imports in validation workflows.
 
 ## See also
 

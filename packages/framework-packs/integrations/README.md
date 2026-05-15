@@ -9,9 +9,13 @@ Integration-owned first-party add-ons now live under this workspace family.
 
 ## Concrete packages
 
-- `openai/`: `weavert-openai` via the `weavert_openai` import root
-- `hosts-reference/`: `weavert-hosts-reference` via the `weavert_hosts_reference` import root
-- `stores-file/`: `weavert-stores-file` via the `weavert_stores_file` import root
+- `openai/`: install `weavert-openai`, import `weavert_openai`, runtime activation `weavert-openai`
+- `hosts-reference/`: install `weavert-hosts-reference`, import `weavert_hosts_reference`, runtime activation `weavert-hosts-reference`
+- `stores-file/`: install `weavert-stores-file`, import `weavert_stores_file`, runtime activation `weavert-stores-file`
+
+## Exposure tier
+
+- These are direct public integration add-ons rather than scenario-pack entrypoints.
 
 ## Ownership rule
 
@@ -24,4 +28,5 @@ Integration-owned first-party add-ons now live under this workspace family.
 - `openai/README.md`
 - `hosts-reference/README.md`
 - `stores-file/README.md`
+- `../../../docs/maintainers/pypi-release-readiness.md`
 - `../../../docs/guides/integrate-openai.md`

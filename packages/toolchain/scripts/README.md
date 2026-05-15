@@ -6,11 +6,13 @@ This package root owns repository support scripts that are intentionally develop
 
 - repository support scripts used by maintainers and validation workflows
 - developer-side utilities that should not appear as runtime-selected packages
+- maintainer-only support utilities that are publishable but not recommended as end-user entrypoints
 
 ## Canonical names
 
 - install name: `weavert-toolchain-scripts`
 - public import root: none; use the script paths directly
+- runtime activation: none
 
 ## Canonical script paths
 

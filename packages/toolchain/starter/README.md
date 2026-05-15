@@ -11,6 +11,9 @@ Canonical import root: `weavert_starter`
 
 - install name: `weavert-starter`
 - import root: `weavert_starter`
+- runtime activation: none
+
+This package stays outside runtime package selection and is reached through the `weavert-starter` CLI or direct imports.
 
 ## See also
 

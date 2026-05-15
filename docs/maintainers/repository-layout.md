@@ -51,6 +51,8 @@ The repository root `pyproject.toml` is a workspace coordinator only. Concrete p
 - `packages/toolchain/starter/pyproject.toml` -> `weavert-starter` CLI metadata
 - each concrete package under `packages/product-kits/` and `packages/toolchain/` owns its own local metadata
 
+The authoritative public-release contract for those concrete packages lives in `pypi-release-readiness.md`.
+
 ## Follow-on extraction guardrail
 
 Follow-on extraction changes must place code into the workspace families instead of restoring new non-core modules under `packages/framework-core/src/weavert/`.
@@ -73,11 +75,13 @@ Use this checklist before landing an extraction change:
 ## Next step
 
 - Read `migration-notes.md` when a repository move also changes public boundaries or packaging assumptions.
+- Use `pypi-release-readiness.md` when the change affects concrete package metadata, dependency bounds, or publication order.
 - Use `validation-findings.md` if the repo change also needs an evidence trail or follow-up ledger.
 - Open `../../CONTRIBUTING.md` before turning the layout rules into a contributor workflow change.
 
 ## See also
 
 - `../README.md`
+- `pypi-release-readiness.md`
 - `../reference/workspace-layout.md`
 - `migration-notes.md`

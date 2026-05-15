@@ -11,6 +11,9 @@ Canonical import root: `weavert_kit_common_local_os`
 
 - install name: `weavert-kit-common-local-os`
 - import root: `weavert_kit_common_local_os`
+- runtime activation: `weavert-bridge-local-os`
+
+The public install name stays separate from the lower-layer runtime package activation name.
 
 ## See also
 
