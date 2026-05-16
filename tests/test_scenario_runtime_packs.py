@@ -6,6 +6,8 @@ from pathlib import Path
 import socket
 import subprocess
 from typing import Any
+import urllib.error
+import urllib.request
 
 import pytest
 
@@ -77,7 +79,10 @@ from weavert_kit_common_web_research import (
     reference_shared_package_manifest as web_research_shared_package_manifest,
     reference_shared_package_shape as web_research_shared_package_shape,
     reference_shared_package_shapes as web_research_shared_package_shapes,
+    validate_technical_web_fetch,
+    validate_technical_web_find,
 )
+from weavert_devtools.tool_impls import validate_web_fetch as validate_devtools_web_fetch
 from weavert_kit_common_workspace_intelligence import (
     reference_shared_package_manifest as workspace_shared_package_manifest,
     reference_shared_package_shape as workspace_shared_package_shape,
@@ -1013,6 +1018,114 @@ def test_grounding_web_fetch_validation_rejects_hostnames_that_resolve_to_non_pu
             assert outcome.message == "Grounding fetch only supports public web hosts"
     finally:
         reference_chat_tool_impls._grounding_hostname_resolves_publicly.cache_clear()
+
+
+def test_grounding_web_find_validation_rejects_page_without_url() -> None:
+    outcome = reference_chat_tool_impls.validate_grounding_web_find(
+        {"page": {"title": "missing identity"}, "pattern": "needle"},
+        ToolContext(session_id="grounding-validation", turn_id="turn-1", agent_name="tester", cwd=Path.cwd()),
+    )
+
+    assert outcome.valid is False
+    assert outcome.message == "url is required"
+
+
+def test_technical_web_fetch_validation_rejects_missing_url() -> None:
+    outcome = validate_technical_web_fetch(
+        {"source": {"title": "missing url"}},
+        ToolContext(session_id="coding-validation", turn_id="turn-1", agent_name="tester", cwd=Path.cwd()),
+    )
+
+    assert outcome.valid is False
+    assert outcome.message == "url is required"
+
+
+def test_technical_web_find_validation_rejects_page_without_url() -> None:
+    outcome = validate_technical_web_find(
+        {"page": {"content": "text"}, "pattern": "needle", "domains": ["docs.example.test"]},
+        ToolContext(session_id="coding-validation", turn_id="turn-1", agent_name="tester", cwd=Path.cwd()),
+    )
+
+    assert outcome.valid is False
+    assert outcome.message == "url is required"
+
+
+def test_devtools_web_fetch_validation_rejects_domain_constrained_mismatch() -> None:
+    outcome = validate_devtools_web_fetch(
+        {"url": "https://example.com", "domains": ["allowed.example.test"]},
+        ToolContext(session_id="devtools-validation", turn_id="turn-1", agent_name="tester", cwd=Path.cwd()),
+    )
+
+    assert outcome.valid is False
+    assert outcome.message == "Grounding fetch is outside the allowed domains"
+
+
+def test_shared_core_revalidates_final_fetch_url_and_sets_freshness_scope() -> None:
+    backend = reference_web_research_core.DuckDuckGoHtmlBackend(
+        urlopen=lambda request, *, timeout: _grounding_urlopen(request, timeout=timeout)
+    )
+    policy = reference_web_research_core.build_policy({"domains": ["grounding.example.test"], "freshness_days": 7})
+
+    result = reference_web_research_core.search_web("refund policy", backend=backend, policy=policy)
+    assert result["freshness_scope"] == {"requested_days": 7, "status": "unsupported"}
+
+    class _RedirectingBackend:
+        def search(self, query: str, *, limit: int):
+            _ = query, limit
+            return []
+
+        def fetch(self, url: str, *, timeout: float, max_bytes: int):
+            _ = url, timeout, max_bytes
+            return reference_web_research_core.BackendFetchResult(
+                url="https://redirected.example.test/out-of-scope",
+                status=200,
+                content_type="text/html",
+                body="<html><title>Out of scope</title></html>",
+                raw_bytes=32,
+                title="Out of scope",
+            )
+
+        def find(self, page: dict[str, Any], pattern: str, *, limit: int, excerpt_chars: int):
+            _ = page, pattern, limit, excerpt_chars
+            return []
+
+    with pytest.raises(ValueError, match="outside the allowed domains"):
+        reference_web_research_core.inspect_page(
+            {"url": "https://grounding.example.test/refund-policy"},
+            backend=_RedirectingBackend(),
+            policy=policy,
+        )
+
+
+def test_shared_core_redirect_handler_rejects_out_of_scope_and_blocked_targets() -> None:
+    request = urllib.request.Request("https://grounding.example.test/refund-policy")
+    headers = Message()
+
+    outside_handler = reference_web_research_core._SafeWebRedirectHandler(
+        allowed_domains=("grounding.example.test",),
+    )
+    with pytest.raises(urllib.error.HTTPError, match="outside the allowed domains"):
+        outside_handler.redirect_request(
+            request,
+            fp=None,
+            code=302,
+            msg="Found",
+            headers=headers,
+            newurl="https://redirected.example.test/out-of-scope",
+        )
+
+    blocked_handler = reference_web_research_core._SafeWebRedirectHandler(
+        blocked_domains=("redirected.example.test",),
+    )
+    with pytest.raises(urllib.error.HTTPError, match="blocked for this domain"):
+        blocked_handler.redirect_request(
+            request,
+            fp=None,
+            code=302,
+            msg="Found",
+            headers=headers,
+            newurl="https://redirected.example.test/blocked",
+        )
 
 
 def test_grounded_chat_reference_stack_exercises_retrieval_web_and_memory_surfaces(

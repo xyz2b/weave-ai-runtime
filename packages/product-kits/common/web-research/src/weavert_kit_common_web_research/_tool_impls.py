@@ -6,7 +6,16 @@ from typing import Any
 
 from weavert.definitions import ValidationOutcome
 from weavert.tool_runtime import ToolContext
-from weavert_web_research import DuckDuckGoHtmlBackend, build_policy, find_in_page, inspect_page, search_web
+from weavert_web_research import (
+    DuckDuckGoHtmlBackend,
+    build_policy,
+    find_in_page,
+    inspect_page,
+    search_web,
+    validate_fetch_input,
+    validate_page_find_input,
+    web_urlopen,
+)
 
 _TECHNICAL_SEARCH_LIMIT = 8
 _TECHNICAL_FETCH_CHARS = 16_000
@@ -46,8 +55,16 @@ async def technical_web_search_tool(tool_input: dict[str, Any], _: ToolContext) 
 
 
 def validate_technical_web_fetch(tool_input: dict[str, Any], _: ToolContext) -> ValidationOutcome:
-    if tool_input.get("source") is None and not str(tool_input.get("url") or "").strip():
-        return ValidationOutcome(False, "source or url is required")
+    policy = build_policy(
+        tool_input,
+        default_search_limit=_TECHNICAL_SEARCH_LIMIT,
+        default_text_chars=_TECHNICAL_FETCH_CHARS,
+        default_find_matches=_TECHNICAL_FIND_LIMIT,
+    )
+    try:
+        validate_fetch_input(_source_reference(tool_input), policy=policy)
+    except ValueError as exc:
+        return ValidationOutcome(False, str(exc))
     return ValidationOutcome(True)
 
 
@@ -62,7 +79,18 @@ async def technical_web_fetch_tool(tool_input: dict[str, Any], _: ToolContext) -
     source = _source_reference(tool_input)
 
     def fetch() -> dict[str, Any]:
-        result = inspect_page(source, backend=DuckDuckGoHtmlBackend(), policy=policy)
+        result = inspect_page(
+            source,
+            backend=DuckDuckGoHtmlBackend(
+                urlopen=lambda request, *, timeout: web_urlopen(
+                    request,
+                    timeout=timeout,
+                    allowed_domains=policy.allowed_domains,
+                    blocked_domains=policy.blocked_domains,
+                )
+            ),
+            policy=policy,
+        )
         result["version_scope"] = _version_scope_for_mapping(result, requested_version=requested_version)
         return result
 
@@ -72,8 +100,16 @@ async def technical_web_fetch_tool(tool_input: dict[str, Any], _: ToolContext) -
 def validate_technical_web_find(tool_input: dict[str, Any], _: ToolContext) -> ValidationOutcome:
     if not str(tool_input.get("pattern") or "").strip():
         return ValidationOutcome(False, "pattern must be non-empty")
-    if not isinstance(tool_input.get("page"), Mapping):
-        return ValidationOutcome(False, "page must be an inspected page object")
+    policy = build_policy(
+        tool_input,
+        default_search_limit=_TECHNICAL_SEARCH_LIMIT,
+        default_text_chars=_TECHNICAL_FETCH_CHARS,
+        default_find_matches=_TECHNICAL_FIND_LIMIT,
+    )
+    try:
+        validate_page_find_input(tool_input, policy=policy)
+    except ValueError as exc:
+        return ValidationOutcome(False, str(exc))
     return ValidationOutcome(True)
 
 

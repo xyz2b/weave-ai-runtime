@@ -8,7 +8,15 @@ from typing import Any
 from weavert.builtins.tool_impls import _normalize_optional_string, _path_allowed, _resolve_path
 from weavert.definitions import SkillShell, ValidationOutcome
 from weavert.tool_runtime import ToolContext
-from weavert_web_research import DuckDuckGoHtmlBackend, build_policy, inspect_page, search_web, validate_web_url_input
+from weavert_web_research import (
+    DuckDuckGoHtmlBackend,
+    build_policy,
+    inspect_page,
+    search_web,
+    validate_fetch_input,
+    validate_web_url_input,
+    web_urlopen,
+)
 
 _GLOB_TOOL_MAX_MATCHES = 128
 
@@ -204,7 +212,14 @@ async def web_fetch_tool(tool_input: dict[str, Any], _: ToolContext) -> dict[str
     def fetch() -> dict[str, Any]:
         result = inspect_page(
             tool_input,
-            backend=DuckDuckGoHtmlBackend(),
+            backend=DuckDuckGoHtmlBackend(
+                urlopen=lambda request, *, timeout: web_urlopen(
+                    request,
+                    timeout=timeout,
+                    allowed_domains=policy.allowed_domains,
+                    blocked_domains=policy.blocked_domains,
+                )
+            ),
             policy=policy,
         )
         return {
@@ -218,6 +233,7 @@ async def web_fetch_tool(tool_input: dict[str, Any], _: ToolContext) -> dict[str
             "page_handle": result["page_handle"],
             "source": result["source"],
             "policy": result["policy"],
+            **({"freshness_scope": result["freshness_scope"]} if "freshness_scope" in result else {}),
         }
 
     return await asyncio.to_thread(fetch)
@@ -226,6 +242,15 @@ async def web_fetch_tool(tool_input: dict[str, Any], _: ToolContext) -> dict[str
 def validate_web_search(tool_input: dict[str, Any], _: ToolContext) -> ValidationOutcome:
     if not tool_input["query"].strip():
         return ValidationOutcome(False, "query must be non-empty")
+    return ValidationOutcome(True)
+
+
+def validate_web_fetch(tool_input: dict[str, Any], _: ToolContext) -> ValidationOutcome:
+    policy = build_policy(tool_input, default_search_limit=5, default_text_chars=32_000, default_find_matches=5)
+    try:
+        validate_fetch_input(tool_input, policy=policy)
+    except ValueError as exc:
+        return ValidationOutcome(False, str(exc))
     return ValidationOutcome(True)
 
 
@@ -252,6 +277,7 @@ __all__ = [
     "validate_edit_tool",
     "validate_read_tool",
     "validate_url_tool",
+    "validate_web_fetch",
     "validate_web_search",
     "validate_write_tool",
     "web_fetch_tool",

@@ -20,7 +20,8 @@ from weavert_web_research import (
     find_in_page,
     inspect_page,
     search_web,
-    validate_web_url_input,
+    validate_fetch_input,
+    validate_page_find_input,
     web_urlopen,
 )
 
@@ -57,25 +58,20 @@ async def grounding_web_search_tool(tool_input: dict[str, Any], _: ToolContext) 
 
 
 def validate_grounding_web_fetch(tool_input: dict[str, Any], _: ToolContext) -> ValidationOutcome:
-    if tool_input.get("source") is None and not str(tool_input.get("url") or "").strip():
-        return ValidationOutcome(False, "source or url is required")
-    url = _candidate_url(tool_input)
-    if url is None:
-        return ValidationOutcome(False, "Only http:// and https:// URLs are supported")
     policy = build_policy(
         tool_input,
         default_search_limit=_GROUNDING_DEFAULT_SEARCH_LIMIT,
         default_text_chars=_GROUNDING_DEFAULT_FETCH_CHARS,
         default_find_matches=_GROUNDING_DEFAULT_FIND_LIMIT,
     )
-    validation_error = validate_web_url_input(
-        url,
-        allowed_domains=policy.allowed_domains,
-        blocked_domains=policy.blocked_domains,
-        hostname_public_resolver=_grounding_hostname_resolves_publicly,
-    )
-    if validation_error is not None:
-        return ValidationOutcome(False, validation_error)
+    try:
+        validate_fetch_input(
+            _source_reference(tool_input),
+            policy=policy,
+            hostname_public_resolver=_grounding_hostname_resolves_publicly,
+        )
+    except ValueError as exc:
+        return ValidationOutcome(False, str(exc))
     return ValidationOutcome(True)
 
 
@@ -91,7 +87,15 @@ async def grounding_web_fetch_tool(tool_input: dict[str, Any], _: ToolContext) -
     def fetch() -> dict[str, Any]:
         return inspect_page(
             source,
-            backend=DuckDuckGoHtmlBackend(urlopen=_grounding_urlopen),
+            backend=DuckDuckGoHtmlBackend(
+                urlopen=lambda request, *, timeout: _grounding_urlopen(
+                    request,
+                    timeout=timeout,
+                    allowed_domains=policy.allowed_domains,
+                    blocked_domains=policy.blocked_domains,
+                    hostname_public_resolver=_grounding_hostname_resolves_publicly,
+                )
+            ),
             policy=policy,
         )
 
@@ -101,8 +105,20 @@ async def grounding_web_fetch_tool(tool_input: dict[str, Any], _: ToolContext) -
 def validate_grounding_web_find(tool_input: dict[str, Any], _: ToolContext) -> ValidationOutcome:
     if not str(tool_input.get("pattern") or "").strip():
         return ValidationOutcome(False, "pattern must be non-empty")
-    if not isinstance(tool_input.get("page"), Mapping):
-        return ValidationOutcome(False, "page must be an inspected page object")
+    policy = build_policy(
+        tool_input,
+        default_search_limit=_GROUNDING_DEFAULT_SEARCH_LIMIT,
+        default_text_chars=_GROUNDING_DEFAULT_FETCH_CHARS,
+        default_find_matches=_GROUNDING_DEFAULT_FIND_LIMIT,
+    )
+    try:
+        validate_page_find_input(
+            tool_input,
+            policy=policy,
+            hostname_public_resolver=_grounding_hostname_resolves_publicly,
+        )
+    except ValueError as exc:
+        return ValidationOutcome(False, str(exc))
     return ValidationOutcome(True)
 
 
@@ -129,14 +145,6 @@ def _source_reference(tool_input: Mapping[str, Any]) -> Mapping[str, Any]:
     if isinstance(source, Mapping):
         return source
     return {"url": tool_input.get("url")}
-
-
-def _candidate_url(tool_input: Mapping[str, Any]) -> str | None:
-    if isinstance(tool_input.get("source"), Mapping):
-        candidate = str(tool_input["source"].get("url") or "").strip()
-        return candidate or None
-    candidate = str(tool_input.get("url") or "").strip()
-    return candidate or None
 
 
 @lru_cache(maxsize=256)

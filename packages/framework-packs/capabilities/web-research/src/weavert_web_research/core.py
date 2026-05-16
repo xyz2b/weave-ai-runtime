@@ -92,6 +92,20 @@ class WebResearchBackend(Protocol):
     ) -> list[BackendFindMatch]: ...
 
 
+@dataclass(frozen=True, slots=True)
+class ValidationResult:
+    normalized_url: str
+
+
+@dataclass(frozen=True, slots=True)
+class PageValidationResult:
+    url: str
+    page_handle: str
+    source_handle: str
+    title: str
+    source: Mapping[str, Any]
+
+
 def build_policy(
     raw: Mapping[str, Any] | None = None,
     *,
@@ -207,6 +221,7 @@ def search_web(
         ],
         "policy": _policy_dict(resolved_policy),
         "backend": "duckduckgo-html",
+        **_freshness_scope_payload(resolved_policy),
     }
 
 
@@ -218,26 +233,17 @@ def inspect_page(
 ) -> dict[str, Any]:
     resolved_policy = policy or WebResearchPolicy()
     resolved_backend = backend or DuckDuckGoHtmlBackend()
-    url = _url_from_reference(raw)
-    normalized = normalize_web_url(url)
-    if normalized is None:
-        raise ValueError("Only http:// and https:// URLs are supported")
-    validation_error = validate_web_url(
-        normalized,
-        allowed_domains=resolved_policy.allowed_domains,
-        blocked_domains=resolved_policy.blocked_domains,
-    )
-    if validation_error is not None:
-        raise ValueError(validation_error)
+    normalized = validate_fetch_input(raw, policy=resolved_policy).normalized_url
     timeout = max(1, int(raw.get("timeout_ms", 10_000))) / 1000
     fetched = resolved_backend.fetch(normalized, timeout=timeout, max_bytes=resolved_policy.max_fetch_bytes)
+    resolved_url = _revalidate_final_fetch_url(fetched.url, policy=resolved_policy)
     normalized_text = normalize_remote_text(fetched.body, content_type=fetched.content_type)
     truncated = fetched.raw_bytes > resolved_policy.max_fetch_bytes or len(normalized_text) > resolved_policy.max_text_chars
     content = truncate_text(normalized_text, resolved_policy.max_text_chars)
-    page_handle = _stable_handle("page", fetched.url)
-    source_handle = _stable_handle("source", fetched.url)
-    title = fetched.title or _normalize_optional_string(raw.get("title")) or fetched.url
-    source = _source_descriptor(title=title, url=fetched.url, page_handle=page_handle, source_handle=source_handle)
+    page_handle = _stable_handle("page", resolved_url)
+    source_handle = _stable_handle("source", resolved_url)
+    title = fetched.title or _normalize_optional_string(raw.get("title")) or resolved_url
+    source = _source_descriptor(title=title, url=resolved_url, page_handle=page_handle, source_handle=source_handle)
     policy_payload = _policy_dict(resolved_policy)
     policy_payload["truncated"] = truncated
     return {
@@ -245,7 +251,7 @@ def inspect_page(
         "title": title,
         "excerpt": truncate_text(content, 240),
         "content": content,
-        "url": fetched.url,
+        "url": resolved_url,
         "status": fetched.status,
         "content_type": fetched.content_type,
         "truncated": truncated,
@@ -263,6 +269,7 @@ def inspect_page(
         "source": source,
         "policy": policy_payload,
         "browser_handoff": build_browser_handoff(source),
+        **_freshness_scope_payload(resolved_policy),
     }
 
 
@@ -272,21 +279,19 @@ def find_in_page(
     backend: WebResearchBackend | None = None,
     policy: WebResearchPolicy | None = None,
 ) -> dict[str, Any]:
+    resolved_policy = policy or WebResearchPolicy()
+    page_validation = validate_page_find_input(raw, policy=resolved_policy)
     page = raw.get("page")
-    if not isinstance(page, Mapping):
-        raise ValueError("page must be an inspected page object")
+    assert isinstance(page, Mapping)
     pattern = _normalize_optional_string(raw.get("pattern"))
     if pattern is None:
         raise ValueError("pattern must be non-empty")
-    resolved_policy = policy or WebResearchPolicy()
     resolved_backend = backend or DuckDuckGoHtmlBackend()
-    page_handle = str(page.get("page_handle") or _stable_handle("page", _url_from_reference(page)))
-    source_handle = str(page.get("source_handle") or _stable_handle("source", _url_from_reference(page)))
-    title = str(page.get("title") or page.get("url") or "Untitled source").strip() or "Untitled source"
-    url = _url_from_reference(page)
-    source = page.get("source")
-    if not isinstance(source, Mapping):
-        source = _source_descriptor(title=title, url=url, page_handle=page_handle, source_handle=source_handle)
+    page_handle = page_validation.page_handle
+    source_handle = page_validation.source_handle
+    title = page_validation.title
+    url = page_validation.url
+    source = dict(page_validation.source)
     matches = resolved_backend.find(
         page,
         pattern,
@@ -328,6 +333,7 @@ def find_in_page(
         "source": dict(source),
         "policy": dict(page.get("policy") or _policy_dict(resolved_policy)),
         "browser_handoff": build_browser_handoff(source),
+        **_freshness_scope_payload(resolved_policy),
     }
 
 
@@ -392,6 +398,52 @@ def validate_web_url_input(
     )
 
 
+def validate_fetch_input(
+    raw: Mapping[str, Any],
+    *,
+    policy: WebResearchPolicy | None = None,
+    hostname_public_resolver: Callable[[str], bool | None] | None = None,
+) -> ValidationResult:
+    normalized = normalize_web_url(_url_from_reference(raw))
+    if normalized is None:
+        raise ValueError("Only http:// and https:// URLs are supported")
+    resolved_policy = policy or WebResearchPolicy()
+    validation_error = validate_web_url(
+        normalized,
+        allowed_domains=resolved_policy.allowed_domains,
+        blocked_domains=resolved_policy.blocked_domains,
+        hostname_public_resolver=hostname_public_resolver,
+    )
+    if validation_error is not None:
+        raise ValueError(validation_error)
+    return ValidationResult(normalized_url=normalized)
+
+
+def validate_page_find_input(
+    raw: Mapping[str, Any],
+    *,
+    policy: WebResearchPolicy | None = None,
+    hostname_public_resolver: Callable[[str], bool | None] | None = None,
+) -> PageValidationResult:
+    page = raw.get("page")
+    if not isinstance(page, Mapping):
+        raise ValueError("page must be an inspected page object")
+    normalized = validate_fetch_input(page, policy=policy, hostname_public_resolver=hostname_public_resolver).normalized_url
+    page_handle = str(page.get("page_handle") or _stable_handle("page", normalized))
+    source_handle = str(page.get("source_handle") or _stable_handle("source", normalized))
+    title = str(page.get("title") or page.get("url") or "Untitled source").strip() or "Untitled source"
+    source = page.get("source")
+    if not isinstance(source, Mapping):
+        source = _source_descriptor(title=title, url=normalized, page_handle=page_handle, source_handle=source_handle)
+    return PageValidationResult(
+        url=normalized,
+        page_handle=page_handle,
+        source_handle=source_handle,
+        title=title,
+        source=source,
+    )
+
+
 def validate_web_url(
     url: str,
     *,
@@ -452,18 +504,48 @@ def web_hostname_resolves_publicly(hostname: str) -> bool | None:
 
 
 class _SafeWebRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def __init__(
+        self,
+        *,
+        allowed_domains: Sequence[str] = (),
+        blocked_domains: Sequence[str] = (),
+        hostname_public_resolver: Callable[[str], bool | None] | None = None,
+    ) -> None:
+        super().__init__()
+        self._allowed_domains = tuple(allowed_domains)
+        self._blocked_domains = tuple(blocked_domains)
+        self._hostname_public_resolver = hostname_public_resolver
+
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         normalized = normalize_web_url(newurl)
         if normalized is None:
             raise urllib.error.HTTPError(newurl, code, "Only http:// and https:// URLs are supported", headers, fp)
-        validation_error = validate_web_url(normalized)
+        validation_error = validate_web_url(
+            normalized,
+            allowed_domains=self._allowed_domains,
+            blocked_domains=self._blocked_domains,
+            hostname_public_resolver=self._hostname_public_resolver,
+        )
         if validation_error is not None:
             raise urllib.error.HTTPError(normalized, code, validation_error, headers, fp)
         return super().redirect_request(req, fp, code, msg, headers, normalized)
 
 
-def web_urlopen(request: urllib.request.Request, *, timeout: float | int):
-    opener = urllib.request.build_opener(_SafeWebRedirectHandler())
+def web_urlopen(
+    request: urllib.request.Request,
+    *,
+    timeout: float | int,
+    allowed_domains: Sequence[str] = (),
+    blocked_domains: Sequence[str] = (),
+    hostname_public_resolver: Callable[[str], bool | None] | None = None,
+):
+    opener = urllib.request.build_opener(
+        _SafeWebRedirectHandler(
+            allowed_domains=allowed_domains,
+            blocked_domains=blocked_domains,
+            hostname_public_resolver=hostname_public_resolver,
+        )
+    )
     return opener.open(request, timeout=timeout)
 
 
@@ -580,6 +662,31 @@ def _policy_dict(policy: WebResearchPolicy) -> dict[str, Any]:
             "max_find_matches": policy.max_find_matches,
         },
     }
+
+
+def _freshness_scope_payload(policy: WebResearchPolicy) -> dict[str, Any]:
+    if policy.freshness_days is None:
+        return {}
+    return {
+        "freshness_scope": {
+            "requested_days": policy.freshness_days,
+            "status": "unsupported",
+        }
+    }
+
+
+def _revalidate_final_fetch_url(url: str, *, policy: WebResearchPolicy) -> str:
+    normalized = normalize_web_url(url)
+    if normalized is None:
+        raise ValueError("Only http:// and https:// URLs are supported")
+    validation_error = validate_web_url(
+        normalized,
+        allowed_domains=policy.allowed_domains,
+        blocked_domains=policy.blocked_domains,
+    )
+    if validation_error is not None:
+        raise ValueError(validation_error)
+    return normalized
 
 
 def _normalize_domains(value: Any) -> tuple[str, ...]:

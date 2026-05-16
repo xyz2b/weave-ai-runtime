@@ -1,5 +1,7 @@
 from .core import (
     DuckDuckGoHtmlBackend,
+    PageValidationResult,
+    ValidationResult,
     WebResearchPolicy,
     build_browser_handoff,
     build_policy,
@@ -8,6 +10,8 @@ from .core import (
     normalize_remote_text,
     normalize_web_url,
     search_web,
+    validate_fetch_input,
+    validate_page_find_input,
     validate_web_url,
     validate_web_url_input,
     web_hostname_resolves_publicly,
@@ -16,6 +20,8 @@ from .core import (
 
 __all__ = [
     "DuckDuckGoHtmlBackend",
+    "PageValidationResult",
+    "ValidationResult",
     "WebResearchPolicy",
     "build_browser_handoff",
     "build_policy",
@@ -24,6 +30,8 @@ __all__ = [
     "normalize_remote_text",
     "normalize_web_url",
     "search_web",
+    "validate_fetch_input",
+    "validate_page_find_input",
     "validate_web_url",
     "validate_web_url_input",
     "web_hostname_resolves_publicly",
