@@ -20,6 +20,7 @@ from weavert.package_system.resolution import PACKAGE_CANDIDATE_METADATA_KEY
 from weavert.tool_runtime import ToolContext
 from weavert_testing import ScriptedModelClient, text_batch, tool_call_batch
 import weavert_kit_common_web._tool_impls as reference_chat_tool_impls
+import weavert_kit_common_web_research._tool_impls as reference_coding_web_tool_impls
 import weavert_web_research.core as reference_web_research_core
 from weavert_kit_chat import (
     CHAT_RETRIEVAL_TOOLS,
@@ -334,7 +335,10 @@ def _tool_context(runtime, cwd: Path) -> ToolContext:
         agent_name="tester",
         cwd=cwd,
         tool_registry=runtime.kernel.tool_registry,
+        agent_registry=runtime.kernel.agent_registry,
+        tool_pool=tuple(runtime.kernel.tool_registry.definitions()),
         runtime_services=runtime.services,
+        agent_runner=runtime.services.agent_runner,
     )
 
 
@@ -483,6 +487,11 @@ def test_grounded_reference_shared_packages_can_be_admitted_selected_and_execute
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(reference_chat_tool_impls, "_grounding_urlopen", _grounding_urlopen)
+    monkeypatch.setattr(
+        reference_coding_web_tool_impls,
+        "web_urlopen",
+        lambda request, timeout=10, **_kwargs: _grounding_urlopen(request, timeout=timeout),
+    )
     monkeypatch.setattr(reference_web_research_core, "web_urlopen", _grounding_urlopen)
 
     retrieval_runtime, retrieval_shape, retrieval_root = _assemble_shared_reference_runtime(
@@ -535,6 +544,7 @@ def test_grounded_reference_shared_packages_can_be_admitted_selected_and_execute
     web_runtime, web_shape, web_root = _assemble_shared_reference_runtime(tmp_path, "weavert-bridge-web")
     web_tool_names = _tool_names(web_runtime)
     assert CHAT_WEB_TOOL_SET <= web_tool_names
+    assert web_runtime.kernel.agent_registry.get("web-searcher").metadata["builtin_owner"] == web_shape.package_name
     assert all(
         web_runtime.kernel.tool_registry.get(tool_name).metadata["builtin_owner"] == web_shape.package_name
         for tool_name in CHAT_WEB_TOOL_SET
@@ -543,6 +553,79 @@ def test_grounded_reference_shared_packages_can_be_admitted_selected_and_execute
         web_runtime.kernel.tool_registry.get(tool_name).traits.read_only
         for tool_name in CHAT_WEB_TOOL_SET
     )
+
+    delegated_calls = []
+
+    async def agent_runner(agent: str, prompt: str, context: ToolContext, **kwargs: Any) -> dict[str, Any]:
+        delegated_calls.append((agent, prompt, kwargs, context))
+        return {
+            "agent": agent,
+            "status": "completed",
+            "run_id": "child-web-1",
+            "parent_run_id": "parent-web-1",
+            "summary": "Refunds stay available for 30 days.",
+            "terminal_metadata": {
+                "web_research": {
+                    "answer": "Refunds stay available for 30 days.",
+                    "sources": [
+                        {
+                            "url": "https://grounding.example.test/refund-policy",
+                            "title": "Refund policy",
+                        }
+                    ],
+                    "evidence": [
+                        {
+                            "url": "https://grounding.example.test/refund-policy",
+                            "excerpt": "Refunds stay available for 30 days after purchase.",
+                        }
+                    ],
+                    "stop_reason": "sufficient_evidence",
+                    "trace_summary": [{"event": "fetched", "tool": "grounding_web_fetch"}],
+                }
+            },
+        }
+
+    web_research_context = ToolContext(
+        session_id="reference-shared-tool",
+        turn_id="turn-1",
+        agent_name="tester",
+        cwd=web_root,
+        tool_registry=web_runtime.kernel.tool_registry,
+        agent_registry=web_runtime.kernel.agent_registry,
+        tool_pool=tuple(web_runtime.kernel.tool_registry.definitions()),
+        runtime_services=web_runtime.services,
+        agent_runner=agent_runner,
+    )
+    web_research_tool_def = web_runtime.kernel.tool_registry.get("web_research")
+    web_research_result = asyncio.run(
+        web_research_tool_def.execute(
+            {
+                "objective": "What is the refund window?",
+                "domains": ["grounding.example.test"],
+                "blocked_domains": ["blocked.example.test"],
+                "freshness_days": 14,
+                "search_budget": 2,
+                "fetch_budget": 1,
+                "find_budget": 1,
+                "desired_source_count": 1,
+            },
+            web_research_context,
+        )
+    )
+    assert delegated_calls[0][0] == "web-searcher"
+    assert delegated_calls[0][2]["background"] is False
+    assert delegated_calls[0][2]["max_turns"] == 4
+    assert "grounding_web_search" in delegated_calls[0][1]
+    assert web_research_result["policy"] == {
+        "domains": ["grounding.example.test"],
+        "blocked_domains": ["blocked.example.test"],
+        "freshness_days": 14,
+    }
+    assert web_research_result["budget"]["fetch_budget"] == 1
+    assert web_research_result["sources"][0]["url"] == "https://grounding.example.test/refund-policy"
+    assert web_research_result["evidence"][0]["excerpt"].startswith("Refunds stay available")
+    assert web_research_result["stop_reason"] == "sufficient_evidence"
+    assert web_research_result["child_run"]["agent"] == "web-searcher"
 
     search_tool = web_runtime.kernel.tool_registry.get("grounding_web_search")
     search_result = asyncio.run(
@@ -1030,6 +1113,41 @@ def test_grounding_web_find_validation_rejects_page_without_url() -> None:
     assert outcome.message == "url is required"
 
 
+def test_web_research_validation_requires_objective_and_bounded_budget() -> None:
+    context = ToolContext(session_id="grounding-validation", turn_id="turn-1", agent_name="tester", cwd=Path.cwd())
+
+    missing_objective = reference_chat_tool_impls.validate_web_research({}, context)
+    assert missing_objective.valid is False
+    assert "objective must be non-empty" in missing_objective.message
+
+    invalid_budget = reference_chat_tool_impls.validate_web_research(
+        {"objective": "research refunds", "search_budget": 99},
+        context,
+    )
+    assert invalid_budget.valid is False
+    assert "search_budget must be between 1 and 8" in invalid_budget.message
+
+    valid = reference_chat_tool_impls.validate_web_research(
+        {
+            "question": "research refunds",
+            "allowed_domains": ["grounding.example.test"],
+            "blocked_domains": ["blocked.example.test"],
+            "recency_days": 7,
+            "fetch_budget": 2,
+            "output_hints": {"citation_style": "compact"},
+        },
+        context,
+    )
+    assert valid.valid is True
+    assert valid.updated_input["objective"] == "research refunds"
+    assert valid.updated_input["policy"] == {
+        "domains": ["grounding.example.test"],
+        "blocked_domains": ["blocked.example.test"],
+        "freshness_days": 7,
+    }
+    assert valid.updated_input["budget"]["fetch_budget"] == 2
+
+
 def test_technical_web_fetch_validation_rejects_missing_url() -> None:
     outcome = validate_technical_web_fetch(
         {"source": {"title": "missing url"}},
@@ -1505,6 +1623,7 @@ def test_local_assistant_daily_brief_skill_fork_exposes_skill_tool_to_assistant_
 
     assert captured["planner_tools"] == {
         "ask_user",
+        "web_research",
         "grounding_web_fetch",
         "grounding_web_find",
         "grounding_web_search",

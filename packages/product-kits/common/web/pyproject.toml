@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "weavert-kit-common-web"
 version = "0.1.0"
-description = "Shared web-grounding kit surfaces for extracted WeaveRT product kits."
+description = "Shared AI-first web_research and read-only web primitive kit surfaces for WeaveRT product kits."
 readme = "README.md"
 license = "Apache-2.0"
 authors = [{ name = "WeaveRT Maintainers" }]

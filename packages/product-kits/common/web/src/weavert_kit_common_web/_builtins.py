@@ -27,6 +27,8 @@ from ._tool_impls import (
     validate_grounding_web_search,
     validate_prepare_citations_tool,
     validate_retrieve_context_tool,
+    validate_web_research,
+    web_research_tool,
 )
 
 CHAT_RETRIEVAL_TOOLS = (
@@ -34,10 +36,12 @@ CHAT_RETRIEVAL_TOOLS = (
     "prepare_citations",
 )
 CHAT_WEB_TOOLS = (
+    "web_research",
     "grounding_web_search",
     "grounding_web_fetch",
     "grounding_web_find",
 )
+WEB_RESEARCH_WORKER_AGENTS = ("web-searcher",)
 CHAT_SCENARIO_AGENTS = (
     "researcher",
     "support-agent",
@@ -129,6 +133,68 @@ def chat_shared_retrieval_builtin_tools() -> tuple[ToolDefinition, ...]:
 def chat_web_grounding_builtin_tools() -> tuple[ToolDefinition, ...]:
     origin = DefinitionOrigin(DefinitionSource.BUNDLED)
     return (
+        ToolDefinition(
+            name="web_research",
+            description="Run bounded AI-first read-only web research through the package-owned delegated web-searcher agent.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "objective": {"type": "string"},
+                    "question": {"type": "string"},
+                    "domains": {"type": "array", "items": {"type": "string"}},
+                    "allowed_domains": {"type": "array", "items": {"type": "string"}},
+                    "blocked_domains": {"type": "array", "items": {"type": "string"}},
+                    "freshness_days": {"type": "integer", "minimum": 0},
+                    "recency_days": {"type": "integer", "minimum": 0},
+                    "search_budget": {"type": "integer", "minimum": 1, "maximum": 8},
+                    "fetch_budget": {"type": "integer", "minimum": 0, "maximum": 8},
+                    "find_budget": {"type": "integer", "minimum": 0, "maximum": 12},
+                    "desired_source_count": {"type": "integer", "minimum": 1, "maximum": 8},
+                    "max_turns": {"type": "integer", "minimum": 1, "maximum": 8},
+                    "max_chars": {"type": "integer", "minimum": 500, "maximum": 32000},
+                    "output_hints": {"type": "object"},
+                },
+                "additionalProperties": False,
+            },
+            output_schema={
+                "type": "object",
+                "properties": {
+                    "objective": {"type": "string"},
+                    "answer": {"type": "string"},
+                    "sources": {"type": "array", "items": {"type": "object"}},
+                    "evidence": {"type": "array", "items": {"type": "object"}},
+                    "policy": {"type": "object"},
+                    "budget": {"type": "object"},
+                    "stop_reason": {"type": "string"},
+                    "trace_summary": {"type": "array", "items": {"type": "object"}},
+                    "child_run": {"type": "object"},
+                },
+                "required": [
+                    "objective",
+                    "answer",
+                    "sources",
+                    "evidence",
+                    "policy",
+                    "budget",
+                    "stop_reason",
+                    "trace_summary",
+                    "child_run",
+                ],
+                "additionalProperties": False,
+            },
+            traits=ToolTraits(read_only=True, concurrency_safe=False),
+            semantics=_network_tool_semantics(
+                title="Research web evidence",
+                operation="web_research",
+                summary_prefix="Research web evidence",
+                subtitle_key="objective",
+                tags=("grounding", "web", "research"),
+            ),
+            validate_input=validate_web_research,
+            execute=web_research_tool,
+            runtime_execution_class="privileged",
+            origin=origin,
+        ),
         ToolDefinition(
             name="grounding_web_search",
             description="Search the public web for chat-safe grounding candidates with explicit source handles.",
@@ -240,10 +306,11 @@ def chat_scenario_builtin_agents() -> tuple[AgentDefinition, ...]:
                 "You are the grounded-chat researcher.\n\n"
                 "Workflow contract:\n"
                 "1. Start with read-only grounding surfaces.\n"
-                "2. Use `grounding_web_search`, `grounding_web_fetch`, and `grounding_web_find` for fresh external facts when needed.\n"
-                "3. Use `retrieve_context` to rank notes, memory, or inspected passages before summarizing.\n"
-                "4. Use `prepare_citations` before handing off a final evidence bundle.\n"
-                "5. Never imply shell access, workspace mutation, or uninspected sources."
+                "2. Prefer `web_research` for fresh external facts that need bounded source discovery and inspection.\n"
+                "3. Use `grounding_web_search`, `grounding_web_fetch`, and `grounding_web_find` only when explicit low-level orchestration is needed.\n"
+                "4. Use `retrieve_context` to rank notes, memory, or inspected passages before summarizing.\n"
+                "5. Use `prepare_citations` before handing off a final evidence bundle.\n"
+                "6. Never imply shell access, workspace mutation, or uninspected sources."
             ),
             tools=(*CHAT_RETRIEVAL_TOOLS, *CHAT_WEB_TOOLS, "ask_user"),
             skills=("chat-summarize", "answer-with-citations", "clarify-request"),
@@ -260,7 +327,7 @@ def chat_scenario_builtin_agents() -> tuple[AgentDefinition, ...]:
                 "Workflow contract:\n"
                 "1. Clarify the user's goal when the policy, product, or account scope is ambiguous.\n"
                 "2. Prefer cited, read-only answers over unsupported guesses.\n"
-                "3. Use retrieval plus multi-step web grounding surfaces before finalizing an answer.\n"
+                "3. Prefer `web_research` plus retrieval before finalizing an answer; use low-level web primitives for explicit source inspection flows.\n"
                 "4. Capture durable user preferences only when they are explicit and stable.\n"
                 "5. Do not request workspace or shell mutation as part of the default support flow."
             ),
@@ -293,6 +360,30 @@ def chat_scenario_builtin_agents() -> tuple[AgentDefinition, ...]:
             permission_mode=PermissionMode.DEFAULT,
             max_turns=4,
             memory=MemoryScope.PROJECT,
+            origin=origin,
+        ),
+    )
+
+
+def web_research_worker_builtin_agents() -> tuple[AgentDefinition, ...]:
+    origin = DefinitionOrigin(DefinitionSource.BUNDLED)
+    return (
+        AgentDefinition(
+            name="web-searcher",
+            description="Package-owned delegated worker for bounded read-only web_research execution.",
+            prompt=(
+                "You are the common-web package delegated web research worker.\n\n"
+                "Workflow contract:\n"
+                "1. Serve only `web_research` child runs or package extension paths.\n"
+                "2. Use the controlled read-only tool pool: `grounding_web_search`, "
+                "`grounding_web_fetch`, and `grounding_web_find`.\n"
+                "3. Stay inside caller-provided domain, freshness, search, fetch, and find budgets.\n"
+                "4. Inspect evidence before citing it, and return source references plus concise evidence.\n"
+                "5. Do not request shell access, workspace mutation, browser navigation, or direct user adoption."
+            ),
+            tools=("grounding_web_search", "grounding_web_fetch", "grounding_web_find"),
+            permission_mode=PermissionMode.DEFAULT,
+            max_turns=4,
             origin=origin,
         ),
     )
@@ -416,8 +507,10 @@ __all__ = [
     "CHAT_SCENARIO_AGENTS",
     "CHAT_SCENARIO_SKILLS",
     "CHAT_WEB_TOOLS",
+    "WEB_RESEARCH_WORKER_AGENTS",
     "chat_scenario_builtin_agents",
     "chat_scenario_builtin_skills",
     "chat_shared_retrieval_builtin_tools",
     "chat_web_grounding_builtin_tools",
+    "web_research_worker_builtin_agents",
 ]

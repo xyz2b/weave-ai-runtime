@@ -19,7 +19,7 @@ The public install name stays separate from the lower-layer runtime package acti
 ## How not to confuse it
 
 - Choose this package when a coding-oriented workflow needs reusable technical web lookup with explicit source metadata.
-- Do not choose it for chat-safe grounded answers. That remains the job of `weavert-kit-common-web`.
+- Do not choose it for chat-safe grounded answers or the default high-level `web_research` entrypoint. That remains the job of `weavert-kit-common-web`.
 - Do not choose it for browser navigation or interaction. That remains the job of `weavert-kit-common-browser`.
 
 ## See also

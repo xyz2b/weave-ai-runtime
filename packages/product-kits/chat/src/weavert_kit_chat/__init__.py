@@ -52,6 +52,7 @@ REFERENCE_SCENARIO_PACK_SHAPE = ReferenceScenarioPackShape(
     profile_prompt_fragments=(
         "Scenario profile: AI chat.",
         "Preserve read-mostly defaults and avoid implicit workspace mutation or shell execution.",
+        "Prefer web_research for bounded public web research; use low-level web primitives only for explicit search, fetch, or page-local find orchestration.",
     ),
     workflow_agent_ids=CHAT_SCENARIO_AGENTS,
     workflow_skill_ids=CHAT_SCENARIO_SKILLS,

@@ -86,6 +86,7 @@ REFERENCE_SCENARIO_PACK_SHAPE = ReferenceScenarioPackShape(
     profile_prompt_fragments=(
         "Scenario profile: local assistant.",
         "Preserve host-centric defaults and require explicit approval posture for bridge-heavy actions.",
+        "Prefer web_research for bounded read-only web research while keeping browser mediation in separate bridge tools.",
     ),
     workflow_agent_ids=LOCAL_ASSISTANT_SCENARIO_AGENTS,
     workflow_skill_ids=LOCAL_ASSISTANT_SCENARIO_SKILLS,
