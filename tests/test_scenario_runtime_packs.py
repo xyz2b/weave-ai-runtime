@@ -572,6 +572,10 @@ def test_grounded_reference_shared_packages_can_be_admitted_selected_and_execute
 
     async def agent_runner(agent: str, prompt: str, context: ToolContext, **kwargs: Any) -> dict[str, Any]:
         delegated_calls.append((agent, prompt, kwargs, context))
+        fetched = await context.tool_registry.get("grounding_web_fetch").execute(
+            {"url": "https://grounding.example.test/refund-policy"},
+            context,
+        )
         return {
             "agent": agent,
             "status": "completed",
@@ -583,14 +587,18 @@ def test_grounded_reference_shared_packages_can_be_admitted_selected_and_execute
                     "answer": "Refunds stay available for 30 days.",
                     "sources": [
                         {
-                            "url": "https://grounding.example.test/refund-policy",
-                            "title": "Refund policy",
+                            "url": "https://fabricated.example.test/refund-policy",
+                            "title": "Fabricated refund policy",
+                            "source_handle": fetched["source_handle"],
+                            "relevance": "high",
                         }
                     ],
                     "evidence": [
                         {
-                            "url": "https://grounding.example.test/refund-policy",
-                            "excerpt": "Refunds stay available for 30 days after purchase.",
+                            "url": "https://fabricated.example.test/refund-policy",
+                            "source_handle": fetched["source_handle"],
+                            "excerpt": "Fabricated child excerpt.",
+                            "claim": "Refunds stay available for 30 days.",
                         }
                     ],
                     "stop_reason": "sufficient_evidence",
@@ -637,8 +645,11 @@ def test_grounded_reference_shared_packages_can_be_admitted_selected_and_execute
     }
     assert web_research_result["budget"]["fetch_budget"] == 1
     assert web_research_result["sources"][0]["url"] == "https://grounding.example.test/refund-policy"
-    assert web_research_result["evidence"][0]["excerpt"].startswith("Refunds stay available")
-    assert web_research_result["stop_reason"] == "sufficient_evidence"
+    assert web_research_result["sources"][0]["title"] == "Refund policy"
+    assert web_research_result["sources"][0]["relevance"] == "high"
+    assert "Refunds stay available" in web_research_result["evidence"][0]["excerpt"]
+    assert web_research_result["evidence"][0]["claim"] == "Refunds stay available for 30 days."
+    assert web_research_result["stop_reason"] == "freshness_unsupported"
     assert web_research_result["child_run"]["agent"] == "web-searcher"
 
     search_tool = web_runtime.kernel.tool_registry.get("grounding_web_search")
@@ -1404,7 +1415,259 @@ def test_web_research_open_mode_fetch_many_uses_preferences_and_deterministic_pa
     ]
     assert result["budget"]["used"]["fetches"] == 2
     assert result["budget"]["rejections"]["policy"] == 1
+    assert result["stop_reason"] == "partial_result"
+
+
+def test_web_research_runtime_drops_fabricated_child_metadata_without_ledger(
+    tmp_path: Path,
+) -> None:
+    runtime, _shape, runtime_root = _assemble_shared_reference_runtime(tmp_path, "weavert-bridge-web")
+
+    async def agent_runner(agent: str, _prompt: str, _context: ToolContext, **_kwargs: Any) -> dict[str, Any]:
+        return {
+            "agent": agent,
+            "status": "completed",
+            "summary": "Child claimed evidence without using web tools.",
+            "terminal_metadata": {
+                "web_research": {
+                    "sources": [
+                        {
+                            "url": "https://fabricated.example.test/source",
+                            "title": "Fabricated source",
+                        }
+                    ],
+                    "evidence": [
+                        {
+                            "url": "https://fabricated.example.test/source",
+                            "excerpt": "Fabricated evidence.",
+                        }
+                    ],
+                    "stop_reason": "sufficient_evidence",
+                }
+            },
+        }
+
+    result = asyncio.run(
+        runtime.kernel.tool_registry.get("web_research").execute(
+            {"objective": "Verify fabricated child metadata.", "desired_source_count": 1},
+            ToolContext(
+                session_id="fabricated-child-metadata",
+                turn_id="turn-1",
+                agent_name="tester",
+                cwd=runtime_root,
+                tool_registry=runtime.kernel.tool_registry,
+                agent_registry=runtime.kernel.agent_registry,
+                tool_pool=tuple(runtime.kernel.tool_registry.definitions()),
+                runtime_services=runtime.services,
+                agent_runner=agent_runner,
+            ),
+        )
+    )
+
+    assert result["sources"] == []
+    assert result["evidence"] == []
+    assert result["stop_reason"] == "partial_result"
+    dropped = [event for event in result["trace_summary"] if event["event"] == "unverified_child_metadata_dropped"]
+    assert {event["kind"] for event in dropped} == {"source", "evidence"}
+
+
+def test_web_research_runtime_merges_child_annotations_without_overriding_ledger_facts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(reference_chat_tool_impls, "_grounding_urlopen", _grounding_urlopen)
+    runtime, _shape, runtime_root = _assemble_shared_reference_runtime(tmp_path, "weavert-bridge-web")
+
+    async def agent_runner(agent: str, _prompt: str, context: ToolContext, **_kwargs: Any) -> dict[str, Any]:
+        fetched = await context.tool_registry.get("grounding_web_fetch").execute(
+            {"url": "https://grounding.example.test/refund-policy"},
+            context,
+        )
+        return {
+            "agent": agent,
+            "status": "completed",
+            "summary": "Refunds stay available for 30 days.",
+            "terminal_metadata": {
+                "web_research": {
+                    "sources": [
+                        {
+                            "url": "https://fabricated.example.test/refund-policy",
+                            "title": "Fabricated title",
+                            "source_handle": fetched["source_handle"],
+                            "relevance": "high",
+                        }
+                    ],
+                    "evidence": [
+                        {
+                            "url": "https://fabricated.example.test/refund-policy",
+                            "source_handle": fetched["source_handle"],
+                            "excerpt": "Fabricated child excerpt.",
+                            "claim": "Refunds remain available for 30 days.",
+                        }
+                    ],
+                }
+            },
+        }
+
+    result = asyncio.run(
+        runtime.kernel.tool_registry.get("web_research").execute(
+            {
+                "objective": "Annotate verified refund evidence.",
+                "domains": ["grounding.example.test"],
+                "fetch_budget": 1,
+                "desired_source_count": 1,
+            },
+            ToolContext(
+                session_id="matching-child-metadata",
+                turn_id="turn-1",
+                agent_name="tester",
+                cwd=runtime_root,
+                tool_registry=runtime.kernel.tool_registry,
+                agent_registry=runtime.kernel.agent_registry,
+                tool_pool=tuple(runtime.kernel.tool_registry.definitions()),
+                runtime_services=runtime.services,
+                agent_runner=agent_runner,
+            ),
+        )
+    )
+
+    assert result["sources"][0]["url"] == "https://grounding.example.test/refund-policy"
+    assert result["sources"][0]["title"] == "Refund policy"
+    assert result["sources"][0]["relevance"] == "high"
+    assert result["evidence"][0]["url"] == "https://grounding.example.test/refund-policy"
+    assert "Refunds stay available" in result["evidence"][0]["excerpt"]
+    assert result["evidence"][0]["claim"] == "Refunds remain available for 30 days."
     assert result["stop_reason"] == "sufficient_evidence"
+
+
+def test_web_research_fetch_many_records_operation_failure_as_partial_result(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _urlopen(request, timeout=10, **_kwargs):
+        _ = timeout
+        url = request.full_url if hasattr(request, "full_url") else str(request)
+        if url == "https://grounding.example.test/good":
+            return _FakeUrlopenResponse(
+                "<html><head><title>Good source</title></head><body>Verified refund evidence.</body></html>"
+            )
+        if url == "https://grounding.example.test/fail":
+            raise urllib.error.URLError("backend unavailable")
+        raise AssertionError(f"Unexpected URL requested during test: {url}")
+
+    monkeypatch.setattr(reference_chat_tool_impls, "_grounding_urlopen", _urlopen)
+
+    def _fetch_many(_request):
+        return tool_call_batch(
+            request_id="req-fetch-many-failure",
+            tool_name="web_research_fetch_many",
+            tool_input={
+                "urls": [
+                    "https://grounding.example.test/good",
+                    "https://grounding.example.test/fail",
+                ],
+                "max_concurrent_fetches": 2,
+            },
+            call_id="call-fetch-many-failure",
+        )
+
+    def _final_request(_request):
+        return text_batch(request_id="req-fetch-many-failure-final", text="One page was inspected.")
+
+    runtime, _shape, runtime_root = _assemble_shared_reference_runtime(
+        tmp_path,
+        "weavert-bridge-web",
+        model_client=ScriptedModelClient([_fetch_many, _final_request]),
+    )
+
+    result = asyncio.run(
+        runtime.kernel.tool_registry.get("web_research").execute(
+            {
+                "objective": "Inspect two candidate sources.",
+                "fetch_budget": 2,
+                "desired_source_count": 1,
+                "max_concurrent_fetches": 2,
+                "max_turns": 2,
+            },
+            _tool_context(runtime, runtime_root),
+        )
+    )
+
+    assert [source["url"] for source in result["sources"]] == ["https://grounding.example.test/good"]
+    assert result["budget"]["used"]["fetches"] == 2
+    assert result["budget"]["operation_failures"] == 1
+    assert result["stop_reason"] == "partial_result"
+    failure_events = [event for event in result["trace_summary"] if event["event"] == "operation_failed"]
+    assert failure_events == [
+        {
+            "event": "operation_failed",
+            "tool": "web_research_fetch_many",
+            "error": "<urlopen error backend unavailable>",
+            "url": "https://grounding.example.test/fail",
+            "input_index": 1,
+        }
+    ]
+
+
+def test_web_research_stop_reason_uses_desired_source_count_and_freshness_limit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(reference_chat_tool_impls, "_grounding_urlopen", _grounding_urlopen)
+    runtime, _shape, runtime_root = _assemble_shared_reference_runtime(tmp_path, "weavert-bridge-web")
+
+    async def fetch_once(agent: str, _prompt: str, context: ToolContext, **_kwargs: Any) -> dict[str, Any]:
+        await context.tool_registry.get("grounding_web_fetch").execute(
+            {"url": "https://grounding.example.test/refund-policy"},
+            context,
+        )
+        return {"agent": agent, "status": "completed", "summary": "One source inspected."}
+
+    def _context(session_id: str) -> ToolContext:
+        return ToolContext(
+            session_id=session_id,
+            turn_id="turn-1",
+            agent_name="tester",
+            cwd=runtime_root,
+            tool_registry=runtime.kernel.tool_registry,
+            agent_registry=runtime.kernel.agent_registry,
+            tool_pool=tuple(runtime.kernel.tool_registry.definitions()),
+            runtime_services=runtime.services,
+            agent_runner=fetch_once,
+        )
+
+    unmet_count = asyncio.run(
+        runtime.kernel.tool_registry.get("web_research").execute(
+            {
+                "objective": "Collect two refund sources.",
+                "domains": ["grounding.example.test"],
+                "fetch_budget": 1,
+                "desired_source_count": 2,
+            },
+            _context("desired-source-count"),
+        )
+    )
+    assert len(unmet_count["evidence"]) == 1
+    assert unmet_count["stop_reason"] == "partial_result"
+
+    freshness_limited = asyncio.run(
+        runtime.kernel.tool_registry.get("web_research").execute(
+            {
+                "objective": "Collect fresh refund evidence.",
+                "domains": ["grounding.example.test"],
+                "freshness_days": 7,
+                "fetch_budget": 1,
+                "desired_source_count": 1,
+            },
+            _context("freshness-limited"),
+        )
+    )
+    assert len(freshness_limited["evidence"]) == 1
+    assert freshness_limited["stop_reason"] == "freshness_unsupported"
+    assert any(
+        event == {"event": "freshness_unsupported", "requested_days": 7, "status": "unsupported"}
+        for event in freshness_limited["trace_summary"]
+    )
 
 
 def test_technical_web_fetch_validation_rejects_missing_url() -> None:

@@ -38,6 +38,31 @@ _WEB_RESEARCH_DEFAULT_DESIRED_SOURCES = 3
 _WEB_RESEARCH_MAX_TRACE_ITEMS = 8
 _WEB_RESEARCH_DEFAULT_MAX_CONCURRENT_FETCHES = 3
 _WEB_RESEARCH_RUN_ID_METADATA_KEY = "web_research_run_id"
+_WEB_RESEARCH_SOURCE_ANNOTATION_FIELDS = frozenset(
+    {
+        "citation_label",
+        "citation_note",
+        "claim",
+        "claim_text",
+        "confidence",
+        "confidence_score",
+        "note",
+        "notes",
+        "rank_hint",
+        "ranking_hint",
+        "relevance",
+        "relevance_score",
+        "synthesis",
+        "synthesis_note",
+        "synthesis_notes",
+    }
+)
+_WEB_RESEARCH_EVIDENCE_ANNOTATION_FIELDS = _WEB_RESEARCH_SOURCE_ANNOTATION_FIELDS | frozenset(
+    {
+        "supports",
+        "supports_claim",
+    }
+)
 
 _grounding_urlopen = web_urlopen
 _web_research_runs: dict[str, "_WebResearchRunState"] = {}
@@ -105,7 +130,12 @@ async def grounding_web_search_tool(tool_input: dict[str, Any], context: ToolCon
             policy=policy,
         )
 
-    result = await asyncio.to_thread(search)
+    try:
+        result = await asyncio.to_thread(search)
+    except Exception as exc:
+        if state is not None:
+            state.record_operation_failure("grounding_web_search", str(exc), effective_input)
+        raise
     if state is not None:
         state.record_search(result)
     return result
@@ -141,7 +171,13 @@ async def grounding_web_fetch_tool(tool_input: dict[str, Any], context: ToolCont
     return result
 
 
-async def _grounding_web_fetch_impl(tool_input: Mapping[str, Any], context: ToolContext) -> dict[str, Any]:
+async def _grounding_web_fetch_impl(
+    tool_input: Mapping[str, Any],
+    context: ToolContext,
+    *,
+    failure_tool: str = "grounding_web_fetch",
+    failure_metadata: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     state = _web_research_state(context)
     effective_input = _effective_web_tool_input("fetch", tool_input, context)
     source = _source_reference(effective_input)
@@ -179,7 +215,17 @@ async def _grounding_web_fetch_impl(tool_input: Mapping[str, Any], context: Tool
             policy=policy,
         )
 
-    return await asyncio.to_thread(fetch)
+    try:
+        return await asyncio.to_thread(fetch)
+    except Exception as exc:
+        if state is not None:
+            state.record_operation_failure(
+                failure_tool,
+                str(exc),
+                effective_input,
+                metadata=failure_metadata,
+            )
+        raise
 
 
 def validate_grounding_web_find(tool_input: dict[str, Any], context: ToolContext) -> ValidationOutcome:
@@ -225,7 +271,12 @@ async def grounding_web_find_tool(tool_input: dict[str, Any], context: ToolConte
             policy=policy,
         )
 
-    result = await asyncio.to_thread(find)
+    try:
+        result = await asyncio.to_thread(find)
+    except Exception as exc:
+        if state is not None:
+            state.record_operation_failure("grounding_web_find", str(exc), effective_input)
+        raise
     if state is not None:
         state.record_find(result)
     return result
@@ -262,7 +313,12 @@ async def web_research_fetch_many_tool(tool_input: dict[str, Any], context: Tool
     async def fetch_one(index: int, ref: Mapping[str, Any]) -> dict[str, Any]:
         async with semaphore:
             try:
-                page = await _grounding_web_fetch_impl(ref, context)
+                page = await _grounding_web_fetch_impl(
+                    ref,
+                    context,
+                    failure_tool="web_research_fetch_many",
+                    failure_metadata={"input_index": index},
+                )
             except Exception as exc:
                 return {
                     "index": index,
@@ -504,16 +560,20 @@ def _project_web_research_result(
         structured = child_payload.get("web_research")
     if not isinstance(structured, Mapping):
         structured = {}
-    trace = _list_of_mappings(structured.get("trace") or structured.get("trace_summary"))
-    ledger_trace = state.trace_summary()
-    if trace:
-        trace = [*ledger_trace, *trace]
-    else:
-        trace = ledger_trace
+    child_sources = _list_of_mappings(structured.get("sources") or structured.get("source_references"))
+    child_evidence = _list_of_mappings(structured.get("evidence") or structured.get("inspected_evidence"))
+    sources, evidence, dropped_events = _merge_verified_child_web_research_metadata(
+        state.sources_payload(),
+        state.evidence_payload(),
+        child_sources=child_sources,
+        child_evidence=child_evidence,
+    )
+    if dropped_events:
+        state.record_unverified_child_metadata_dropped(dropped_events)
+    child_trace = _list_of_mappings(structured.get("trace") or structured.get("trace_summary"))
+    trace = [*state.trace_summary(), *child_trace]
     if child_payload.get("summary"):
         trace.append({"event": "delegated_summary", "summary": str(child_payload["summary"])})
-    sources = _list_of_mappings(structured.get("sources") or structured.get("source_references")) or state.sources_payload()
-    evidence = _list_of_mappings(structured.get("evidence") or structured.get("inspected_evidence")) or state.evidence_payload()
     return {
         "objective": request["objective"],
         "mode": request.get("mode", "focused"),
@@ -526,7 +586,6 @@ def _project_web_research_result(
         "budget": state.budget_payload(),
         "stop_reason": state.stop_reason(
             structured.get("stop_reason") or terminal_metadata.get("stop_reason") or child_payload.get("status"),
-            has_projected_evidence=bool(evidence),
         ),
         "trace_summary": trace[:_WEB_RESEARCH_MAX_TRACE_ITEMS],
         "child_run": {
@@ -542,10 +601,7 @@ def _project_web_research_result(
 
 def _stop_reason_from_status(raw_status: Any) -> str:
     status = str(raw_status or "").strip()
-    if status == "completed":
-        return "sufficient_evidence"
     if status in {
-        "sufficient_evidence",
         "partial_result",
         "budget_exhausted",
         "policy_blocked",
@@ -556,6 +612,125 @@ def _stop_reason_from_status(raw_status: Any) -> str:
     if status in {"max_turns", "cancelled"}:
         return "budget_exhausted"
     return "partial_result"
+
+
+def _merge_verified_child_web_research_metadata(
+    ledger_sources: list[dict[str, Any]],
+    ledger_evidence: list[dict[str, Any]],
+    *,
+    child_sources: list[dict[str, Any]],
+    child_evidence: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    sources = [dict(item) for item in ledger_sources]
+    evidence = [dict(item) for item in ledger_evidence]
+    dropped: list[dict[str, Any]] = []
+
+    for index, child in enumerate(child_sources):
+        match = _find_unique_child_match(
+            child,
+            sources,
+            identity_fields=("url", "source_handle", "page_handle", "id"),
+        )
+        if match is None:
+            dropped.append(_unverified_child_metadata_event("source", child, index))
+            continue
+        _merge_child_annotations(match, child, _WEB_RESEARCH_SOURCE_ANNOTATION_FIELDS)
+
+    for index, child in enumerate(child_evidence):
+        match = _find_unique_child_match(
+            child,
+            evidence,
+            identity_fields=("source_handle", "page_handle", "id"),
+            compound_fields=(("url", "excerpt"),),
+            fallback_fields=("url",),
+        )
+        if match is None:
+            dropped.append(_unverified_child_metadata_event("evidence", child, index))
+            continue
+        _merge_child_annotations(match, child, _WEB_RESEARCH_EVIDENCE_ANNOTATION_FIELDS)
+
+    return sources, evidence, dropped
+
+
+def _find_unique_child_match(
+    child: Mapping[str, Any],
+    candidates: list[dict[str, Any]],
+    *,
+    identity_fields: tuple[str, ...],
+    compound_fields: tuple[tuple[str, ...], ...] = (),
+    fallback_fields: tuple[str, ...] = (),
+) -> dict[str, Any] | None:
+    for fields in compound_fields:
+        values = {field: _identity_value(child.get(field)) for field in fields}
+        if not all(values.values()):
+            continue
+        matches = [
+            item
+            for item in candidates
+            if all(_identity_value(item.get(field)) == value for field, value in values.items())
+        ]
+        if len(matches) == 1:
+            return matches[0]
+    for field in identity_fields:
+        value = _identity_value(child.get(field))
+        if not value:
+            continue
+        matches = [item for item in candidates if _identity_value(item.get(field)) == value]
+        if len(matches) == 1:
+            return matches[0]
+    for field in fallback_fields:
+        value = _identity_value(child.get(field))
+        if not value:
+            continue
+        matches = [item for item in candidates if _identity_value(item.get(field)) == value]
+        if len(matches) == 1:
+            return matches[0]
+    return None
+
+
+def _merge_child_annotations(
+    target: dict[str, Any],
+    child: Mapping[str, Any],
+    supported_fields: frozenset[str],
+) -> None:
+    for field in supported_fields:
+        if field not in child:
+            continue
+        value = child[field]
+        if value is None or value == "":
+            continue
+        target[field] = value
+
+
+def _unverified_child_metadata_event(kind: str, item: Mapping[str, Any], index: int) -> dict[str, Any]:
+    event: dict[str, Any] = {
+        "event": "unverified_child_metadata_dropped",
+        "kind": kind,
+        "child_index": index,
+        "reason": "no_ledger_match",
+    }
+    for key in ("url", "source_handle", "page_handle", "id"):
+        value = _identity_value(item.get(key))
+        if value:
+            event[key] = value
+    return event
+
+
+def _identity_value(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _url_from_tool_input(tool_input: Mapping[str, Any]) -> str:
+    source = tool_input.get("source")
+    if isinstance(source, Mapping):
+        url = source.get("url")
+    else:
+        url = None
+    return _identity_value(tool_input.get("url") or url)
+
+
+def _optional_fact_fields(item: Mapping[str, Any], fields: tuple[str, ...]) -> dict[str, Any]:
+    return {field: item[field] for field in fields if field in item}
 
 
 def _list_of_mappings(raw: Any) -> list[dict[str, Any]]:
@@ -573,10 +748,22 @@ class _WebResearchRunState:
     find_used: int = 0
     policy_rejections: int = 0
     budget_rejections: int = 0
+    operation_failures: int = 0
     sources: list[dict[str, Any]] = field(default_factory=list)
     evidence: list[dict[str, Any]] = field(default_factory=list)
     trace: list[dict[str, Any]] = field(default_factory=list)
     _lock: Lock = field(default_factory=Lock)
+
+    def __post_init__(self) -> None:
+        freshness_days = self.request.get("policy", {}).get("freshness_days")
+        if freshness_days is not None:
+            self._append_trace(
+                {
+                    "event": "freshness_unsupported",
+                    "requested_days": freshness_days,
+                    "status": "unsupported",
+                }
+            )
 
     @property
     def public_policy(self) -> Mapping[str, Any]:
@@ -675,6 +862,35 @@ class _WebResearchRunState:
                 }
             )
 
+    def record_operation_failure(
+        self,
+        tool: str,
+        error: str,
+        tool_input: Mapping[str, Any],
+        *,
+        metadata: Mapping[str, Any] | None = None,
+    ) -> None:
+        with self._lock:
+            self.operation_failures += 1
+            event: dict[str, Any] = {
+                "event": "operation_failed",
+                "tool": tool,
+                "error": _first_excerpt(error),
+            }
+            url = _url_from_tool_input(tool_input)
+            if url:
+                event["url"] = url
+            if metadata:
+                for key, value in metadata.items():
+                    if value is not None:
+                        event[str(key)] = value
+            self._append_trace(event)
+
+    def record_unverified_child_metadata_dropped(self, events: list[dict[str, Any]]) -> None:
+        with self._lock:
+            for event in events:
+                self._append_trace(event)
+
     def sources_payload(self) -> list[dict[str, Any]]:
         with self._lock:
             return [dict(item) for item in self.sources]
@@ -699,19 +915,35 @@ class _WebResearchRunState:
                 "policy": self.policy_rejections,
                 "budget": self.budget_rejections,
             }
+            budget["operation_failures"] = self.operation_failures
             return budget
 
-    def stop_reason(self, child_status: Any, *, has_projected_evidence: bool = False) -> str:
-        has_evidence = bool(self.evidence) or has_projected_evidence
-        if self.policy_rejections and not has_evidence:
-            return "policy_blocked"
-        if self.budget_rejections:
-            return "budget_exhausted" if not has_evidence else "partial_result"
-        if self.request["policy"].get("freshness_days") is not None and not has_evidence:
+    def stop_reason(self, child_status: Any) -> str:
+        with self._lock:
+            has_evidence = bool(self.evidence)
+            policy_rejections = self.policy_rejections
+            budget_rejections = self.budget_rejections
+            operation_failures = self.operation_failures
+            freshness_requested = self.request["policy"].get("freshness_days") is not None
+            inspected_sources = self._inspected_source_count_locked()
+            desired_sources = int(self.request["budget"].get("desired_source_count") or 1)
+        if not has_evidence:
+            if policy_rejections:
+                return "policy_blocked"
+            if budget_rejections:
+                return "budget_exhausted"
+            if freshness_requested:
+                return "freshness_unsupported"
+            if operation_failures:
+                return "partial_result"
+            return _stop_reason_from_status(child_status)
+        if freshness_requested:
             return "freshness_unsupported"
-        if has_evidence:
-            return "sufficient_evidence"
-        return _stop_reason_from_status(child_status)
+        if budget_rejections or operation_failures:
+            return "partial_result"
+        if inspected_sources < desired_sources:
+            return "partial_result"
+        return "sufficient_evidence"
 
     def _add_source(self, item: Mapping[str, Any]) -> None:
         url = str(item.get("url") or "").strip()
@@ -746,8 +978,17 @@ class _WebResearchRunState:
                 "excerpt": excerpt,
                 "source_handle": item.get("source_handle"),
                 "page_handle": item.get("page_handle"),
+                **_optional_fact_fields(item, ("exact_excerpt", "match_start", "match_end")),
             }
         )
+
+    def _inspected_source_count_locked(self) -> int:
+        keys: set[str] = set()
+        for item in self.evidence:
+            key = _identity_value(item.get("source_handle") or item.get("page_handle") or item.get("url"))
+            if key:
+                keys.add(key)
+        return len(keys)
 
     def _append_trace(self, event: Mapping[str, Any]) -> None:
         self.trace.append(dict(event))
