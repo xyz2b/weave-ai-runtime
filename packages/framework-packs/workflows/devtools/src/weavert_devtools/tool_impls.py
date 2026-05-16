@@ -2,14 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import re
-import urllib.parse
-import urllib.request
 from pathlib import Path
 from typing import Any
 
 from weavert.builtins.tool_impls import _normalize_optional_string, _path_allowed, _resolve_path
 from weavert.definitions import SkillShell, ValidationOutcome
 from weavert.tool_runtime import ToolContext
+from weavert_web_research import DuckDuckGoHtmlBackend, build_policy, inspect_page, search_web, validate_web_url_input
 
 _GLOB_TOOL_MAX_MATCHES = 128
 
@@ -193,25 +192,33 @@ async def bash_tool(tool_input: dict[str, Any], context: ToolContext) -> dict[st
 
 
 def validate_url_tool(tool_input: dict[str, Any], _: ToolContext) -> ValidationOutcome:
-    url = tool_input["url"]
-    if not url.startswith(("http://", "https://")):
-        return ValidationOutcome(False, "Only http:// and https:// URLs are supported")
+    validation_error = validate_web_url_input(tool_input["url"])
+    if validation_error is not None:
+        return ValidationOutcome(False, validation_error)
     return ValidationOutcome(True)
 
 
 async def web_fetch_tool(tool_input: dict[str, Any], _: ToolContext) -> dict[str, Any]:
-    timeout = tool_input.get("timeout_ms", 10_000) / 1000
+    policy = build_policy(tool_input, default_search_limit=5, default_text_chars=32_000, default_find_matches=5)
 
     def fetch() -> dict[str, Any]:
-        request = urllib.request.Request(tool_input["url"], headers={"User-Agent": "weavert/0.1"})
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            body = response.read().decode("utf-8", errors="replace")
-            return {
-                "url": tool_input["url"],
-                "status": response.status,
-                "content_type": response.headers.get_content_type(),
-                "content": body,
-            }
+        result = inspect_page(
+            tool_input,
+            backend=DuckDuckGoHtmlBackend(),
+            policy=policy,
+        )
+        return {
+            "url": result["url"],
+            "status": result["status"],
+            "content_type": result["content_type"],
+            "content": result["content"],
+            "title": result["title"],
+            "truncated": result["truncated"],
+            "source_handle": result["source_handle"],
+            "page_handle": result["page_handle"],
+            "source": result["source"],
+            "policy": result["policy"],
+        }
 
     return await asyncio.to_thread(fetch)
 
@@ -223,23 +230,14 @@ def validate_web_search(tool_input: dict[str, Any], _: ToolContext) -> Validatio
 
 
 async def web_search_tool(tool_input: dict[str, Any], _: ToolContext) -> dict[str, Any]:
-    encoded = urllib.parse.urlencode({"q": tool_input["query"]})
-    url = f"https://duckduckgo.com/html/?{encoded}"
+    policy = build_policy(tool_input, default_search_limit=5, default_text_chars=32_000, default_find_matches=5)
 
     def search() -> dict[str, Any]:
-        request = urllib.request.Request(url, headers={"User-Agent": "weavert/0.1"})
-        with urllib.request.urlopen(request, timeout=10) as response:
-            html = response.read().decode("utf-8", errors="replace")
-        results = []
-        for match in re.finditer(
-            r'<a[^>]*class="result__a"[^>]*href="(?P<href>[^"]+)"[^>]*>(?P<title>.*?)</a>',
-            html,
-        ):
-            title = re.sub(r"<[^>]+>", "", match.group("title"))
-            results.append({"title": title, "url": match.group("href")})
-            if len(results) >= tool_input.get("limit", 5):
-                break
-        return {"query": tool_input["query"], "results": results}
+        return search_web(
+            str(tool_input["query"]),
+            backend=DuckDuckGoHtmlBackend(),
+            policy=policy,
+        )
 
     return await asyncio.to_thread(search)
 

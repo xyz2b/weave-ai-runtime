@@ -6,6 +6,7 @@ Framework-pack workflow project for first-party workspace and coding built-ins.
 
 - first-party workspace and coding built-ins
 - reusable devtools workflow surfaces shared across multiple product shapes
+- compatibility `web_search` and `web_fetch` wrappers over the shared framework-level web research core
 
 ## Canonical names
 

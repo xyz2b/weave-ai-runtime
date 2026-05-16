@@ -13,6 +13,7 @@ requires-python = ">=3.11"
 dependencies = [
   "weavert>=0.1.0,<0.2.0",
   "weavert-kit-common-git>=0.1.0,<0.2.0",
+  "weavert-kit-common-web-research>=0.1.0,<0.2.0",
   "weavert-kit-common-workspace-intelligence>=0.1.0,<0.2.0",
 ]
 keywords = ["weavert", "agents", "ai", "product-kit", "scenario-pack"]

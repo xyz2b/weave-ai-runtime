@@ -18,6 +18,7 @@ from weavert.package_system.resolution import PACKAGE_CANDIDATE_METADATA_KEY
 from weavert.tool_runtime import ToolContext
 from weavert_testing import ScriptedModelClient, text_batch, tool_call_batch
 import weavert_kit_common_web._tool_impls as reference_chat_tool_impls
+import weavert_web_research.core as reference_web_research_core
 from weavert_kit_chat import (
     CHAT_RETRIEVAL_TOOLS,
     CHAT_SCENARIO_AGENTS as CHAT_SCENARIO_AGENT_NAMES,
@@ -71,6 +72,12 @@ from weavert_kit_common_web import (
     reference_shared_package_shapes as web_shared_package_shapes,
     validate_grounding_web_fetch,
 )
+from weavert_kit_common_web_research import (
+    CODING_WEB_RESEARCH_TOOLS,
+    reference_shared_package_manifest as web_research_shared_package_manifest,
+    reference_shared_package_shape as web_research_shared_package_shape,
+    reference_shared_package_shapes as web_research_shared_package_shapes,
+)
 from weavert_kit_common_workspace_intelligence import (
     reference_shared_package_manifest as workspace_shared_package_manifest,
     reference_shared_package_shape as workspace_shared_package_shape,
@@ -111,6 +118,7 @@ CODING_SHARED_WORKSPACE_TOOLS = {
     "workspace_outline",
     "workspace_test_targets",
 }
+CODING_SHARED_WEB_TOOLS = set(CODING_WEB_RESEARCH_TOOLS)
 CODING_WORKFLOW_CONTROL_TOOLS = {
     "agent",
     "skill",
@@ -130,7 +138,12 @@ CODING_WORKFLOW_CONTROL_TOOLS = {
     "job_list",
     "job_stop",
 }
-CODING_SPECIALIZED_TOOLS = CODING_WORKSPACE_TOOLS | CODING_SHARED_GIT_TOOLS | CODING_SHARED_WORKSPACE_TOOLS
+CODING_SPECIALIZED_TOOLS = (
+    CODING_WORKSPACE_TOOLS
+    | CODING_SHARED_GIT_TOOLS
+    | CODING_SHARED_WEB_TOOLS
+    | CODING_SHARED_WORKSPACE_TOOLS
+)
 CODING_PROFILE_TOOLS = (
     CODING_SPECIALIZED_TOOLS
     | CODING_WORKFLOW_CONTROL_TOOLS
@@ -162,6 +175,7 @@ LOCAL_ASSISTANT_BRIDGE_TOOL_SET = (
 LOCAL_ASSISTANT_WORKFLOW_CONTROL_TOOLS = {"ask_user", "skill"}
 LOCAL_ASSISTANT_PROFILE_TOOLS = (
     CHAT_RETRIEVAL_TOOL_SET
+    | CHAT_WEB_TOOL_SET
     | LOCAL_ASSISTANT_WORKFLOW_CONTROL_TOOLS
     | LOCAL_ASSISTANT_BRIDGE_TOOL_SET
 )
@@ -172,6 +186,7 @@ LOCAL_ASSISTANT_PROFILE_SKILLS = LOCAL_ASSISTANT_SCENARIO_SKILLS | {"remember"}
 REFERENCE_SHARED_SHAPES = (
     *retrieval_shared_package_shapes(),
     *web_shared_package_shapes(),
+    *web_research_shared_package_shapes(),
     *browser_shared_package_shapes(),
     *local_os_shared_package_shapes(),
     *pim_shared_package_shapes(),
@@ -197,6 +212,7 @@ def reference_shared_package_shape(name: str):
     for resolver in (
         retrieval_shared_package_shape,
         web_shared_package_shape,
+        web_research_shared_package_shape,
         browser_shared_package_shape,
         local_os_shared_package_shape,
         pim_shared_package_shape,
@@ -227,6 +243,7 @@ def reference_shared_package_manifests():
     return (
         retrieval_shared_package_manifest(),
         web_shared_package_manifest(),
+        web_research_shared_package_manifest(),
         browser_shared_package_manifest(),
         local_os_shared_package_manifest(),
         pim_shared_package_manifest(),
@@ -461,6 +478,7 @@ def test_grounded_reference_shared_packages_can_be_admitted_selected_and_execute
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(reference_chat_tool_impls, "_grounding_urlopen", _grounding_urlopen)
+    monkeypatch.setattr(reference_web_research_core, "web_urlopen", _grounding_urlopen)
 
     retrieval_runtime, retrieval_shape, retrieval_root = _assemble_shared_reference_runtime(
         tmp_path,
@@ -527,20 +545,82 @@ def test_grounded_reference_shared_packages_can_be_admitted_selected_and_execute
     )
     assert search_result["results"] == [
         {
+            "id": search_result["results"][0]["id"],
             "title": "Refund policy",
+            "excerpt": "",
+            "content": "",
             "url": "https://grounding.example.test/refund-policy",
+            "source_kind": "external",
+            "metadata": search_result["results"][0]["metadata"],
+            "rank": 1,
+            "source_handle": search_result["results"][0]["source_handle"],
+            "page_handle": search_result["results"][0]["page_handle"],
+            "source": search_result["results"][0]["source"],
+            "browser_handoff": search_result["results"][0]["browser_handoff"],
         }
     ]
+    assert search_result["results"][0]["source_handle"].startswith("source::")
+    assert search_result["results"][0]["page_handle"].startswith("page::")
 
     fetch_tool = web_runtime.kernel.tool_registry.get("grounding_web_fetch")
     fetch_result = asyncio.run(
         fetch_tool.execute(
-            {"url": "https://grounding.example.test/refund-policy"},
+            {"source": search_result["results"][0]},
             _tool_context(web_runtime, web_root),
         )
     )
     assert fetch_result["title"] == "Refund policy"
     assert "30 days" in fetch_result["content"]
+    assert fetch_result["source_handle"] == search_result["results"][0]["source_handle"]
+
+    find_tool = web_runtime.kernel.tool_registry.get("grounding_web_find")
+    find_result = asyncio.run(
+        find_tool.execute(
+            {"page": fetch_result, "pattern": "30 days"},
+            _tool_context(web_runtime, web_root),
+        )
+    )
+    assert find_result["matches"][0]["exact_excerpt"] == "30 days"
+    assert find_result["matches"][0]["source_handle"] == fetch_result["source_handle"]
+
+    coding_runtime, coding_shape, coding_root = _assemble_shared_reference_runtime(
+        tmp_path,
+        "weavert-shared-web-research",
+    )
+    coding_tool_names = _tool_names(coding_runtime)
+    assert CODING_SHARED_WEB_TOOLS <= coding_tool_names
+    assert all(
+        coding_runtime.kernel.tool_registry.get(tool_name).metadata["builtin_owner"] == coding_shape.package_name
+        for tool_name in CODING_SHARED_WEB_TOOLS
+    )
+
+    technical_search_tool = coding_runtime.kernel.tool_registry.get("technical_web_search")
+    technical_search = asyncio.run(
+        technical_search_tool.execute(
+            {"query": "refund policy", "domains": ["grounding.example.test"], "version": "v2"},
+            _tool_context(coding_runtime, coding_root),
+        )
+    )
+    assert technical_search["version_scope"]["status"] == "unsatisfied"
+
+    technical_fetch_tool = coding_runtime.kernel.tool_registry.get("technical_web_fetch")
+    technical_fetch = asyncio.run(
+        technical_fetch_tool.execute(
+            {"source": technical_search["results"][0], "version": "v2"},
+            _tool_context(coding_runtime, coding_root),
+        )
+    )
+    assert technical_fetch["version_scope"]["status"] == "version_mismatch"
+
+    technical_find_tool = coding_runtime.kernel.tool_registry.get("technical_web_find")
+    technical_find = asyncio.run(
+        technical_find_tool.execute(
+            {"page": technical_fetch, "pattern": "30 days", "version": "v2"},
+            _tool_context(coding_runtime, coding_root),
+        )
+    )
+    assert technical_find["matches"][0]["exact_excerpt"] == "30 days"
+    assert technical_find["version_scope"]["status"] == "version_mismatch"
 
 
 @pytest.mark.parametrize(
@@ -951,15 +1031,26 @@ def test_grounded_chat_reference_stack_exercises_retrieval_web_and_memory_surfac
         search_tool.execute({"query": "refund policy"}, _tool_context(runtime, runtime_root))
     )
     assert search_result["results"][0]["url"] == "https://grounding.example.test/refund-policy"
+    assert search_result["results"][0]["source_handle"].startswith("source::")
 
     fetch_tool = runtime.kernel.tool_registry.get("grounding_web_fetch")
     fetched = asyncio.run(
         fetch_tool.execute(
-            {"url": search_result["results"][0]["url"]},
+            {"source": search_result["results"][0]},
             _tool_context(runtime, runtime_root),
         )
     )
     assert "30 days" in fetched["content"]
+    assert fetched["source_handle"] == search_result["results"][0]["source_handle"]
+
+    find_tool = runtime.kernel.tool_registry.get("grounding_web_find")
+    findings = asyncio.run(
+        find_tool.execute(
+            {"page": fetched, "pattern": "30 days"},
+            _tool_context(runtime, runtime_root),
+        )
+    )
+    assert findings["matches"][0]["exact_excerpt"] == "30 days"
 
     memory_service = runtime.services.resolve_memory_service()
     support_agent = runtime.kernel.agent_registry.get("support-agent")
@@ -988,8 +1079,10 @@ def test_grounded_chat_reference_stack_exercises_retrieval_web_and_memory_surfac
                     {
                         "id": "web-refund-policy",
                         "title": fetched["title"],
-                        "content": fetched["content"],
+                        "content": findings["matches"][0]["excerpt"],
+                        "excerpt": findings["matches"][0]["excerpt"],
                         "url": fetched["url"],
+                        "metadata": {"source_handle": fetched["source_handle"]},
                     }
                 ],
             },
@@ -1089,6 +1182,7 @@ def test_local_assistant_bridge_tools_keep_host_mediation_allowlists_and_audit_a
 
     assert shape.expected_tools == (
         CHAT_RETRIEVAL_TOOLS
+        + CHAT_WEB_TOOLS
         + ("ask_user", "skill")
         + LOCAL_ASSISTANT_BROWSER_TOOLS
         + LOCAL_ASSISTANT_LOCAL_OS_TOOLS
@@ -1138,6 +1232,7 @@ def test_local_assistant_bridge_tools_use_bound_host_facets_for_live_state_and_s
 
         async def browser_stage_navigation(self, *, request, context):
             assert request["url"] == "https://assistant.example.test/briefing"
+            assert request["web_handoff"]["source_handle"] == "source::demo"
             assert context.agent_name == "tester"
             return {
                 "receipt_id": "nav-1",
@@ -1177,7 +1272,20 @@ def test_local_assistant_bridge_tools_use_bound_host_facets_for_live_state_and_s
     stage_tool = runtime.kernel.tool_registry.get("browser_stage_navigation")
     staged = asyncio.run(
         stage_tool.execute(
-            {"url": "https://assistant.example.test/briefing"},
+            {
+                "url": "https://assistant.example.test/briefing",
+                "web_handoff": {
+                    "kind": "web_page",
+                    "title": "Briefing",
+                    "url": "https://assistant.example.test/briefing",
+                    "source_handle": "source::demo",
+                    "page_handle": "page::demo",
+                    "domain": "assistant.example.test",
+                    "approval_owner": "app",
+                    "allowlist_owner": "app",
+                    "audit_sink_owner": "app",
+                },
+            },
             _tool_context(runtime, runtime_root),
         )
     )
@@ -1190,6 +1298,7 @@ def test_local_assistant_bridge_tools_use_bound_host_facets_for_live_state_and_s
         "review_state": "pending",
         "target_url": "https://assistant.example.test/briefing",
     }
+    assert staged["request"]["web_handoff"]["source_handle"] == "source::demo"
 
 
 def test_local_assistant_mapping_host_facets_only_satisfy_supported_read_only_operations(
@@ -1283,6 +1392,9 @@ def test_local_assistant_daily_brief_skill_fork_exposes_skill_tool_to_assistant_
 
     assert captured["planner_tools"] == {
         "ask_user",
+        "grounding_web_fetch",
+        "grounding_web_find",
+        "grounding_web_search",
         "browser_snapshot",
         "local_os_snapshot",
         "pim_list_agenda",

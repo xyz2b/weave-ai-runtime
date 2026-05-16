@@ -24,6 +24,10 @@ from weavert_kit_common_retrieval import (
     CHAT_RETRIEVAL_TOOLS,
     reference_shared_package_manifest as retrieval_package_manifest,
 )
+from weavert_kit_common_web import (
+    CHAT_WEB_TOOLS,
+    reference_shared_package_manifest as web_package_manifest,
+)
 
 from ._builtins import (
     LOCAL_ASSISTANT_SCENARIO_AGENTS,
@@ -43,12 +47,14 @@ REFERENCE_SCENARIO_PACK_SHAPE = ReferenceScenarioPackShape(
     recommended_first_party_packages=("weavert-memory",),
     shared_package_dependencies=(
         "weavert-shared-retrieval",
+        "weavert-bridge-web",
         "weavert-bridge-browser",
         "weavert-bridge-local-os",
         "weavert-bridge-pim",
     ),
     expected_tools=(
         *CHAT_RETRIEVAL_TOOLS,
+        *CHAT_WEB_TOOLS,
         *LOCAL_ASSISTANT_WORKFLOW_CONTROL_TOOLS,
         *LOCAL_ASSISTANT_BROWSER_TOOLS,
         *LOCAL_ASSISTANT_LOCAL_OS_TOOLS,
@@ -59,6 +65,7 @@ REFERENCE_SCENARIO_PACK_SHAPE = ReferenceScenarioPackShape(
     default_boundaries=(
         "host-centric by default",
         "stronger permission, audit, and approval expectations than chat",
+        "read-only web research escalates into browser bridges only through staged host mediation",
         "bridge-heavy composition without implicit coding surfaces",
     ),
     app_owned_wiring=(
@@ -72,6 +79,7 @@ REFERENCE_SCENARIO_PACK_SHAPE = ReferenceScenarioPackShape(
         "host decides which browser, OS, or PIM bridges are actually bound",
     ),
     permission_policy_posture=(
+        "keep read-only web research separate from browser execution",
         "compose staged approval layers for browser, OS, and PIM actions",
         "keep final high-risk allowlists outside the scenario pack",
     ),
@@ -87,6 +95,7 @@ REFERENCE_SCENARIO_PACK_SHAPE = ReferenceScenarioPackShape(
     ),
     notes=(
         "Local assistant remains a staged bridge reference, not a full product shell.",
+        "Read-only web results may stage browser follow-up only through browser bridge tools with app-owned approvals.",
         "Final host mediation, final allowlists, and final audit sinks stay outside the scenario pack.",
     ),
 )
@@ -122,6 +131,7 @@ def reference_scenario_pack_manifests() -> tuple[RuntimePackageManifest, ...]:
 def local_assistant_scenario_runtime_pack_manifests() -> tuple[RuntimePackageManifest, ...]:
     return (
         retrieval_package_manifest(),
+        web_package_manifest(),
         browser_package_manifest(),
         local_os_package_manifest(),
         pim_package_manifest(),

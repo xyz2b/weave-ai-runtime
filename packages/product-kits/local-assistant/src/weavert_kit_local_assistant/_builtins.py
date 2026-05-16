@@ -513,7 +513,7 @@ def local_assistant_scenario_builtin_agents() -> tuple[AgentDefinition, ...]:
                 "You are the local-assistant planner.\n\n"
                 "Planning contract:\n"
                 "1. Gather only staged, host-mediated context first.\n"
-                "2. Use retrieval plus the read-only browser, local-OS, and PIM bridge surfaces to understand the state.\n"
+                "2. Use retrieval plus read-only web research, browser, local-OS, and PIM bridge surfaces to understand the state.\n"
                 "3. Keep bridge assumptions explicit and name any missing host mediation or approval requirements.\n"
                 "4. Produce an ordered plan that stays inside app-owned allowlist and audit boundaries.\n"
                 "5. Never imply silent automation or direct ownership of browser, OS, or account bindings."
@@ -522,6 +522,9 @@ def local_assistant_scenario_builtin_agents() -> tuple[AgentDefinition, ...]:
                 "skill",
                 "retrieve_context",
                 "prepare_citations",
+                "grounding_web_search",
+                "grounding_web_fetch",
+                "grounding_web_find",
                 "browser_snapshot",
                 "local_os_snapshot",
                 "pim_list_agenda",
@@ -541,8 +544,8 @@ def local_assistant_scenario_builtin_agents() -> tuple[AgentDefinition, ...]:
                 "You are the local-assistant action worker.\n\n"
                 "Execution contract:\n"
                 "1. Re-check the requested goal and any existing evidence before acting.\n"
-                "2. Prefer read-only inspection before staging high-risk bridge requests.\n"
-                "3. Use only the staged bridge tools; do not claim that the package can execute browser, OS, or PIM actions autonomously.\n"
+                "2. Prefer read-only web or bridge inspection before staging high-risk bridge requests.\n"
+                "3. Escalate from web research into browser work only through the staged browser bridge tools; do not claim that the package can execute browser, OS, or PIM actions autonomously.\n"
                 "4. Make approval, allowlist, and audit needs explicit in every action handoff.\n"
                 "5. Leave enough context for the recovery agent to resume interrupted work."
             ),
@@ -550,6 +553,9 @@ def local_assistant_scenario_builtin_agents() -> tuple[AgentDefinition, ...]:
                 "skill",
                 "retrieve_context",
                 "prepare_citations",
+                "grounding_web_search",
+                "grounding_web_fetch",
+                "grounding_web_find",
                 *LOCAL_ASSISTANT_BROWSER_TOOLS,
                 *LOCAL_ASSISTANT_LOCAL_OS_TOOLS,
                 *LOCAL_ASSISTANT_PIM_TOOLS,
@@ -568,7 +574,7 @@ def local_assistant_scenario_builtin_agents() -> tuple[AgentDefinition, ...]:
                 "You are the local-assistant recovery agent.\n\n"
                 "Recovery contract:\n"
                 "1. Reconstruct the last known goal, staged requests, and unresolved approvals.\n"
-                "2. Use retrieval and read-only bridge inspection before proposing a resume path.\n"
+                "2. Use retrieval, read-only web research, and read-only bridge inspection before proposing a resume path.\n"
                 "3. Preserve the same app-owned host, allowlist, and audit boundary instead of bypassing it.\n"
                 "4. Return the next safe step, missing approval, or missing host binding explicitly."
             ),
@@ -576,6 +582,9 @@ def local_assistant_scenario_builtin_agents() -> tuple[AgentDefinition, ...]:
                 "skill",
                 "retrieve_context",
                 "prepare_citations",
+                "grounding_web_search",
+                "grounding_web_fetch",
+                "grounding_web_find",
                 "browser_snapshot",
                 "local_os_snapshot",
                 "pim_list_agenda",
@@ -600,9 +609,10 @@ def local_assistant_scenario_builtin_skills() -> tuple[SkillDefinition, ...]:
             content=(
                 "Before staging or handing off any browser, local-OS, or PIM action:\n\n"
                 "1. Restate the user goal in one sentence.\n"
-                "2. Name the exact bridge surface being requested.\n"
-                "3. Confirm whether the step needs approval, host binding, allowlist review, or audit annotation.\n"
-                "4. If any of those are missing, stop and surface the missing boundary instead of guessing."
+                "2. If the step started from web research, carry forward the inspected-source handoff payload instead of restating the page loosely.\n"
+                "3. Name the exact bridge surface being requested.\n"
+                "4. Confirm whether the step needs approval, host binding, allowlist review, or audit annotation.\n"
+                "5. If any of those are missing, stop and surface the missing boundary instead of guessing."
             ),
             user_invocable=False,
             execution_context=SkillExecutionContext.INLINE,

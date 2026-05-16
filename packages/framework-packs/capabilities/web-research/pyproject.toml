@@ -3,22 +3,15 @@ requires = ["setuptools>=69", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "weavert-kit-local-assistant"
+name = "weavert-web-research"
 version = "0.1.0"
-description = "Local-assistant product kit for extracted WeaveRT scenario packs."
+description = "Shared web research core for WeaveRT framework and product-kit adapters."
 readme = "README.md"
 license = "Apache-2.0"
 authors = [{ name = "WeaveRT Maintainers" }]
 requires-python = ">=3.11"
-dependencies = [
-  "weavert>=0.1.0,<0.2.0",
-  "weavert-kit-common-browser>=0.1.0,<0.2.0",
-  "weavert-kit-common-local-os>=0.1.0,<0.2.0",
-  "weavert-kit-common-pim>=0.1.0,<0.2.0",
-  "weavert-kit-common-retrieval>=0.1.0,<0.2.0",
-  "weavert-kit-common-web>=0.1.0,<0.2.0",
-]
-keywords = ["weavert", "agents", "ai", "product-kit", "scenario-pack"]
+dependencies = []
+keywords = ["weavert", "web", "research", "framework-pack"]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Intended Audience :: Developers",

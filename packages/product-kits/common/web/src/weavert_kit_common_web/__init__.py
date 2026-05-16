@@ -9,22 +9,30 @@ from weavert.extension_contracts.scenario_runtime_packs import (
 from ._builtins import CHAT_WEB_TOOLS, chat_web_grounding_builtin_tools
 from ._tool_impls import (
     grounding_web_fetch_tool,
+    grounding_web_find_tool,
     grounding_web_search_tool,
     validate_grounding_web_fetch,
+    validate_grounding_web_find,
     validate_grounding_web_search,
 )
 
 REFERENCE_SHARED_PACKAGE_SHAPE = ReferenceSharedPackageShape(
     package_name="weavert-bridge-web",
     capability_key="weavert.reference.bridge.web",
-    description="Reference shared package for read-only web search and fetch grounding surfaces.",
+    description="Reference shared package for read-only multi-step web grounding surfaces.",
     shared_surface_family="web-bridge",
     intended_profiles=("chat", "local_assistant"),
-    surfaces=("read-only web search", "bounded remote fetch", "HTTP-aware grounding helpers"),
+    surfaces=(
+        "read-only web search",
+        "bounded remote fetch",
+        "page-local grounding evidence finding",
+        "HTTP-aware grounding helpers",
+    ),
     tool_ids=CHAT_WEB_TOOLS,
     notes=(
         "Scenario packs should consume this bridge instead of duplicating web adapters.",
         "The default posture stays read-only and chat-safe even when external grounding is enabled.",
+        "Browser navigation or interaction still requires a separate browser bridge package.",
     ),
 )
 
@@ -58,11 +66,13 @@ __all__ = [
     "CHAT_WEB_TOOLS",
     "REFERENCE_SHARED_PACKAGE_SHAPE",
     "grounding_web_fetch_tool",
+    "grounding_web_find_tool",
     "grounding_web_search_tool",
     "reference_shared_package_manifest",
     "reference_shared_package_manifests",
     "reference_shared_package_shape",
     "reference_shared_package_shapes",
     "validate_grounding_web_fetch",
+    "validate_grounding_web_find",
     "validate_grounding_web_search",
 ]

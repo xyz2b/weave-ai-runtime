@@ -10,7 +10,10 @@ readme = "README.md"
 license = "Apache-2.0"
 authors = [{ name = "WeaveRT Maintainers" }]
 requires-python = ">=3.11"
-dependencies = ["weavert>=0.1.0,<0.2.0"]
+dependencies = [
+  "weavert>=0.1.0,<0.2.0",
+  "weavert-web-research>=0.1.0,<0.2.0",
+]
 keywords = ["weavert", "agents", "ai", "framework-pack", "workflow"]
 classifiers = [
   "Development Status :: 3 - Alpha",

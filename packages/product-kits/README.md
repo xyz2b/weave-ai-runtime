@@ -28,6 +28,7 @@ It owns scenario packs plus shared product-kit packages.
 | --- | --- | --- | --- | --- |
 | `common/retrieval/` | `weavert-kit-common-retrieval` | `weavert_kit_common_retrieval` | `weavert-shared-retrieval` | Lower-layer shared kit |
 | `common/web/` | `weavert-kit-common-web` | `weavert_kit_common_web` | `weavert-bridge-web` | Lower-layer shared kit |
+| `common/web-research/` | `weavert-kit-common-web-research` | `weavert_kit_common_web_research` | `weavert-shared-web-research` | Lower-layer shared kit |
 | `common/git/` | `weavert-kit-common-git` | `weavert_kit_common_git` | `weavert-shared-git` | Lower-layer shared kit |
 | `common/workspace-intelligence/` | `weavert-kit-common-workspace-intelligence` | `weavert_kit_common_workspace_intelligence` | `weavert-shared-workspace-intelligence` | Lower-layer shared kit |
 | `common/browser/` | `weavert-kit-common-browser` | `weavert_kit_common_browser` | `weavert-bridge-browser` | Lower-layer shared kit |
@@ -36,9 +37,9 @@ It owns scenario packs plus shared product-kit packages.
 
 ## Composition summary
 
-- `weavert_kit_chat` composes retrieval and web common kits.
-- `weavert_kit_coding` composes git and workspace-intelligence common kits.
-- `weavert_kit_local_assistant` composes retrieval, browser, local-OS, and PIM common kits.
+- `weavert_kit_chat` composes retrieval plus the read-only multi-step web grounding kit.
+- `weavert_kit_coding` composes git, coding-oriented web research, and workspace-intelligence common kits.
+- `weavert_kit_local_assistant` composes retrieval, read-only web grounding, browser, local-OS, and PIM common kits.
 
 ## See also
 

@@ -9,6 +9,10 @@ from weavert_kit_common_git import (
     CODING_SHARED_GIT_TOOLS,
     reference_shared_package_manifest as git_package_manifest,
 )
+from weavert_kit_common_web_research import (
+    CODING_WEB_RESEARCH_TOOLS,
+    reference_shared_package_manifest as web_research_package_manifest,
+)
 from weavert_kit_common_workspace_intelligence import (
     CODING_SHARED_WORKSPACE_TOOLS,
     reference_shared_package_manifest as workspace_intelligence_package_manifest,
@@ -75,6 +79,7 @@ REFERENCE_SCENARIO_PACK_SHAPE = ReferenceScenarioPackShape(
     ),
     shared_package_dependencies=(
         "weavert-shared-git",
+        "weavert-shared-web-research",
         "weavert-shared-workspace-intelligence",
     ),
     expected_tools=(
@@ -86,6 +91,7 @@ REFERENCE_SCENARIO_PACK_SHAPE = ReferenceScenarioPackShape(
         "bash",
         *CODING_WORKFLOW_CONTROL_TOOLS,
         *CODING_SHARED_GIT_TOOLS,
+        *CODING_WEB_RESEARCH_TOOLS,
         *CODING_SHARED_WORKSPACE_TOOLS,
     ),
     expected_agents=(*CODING_SCENARIO_AGENTS, *CODING_GENERIC_AGENTS),
@@ -118,6 +124,7 @@ REFERENCE_SCENARIO_PACK_SHAPE = ReferenceScenarioPackShape(
     notes=(
         "The scenario pack publishes product-role workflow agents without replacing the generic first-party planning layer.",
         "The coding workflow layer remains additive to app-owned shells and shared coding packages.",
+        "External technical web lookup stays reusable and distinct from chat citation defaults or browser-stage semantics.",
     ),
 )
 
@@ -152,6 +159,7 @@ def reference_scenario_pack_manifests() -> tuple[RuntimePackageManifest, ...]:
 def coding_scenario_runtime_pack_manifests() -> tuple[RuntimePackageManifest, ...]:
     return (
         git_package_manifest(),
+        web_research_package_manifest(),
         workspace_intelligence_package_manifest(),
         reference_scenario_pack_manifest(),
     )

@@ -29,7 +29,7 @@ class FakeResponse:
         self.status = status
         self.headers = FakeHeaders()
 
-    def read(self) -> bytes:
+    def read(self, _size: int | None = None) -> bytes:
         return self._body
 
     def __enter__(self) -> "FakeResponse":
@@ -171,7 +171,7 @@ def test_builtin_external_orchestration_and_task_tools(tmp_path: Path, monkeypat
             )
         return FakeResponse("fetch body")
 
-    monkeypatch.setattr("weavert.builtins.tool_impls.urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("weavert_web_research.core.web_urlopen", fake_urlopen)
     context.task_manager.create(
         "job-1",
         title="background-check",

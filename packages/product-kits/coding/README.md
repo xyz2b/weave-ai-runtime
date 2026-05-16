@@ -18,6 +18,7 @@ The public install name stays separate from the runtime scenario-pack activation
 ## Shared packages it composes
 
 - `weavert_kit_common_git`
+- `weavert_kit_common_web_research`
 - `weavert_kit_common_workspace_intelligence`
 
 ## See also

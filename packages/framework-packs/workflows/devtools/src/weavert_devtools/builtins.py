@@ -250,11 +250,13 @@ def devtools_builtin_tools() -> tuple[ToolDefinition, ...]:
         ToolDefinition(
             name="web_fetch",
             aliases=("WebFetch",),
-            description="Fetch a single remote resource and return its content.",
+            description="Fetch a single remote resource and return a compatibility payload plus additive source metadata.",
             input_schema={
                 "type": "object",
                 "properties": {
                     "url": {"type": "string"},
+                    "domains": {"type": "array", "items": {"type": "string"}},
+                    "freshness_days": {"type": "integer", "minimum": 0},
                     "timeout_ms": {"type": "integer", "minimum": 1},
                 },
                 "required": ["url"],
@@ -285,11 +287,13 @@ def devtools_builtin_tools() -> tuple[ToolDefinition, ...]:
         ToolDefinition(
             name="web_search",
             aliases=("WebSearch",),
-            description="Search the web for recent information.",
+            description="Search the web for recent information while preserving the legacy `query` and `results` fields.",
             input_schema={
                 "type": "object",
                 "properties": {
                     "query": {"type": "string"},
+                    "domains": {"type": "array", "items": {"type": "string"}},
+                    "freshness_days": {"type": "integer", "minimum": 0},
                     "limit": {"type": "integer", "minimum": 1, "maximum": 10},
                 },
                 "required": ["query"],

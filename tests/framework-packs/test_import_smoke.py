@@ -10,6 +10,7 @@ import pytest
     (
         "weavert_memory.package",
         "weavert_team.assembly",
+        "weavert_web_research.core",
         "weavert_compaction.manager",
         "weavert_compaction.package",
         "weavert_isolation.package",
