@@ -83,7 +83,7 @@ Use them when you want one reusable bridge or shared capability without taking a
 | Install name | Import root | Runtime activation | What it adds | Typical use |
 | --- | --- | --- | --- | --- |
 | `weavert-kit-common-retrieval` | `weavert_kit_common_retrieval` | `weavert-shared-retrieval` | Shared retrieval surfaces | Reuse retrieval support across chat or assistant products |
-| `weavert-kit-common-web` | `weavert_kit_common_web` | `weavert-bridge-web` | Shared read-only web grounding surfaces | Add web grounding without taking the full chat profile |
+| `weavert-kit-common-web` | `weavert_kit_common_web` | `weavert-bridge-web` | Shared read-only web grounding surfaces with compact `web_research`, provider metadata, and explicit freshness outcomes | Add web grounding without taking the full chat profile |
 | `weavert-kit-common-git` | `weavert_kit_common_git` | `weavert-shared-git` | Shared git inspection surfaces | Add repository inspection to a custom coding workflow |
 | `weavert-kit-common-workspace-intelligence` | `weavert_kit_common_workspace_intelligence` | `weavert-shared-workspace-intelligence` | Shared workspace-intelligence surfaces | Add workspace-aware coding support |
 | `weavert-kit-common-browser` | `weavert_kit_common_browser` | `weavert-bridge-browser` | Shared browser bridge surfaces | Add browser-side interaction to a host-centric assistant |
@@ -93,6 +93,7 @@ Use them when you want one reusable bridge or shared capability without taking a
 ## Commonly confused shared kits
 
 - `weavert-kit-common-retrieval` ranks, excerpts, and prepares citations from grounding items you already have, such as notes, memory, or fetched passages. It does not search the public web and it does not drive a browser.
+- `weavert-kit-common-web` owns the recommended compact `web_research` entrypoint for chat and local-assistant public-web grounding. Low-level search payloads remain compatible while adding provider and freshness metadata.
 - `weavert-kit-common-web` performs read-only public-web search and bounded remote fetch for grounding. It does not expose browser navigation, clicks, or host-side browser control.
 - `weavert-kit-common-browser` is a host-mediated browser bridge for browser state, navigation, and interaction. It is not a web-search adapter and it does not imply autonomous browser ownership.
 - `weavert-kit-common-local-os` bridges generic local-machine surfaces such as files, clipboard, notifications, and processes. It is broader device plumbing, not structured personal-data tooling.

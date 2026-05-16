@@ -83,7 +83,7 @@ python -m pip install weavert
 | Install name | Import root | Runtime activation | 增加什么 | 典型用途 |
 | --- | --- | --- | --- | --- |
 | `weavert-kit-common-retrieval` | `weavert_kit_common_retrieval` | `weavert-shared-retrieval` | Shared retrieval surfaces | 在 chat 或 assistant 产品间复用 retrieval support |
-| `weavert-kit-common-web` | `weavert_kit_common_web` | `weavert-bridge-web` | Shared read-only web grounding surfaces | 增加 web grounding，但不采用完整 chat profile |
+| `weavert-kit-common-web` | `weavert_kit_common_web` | `weavert-bridge-web` | 带 compact `web_research`、provider metadata 和 freshness outcome 的只读 web grounding surfaces | 增加 web grounding，但不采用完整 chat profile |
 | `weavert-kit-common-git` | `weavert_kit_common_git` | `weavert-shared-git` | Shared git inspection surfaces | 给自定义 coding workflow 增加 repository inspection |
 | `weavert-kit-common-workspace-intelligence` | `weavert_kit_common_workspace_intelligence` | `weavert-shared-workspace-intelligence` | Shared workspace-intelligence surfaces | 增加 workspace-aware coding support |
 | `weavert-kit-common-browser` | `weavert_kit_common_browser` | `weavert-bridge-browser` | Shared browser bridge surfaces | 给 host-centric assistant 增加 browser-side interaction |

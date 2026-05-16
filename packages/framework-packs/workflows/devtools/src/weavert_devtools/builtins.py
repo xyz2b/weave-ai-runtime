@@ -294,7 +294,11 @@ def devtools_builtin_tools() -> tuple[ToolDefinition, ...]:
                 "properties": {
                     "query": {"type": "string"},
                     "domains": {"type": "array", "items": {"type": "string"}},
+                    "blocked_domains": {"type": "array", "items": {"type": "string"}},
                     "freshness_days": {"type": "integer", "minimum": 0},
+                    "recency_days": {"type": "integer", "minimum": 0},
+                    "freshness_required": {"type": "boolean"},
+                    "provider": {"type": "string"},
                     "limit": {"type": "integer", "minimum": 1, "maximum": 10},
                 },
                 "required": ["query"],

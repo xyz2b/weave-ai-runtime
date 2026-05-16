@@ -9,6 +9,7 @@ from weavert.tool_runtime import ToolContext
 from weavert_web_research import (
     DuckDuckGoHtmlBackend,
     build_policy,
+    default_web_search_provider_registry,
     find_in_page,
     inspect_page,
     search_web,
@@ -43,7 +44,11 @@ async def technical_web_search_tool(tool_input: dict[str, Any], _: ToolContext) 
     )
 
     def search() -> dict[str, Any]:
-        result = search_web(query, backend=DuckDuckGoHtmlBackend(), policy=policy)
+        result = search_web(
+            query,
+            registry=default_web_search_provider_registry(duckduckgo_urlopen=web_urlopen),
+            policy=policy,
+        )
         annotated = _annotate_versioned_results(result["results"], requested_version=requested_version)
         return {
             **result,

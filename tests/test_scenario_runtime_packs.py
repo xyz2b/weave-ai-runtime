@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import asyncio
 from email.message import Message
+import os
 from pathlib import Path
 import socket
 import subprocess
 import tarfile
 from typing import Any
 import urllib.error
+import urllib.parse
 import urllib.request
 import zipfile
 
@@ -1217,6 +1219,46 @@ def test_web_research_validation_requires_objective_and_bounded_budget() -> None
     assert valid.updated_input["budget"]["fetch_budget"] == 2
 
 
+def test_web_research_compact_request_normalization_and_precedence() -> None:
+    context = ToolContext(session_id="grounding-validation", turn_id="turn-1", agent_name="tester", cwd=Path.cwd())
+
+    outcome = reference_chat_tool_impls.validate_web_research(
+        {
+            "question": "Find the current API policy.",
+            "scope": {
+                "mode": "focused",
+                "allowed_domains": ["compact.example.test"],
+                "blocked_domains": ["blocked.example.test"],
+            },
+            "freshness": {"days": 3, "required": True},
+            "depth": "deep",
+            "source_preferences": {
+                "preferred_domains": ["preferred.example.test"],
+                "desired_source_count": 4,
+            },
+            "hard_policy": {"allowed_domains": ["advanced.example.test"]},
+            "preferences": {"preferred_domains": ["advanced-preferred.example.test"]},
+            "budget_profile": "quick",
+            "desired_source_count": 2,
+        },
+        context,
+    )
+
+    assert outcome.valid is True
+    assert outcome.updated_input["objective"] == "Find the current API policy."
+    assert outcome.updated_input["mode"] == "focused"
+    assert outcome.updated_input["policy"] == {
+        "domains": ["advanced.example.test"],
+        "blocked_domains": ["blocked.example.test"],
+        "freshness_days": 3,
+    }
+    assert outcome.updated_input["preferences"]["preferred_domains"] == ["advanced-preferred.example.test"]
+    assert outcome.updated_input["preferences"]["freshness_required"] is True
+    assert outcome.updated_input["budget_profile"] == "quick"
+    assert outcome.updated_input["budget"]["search_budget"] == 2
+    assert outcome.updated_input["budget"]["desired_source_count"] == 2
+
+
 def test_web_research_runtime_projects_ledger_evidence_without_terminal_metadata(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1279,6 +1321,141 @@ def test_web_research_runtime_projects_ledger_evidence_without_terminal_metadata
     assert "30 days" in result["evidence"][0]["excerpt"]
     assert result["budget"]["used"] == {"searches": 1, "fetches": 1, "finds": 0}
     assert result["stop_reason"] == "sufficient_evidence"
+
+
+def test_web_research_runtime_preserves_provider_and_freshness_metadata(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(reference_chat_tool_impls, "_grounding_urlopen", _grounding_urlopen)
+    provider = reference_web_research_core.FixtureWebResearchProvider(
+        provider_id="fresh-fixture",
+        supports_freshness=True,
+        search_results={
+            "refund policy": [
+                {"title": "Refund policy", "url": "https://grounding.example.test/refund-policy"}
+            ]
+        },
+    )
+    monkeypatch.setattr(
+        reference_chat_tool_impls,
+        "_grounding_search_provider_registry",
+        reference_web_research_core.WebSearchProviderRegistry((provider,)),
+    )
+
+    def _search_request(_request):
+        return tool_call_batch(
+            request_id="req-web-research-fresh-search",
+            tool_name="grounding_web_search",
+            tool_input={"query": "refund policy", "limit": 1},
+            call_id="call-fresh-search",
+        )
+
+    def _fetch_request(_request):
+        return tool_call_batch(
+            request_id="req-web-research-fresh-fetch",
+            tool_name="grounding_web_fetch",
+            tool_input={"url": "https://grounding.example.test/refund-policy"},
+            call_id="call-fresh-fetch",
+        )
+
+    def _final_request(_request):
+        return text_batch(request_id="req-web-research-fresh-final", text="Fresh refund evidence inspected.")
+
+    runtime, _shape, runtime_root = _assemble_shared_reference_runtime(
+        tmp_path,
+        "weavert-bridge-web",
+        model_client=ScriptedModelClient([_search_request, _fetch_request, _final_request]),
+    )
+
+    result = asyncio.run(
+        runtime.kernel.tool_registry.get("web_research").execute(
+            {
+                "question": "What is the current refund policy?",
+                "scope": {"allowed_domains": ["grounding.example.test"]},
+                "freshness": {"days": 7, "required": True},
+                "depth": "quick",
+                "desired_source_count": 1,
+            },
+            _tool_context(runtime, runtime_root),
+        )
+    )
+
+    assert result["provider"]["id"] == "fresh-fixture"
+    assert result["provider_selection"]["selected"] == "fresh-fixture"
+    assert result["freshness_scope"] == {"requested_days": 7, "status": "enforced"}
+    assert result["stop_reason"] == "sufficient_evidence"
+    assert result["sources"][0]["provider"]["id"] == "fresh-fixture"
+
+
+def test_web_research_runtime_classifies_provider_fallback_as_freshness_unsupported(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(reference_chat_tool_impls, "_grounding_urlopen", _grounding_urlopen)
+    failing_provider = reference_web_research_core.FixtureWebResearchProvider(
+        provider_id="fresh-fixture",
+        supports_freshness=True,
+        fail_search=True,
+    )
+    fallback_provider = reference_web_research_core.FixtureWebResearchProvider(
+        provider_id="legacy-fixture",
+        supports_freshness=False,
+        search_results={
+            "refund policy": [
+                {"title": "Refund policy", "url": "https://grounding.example.test/refund-policy"}
+            ]
+        },
+    )
+    monkeypatch.setattr(
+        reference_chat_tool_impls,
+        "_grounding_search_provider_registry",
+        reference_web_research_core.WebSearchProviderRegistry((failing_provider, fallback_provider)),
+    )
+
+    def _search_request(_request):
+        return tool_call_batch(
+            request_id="req-web-research-fallback-search",
+            tool_name="grounding_web_search",
+            tool_input={"query": "refund policy", "limit": 1},
+            call_id="call-fallback-search",
+        )
+
+    def _fetch_request(_request):
+        return tool_call_batch(
+            request_id="req-web-research-fallback-fetch",
+            tool_name="grounding_web_fetch",
+            tool_input={"url": "https://grounding.example.test/refund-policy"},
+            call_id="call-fallback-fetch",
+        )
+
+    def _final_request(_request):
+        return text_batch(request_id="req-web-research-fallback-final", text="Fallback evidence inspected.")
+
+    runtime, _shape, runtime_root = _assemble_shared_reference_runtime(
+        tmp_path,
+        "weavert-bridge-web",
+        model_client=ScriptedModelClient([_search_request, _fetch_request, _final_request]),
+    )
+
+    result = asyncio.run(
+        runtime.kernel.tool_registry.get("web_research").execute(
+            {
+                "question": "What is the current refund policy?",
+                "scope": {"allowed_domains": ["grounding.example.test"]},
+                "freshness": {"days": 7, "required": True},
+                "fetch_budget": 1,
+                "desired_source_count": 1,
+            },
+            _tool_context(runtime, runtime_root),
+        )
+    )
+
+    assert result["provider"]["id"] == "legacy-fixture"
+    assert result["provider_selection"]["status"] == "fallback"
+    assert result["provider_fallback"]["used"] is True
+    assert result["freshness_scope"] == {"requested_days": 7, "status": "unsupported"}
+    assert result["stop_reason"] == "freshness_unsupported"
 
 
 def test_web_research_runtime_enforces_child_policy_and_budget(
@@ -1735,6 +1912,124 @@ def test_shared_core_revalidates_final_fetch_url_and_sets_freshness_scope() -> N
             backend=_RedirectingBackend(),
             policy=policy,
         )
+
+
+def test_shared_core_provider_registry_reports_freshness_and_fallback() -> None:
+    fresh_provider = reference_web_research_core.FixtureWebResearchProvider(
+        provider_id="fresh-fixture",
+        supports_freshness=True,
+        search_results={
+            "refund policy": [
+                {"title": "Refund policy", "url": "https://grounding.example.test/refund-policy"},
+                {"title": "Outside", "url": "https://outside.example.test/refund-policy"},
+            ]
+        },
+    )
+    legacy_provider = reference_web_research_core.FixtureWebResearchProvider(
+        provider_id="legacy-fixture",
+        supports_freshness=False,
+        search_results={
+            "refund policy": [
+                {"title": "Refund policy", "url": "https://grounding.example.test/refund-policy"}
+            ]
+        },
+    )
+    policy = reference_web_research_core.build_policy(
+        {"domains": ["grounding.example.test"], "freshness_days": 7, "limit": 3}
+    )
+
+    enforced = reference_web_research_core.search_web(
+        "refund policy",
+        registry=reference_web_research_core.WebSearchProviderRegistry((fresh_provider, legacy_provider)),
+        policy=policy,
+    )
+
+    assert enforced["provider"]["id"] == "fresh-fixture"
+    assert enforced["freshness_scope"] == {"requested_days": 7, "status": "enforced"}
+    assert enforced["constraint_outcomes"]["allowed_domains"]["status"] == "enforced"
+    assert [item["url"] for item in enforced["results"]] == ["https://grounding.example.test/refund-policy"]
+    assert enforced["results"][0]["metadata"]["provider"]["id"] == "fresh-fixture"
+
+    failing_fresh_provider = reference_web_research_core.FixtureWebResearchProvider(
+        provider_id="fresh-fixture",
+        supports_freshness=True,
+        fail_search=True,
+    )
+    fallback = reference_web_research_core.search_web(
+        "refund policy",
+        registry=reference_web_research_core.WebSearchProviderRegistry((failing_fresh_provider, legacy_provider)),
+        policy=policy,
+    )
+
+    assert fallback["provider"]["id"] == "legacy-fixture"
+    assert fallback["provider_selection"]["status"] == "fallback"
+    assert fallback["provider_fallback"]["used"] is True
+    assert fallback["provider_fallback"]["from"] == "fresh-fixture"
+    assert fallback["freshness_scope"] == {"requested_days": 7, "status": "unsupported"}
+
+
+def test_brave_provider_maps_freshness_and_domain_filters() -> None:
+    requested_urls: list[str] = []
+    requested_tokens: list[str | None] = []
+
+    def _brave_urlopen(request, timeout=10, **_kwargs):
+        _ = timeout
+        requested_urls.append(request.full_url)
+        requested_tokens.append(request.get_header("X-subscription-token") or request.get_header("X-Subscription-Token"))
+        return _FakeUrlopenResponse(
+            (
+                '{"web":{"results":['
+                '{"title":"Fresh docs","url":"https://docs.example.test/current","description":"Fresh result"}'
+                "]}}"
+            ),
+            content_type="application/json",
+        )
+
+    provider = reference_web_research_core.BraveSearchApiProvider(api_key="test-token", urlopen=_brave_urlopen)
+    policy = reference_web_research_core.build_policy(
+        {
+            "domains": ["docs.example.test"],
+            "blocked_domains": ["old.example.test"],
+            "freshness_days": 7,
+            "limit": 2,
+        }
+    )
+
+    result = reference_web_research_core.search_web(
+        "api reference",
+        registry=reference_web_research_core.WebSearchProviderRegistry((provider,)),
+        policy=policy,
+    )
+
+    parsed = urllib.parse.urlparse(requested_urls[0])
+    query_params = urllib.parse.parse_qs(parsed.query)
+    assert requested_tokens == ["test-token"]
+    assert query_params["freshness"] == ["pw"]
+    assert "site:docs.example.test" in query_params["q"][0]
+    assert "-site:old.example.test" in query_params["q"][0]
+    assert result["provider"]["id"] == "brave-search"
+    assert result["freshness_scope"] == {"requested_days": 7, "status": "enforced"}
+
+
+@pytest.mark.skipif(
+    not os.environ.get("WEAVERT_LIVE_WEB_PROVIDER_SMOKE"),
+    reason="live web provider smoke validation is opt-in",
+)
+def test_live_brave_provider_smoke_validation_is_opt_in() -> None:
+    if not (os.environ.get("BRAVE_SEARCH_API_KEY") or os.environ.get("WEAVERT_BRAVE_SEARCH_API_KEY")):
+        pytest.skip("BRAVE_SEARCH_API_KEY or WEAVERT_BRAVE_SEARCH_API_KEY is required")
+
+    result = reference_web_research_core.search_web(
+        "WeaveRT runtime",
+        registry=reference_web_research_core.WebSearchProviderRegistry(
+            (reference_web_research_core.BraveSearchApiProvider(),)
+        ),
+        policy=reference_web_research_core.build_policy({"freshness_days": 31, "limit": 2}),
+    )
+
+    assert result["provider"]["id"] == "brave-search"
+    assert result["freshness_scope"]["status"] == "enforced"
+    assert result["results"]
 
 
 def test_shared_core_redirect_handler_rejects_out_of_scope_and_blocked_targets() -> None:

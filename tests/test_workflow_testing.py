@@ -16,6 +16,8 @@ from weavert_testing import (
     assert_skill_outcome,
     assert_tool_outcome,
     assert_tool_result,
+    assert_web_research_ledger_evidence,
+    assert_web_research_outcome,
     copied_fixture_workspace,
     run_workflow_test,
     text_batch,
@@ -234,6 +236,26 @@ def test_run_workflow_test_preserves_explicit_empty_discovery_sources(tmp_path: 
         assert len(report.scripted_requests) == 1
 
     asyncio.run(_run())
+
+
+def test_web_research_testing_assertions_accept_result_payloads() -> None:
+    payload = {
+        "provider": {"id": "fixture-web"},
+        "freshness_scope": {"status": "enforced"},
+        "stop_reason": "sufficient_evidence",
+        "sources": [{"url": "https://example.test/source"}],
+        "evidence": [{"url": "https://example.test/source", "excerpt": "Verified evidence."}],
+    }
+
+    assert_web_research_outcome(
+        payload,
+        provider_id="fixture-web",
+        freshness_status="enforced",
+        stop_reason="sufficient_evidence",
+        min_sources=1,
+    )
+    evidence = assert_web_research_ledger_evidence(payload, urls=("https://example.test/source",))
+    assert evidence[0]["excerpt"] == "Verified evidence."
 
 
 def test_run_workflow_test_collects_scripted_diagnostics_from_route_model_client(tmp_path: Path) -> None:

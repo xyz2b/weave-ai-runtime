@@ -19,7 +19,9 @@ from weavert_kit_common_retrieval._tool_impls import (
 )
 from weavert_web_research import (
     DuckDuckGoHtmlBackend,
+    WebSearchProviderRegistry,
     build_policy,
+    default_web_search_provider_registry,
     find_in_page,
     inspect_page,
     search_web,
@@ -65,6 +67,7 @@ _WEB_RESEARCH_EVIDENCE_ANNOTATION_FIELDS = _WEB_RESEARCH_SOURCE_ANNOTATION_FIELD
 )
 
 _grounding_urlopen = web_urlopen
+_grounding_search_provider_registry: WebSearchProviderRegistry | None = None
 _web_research_runs: dict[str, "_WebResearchRunState"] = {}
 
 
@@ -126,7 +129,7 @@ async def grounding_web_search_tool(tool_input: dict[str, Any], context: ToolCon
     def search() -> dict[str, Any]:
         return search_web(
             query,
-            backend=DuckDuckGoHtmlBackend(urlopen=_grounding_urlopen),
+            registry=_grounding_provider_registry(),
             policy=policy,
         )
 
@@ -372,15 +375,27 @@ def _grounding_policy_urlopen(request, **kwargs: Any):
             raise exc
 
 
+def _grounding_provider_registry() -> WebSearchProviderRegistry:
+    if _grounding_search_provider_registry is not None:
+        return _grounding_search_provider_registry
+    return default_web_search_provider_registry(duckduckgo_urlopen=_grounding_urlopen)
+
+
 def _web_research_objective(tool_input: Mapping[str, Any]) -> str:
     return str(tool_input.get("objective") or tool_input.get("question") or "").strip()
 
 
 def _normalize_web_research_input(tool_input: Mapping[str, Any]) -> dict[str, Any]:
     objective = _web_research_objective(tool_input)
-    mode = str(tool_input.get("mode") or "focused").strip().lower()
-    if mode not in {"focused", "open"}:
-        raise ValueError("mode must be focused or open")
+    scope = tool_input.get("scope")
+    if scope is not None and not isinstance(scope, Mapping):
+        raise ValueError("scope must be an object when provided")
+    source_preferences = tool_input.get("source_preferences")
+    if source_preferences is not None and not isinstance(source_preferences, Mapping):
+        raise ValueError("source_preferences must be an object when provided")
+    freshness = tool_input.get("freshness")
+    if freshness is not None and not isinstance(freshness, Mapping):
+        raise ValueError("freshness must be an object when provided")
     hard_policy = tool_input.get("hard_policy")
     if hard_policy is not None and not isinstance(hard_policy, Mapping):
         raise ValueError("hard_policy must be an object when provided")
@@ -389,27 +404,76 @@ def _normalize_web_research_input(tool_input: Mapping[str, Any]) -> dict[str, An
         raise ValueError("preferences must be an object when provided")
     hard_policy_map = dict(hard_policy or {})
     preferences_map = dict(preferences or {})
+    scope_map = dict(scope or {})
+    source_preferences_map = dict(source_preferences or {})
+    freshness_map = dict(freshness or {})
     legacy_domains = tool_input.get("domains")
     legacy_allowed_domains = tool_input.get("allowed_domains")
     legacy_blocks = tool_input.get("blocked_domains")
-    legacy_freshness = tool_input.get("freshness_days") or tool_input.get("recency_days")
+    compact_allowed_domains = scope_map.get("allowed_domains")
+    compact_blocked_domains = scope_map.get("blocked_domains")
+    compact_preferred_domains = source_preferences_map.get("preferred_domains")
+    compact_desired_source_count = source_preferences_map.get("desired_source_count")
+    legacy_freshness = tool_input.get("freshness_days")
+    if legacy_freshness is None:
+        legacy_freshness = tool_input.get("recency_days")
+    compact_freshness_days = freshness_map.get("days")
+    mode_raw = tool_input.get("mode")
+    if mode_raw is None:
+        mode_raw = scope_map.get("mode")
+    if mode_raw is None:
+        has_compact_projection = any(
+            key in tool_input for key in ("scope", "freshness", "depth", "source_preferences")
+        ) or ("question" in tool_input and "objective" not in tool_input)
+        mode_raw = (
+            "focused"
+            if legacy_domains is not None
+            or legacy_allowed_domains is not None
+            or compact_allowed_domains is not None
+            or (not has_compact_projection and "objective" in tool_input)
+            else "open"
+        )
+    mode = str(mode_raw or "focused").strip().lower()
+    if mode not in {"focused", "open"}:
+        raise ValueError("mode must be focused or open")
+    scope_mode = scope_map.get("mode")
+    if scope_mode is not None and str(scope_mode).strip().lower() not in {"focused", "open"}:
+        raise ValueError("scope.mode must be focused or open")
     if legacy_blocks is not None and "blocked_domains" not in hard_policy_map:
         hard_policy_map["blocked_domains"] = legacy_blocks
+    if compact_blocked_domains is not None and "blocked_domains" not in hard_policy_map:
+        hard_policy_map["blocked_domains"] = compact_blocked_domains
     if legacy_freshness is not None and "freshness_days" not in preferences_map:
         preferences_map["freshness_days"] = legacy_freshness
+    if compact_freshness_days is not None and "freshness_days" not in preferences_map:
+        preferences_map["freshness_days"] = compact_freshness_days
     if legacy_allowed_domains is not None:
         hard_policy_map.setdefault("allowed_domains", legacy_allowed_domains)
+    if compact_allowed_domains is not None:
+        hard_policy_map.setdefault("allowed_domains", compact_allowed_domains)
     if legacy_domains is not None:
         if mode == "open":
             preferences_map.setdefault("preferred_domains", legacy_domains)
         else:
             hard_policy_map.setdefault("domains", legacy_domains)
-    budget_profile = str(tool_input.get("budget_profile") or "standard").strip().lower()
+    if compact_preferred_domains is not None:
+        preferences_map.setdefault("preferred_domains", compact_preferred_domains)
+    freshness_required = _normalize_bool(freshness_map.get("required"))
+    if tool_input.get("freshness_required") is not None:
+        freshness_required = _normalize_bool(tool_input.get("freshness_required"))
+    budget_profile = str(tool_input.get("budget_profile") or tool_input.get("depth") or "standard").strip().lower()
     profile_defaults = _budget_profile_defaults(budget_profile)
+    desired_source_default = (
+        compact_desired_source_count
+        if compact_desired_source_count is not None and tool_input.get("desired_source_count") is None
+        else profile_defaults["desired_source_count"]
+    )
     raw_policy = {
         "domains": hard_policy_map.get("domains") or hard_policy_map.get("allowed_domains"),
         "blocked_domains": hard_policy_map.get("blocked_domains"),
         "freshness_days": preferences_map.get("freshness_days"),
+        "freshness_required": freshness_required,
+        "provider": tool_input.get("provider") or preferences_map.get("provider"),
         "limit": tool_input.get("search_budget") or profile_defaults["search_budget"],
         "max_chars": tool_input.get("max_chars") or _GROUNDING_DEFAULT_FETCH_CHARS,
     }
@@ -425,7 +489,10 @@ def _normalize_web_research_input(tool_input: Mapping[str, Any]) -> dict[str, An
     preferences_payload = {
         "preferred_domains": list(build_policy({"domains": preferences_map.get("preferred_domains")}).allowed_domains),
         "freshness_days": policy.freshness_days,
+        "freshness_required": freshness_required,
     }
+    if tool_input.get("provider") is not None:
+        preferences_payload["provider"] = tool_input.get("provider")
     for key, value in preferences_map.items():
         if key not in preferences_payload:
             preferences_payload[str(key)] = value
@@ -469,7 +536,7 @@ def _normalize_web_research_input(tool_input: Mapping[str, Any]) -> dict[str, An
                 "desired_source_count",
                 1,
                 8,
-                profile_defaults["desired_source_count"],
+                int(desired_source_default),
             ),
             "max_turns": _bounded_int(tool_input.get("max_turns"), "max_turns", 1, 8, profile_defaults["max_turns"]),
             "max_concurrent_fetches": _bounded_int(
@@ -481,6 +548,7 @@ def _normalize_web_research_input(tool_input: Mapping[str, Any]) -> dict[str, An
             ),
         },
         "budget_profile": budget_profile,
+        "freshness_required": freshness_required,
         "output_hints": dict(output_hints or {}),
     }
 
@@ -526,12 +594,27 @@ def _bounded_int(raw: Any, field: str, minimum: int, maximum: int, default: int)
     return raw
 
 
+def _normalize_bool(value: Any, *, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    normalized = str(value).strip().lower()
+    if normalized in {"1", "true", "yes", "on", "required"}:
+        return True
+    if normalized in {"0", "false", "no", "off", ""}:
+        return False
+    return default
+
+
 def _web_research_delegation_prompt(request: Mapping[str, Any]) -> str:
     return (
         "Run bounded read-only web research for this objective. Use only the package-owned "
         "`grounding_web_search`, `grounding_web_fetch`, `grounding_web_find`, and "
         "`web_research_fetch_many` tools, stay inside the supplied hard policy and budgets, "
-        "and return concise structured evidence.\n\n"
+        "preserve provider/freshness metadata, and return concise structured evidence.\n\n"
         f"Objective: {request['objective']}\n"
         f"Mode: {request['mode']}\n"
         f"Hard policy: {request['hard_policy']}\n"
@@ -540,6 +623,8 @@ def _web_research_delegation_prompt(request: Mapping[str, Any]) -> str:
         f"Output hints: {request['output_hints']}\n\n"
         "In open mode, use preferred domains as ranking guidance, not as the only valid source "
         "scope. In focused mode, stay inside hard allowed domains. "
+        "If freshness is required, do not claim sufficient fresh evidence unless search reports "
+        "freshness_scope as enforced or satisfied; expose provider fallback or unsupported freshness. "
         "Do not navigate browsers, run shell commands, mutate workspace state, or cite sources "
         "you did not inspect."
     )
@@ -571,10 +656,14 @@ def _project_web_research_result(
     if dropped_events:
         state.record_unverified_child_metadata_dropped(dropped_events)
     child_trace = _list_of_mappings(structured.get("trace") or structured.get("trace_summary"))
+    stop_reason = state.stop_reason(
+        structured.get("stop_reason") or terminal_metadata.get("stop_reason") or child_payload.get("status"),
+    )
+    state.finalize_provider_and_freshness_trace()
     trace = [*state.trace_summary(), *child_trace]
     if child_payload.get("summary"):
         trace.append({"event": "delegated_summary", "summary": str(child_payload["summary"])})
-    return {
+    result = {
         "objective": request["objective"],
         "mode": request.get("mode", "focused"),
         "answer": str(structured.get("answer") or child_payload.get("summary") or "").strip(),
@@ -584,9 +673,7 @@ def _project_web_research_result(
         "hard_policy": dict(request.get("hard_policy") or {}),
         "preferences": dict(request.get("preferences") or {}),
         "budget": state.budget_payload(),
-        "stop_reason": state.stop_reason(
-            structured.get("stop_reason") or terminal_metadata.get("stop_reason") or child_payload.get("status"),
-        ),
+        "stop_reason": stop_reason,
         "trace_summary": trace[:_WEB_RESEARCH_MAX_TRACE_ITEMS],
         "child_run": {
             "agent": child_payload.get("agent") or child_payload.get("agent_name") or "web-searcher",
@@ -597,6 +684,19 @@ def _project_web_research_result(
             "delegation_depth": child_payload.get("delegation_depth"),
         },
     }
+    provider = state.provider_payload()
+    if provider is not None:
+        result["provider"] = provider
+    provider_selection = state.provider_selection_payload()
+    if provider_selection is not None:
+        result["provider_selection"] = provider_selection
+    provider_fallback = state.provider_fallback_payload()
+    if provider_fallback is not None:
+        result["provider_fallback"] = provider_fallback
+    freshness_scope = state.freshness_scope_payload()
+    if freshness_scope:
+        result["freshness_scope"] = freshness_scope
+    return result
 
 
 def _stop_reason_from_status(raw_status: Any) -> str:
@@ -607,6 +707,9 @@ def _stop_reason_from_status(raw_status: Any) -> str:
         "policy_blocked",
         "needs_wider_scope",
         "freshness_unsupported",
+        "freshness_enforced",
+        "freshness_satisfied",
+        "provider_fallback",
     }:
         return status
     if status in {"max_turns", "cancelled"}:
@@ -752,18 +855,12 @@ class _WebResearchRunState:
     sources: list[dict[str, Any]] = field(default_factory=list)
     evidence: list[dict[str, Any]] = field(default_factory=list)
     trace: list[dict[str, Any]] = field(default_factory=list)
+    provider_events: list[dict[str, Any]] = field(default_factory=list)
+    freshness_outcomes: list[dict[str, Any]] = field(default_factory=list)
     _lock: Lock = field(default_factory=Lock)
 
     def __post_init__(self) -> None:
-        freshness_days = self.request.get("policy", {}).get("freshness_days")
-        if freshness_days is not None:
-            self._append_trace(
-                {
-                    "event": "freshness_unsupported",
-                    "requested_days": freshness_days,
-                    "status": "unsupported",
-                }
-            )
+        return None
 
     @property
     def public_policy(self) -> Mapping[str, Any]:
@@ -798,19 +895,26 @@ class _WebResearchRunState:
     def record_search(self, result: Mapping[str, Any]) -> None:
         results = _list_of_mappings(result.get("results"))
         with self._lock:
+            self._record_provider_and_freshness(result)
             for item in results:
                 self._add_source(item)
-            self._append_trace(
-                {
-                    "event": "searched",
-                    "tool": "grounding_web_search",
-                    "query": result.get("query"),
-                    "result_count": len(results),
-                }
-            )
+            event = {
+                "event": "searched",
+                "tool": "grounding_web_search",
+                "query": result.get("query"),
+                "result_count": len(results),
+            }
+            provider = result.get("provider")
+            if isinstance(provider, Mapping):
+                event["provider"] = provider.get("id")
+            freshness_scope = result.get("freshness_scope")
+            if isinstance(freshness_scope, Mapping):
+                event["freshness_status"] = freshness_scope.get("status")
+            self._append_trace(event)
 
     def record_fetch(self, result: Mapping[str, Any]) -> None:
         with self._lock:
+            self._record_provider_and_freshness(result, include_freshness=False)
             self._add_source(dict(result.get("source") or result))
             self._add_evidence(
                 {
@@ -833,6 +937,7 @@ class _WebResearchRunState:
     def record_find(self, result: Mapping[str, Any]) -> None:
         matches = _list_of_mappings(result.get("matches"))
         with self._lock:
+            self._record_provider_and_freshness(result, include_freshness=False)
             source = result.get("source")
             if isinstance(source, Mapping):
                 self._add_source(dict(source))
@@ -891,6 +996,26 @@ class _WebResearchRunState:
             for event in events:
                 self._append_trace(event)
 
+    def finalize_provider_and_freshness_trace(self) -> None:
+        with self._lock:
+            freshness_days = self.request.get("policy", {}).get("freshness_days")
+            if freshness_days is None:
+                return
+            if any(str(event.get("event", "")).startswith("freshness_") for event in self.trace):
+                return
+            status = "unsupported"
+            if any(outcome.get("status") == "enforced" for outcome in self.freshness_outcomes):
+                status = "enforced"
+            elif any(outcome.get("status") == "satisfied" for outcome in self.freshness_outcomes):
+                status = "satisfied"
+            self._append_trace(
+                {
+                    "event": "freshness_enforced" if status == "enforced" else "freshness_unsupported",
+                    "requested_days": freshness_days,
+                    "status": status,
+                }
+            )
+
     def sources_payload(self) -> list[dict[str, Any]]:
         with self._lock:
             return [dict(item) for item in self.sources]
@@ -902,6 +1027,46 @@ class _WebResearchRunState:
     def trace_summary(self) -> list[dict[str, Any]]:
         with self._lock:
             return [dict(item) for item in self.trace[-_WEB_RESEARCH_MAX_TRACE_ITEMS:]]
+
+    def provider_payload(self) -> dict[str, Any] | None:
+        with self._lock:
+            for event in reversed(self.provider_events):
+                if isinstance(event.get("provider_selection"), Mapping):
+                    provider = event.get("provider")
+                    return dict(provider) if isinstance(provider, Mapping) else None
+            for event in reversed(self.provider_events):
+                provider = event.get("provider")
+                if isinstance(provider, Mapping):
+                    return dict(provider)
+            return None
+
+    def provider_selection_payload(self) -> dict[str, Any] | None:
+        with self._lock:
+            for event in reversed(self.provider_events):
+                selection = event.get("provider_selection")
+                if isinstance(selection, Mapping):
+                    return dict(selection)
+            return None
+
+    def provider_fallback_payload(self) -> dict[str, Any] | None:
+        with self._lock:
+            for event in reversed(self.provider_events):
+                fallback = event.get("provider_fallback")
+                if isinstance(fallback, Mapping):
+                    return dict(fallback)
+            return None
+
+    def freshness_scope_payload(self) -> dict[str, Any]:
+        with self._lock:
+            freshness_days = self.request.get("policy", {}).get("freshness_days")
+            if freshness_days is None:
+                return {}
+            status = "unsupported"
+            if any(outcome.get("status") == "enforced" for outcome in self.freshness_outcomes):
+                status = "enforced"
+            elif any(outcome.get("status") == "satisfied" for outcome in self.freshness_outcomes):
+                status = "satisfied"
+            return {"requested_days": freshness_days, "status": status}
 
     def budget_payload(self) -> dict[str, Any]:
         with self._lock:
@@ -925,6 +1090,9 @@ class _WebResearchRunState:
             budget_rejections = self.budget_rejections
             operation_failures = self.operation_failures
             freshness_requested = self.request["policy"].get("freshness_days") is not None
+            freshness_satisfied = any(
+                outcome.get("status") in {"enforced", "satisfied"} for outcome in self.freshness_outcomes
+            )
             inspected_sources = self._inspected_source_count_locked()
             desired_sources = int(self.request["budget"].get("desired_source_count") or 1)
         if not has_evidence:
@@ -932,12 +1100,16 @@ class _WebResearchRunState:
                 return "policy_blocked"
             if budget_rejections:
                 return "budget_exhausted"
-            if freshness_requested:
+            if freshness_requested and not freshness_satisfied:
                 return "freshness_unsupported"
             if operation_failures:
                 return "partial_result"
             return _stop_reason_from_status(child_status)
-        if freshness_requested:
+        if freshness_requested and not freshness_satisfied:
+            return "freshness_unsupported"
+        if self.provider_fallback_payload() and self.provider_fallback_payload().get("used") and self.request.get(
+            "freshness_required"
+        ):
             return "freshness_unsupported"
         if budget_rejections or operation_failures:
             return "partial_result"
@@ -951,16 +1123,16 @@ class _WebResearchRunState:
             return
         if any(existing.get("url") == url for existing in self.sources):
             return
-        self.sources.append(
-            {
-                "id": item.get("id") or item.get("source_handle") or url,
-                "title": item.get("title") or url,
-                "url": url,
-                "source_handle": item.get("source_handle") or item.get("id"),
-                "page_handle": item.get("page_handle"),
-                "domain": item.get("domain"),
-            }
-        )
+        source = {
+            "id": item.get("id") or item.get("source_handle") or url,
+            "title": item.get("title") or url,
+            "url": url,
+            "source_handle": item.get("source_handle") or item.get("id"),
+            "page_handle": item.get("page_handle"),
+            "domain": item.get("domain"),
+        }
+        self._attach_provider_source_metadata(source, item)
+        self.sources.append(source)
 
     def _add_evidence(self, item: Mapping[str, Any]) -> None:
         excerpt = str(item.get("excerpt") or item.get("content") or "").strip()
@@ -970,17 +1142,17 @@ class _WebResearchRunState:
         key = (url, excerpt)
         if any((existing.get("url"), existing.get("excerpt")) == key for existing in self.evidence):
             return
-        self.evidence.append(
-            {
-                "id": item.get("id") or item.get("source_handle") or url,
-                "title": item.get("title"),
-                "url": url,
-                "excerpt": excerpt,
-                "source_handle": item.get("source_handle"),
-                "page_handle": item.get("page_handle"),
-                **_optional_fact_fields(item, ("exact_excerpt", "match_start", "match_end")),
-            }
-        )
+        evidence = {
+            "id": item.get("id") or item.get("source_handle") or url,
+            "title": item.get("title"),
+            "url": url,
+            "excerpt": excerpt,
+            "source_handle": item.get("source_handle"),
+            "page_handle": item.get("page_handle"),
+            **_optional_fact_fields(item, ("exact_excerpt", "match_start", "match_end")),
+        }
+        self._attach_provider_source_metadata(evidence, item)
+        self.evidence.append(evidence)
 
     def _inspected_source_count_locked(self) -> int:
         keys: set[str] = set()
@@ -994,6 +1166,50 @@ class _WebResearchRunState:
         self.trace.append(dict(event))
         if len(self.trace) > _WEB_RESEARCH_MAX_TRACE_ITEMS * 4:
             del self.trace[: len(self.trace) - _WEB_RESEARCH_MAX_TRACE_ITEMS * 4]
+
+    def _record_provider_and_freshness(self, result: Mapping[str, Any], *, include_freshness: bool = True) -> None:
+        provider = result.get("provider")
+        selection = result.get("provider_selection")
+        fallback = result.get("provider_fallback")
+        if isinstance(provider, Mapping):
+            event = {
+                "provider": dict(provider),
+                "provider_selection": dict(selection) if isinstance(selection, Mapping) else None,
+                "provider_fallback": dict(fallback) if isinstance(fallback, Mapping) else None,
+            }
+            self.provider_events.append(event)
+            if isinstance(fallback, Mapping) and fallback.get("used"):
+                self._append_trace(
+                    {
+                        "event": "provider_fallback",
+                        "from": fallback.get("from"),
+                        "selected": fallback.get("selected"),
+                    }
+                )
+        freshness_scope = result.get("freshness_scope") if include_freshness else None
+        if isinstance(freshness_scope, Mapping):
+            self.freshness_outcomes.append(dict(freshness_scope))
+            status = freshness_scope.get("status")
+            if status in {"enforced", "satisfied", "unsupported", "unsatisfied"}:
+                self._append_trace(
+                    {
+                        "event": "freshness_enforced" if status in {"enforced", "satisfied"} else "freshness_unsupported",
+                        "requested_days": freshness_scope.get("requested_days"),
+                        "status": status,
+                    }
+                )
+
+    def _attach_provider_source_metadata(self, target: dict[str, Any], item: Mapping[str, Any]) -> None:
+        metadata = item.get("metadata")
+        provider = item.get("provider")
+        freshness_scope = item.get("freshness_scope")
+        if isinstance(metadata, Mapping):
+            provider = provider or metadata.get("provider")
+            freshness_scope = freshness_scope or metadata.get("freshness_scope")
+        if isinstance(provider, Mapping):
+            target["provider"] = dict(provider)
+        if isinstance(freshness_scope, Mapping):
+            target["freshness_scope"] = dict(freshness_scope)
 
 
 def _web_research_state(context: Any) -> _WebResearchRunState | None:
@@ -1021,6 +1237,11 @@ def _effective_web_tool_input(kind: str, tool_input: Mapping[str, Any], context:
         effective["blocked_domains"] = list(policy["blocked_domains"])
     if policy.get("freshness_days") is not None:
         effective["freshness_days"] = policy["freshness_days"]
+    if state.request.get("freshness_required"):
+        effective["freshness_required"] = bool(state.request["freshness_required"])
+    provider = state.request.get("preferences", {}).get("provider")
+    if provider:
+        effective["provider"] = provider
     if kind == "search":
         remaining = max(1, int(state.request["budget"]["search_budget"]) - state.search_used)
         effective.setdefault("limit", min(_GROUNDING_DEFAULT_SEARCH_LIMIT, remaining))

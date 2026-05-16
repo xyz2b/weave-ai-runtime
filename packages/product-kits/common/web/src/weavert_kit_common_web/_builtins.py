@@ -145,6 +145,32 @@ def chat_web_grounding_builtin_tools() -> tuple[ToolDefinition, ...]:
                     "objective": {"type": "string"},
                     "question": {"type": "string"},
                     "mode": {"type": "string", "enum": ["focused", "open"]},
+                    "scope": {
+                        "type": "object",
+                        "properties": {
+                            "mode": {"type": "string", "enum": ["focused", "open"]},
+                            "allowed_domains": {"type": "array", "items": {"type": "string"}},
+                            "blocked_domains": {"type": "array", "items": {"type": "string"}},
+                        },
+                        "additionalProperties": False,
+                    },
+                    "freshness": {
+                        "type": "object",
+                        "properties": {
+                            "days": {"type": "integer", "minimum": 0},
+                            "required": {"type": "boolean"},
+                        },
+                        "additionalProperties": False,
+                    },
+                    "depth": {"type": "string", "enum": ["quick", "standard", "deep"]},
+                    "source_preferences": {
+                        "type": "object",
+                        "properties": {
+                            "preferred_domains": {"type": "array", "items": {"type": "string"}},
+                            "desired_source_count": {"type": "integer", "minimum": 1, "maximum": 8},
+                        },
+                        "additionalProperties": False,
+                    },
                     "domains": {"type": "array", "items": {"type": "string"}},
                     "allowed_domains": {"type": "array", "items": {"type": "string"}},
                     "blocked_domains": {"type": "array", "items": {"type": "string"}},
@@ -153,6 +179,8 @@ def chat_web_grounding_builtin_tools() -> tuple[ToolDefinition, ...]:
                     "budget_profile": {"type": "string", "enum": ["quick", "standard", "deep"]},
                     "freshness_days": {"type": "integer", "minimum": 0},
                     "recency_days": {"type": "integer", "minimum": 0},
+                    "freshness_required": {"type": "boolean"},
+                    "provider": {"type": "string"},
                     "search_budget": {"type": "integer", "minimum": 1, "maximum": 8},
                     "fetch_budget": {"type": "integer", "minimum": 0, "maximum": 8},
                     "find_budget": {"type": "integer", "minimum": 0, "maximum": 12},
@@ -179,6 +207,10 @@ def chat_web_grounding_builtin_tools() -> tuple[ToolDefinition, ...]:
                     "stop_reason": {"type": "string"},
                     "trace_summary": {"type": "array", "items": {"type": "object"}},
                     "child_run": {"type": "object"},
+                    "provider": {"type": "object"},
+                    "provider_selection": {"type": "object"},
+                    "provider_fallback": {"type": "object"},
+                    "freshness_scope": {"type": "object"},
                 },
                 "required": [
                     "objective",
@@ -217,7 +249,11 @@ def chat_web_grounding_builtin_tools() -> tuple[ToolDefinition, ...]:
                 "properties": {
                     "query": {"type": "string"},
                     "domains": {"type": "array", "items": {"type": "string"}},
+                    "blocked_domains": {"type": "array", "items": {"type": "string"}},
                     "freshness_days": {"type": "integer", "minimum": 0},
+                    "recency_days": {"type": "integer", "minimum": 0},
+                    "freshness_required": {"type": "boolean"},
+                    "provider": {"type": "string"},
                     "limit": {"type": "integer", "minimum": 1, "maximum": 8},
                 },
                 "required": ["query"],
@@ -418,9 +454,11 @@ def web_research_worker_builtin_agents() -> tuple[AgentDefinition, ...]:
                 "2. Use the controlled read-only tool pool: `grounding_web_search`, "
                 "`grounding_web_fetch`, `grounding_web_find`, and `web_research_fetch_many`.\n"
                 "3. Stay inside caller-provided hard policy and budgets; open-mode preferences guide ranking, not safety.\n"
-                "4. Inspect evidence before citing it, and return source references plus concise evidence.\n"
-                "5. Use `web_research_fetch_many` only for bounded concurrent page inspection.\n"
-                "6. Do not request shell access, workspace mutation, browser navigation, or direct user adoption."
+                "4. Treat provider, provider fallback, and freshness_scope fields as part of the evidence contract.\n"
+                "5. Do not present a freshness-constrained answer as confirmed when search reports unsupported freshness or a provider downgrade.\n"
+                "6. Inspect evidence before citing it, and return source references plus concise evidence.\n"
+                "7. Use `web_research_fetch_many` only for bounded concurrent page inspection.\n"
+                "8. Do not request shell access, workspace mutation, browser navigation, or direct user adoption."
             ),
             tools=("grounding_web_search", "grounding_web_fetch", "grounding_web_find", "web_research_fetch_many"),
             permission_mode=PermissionMode.DEFAULT,

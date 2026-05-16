@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
 from weavert.contracts import RuntimeMessage, ToolResultBlock
 from weavert.result_projections import (
@@ -91,6 +91,45 @@ def assert_no_terminal_failure(source: Any) -> None:
     raise AssertionError(f"Workflow terminated unsuccessfully: {detail}")
 
 
+def assert_web_research_outcome(
+    source: Any,
+    *,
+    provider_id: str | None = None,
+    freshness_status: str | None = None,
+    stop_reason: str | None = None,
+    min_sources: int | None = None,
+) -> dict[str, Any]:
+    payload = _web_research_payload(source)
+    if provider_id is not None:
+        observed = payload.get("provider", {}).get("id")
+        if observed != provider_id:
+            raise AssertionError(f"Expected web_research provider '{provider_id}', got '{observed}'.")
+    if freshness_status is not None:
+        observed = payload.get("freshness_scope", {}).get("status")
+        if observed != freshness_status:
+            raise AssertionError(f"Expected web_research freshness '{freshness_status}', got '{observed}'.")
+    if stop_reason is not None and payload.get("stop_reason") != stop_reason:
+        raise AssertionError(f"Expected web_research stop_reason '{stop_reason}', got '{payload.get('stop_reason')}'.")
+    if min_sources is not None and len(_list_of_mappings(payload.get("sources"))) < min_sources:
+        raise AssertionError(f"Expected at least {min_sources} web_research source(s).")
+    return payload
+
+
+def assert_delegated_web_research_tool_use(source: Any, tool_name: str) -> ToolOutcomeProjection:
+    return assert_tool_outcome(source, tool_name)
+
+
+def assert_web_research_ledger_evidence(source: Any, *, urls: Sequence[str] = ()) -> list[dict[str, Any]]:
+    payload = _web_research_payload(source)
+    evidence = _list_of_mappings(payload.get("evidence"))
+    if not evidence:
+        raise AssertionError("Expected ledger-derived web_research evidence.")
+    missing = [url for url in urls if not any(item.get("url") == url for item in evidence)]
+    if missing:
+        raise AssertionError(f"Missing web_research evidence URL(s): {', '.join(missing)}.")
+    return evidence
+
+
 
 def _messages_from_source(source: Any) -> tuple[RuntimeMessage, ...]:
     if isinstance(source, tuple) and _is_message_tuple(source):
@@ -108,11 +147,32 @@ def _is_message_tuple(messages: tuple[Any, ...]) -> bool:
     return all(isinstance(message, RuntimeMessage) for message in messages)
 
 
+def _web_research_payload(source: Any) -> dict[str, Any]:
+    if isinstance(source, Mapping):
+        return dict(source)
+    projection = latest_tool_outcome(source, "web_research")
+    if projection is not None and isinstance(projection.output, Mapping):
+        return dict(projection.output)
+    output = getattr(source, "output", None)
+    if isinstance(output, Mapping):
+        return dict(output)
+    raise AssertionError("Expected a web_research result payload or report containing one.")
+
+
+def _list_of_mappings(raw: Any) -> list[dict[str, Any]]:
+    if not isinstance(raw, list):
+        return []
+    return [dict(item) for item in raw if isinstance(item, Mapping)]
+
+
 __all__ = [
     "assert_child_summary",
+    "assert_delegated_web_research_tool_use",
     "assert_no_terminal_failure",
     "assert_skill_outcome",
     "assert_tool_outcome",
     "assert_tool_result",
+    "assert_web_research_ledger_evidence",
+    "assert_web_research_outcome",
     "extract_tool_result",
 ]

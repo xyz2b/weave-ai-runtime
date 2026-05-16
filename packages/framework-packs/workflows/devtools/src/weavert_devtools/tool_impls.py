@@ -8,14 +8,15 @@ from typing import Any
 from weavert.builtins.tool_impls import _normalize_optional_string, _path_allowed, _resolve_path
 from weavert.definitions import SkillShell, ValidationOutcome
 from weavert.tool_runtime import ToolContext
+import weavert_web_research.core as web_research_core
 from weavert_web_research import (
     DuckDuckGoHtmlBackend,
     build_policy,
+    default_web_search_provider_registry,
     inspect_page,
     search_web,
     validate_fetch_input,
     validate_web_url_input,
-    web_urlopen,
 )
 
 _GLOB_TOOL_MAX_MATCHES = 128
@@ -213,7 +214,7 @@ async def web_fetch_tool(tool_input: dict[str, Any], _: ToolContext) -> dict[str
         result = inspect_page(
             tool_input,
             backend=DuckDuckGoHtmlBackend(
-                urlopen=lambda request, *, timeout: web_urlopen(
+                urlopen=lambda request, *, timeout: _web_policy_urlopen(
                     request,
                     timeout=timeout,
                     allowed_domains=policy.allowed_domains,
@@ -233,6 +234,7 @@ async def web_fetch_tool(tool_input: dict[str, Any], _: ToolContext) -> dict[str
             "page_handle": result["page_handle"],
             "source": result["source"],
             "policy": result["policy"],
+            "provider": result["provider"],
             **({"freshness_scope": result["freshness_scope"]} if "freshness_scope" in result else {}),
         }
 
@@ -260,11 +262,25 @@ async def web_search_tool(tool_input: dict[str, Any], _: ToolContext) -> dict[st
     def search() -> dict[str, Any]:
         return search_web(
             str(tool_input["query"]),
-            backend=DuckDuckGoHtmlBackend(),
+            registry=default_web_search_provider_registry(duckduckgo_urlopen=web_research_core.web_urlopen),
             policy=policy,
         )
 
     return await asyncio.to_thread(search)
+
+
+def _web_policy_urlopen(request, **kwargs: Any):
+    try:
+        return web_research_core.web_urlopen(request, **kwargs)
+    except TypeError as exc:
+        policy_keys = {"allowed_domains", "blocked_domains", "hostname_public_resolver"}
+        if not policy_keys.intersection(kwargs):
+            raise
+        reduced_kwargs = {key: value for key, value in kwargs.items() if key not in policy_keys}
+        try:
+            return web_research_core.web_urlopen(request, **reduced_kwargs)
+        except TypeError:
+            raise exc
 
 
 __all__ = [
