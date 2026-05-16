@@ -60,6 +60,14 @@ Shared packages 贡献的是可被多种产品形态复用的能力。
 
 Shared packages 回答的问题是：“这个能力是否能跨产品复用？”
 
+## 一个快速边界检查
+
+- retrieval 负责判断哪些 grounding items 或 memory passages 最相关，并准备 citations
+- web grounding 负责只读地搜索公网网站并抓取远程文本
+- browser bridges 通过 app-owned browser 提供状态、导航与交互
+- local-OS bridges 暴露 files、clipboard、notifications、processes 这类通用机器表面
+- PIM bridges 暴露 calendars、contacts、reminders、tasks 这类结构化个人数据表面
+
 ## Scenario packs
 
 Scenario packs 是产品画像级 package。

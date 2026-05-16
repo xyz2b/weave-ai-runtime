@@ -29,6 +29,14 @@ This family groups reusable product-kit packages shared across multiple scenario
 - Put reusable product-kit bridges here when more than one scenario pack should compose them.
 - Keep product-profile defaults in the scenario-pack packages above this layer.
 
+## Easy boundary checks
+
+- `retrieval` ranks and cites grounding you already have.
+- `web` searches public websites and fetches remote text in a read-only posture.
+- `browser` uses a host-mediated browser bridge for state, navigation, and interaction.
+- `local-os` exposes generic local-machine surfaces such as files, clipboard, notifications, and processes.
+- `pim` exposes structured personal-data surfaces such as calendars, contacts, reminders, and tasks.
+
 ## See also
 
 - `../README.md`

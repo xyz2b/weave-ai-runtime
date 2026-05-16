@@ -18,6 +18,12 @@
 - `weavert_kit_common_retrieval`
 - `weavert_kit_common_web`
 
+## 什么时候选它，而不是旁边那些包
+
+- 当你想直接拿一个已经组合好 retrieval 和公网 web grounding 的 higher-layer profile 时，选 `weavert-kit-chat`。
+- 如果你的 app 主要需要 host-mediated browser、local-machine 或 PIM bridges，不要选它；那是 `weavert-kit-local-assistant` 的职责。
+- 如果你只想拿一个 lower-layer capability，而不是完整 chat profile，就直接装 `weavert-kit-common-retrieval` 或 `weavert-kit-common-web`。
+
 ## 另见
 
 - `../README.zh-CN.md`

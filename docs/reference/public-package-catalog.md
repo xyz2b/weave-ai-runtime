@@ -90,6 +90,14 @@ Use them when you want one reusable bridge or shared capability without taking a
 | `weavert-kit-common-local-os` | `weavert_kit_common_local_os` | `weavert-bridge-local-os` | Shared local-OS bridge surfaces | Add local machine bridge behavior without taking a full scenario pack |
 | `weavert-kit-common-pim` | `weavert_kit_common_pim` | `weavert-bridge-pim` | Shared PIM bridge surfaces | Add calendar, notes, or personal-information-management style bridges |
 
+## Commonly confused shared kits
+
+- `weavert-kit-common-retrieval` ranks, excerpts, and prepares citations from grounding items you already have, such as notes, memory, or fetched passages. It does not search the public web and it does not drive a browser.
+- `weavert-kit-common-web` performs read-only public-web search and bounded remote fetch for grounding. It does not expose browser navigation, clicks, or host-side browser control.
+- `weavert-kit-common-browser` is a host-mediated browser bridge for browser state, navigation, and interaction. It is not a web-search adapter and it does not imply autonomous browser ownership.
+- `weavert-kit-common-local-os` bridges generic local-machine surfaces such as files, clipboard, notifications, and processes. It is broader device plumbing, not structured personal-data tooling.
+- `weavert-kit-common-pim` bridges structured personal-information surfaces such as calendar events, contacts, reminders, and tasks. Use it for PIM objects, not generic local-OS access.
+
 ## Scenario kits
 
 These are higher-layer product-profile entrypoints.

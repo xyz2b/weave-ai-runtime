@@ -20,6 +20,12 @@
 - `weavert_kit_common_local_os`
 - `weavert_kit_common_pim`
 
+## 什么时候选它，而不是旁边那些包
+
+- 当你的 app 自己拥有 host approvals，而且需要 browser、local-machine 或 PIM bridges 组成一个 higher-layer profile 时，选 `weavert-kit-local-assistant`。
+- 如果你只需要 retrieval 加公网 web 的 grounded answers，不要选它；更轻的是 `weavert-kit-chat`。
+- 如果你只想拿一个 lower-layer bridge，而不是整个 profile，就直接装对应的 common kit。
+
 ## 另见
 
 - `../README.zh-CN.md`

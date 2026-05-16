@@ -90,6 +90,14 @@ python -m pip install weavert
 | `weavert-kit-common-local-os` | `weavert_kit_common_local_os` | `weavert-bridge-local-os` | Shared local-OS bridge surfaces | 增加本地机器 bridge 行为，但不采用完整 scenario pack |
 | `weavert-kit-common-pim` | `weavert_kit_common_pim` | `weavert-bridge-pim` | Shared PIM bridge surfaces | 增加 calendar、notes 或个人信息管理类 bridge |
 
+## 常见易混 shared kits
+
+- `weavert-kit-common-retrieval` 负责对你已经拿到的 grounding 项做排序、摘录和 citation 准备，比如 notes、memory 或 fetched passages。它自己不做公网搜索，也不驱动浏览器。
+- `weavert-kit-common-web` 负责只读的公网 web 搜索与受限远程抓取，用于 grounding。它不提供浏览器导航、点击，或宿主侧浏览器控制。
+- `weavert-kit-common-browser` 是一个经由 host mediation 的 browser bridge，用于浏览器状态、导航和交互。它不是 web 搜索适配器，也不意味着 runtime 自主拥有浏览器。
+- `weavert-kit-common-local-os` 桥接的是 files、clipboard、notifications、processes 这类通用本地机器表面。它是更宽的设备桥接，不是结构化个人信息工具。
+- `weavert-kit-common-pim` 桥接的是 calendar events、contacts、reminders、tasks 这类结构化个人信息表面。需要 PIM objects 时选它，不要把它和通用 local-OS access 混在一起。
+
 ## Scenario kits
 
 这些是 higher-layer product-profile entrypoints。

@@ -60,6 +60,14 @@ Examples include:
 
 Shared packages answer "is this capability reusable across products?"
 
+## Quick boundary check for the easy-to-confuse ones
+
+- retrieval decides which grounding items or memory passages are most relevant and prepares citations
+- web grounding searches public websites and fetches remote text in a read-only posture
+- browser bridges work through an app-owned browser for state, navigation, and interaction
+- local-OS bridges expose generic machine surfaces such as files, clipboard, notifications, and processes
+- PIM bridges expose structured personal-data surfaces such as calendars, contacts, reminders, and tasks
+
 ## Scenario packs
 
 Scenario packs are product-profile packages.

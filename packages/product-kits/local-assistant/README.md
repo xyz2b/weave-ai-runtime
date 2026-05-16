@@ -22,6 +22,12 @@ The public install name stays separate from the runtime scenario-pack activation
 - `weavert_kit_common_local_os`
 - `weavert_kit_common_pim`
 
+## When to choose this package instead of the nearby ones
+
+- Choose `weavert-kit-local-assistant` when your app owns host approvals and needs browser, local-machine, or PIM bridges as one higher-layer profile.
+- Do not choose it if you only need grounded answers from retrieval plus the public web. That is the lighter role of `weavert-kit-chat`.
+- If you only want one lower-layer bridge instead of the full profile, install the corresponding common kit directly.
+
 ## See also
 
 - `../README.md`

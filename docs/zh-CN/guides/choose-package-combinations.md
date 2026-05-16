@@ -209,6 +209,16 @@ python -m pip install weavert-full weavert-kit-common-browser
 - 只要 PIM bridge -> `weavert-kit-common-pim`
 - 只要 workspace-aware coding support -> `weavert-kit-common-workspace-intelligence`
 
+## 常见易混选择
+
+- 想把 notes、memory 或已经抓回来的文本排成 grounding 结果并准备 citations -> `weavert-kit-common-retrieval`
+- 想在只读 grounding 姿态下搜索公网网页或抓取页面文本 -> `weavert-kit-common-web`
+- 想通过 app-owned browser bridge 获取浏览器状态、导航、点击、填表或提取 -> `weavert-kit-common-browser`
+- 想接入 files、clipboard、notifications、processes 这类通用本地机器表面 -> `weavert-kit-common-local-os`
+- 想接入 calendar、contacts、reminders、tasks 这类结构化个人信息表面 -> `weavert-kit-common-pim`
+- 想直接拿一个已经组合好 retrieval 和公网 web grounding 的 higher-layer chat profile -> `weavert-kit-chat`
+- 想直接拿一个已经组合好 retrieval、browser、local-OS 和 PIM bridges 的 host-centric assistant profile -> `weavert-kit-local-assistant`
+
 ## 如何在 framework packs 和 product kits 之间做选择
 
 在下面这些情况选 framework packs：

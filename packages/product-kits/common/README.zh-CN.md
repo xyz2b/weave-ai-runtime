@@ -22,6 +22,14 @@
 - 当某个可复用 product-kit bridge 应被多个 scenario packs 组合时，把它放在这里。
 - 产品画像默认值则保留在这一层之上的 scenario-pack packages 中。
 
+## 快速边界检查
+
+- `retrieval` 负责对你已经拿到的 grounding 做排序和 citation 准备。
+- `web` 负责只读地搜索公网网站并抓取远程文本。
+- `browser` 负责通过 host-mediated browser bridge 提供状态、导航与交互。
+- `local-os` 负责暴露 files、clipboard、notifications、processes 这类通用本地机器表面。
+- `pim` 负责暴露 calendars、contacts、reminders、tasks 这类结构化个人数据表面。
+
 ## 另见
 
 - `../README.zh-CN.md`

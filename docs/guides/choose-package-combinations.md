@@ -209,6 +209,16 @@ Recommended shared-kit choices:
 - PIM bridge only -> `weavert-kit-common-pim`
 - workspace-aware coding support only -> `weavert-kit-common-workspace-intelligence`
 
+## Commonly confused choices
+
+- Want to rank notes, memory, or already-fetched text into grounding results and citations -> `weavert-kit-common-retrieval`
+- Want to search the public web or fetch page text in a read-only grounding posture -> `weavert-kit-common-web`
+- Want browser state, navigation, click, form-fill, or extraction through an app-owned browser bridge -> `weavert-kit-common-browser`
+- Want generic local-machine surfaces such as files, clipboard, notifications, or processes -> `weavert-kit-common-local-os`
+- Want structured calendar, contact, reminder, or task surfaces -> `weavert-kit-common-pim`
+- Want a higher-layer chat profile that already composes retrieval and public-web grounding -> `weavert-kit-chat`
+- Want a higher-layer host-centric assistant profile that already composes retrieval, browser, local-OS, and PIM bridges -> `weavert-kit-local-assistant`
+
 ## How to choose between framework packs and product kits
 
 Choose framework packs when:
