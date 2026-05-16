@@ -1,0 +1,3 @@
+weavert<0.2.0,>=0.1.0
+weavert-kit-common-retrieval<0.2.0,>=0.1.0
+weavert-web-research<0.2.0,>=0.1.0

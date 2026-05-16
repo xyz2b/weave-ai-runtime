@@ -5,9 +5,11 @@ from email.message import Message
 from pathlib import Path
 import socket
 import subprocess
+import tarfile
 from typing import Any
 import urllib.error
 import urllib.request
+import zipfile
 
 import pytest
 
@@ -108,6 +110,17 @@ def _dedupe_manifests(*groups):
             manifests.append(manifest)
             seen.add(manifest.name)
     return tuple(manifests)
+
+
+def _read_web_artifact_text(path: Path, member: str) -> str:
+    if path.suffix == ".whl":
+        with zipfile.ZipFile(path) as archive:
+            return archive.read(member).decode()
+    with tarfile.open(path) as archive:
+        package_prefix = path.name.removesuffix(".tar.gz")
+        extracted = archive.extractfile(f"{package_prefix}/src/{member}")
+        assert extracted is not None
+        return extracted.read().decode()
 
 
 REFERENCE_MANIFESTS = _dedupe_manifests(
@@ -297,7 +310,7 @@ def _assemble_reference_runtime(
     return runtime, shape, runtime_root
 
 
-def _assemble_shared_reference_runtime(tmp_path: Path, package_name: str):
+def _assemble_shared_reference_runtime(tmp_path: Path, package_name: str, *, model_client=None):
     shape = reference_shared_package_shape(package_name)
     runtime_root = tmp_path / shape.package_name
     runtime_root.mkdir(parents=True)
@@ -307,6 +320,7 @@ def _assemble_shared_reference_runtime(tmp_path: Path, package_name: str):
             distribution="weavert-core",
             extra_package_manifests=REFERENCE_MANIFESTS,
             requested_packages={shape.package_name},
+            model_client=model_client,
         )
     )
     return runtime, shape, runtime_root
@@ -709,6 +723,50 @@ def test_grounded_reference_shared_packages_can_be_admitted_selected_and_execute
     )
     assert technical_find["matches"][0]["exact_excerpt"] == "30 days"
     assert technical_find["version_scope"]["status"] == "version_mismatch"
+
+
+def test_common_web_generated_artifacts_match_public_research_surfaces() -> None:
+    package_root = Path("packages/product-kits/common/web")
+    required_snippets = {
+        "__init__.py": (
+            "web_research_tool",
+            "web_research_fetch_many_tool",
+            "validate_web_research_fetch_many",
+            "bounded concurrent research page inspection",
+        ),
+        "_builtins.py": (
+            "web_research",
+            "web-searcher",
+            "web_research_fetch_many",
+            '"mode"',
+            '"hard_policy"',
+            '"preferences"',
+            '"max_concurrent_fetches"',
+        ),
+        "_tool_impls.py": (
+            "class _WebResearchRunState",
+            "web_research_fetch_many_tool",
+            "_effective_web_tool_input",
+            "budget_profile",
+            "preferred_domains",
+        ),
+    }
+    artifact_sources = [
+        package_root / "build/lib/weavert_kit_common_web",
+        package_root / "dist/weavert_kit_common_web-0.1.0-py3-none-any.whl",
+        package_root / "dist/weavert_kit_common_web-0.1.0.tar.gz",
+    ]
+
+    for artifact in artifact_sources:
+        assert artifact.exists(), artifact
+        for filename, snippets in required_snippets.items():
+            member = f"weavert_kit_common_web/{filename}"
+            if artifact.is_dir():
+                text = (artifact / filename).read_text()
+            else:
+                text = _read_web_artifact_text(artifact, member)
+            for snippet in snippets:
+                assert snippet in text, (artifact, filename, snippet)
 
 
 @pytest.mark.parametrize(
@@ -1146,6 +1204,207 @@ def test_web_research_validation_requires_objective_and_bounded_budget() -> None
         "freshness_days": 7,
     }
     assert valid.updated_input["budget"]["fetch_budget"] == 2
+
+
+def test_web_research_runtime_projects_ledger_evidence_without_terminal_metadata(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(reference_chat_tool_impls, "_grounding_urlopen", _grounding_urlopen)
+
+    def _search_request(request):
+        assert request.agent is not None
+        assert request.agent.name == "web-searcher"
+        assert {tool.name for tool in request.tools} == {
+            "grounding_web_search",
+            "grounding_web_fetch",
+            "grounding_web_find",
+            "web_research_fetch_many",
+        }
+        return tool_call_batch(
+            request_id="req-web-research-search",
+            tool_name="grounding_web_search",
+            tool_input={"query": "refund policy", "limit": 1},
+            call_id="call-search",
+        )
+
+    def _fetch_request(_request):
+        return tool_call_batch(
+            request_id="req-web-research-fetch",
+            tool_name="grounding_web_fetch",
+            tool_input={"url": "https://grounding.example.test/refund-policy"},
+            call_id="call-fetch",
+        )
+
+    def _final_request(_request):
+        return text_batch(
+            request_id="req-web-research-final",
+            text="Refunds stay available for 30 days.",
+        )
+
+    runtime, _shape, runtime_root = _assemble_shared_reference_runtime(
+        tmp_path,
+        "weavert-bridge-web",
+        model_client=ScriptedModelClient([_search_request, _fetch_request, _final_request]),
+    )
+
+    tool = runtime.kernel.tool_registry.get("web_research")
+    result = asyncio.run(
+        tool.execute(
+            {
+                "objective": "What is the refund window?",
+                "domains": ["grounding.example.test"],
+                "search_budget": 1,
+                "fetch_budget": 1,
+                "desired_source_count": 1,
+            },
+            _tool_context(runtime, runtime_root),
+        )
+    )
+
+    assert result["answer"] == "Refunds stay available for 30 days."
+    assert result["sources"][0]["url"] == "https://grounding.example.test/refund-policy"
+    assert result["evidence"][0]["url"] == "https://grounding.example.test/refund-policy"
+    assert "30 days" in result["evidence"][0]["excerpt"]
+    assert result["budget"]["used"] == {"searches": 1, "fetches": 1, "finds": 0}
+    assert result["stop_reason"] == "sufficient_evidence"
+
+
+def test_web_research_runtime_enforces_child_policy_and_budget(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    opened_urls: list[str] = []
+
+    def _urlopen(request, timeout=10, **_kwargs):
+        _ = timeout
+        url = request.full_url if hasattr(request, "full_url") else str(request)
+        opened_urls.append(url)
+        return _FakeUrlopenResponse(
+            f"<html><head><title>{url}</title></head><body>Evidence from {url}</body></html>"
+        )
+
+    monkeypatch.setattr(reference_chat_tool_impls, "_grounding_urlopen", _urlopen)
+
+    def _outside_fetch(_request):
+        return tool_call_batch(
+            request_id="req-policy-outside",
+            tool_name="grounding_web_fetch",
+            tool_input={"url": "https://outside.example.test/leak"},
+            call_id="call-outside",
+        )
+
+    def _first_fetch(_request):
+        return tool_call_batch(
+            request_id="req-policy-first",
+            tool_name="grounding_web_fetch",
+            tool_input={"url": "https://grounding.example.test/one"},
+            call_id="call-one",
+        )
+
+    def _over_budget_fetch(_request):
+        return tool_call_batch(
+            request_id="req-policy-over-budget",
+            tool_name="grounding_web_fetch",
+            tool_input={"url": "https://grounding.example.test/two"},
+            call_id="call-two",
+        )
+
+    def _final_request(_request):
+        return text_batch(request_id="req-policy-final", text="Partial result.")
+
+    runtime, _shape, runtime_root = _assemble_shared_reference_runtime(
+        tmp_path,
+        "weavert-bridge-web",
+        model_client=ScriptedModelClient(
+            [_outside_fetch, _first_fetch, _over_budget_fetch, _final_request]
+        ),
+    )
+
+    result = asyncio.run(
+        runtime.kernel.tool_registry.get("web_research").execute(
+            {
+                "objective": "Only inspect the grounding domain.",
+                "domains": ["grounding.example.test"],
+                "fetch_budget": 1,
+                "max_turns": 4,
+            },
+            _tool_context(runtime, runtime_root),
+        )
+    )
+
+    assert opened_urls == ["https://grounding.example.test/one"]
+    assert result["budget"]["used"]["fetches"] == 1
+    assert result["budget"]["rejections"] == {"policy": 1, "budget": 1}
+    assert result["stop_reason"] == "partial_result"
+    assert any(event["event"] == "rejected" for event in result["trace_summary"])
+    assert any(event["event"] == "budget_rejected" for event in result["trace_summary"])
+
+
+def test_web_research_open_mode_fetch_many_uses_preferences_and_deterministic_partial_results(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    opened_urls: list[str] = []
+
+    def _urlopen(request, timeout=10, **_kwargs):
+        _ = timeout
+        url = request.full_url if hasattr(request, "full_url") else str(request)
+        opened_urls.append(url)
+        return _FakeUrlopenResponse(
+            f"<html><head><title>{url}</title></head><body>Evidence from {url}</body></html>"
+        )
+
+    monkeypatch.setattr(reference_chat_tool_impls, "_grounding_urlopen", _urlopen)
+
+    def _fetch_many(_request):
+        return tool_call_batch(
+            request_id="req-fetch-many",
+            tool_name="web_research_fetch_many",
+            tool_input={
+                "urls": [
+                    "https://preferred.example.test/a",
+                    "http://127.0.0.1:8000/admin",
+                    "https://outside.example.test/c",
+                ],
+                "max_concurrent_fetches": 2,
+            },
+            call_id="call-fetch-many",
+        )
+
+    def _final_request(_request):
+        return text_batch(request_id="req-fetch-many-final", text="Open research finished.")
+
+    runtime, _shape, runtime_root = _assemble_shared_reference_runtime(
+        tmp_path,
+        "weavert-bridge-web",
+        model_client=ScriptedModelClient([_fetch_many, _final_request]),
+    )
+
+    result = asyncio.run(
+        runtime.kernel.tool_registry.get("web_research").execute(
+            {
+                "objective": "Explore public sources.",
+                "mode": "open",
+                "domains": ["preferred.example.test"],
+                "fetch_budget": 3,
+                "max_concurrent_fetches": 2,
+                "max_turns": 2,
+            },
+            _tool_context(runtime, runtime_root),
+        )
+    )
+
+    assert opened_urls == ["https://preferred.example.test/a", "https://outside.example.test/c"]
+    assert result["policy"]["domains"] == []
+    assert result["preferences"]["preferred_domains"] == ["preferred.example.test"]
+    assert [source["url"] for source in result["sources"]] == [
+        "https://preferred.example.test/a",
+        "https://outside.example.test/c",
+    ]
+    assert result["budget"]["used"]["fetches"] == 2
+    assert result["budget"]["rejections"]["policy"] == 1
+    assert result["stop_reason"] == "sufficient_evidence"
 
 
 def test_technical_web_fetch_validation_rejects_missing_url() -> None:

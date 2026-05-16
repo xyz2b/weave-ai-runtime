@@ -1,3 +1,28 @@
+Metadata-Version: 2.4
+Name: weavert-kit-common-web
+Version: 0.1.0
+Summary: Shared AI-first web_research and read-only web primitive kit surfaces for WeaveRT product kits.
+Author: WeaveRT Maintainers
+License-Expression: Apache-2.0
+Project-URL: Homepage, https://github.com/xyz2b/weave-ai-runtime
+Project-URL: Documentation, https://github.com/xyz2b/weave-ai-runtime/tree/main/docs
+Project-URL: Repository, https://github.com/xyz2b/weave-ai-runtime
+Project-URL: Issues, https://github.com/xyz2b/weave-ai-runtime/issues
+Keywords: weavert,agents,ai,product-kit,shared-kit
+Classifier: Development Status :: 3 - Alpha
+Classifier: Intended Audience :: Developers
+Classifier: Operating System :: OS Independent
+Classifier: Programming Language :: Python
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Programming Language :: Python :: 3.12
+Classifier: Programming Language :: Python :: 3.13
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+Requires-Dist: weavert<0.2.0,>=0.1.0
+Requires-Dist: weavert-kit-common-retrieval<0.2.0,>=0.1.0
+Requires-Dist: weavert-web-research<0.2.0,>=0.1.0
+
 # Web Common Kit
 
 Canonical import root: `weavert_kit_common_web`
