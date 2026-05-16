@@ -199,6 +199,16 @@ LOCAL_ASSISTANT_PROFILE_TOOLS = (
 )
 LOCAL_ASSISTANT_SCENARIO_AGENTS = set(LOCAL_ASSISTANT_SCENARIO_AGENT_NAMES)
 LOCAL_ASSISTANT_SCENARIO_SKILLS = set(LOCAL_ASSISTANT_SCENARIO_SKILL_NAMES)
+PUBLIC_BATCH_FETCH_FIELDS = {"urls", "sources", "max_concurrent_fetches"}
+PUBLIC_BATCH_FETCH_TOOL_NAMES = {
+    "grounding_web_search",
+    "grounding_web_fetch",
+    "grounding_web_find",
+    "web_research_fetch_many",
+    "_web_research_fetch_many",
+    "web_fetch_many",
+    "fetch_many",
+}
 LOCAL_ASSISTANT_PROFILE_SKILLS = LOCAL_ASSISTANT_SCENARIO_SKILLS | {"remember"}
 
 REFERENCE_SHARED_SHAPES = (
@@ -350,6 +360,15 @@ def _tool_context(runtime, cwd: Path) -> ToolContext:
         runtime_services=runtime.services,
         agent_runner=runtime.services.agent_runner,
     )
+
+
+def _assert_public_web_fetch_schema_is_single_page(schema: dict[str, Any]) -> None:
+    properties = schema["properties"]
+    assert {"url", "source"} <= set(properties)
+    assert PUBLIC_BATCH_FETCH_FIELDS.isdisjoint(properties)
+    assert all("batch" not in field and "concurrent" not in field for field in properties)
+    assert schema["additionalProperties"] is False
+    assert schema["oneOf"] == [{"required": ["url"]}, {"required": ["source"]}]
 
 
 class _FakeUrlopenResponse:
@@ -754,7 +773,7 @@ def test_common_web_generated_artifacts_match_public_research_surfaces() -> None
             "web_research_tool",
             "web_fetch_tool",
             "validate_web_fetch",
-            "bounded concurrent research page inspection",
+            "bounded multi-page inspection behind web_research",
         ),
         "_builtins.py": (
             "web_research",
@@ -766,7 +785,7 @@ def test_common_web_generated_artifacts_match_public_research_surfaces() -> None
             '"max_concurrent_fetches"',
         ),
         "_tool_impls.py": (
-            "class _WebResearchRunState",
+            "WebResearchLoopState",
             "web_fetch_tool",
             "_effective_web_tool_input",
             "budget_profile",
@@ -789,6 +808,94 @@ def test_common_web_generated_artifacts_match_public_research_surfaces() -> None
                 text = _read_web_artifact_text(artifact, member)
             for snippet in snippets:
                 assert snippet in text, (artifact, filename, snippet)
+
+
+def test_public_web_fetch_schema_is_single_page_only(tmp_path: Path) -> None:
+    runtime, _shape, runtime_root = _assemble_shared_reference_runtime(tmp_path, "weavert-shared-web-research")
+    schema = runtime.kernel.tool_registry.get("web_fetch").input_schema
+
+    _assert_public_web_fetch_schema_is_single_page(schema)
+
+    context = _tool_context(runtime, runtime_root)
+    url = validate_web_fetch({"url": "https://docs.example.test/page"}, context)
+    source = validate_web_fetch(
+        {"source": {"url": "https://docs.example.test/page", "title": "Docs"}},
+        context,
+    )
+    both = validate_web_fetch(
+        {"url": "https://docs.example.test/page", "source": {"url": "https://docs.example.test/other"}},
+        context,
+    )
+
+    assert url.valid is True
+    assert source.valid is True
+    assert both.valid is False
+    assert both.message == "web_fetch accepts either url or source, not both"
+
+
+def test_public_web_fetch_rejects_batch_fields_standalone_and_inside_web_research(tmp_path: Path) -> None:
+    runtime, _shape, runtime_root = _assemble_shared_reference_runtime(tmp_path, "weavert-shared-web-research")
+    context = _tool_context(runtime, runtime_root)
+
+    for field, value in {
+        "urls": ["https://docs.example.test/a", "https://docs.example.test/b"],
+        "sources": [{"url": "https://docs.example.test/a"}],
+        "max_concurrent_fetches": 2,
+    }.items():
+        outcome = validate_web_fetch({field: value}, context)
+        assert outcome.valid is False
+        assert "batch fetch fields are not public" in outcome.message
+        assert field in outcome.message
+
+    async def agent_runner(agent: str, _prompt: str, active_context: ToolContext, **_kwargs: Any) -> dict[str, Any]:
+        with pytest.raises(ValueError, match="batch fetch fields are not public"):
+            await active_context.tool_registry.get("web_fetch").execute(
+                {"urls": ["https://docs.example.test/a", "https://docs.example.test/b"]},
+                active_context,
+            )
+        return {"agent": agent, "status": "completed", "summary": "Batch fetch was rejected."}
+
+    result = asyncio.run(
+        runtime.kernel.tool_registry.get("web_research").execute(
+            {"objective": "Reject public batch fetch.", "max_turns": 1},
+            ToolContext(
+                session_id="batch-fetch-rejection",
+                turn_id="turn-1",
+                agent_name="tester",
+                cwd=runtime_root,
+                tool_registry=runtime.kernel.tool_registry,
+                agent_registry=runtime.kernel.agent_registry,
+                tool_pool=tuple(runtime.kernel.tool_registry.definitions()),
+                runtime_services=runtime.services,
+                agent_runner=agent_runner,
+            ),
+        )
+    )
+
+    assert result["sources"] == []
+    assert result["budget"]["rejections"]["policy"] == 1
+    assert result["trace_summary"][0]["event"] == "rejected"
+
+
+@pytest.mark.parametrize(
+    "package_name",
+    ("weavert-scenario-chat", "weavert-scenario-coding", "weavert-scenario-local-assistant"),
+)
+def test_scenario_web_inventories_reject_public_batch_fetch_surfaces(tmp_path: Path, package_name: str) -> None:
+    runtime, _shape, _runtime_root = _assemble_reference_runtime(tmp_path, package_name)
+    tool_names = _tool_names(runtime)
+
+    assert "web_fetch" in tool_names
+    assert PUBLIC_BATCH_FETCH_TOOL_NAMES.isdisjoint(tool_names)
+    for tool_name in tool_names:
+        assert "fetch_many" not in tool_name
+
+    for tool_name, tool_definition in runtime.kernel.tool_registry.items():
+        assert tool_name not in PUBLIC_BATCH_FETCH_TOOL_NAMES
+        if tool_name == "web_fetch":
+            _assert_public_web_fetch_schema_is_single_page(tool_definition.input_schema)
+        else:
+            assert "web_research_fetch_many" not in str(tool_definition.input_schema)
 
 
 @pytest.mark.parametrize(
@@ -1567,7 +1674,7 @@ def test_web_research_runtime_enforces_child_policy_and_budget(
     assert any(event["event"] == "budget_rejected" for event in result["trace_summary"])
 
 
-def test_web_research_open_mode_fetch_many_uses_preferences_and_deterministic_partial_results(
+def test_web_research_open_mode_repeated_fetch_uses_preferences_and_deterministic_partial_results(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1583,28 +1690,37 @@ def test_web_research_open_mode_fetch_many_uses_preferences_and_deterministic_pa
 
     monkeypatch.setattr(reference_web_tool_impls, "_web_urlopen", _urlopen)
 
-    def _fetch_many(_request):
+    def _fetch_preferred(_request):
         return tool_call_batch(
-            request_id="req-fetch-many",
+            request_id="req-repeated-fetch-preferred",
             tool_name="web_fetch",
-            tool_input={
-                "urls": [
-                    "https://preferred.example.test/a",
-                    "http://127.0.0.1:8000/admin",
-                    "https://outside.example.test/c",
-                ],
-                "max_concurrent_fetches": 2,
-            },
-            call_id="call-fetch-many",
+            tool_input={"url": "https://preferred.example.test/a"},
+            call_id="call-fetch-preferred",
+        )
+
+    def _fetch_blocked(_request):
+        return tool_call_batch(
+            request_id="req-repeated-fetch-blocked",
+            tool_name="web_fetch",
+            tool_input={"url": "http://127.0.0.1:8000/admin"},
+            call_id="call-fetch-blocked",
+        )
+
+    def _fetch_outside(_request):
+        return tool_call_batch(
+            request_id="req-repeated-fetch-outside",
+            tool_name="web_fetch",
+            tool_input={"url": "https://outside.example.test/c"},
+            call_id="call-fetch-outside",
         )
 
     def _final_request(_request):
-        return text_batch(request_id="req-fetch-many-final", text="Open research finished.")
+        return text_batch(request_id="req-repeated-fetch-final", text="Open research finished.")
 
     runtime, _shape, runtime_root = _assemble_shared_reference_runtime(
         tmp_path,
         "weavert-shared-web-research",
-        model_client=ScriptedModelClient([_fetch_many, _final_request]),
+        model_client=ScriptedModelClient([_fetch_preferred, _fetch_blocked, _fetch_outside, _final_request]),
     )
 
     result = asyncio.run(
@@ -1614,8 +1730,7 @@ def test_web_research_open_mode_fetch_many_uses_preferences_and_deterministic_pa
                 "mode": "open",
                 "domains": ["preferred.example.test"],
                 "fetch_budget": 3,
-                "max_concurrent_fetches": 2,
-                "max_turns": 2,
+                "max_turns": 4,
             },
             _tool_context(runtime, runtime_root),
         )
@@ -1772,27 +1887,29 @@ def test_web_fetch_records_operation_failure_as_partial_result(
 
     monkeypatch.setattr(reference_web_tool_impls, "_web_urlopen", _urlopen)
 
-    def _fetch_many(_request):
+    def _fetch_good(_request):
         return tool_call_batch(
-            request_id="req-fetch-many-failure",
+            request_id="req-repeated-fetch-good",
             tool_name="web_fetch",
-            tool_input={
-                "urls": [
-                    "https://grounding.example.test/good",
-                    "https://grounding.example.test/fail",
-                ],
-                "max_concurrent_fetches": 2,
-            },
-            call_id="call-fetch-many-failure",
+            tool_input={"url": "https://grounding.example.test/good"},
+            call_id="call-fetch-good",
+        )
+
+    def _fetch_fail(_request):
+        return tool_call_batch(
+            request_id="req-repeated-fetch-fail",
+            tool_name="web_fetch",
+            tool_input={"url": "https://grounding.example.test/fail"},
+            call_id="call-fetch-fail",
         )
 
     def _final_request(_request):
-        return text_batch(request_id="req-fetch-many-failure-final", text="One page was inspected.")
+        return text_batch(request_id="req-repeated-fetch-failure-final", text="One page was inspected.")
 
     runtime, _shape, runtime_root = _assemble_shared_reference_runtime(
         tmp_path,
         "weavert-shared-web-research",
-        model_client=ScriptedModelClient([_fetch_many, _final_request]),
+        model_client=ScriptedModelClient([_fetch_good, _fetch_fail, _final_request]),
     )
 
     result = asyncio.run(
@@ -1801,8 +1918,7 @@ def test_web_fetch_records_operation_failure_as_partial_result(
                 "objective": "Inspect two candidate sources.",
                 "fetch_budget": 2,
                 "desired_source_count": 1,
-                "max_concurrent_fetches": 2,
-                "max_turns": 2,
+                "max_turns": 3,
             },
             _tool_context(runtime, runtime_root),
         )
@@ -1819,7 +1935,6 @@ def test_web_fetch_records_operation_failure_as_partial_result(
             "tool": "web_fetch",
             "error": "<urlopen error backend unavailable>",
             "url": "https://grounding.example.test/fail",
-            "input_index": 1,
         }
     ]
 

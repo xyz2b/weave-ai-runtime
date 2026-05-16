@@ -14,7 +14,9 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache
+from threading import Lock
 from typing import Any, Protocol
+from uuid import uuid4
 
 _HTML_TITLE_RE = re.compile(r"<title[^>]*>(?P<title>.*?)</title>", re.IGNORECASE | re.DOTALL)
 _HTML_SCRIPT_STYLE_RE = re.compile(
@@ -41,6 +43,7 @@ _DEFAULT_BLOCKED_HOST_SUFFIXES = (
 )
 _DEFAULT_FETCH_BYTES = 256_000
 _DEFAULT_FETCH_CHARS = 12_000
+_DEFAULT_LOOP_TRACE_ITEMS = 8
 
 
 @dataclass(frozen=True, slots=True)
@@ -152,18 +155,6 @@ class ResearchProfile:
     defaults: Mapping[str, Any] = field(default_factory=dict)
 
 
-@dataclass(slots=True)
-class WebResearchLoopState:
-    profile: str
-    queries: list[str] = field(default_factory=list)
-    pages_read: list[Mapping[str, Any]] = field(default_factory=list)
-    evidence: list[Mapping[str, Any]] = field(default_factory=list)
-    conflicts: list[Mapping[str, Any]] = field(default_factory=list)
-    gaps: list[Mapping[str, Any]] = field(default_factory=list)
-    provider: Mapping[str, Any] = field(default_factory=dict)
-    freshness: Mapping[str, Any] = field(default_factory=dict)
-
-
 class ResearchProfileRegistry:
     def __init__(self, profiles: Sequence[ResearchProfile]) -> None:
         self._profiles = {profile.name: profile for profile in profiles}
@@ -176,6 +167,506 @@ class ResearchProfileRegistry:
 
     def names(self) -> tuple[str, ...]:
         return tuple(self._profiles)
+
+
+def web_research_stop_reason_from_status(raw_status: Any) -> str:
+    status = str(raw_status or "").strip()
+    if status in {
+        "sufficient_evidence",
+        "partial_result",
+        "budget_exhausted",
+        "policy_blocked",
+        "freshness_unsupported",
+        "unresolved_conflict",
+        "remaining_gaps",
+    }:
+        return status
+    if status in {"conflicting_evidence", "conflict", "conflicts"}:
+        return "unresolved_conflict"
+    if status in {"needs_wider_scope", "gaps_remaining", "gap", "gaps"}:
+        return "remaining_gaps"
+    if status in {"freshness_enforced", "freshness_satisfied"}:
+        return "sufficient_evidence"
+    if status == "provider_fallback":
+        return "partial_result"
+    if status in {"max_turns", "cancelled"}:
+        return "budget_exhausted"
+    return "partial_result"
+
+
+def web_research_confidence_from_stop_reason(stop_reason: str) -> str:
+    if stop_reason == "sufficient_evidence":
+        return "high"
+    if stop_reason in {"partial_result", "freshness_unsupported"}:
+        return "medium"
+    return "low"
+
+
+def refine_web_research_stop_reason(
+    stop_reason: str,
+    *,
+    child_status: Any,
+    conflicts: Sequence[Mapping[str, Any]] = (),
+    gaps: Sequence[Mapping[str, Any]] = (),
+) -> str:
+    child_stop = web_research_stop_reason_from_status(child_status)
+    if child_stop in {"unresolved_conflict", "remaining_gaps"}:
+        return child_stop
+    if conflicts and stop_reason == "sufficient_evidence":
+        return "unresolved_conflict"
+    if gaps and stop_reason == "sufficient_evidence":
+        return "remaining_gaps"
+    return stop_reason
+
+
+@dataclass(slots=True)
+class WebResearchLoopState:
+    request: Mapping[str, Any]
+    run_id: str = field(default_factory=lambda: f"webresearch-{uuid4().hex}")
+    search_used: int = 0
+    fetch_used: int = 0
+    find_used: int = 0
+    policy_rejections: int = 0
+    budget_rejections: int = 0
+    operation_failures: int = 0
+    sources: list[dict[str, Any]] = field(default_factory=list)
+    evidence: list[dict[str, Any]] = field(default_factory=list)
+    conflicts: list[dict[str, Any]] = field(default_factory=list)
+    gaps: list[dict[str, Any]] = field(default_factory=list)
+    trace: list[dict[str, Any]] = field(default_factory=list)
+    provider_events: list[dict[str, Any]] = field(default_factory=list)
+    freshness_outcomes: list[dict[str, Any]] = field(default_factory=list)
+    _lock: Lock = field(default_factory=Lock)
+
+    @property
+    def profile(self) -> str:
+        return str(self.request.get("profile") or "general")
+
+    @property
+    def public_policy(self) -> Mapping[str, Any]:
+        return self.request["policy"]
+
+    @property
+    def max_concurrent_fetches(self) -> int:
+        return int(self.request["budget"]["max_concurrent_fetches"])
+
+    def reserve(self, kind: str) -> None:
+        budget_key = f"{kind}_budget"
+        used_attr = f"{kind}_used"
+        if budget_key not in self.request["budget"] or not hasattr(self, used_attr):
+            return
+        with self._lock:
+            used = int(getattr(self, used_attr))
+            budget = int(self.request["budget"][budget_key])
+            if used >= budget:
+                self.budget_rejections += 1
+                self._append_trace(
+                    {
+                        "event": "budget_rejected",
+                        "tool": f"web_{kind}",
+                        "budget": budget_key,
+                        "used": used,
+                        "limit": budget,
+                    }
+                )
+                raise ValueError(f"web_research {kind} budget exhausted")
+            setattr(self, used_attr, used + 1)
+
+    def record_search(self, result: Mapping[str, Any]) -> None:
+        results = _list_of_mappings(result.get("results"))
+        with self._lock:
+            self._record_provider_and_freshness(result)
+            query = _identity_value(result.get("query"))
+            if query:
+                self._append_query(query)
+            for item in results:
+                self._add_source(item)
+            event = {
+                "event": "searched",
+                "tool": "web_search",
+                "query": result.get("query"),
+                "result_count": len(results),
+            }
+            provider = result.get("provider")
+            if isinstance(provider, Mapping):
+                event["provider"] = provider.get("id")
+            freshness_scope = result.get("freshness_scope")
+            if isinstance(freshness_scope, Mapping):
+                event["freshness_status"] = freshness_scope.get("status")
+            self._append_trace(event)
+
+    def record_fetch(self, result: Mapping[str, Any]) -> None:
+        with self._lock:
+            self._record_provider_and_freshness(result, include_freshness=False)
+            self._add_source(dict(result.get("source") or result))
+            self._append_page_read(result)
+            self._add_evidence(
+                {
+                    "id": result.get("id") or result.get("source_handle"),
+                    "title": result.get("title"),
+                    "url": result.get("url"),
+                    "excerpt": result.get("excerpt") or _first_excerpt(result.get("content")),
+                    "source_handle": result.get("source_handle"),
+                    "page_handle": result.get("page_handle"),
+                }
+            )
+            self._append_trace(
+                {
+                    "event": "fetched",
+                    "tool": "web_fetch",
+                    "url": result.get("url"),
+                }
+            )
+
+    def record_find(self, result: Mapping[str, Any]) -> None:
+        matches = _list_of_mappings(result.get("matches"))
+        with self._lock:
+            self._record_provider_and_freshness(result, include_freshness=False)
+            query = _identity_value(result.get("query"))
+            if query:
+                self._append_query(query)
+            source = result.get("source")
+            if isinstance(source, Mapping):
+                self._add_source(dict(source))
+            for item in matches:
+                self._add_evidence(item)
+            self._append_trace(
+                {
+                    "event": "found",
+                    "tool": "web_find",
+                    "query": result.get("query"),
+                    "match_count": len(matches),
+                }
+            )
+
+    def record_conflict(self, conflict: Mapping[str, Any]) -> None:
+        with self._lock:
+            self.conflicts.append(dict(conflict))
+
+    def record_gap(self, gap: Mapping[str, Any]) -> None:
+        with self._lock:
+            self.gaps.append(dict(gap))
+
+    def record_rejection(self, tool: str, error: str, tool_input: Mapping[str, Any]) -> None:
+        with self._lock:
+            if "budget exhausted" in error:
+                self.budget_rejections += 1
+            else:
+                self.policy_rejections += 1
+            self._append_trace(
+                {
+                    "event": "rejected",
+                    "tool": tool,
+                    "error": error,
+                    "url": tool_input.get("url"),
+                }
+            )
+
+    def record_operation_failure(
+        self,
+        tool: str,
+        error: str,
+        tool_input: Mapping[str, Any],
+        *,
+        metadata: Mapping[str, Any] | None = None,
+    ) -> None:
+        with self._lock:
+            self.operation_failures += 1
+            event: dict[str, Any] = {
+                "event": "operation_failed",
+                "tool": tool,
+                "error": _first_excerpt(error),
+            }
+            url = _url_from_tool_input(tool_input)
+            if url:
+                event["url"] = url
+            if metadata:
+                for key, value in metadata.items():
+                    if value is not None:
+                        event[str(key)] = value
+            self._append_trace(event)
+
+    def record_unverified_child_metadata_dropped(self, events: Sequence[Mapping[str, Any]]) -> None:
+        with self._lock:
+            for event in events:
+                self._append_trace(event)
+
+    def finalize_provider_and_freshness_trace(self) -> None:
+        with self._lock:
+            freshness_days = self.request.get("policy", {}).get("freshness_days")
+            if freshness_days is None:
+                return
+            if any(str(event.get("event", "")).startswith("freshness_") for event in self.trace):
+                return
+            status = "unsupported"
+            if any(outcome.get("status") == "enforced" for outcome in self.freshness_outcomes):
+                status = "enforced"
+            elif any(outcome.get("status") == "satisfied" for outcome in self.freshness_outcomes):
+                status = "satisfied"
+            self._append_trace(
+                {
+                    "event": "freshness_enforced" if status == "enforced" else "freshness_unsupported",
+                    "requested_days": freshness_days,
+                    "status": status,
+                }
+            )
+
+    def sources_payload(self) -> list[dict[str, Any]]:
+        with self._lock:
+            return [dict(item) for item in self.sources]
+
+    def evidence_payload(self) -> list[dict[str, Any]]:
+        with self._lock:
+            return [dict(item) for item in self.evidence]
+
+    def conflicts_payload(self) -> list[dict[str, Any]]:
+        with self._lock:
+            return [dict(item) for item in self.conflicts]
+
+    def gaps_payload(self) -> list[dict[str, Any]]:
+        with self._lock:
+            return [dict(item) for item in self.gaps]
+
+    def trace_summary(self, *, max_items: int = _DEFAULT_LOOP_TRACE_ITEMS) -> list[dict[str, Any]]:
+        with self._lock:
+            return [dict(item) for item in self.trace[-max_items:]]
+
+    def queries_payload(self) -> list[str]:
+        queries: list[str] = []
+        with self._lock:
+            for event in self.trace:
+                query = _identity_value(event.get("query"))
+                if query and query not in queries:
+                    queries.append(query)
+        return queries
+
+    def pages_read_payload(self) -> list[dict[str, Any]]:
+        pages: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        with self._lock:
+            for source in self.sources:
+                key = _identity_value(source.get("page_handle") or source.get("source_handle") or source.get("url"))
+                if not key or key in seen:
+                    continue
+                if source.get("page_handle") is None and not any(
+                    evidence.get("url") == source.get("url") for evidence in self.evidence
+                ):
+                    continue
+                seen.add(key)
+                pages.append(
+                    {
+                        "url": source.get("url"),
+                        "title": source.get("title"),
+                        "source_handle": source.get("source_handle") or source.get("id"),
+                        "page_handle": source.get("page_handle"),
+                    }
+                )
+        return pages
+
+    def provider_payload(self) -> dict[str, Any] | None:
+        with self._lock:
+            for event in reversed(self.provider_events):
+                if isinstance(event.get("provider_selection"), Mapping):
+                    provider = event.get("provider")
+                    return dict(provider) if isinstance(provider, Mapping) else None
+            for event in reversed(self.provider_events):
+                provider = event.get("provider")
+                if isinstance(provider, Mapping):
+                    return dict(provider)
+            return None
+
+    def provider_selection_payload(self) -> dict[str, Any] | None:
+        with self._lock:
+            for event in reversed(self.provider_events):
+                selection = event.get("provider_selection")
+                if isinstance(selection, Mapping):
+                    return dict(selection)
+            return None
+
+    def provider_fallback_payload(self) -> dict[str, Any] | None:
+        with self._lock:
+            for event in reversed(self.provider_events):
+                fallback = event.get("provider_fallback")
+                if isinstance(fallback, Mapping):
+                    return dict(fallback)
+            return None
+
+    def freshness_scope_payload(self) -> dict[str, Any]:
+        with self._lock:
+            freshness_days = self.request.get("policy", {}).get("freshness_days")
+            if freshness_days is None:
+                return {}
+            status = "unsupported"
+            if any(outcome.get("status") == "enforced" for outcome in self.freshness_outcomes):
+                status = "enforced"
+            elif any(outcome.get("status") == "satisfied" for outcome in self.freshness_outcomes):
+                status = "satisfied"
+            return {"requested_days": freshness_days, "status": status}
+
+    def budget_payload(self) -> dict[str, Any]:
+        with self._lock:
+            budget = dict(self.request["budget"])
+            budget["used"] = {
+                "searches": self.search_used,
+                "fetches": self.fetch_used,
+                "finds": self.find_used,
+            }
+            budget["rejections"] = {
+                "policy": self.policy_rejections,
+                "budget": self.budget_rejections,
+            }
+            budget["operation_failures"] = self.operation_failures
+            return budget
+
+    def stop_reason(self, child_status: Any) -> str:
+        with self._lock:
+            has_evidence = bool(self.evidence)
+            policy_rejections = self.policy_rejections
+            budget_rejections = self.budget_rejections
+            operation_failures = self.operation_failures
+            freshness_requested = self.request["policy"].get("freshness_days") is not None
+            freshness_satisfied = any(
+                outcome.get("status") in {"enforced", "satisfied"} for outcome in self.freshness_outcomes
+            )
+            inspected_sources = self._inspected_source_count_locked()
+            desired_sources = int(self.request["budget"].get("desired_source_count") or 1)
+        if not has_evidence:
+            if policy_rejections:
+                return "policy_blocked"
+            if budget_rejections:
+                return "budget_exhausted"
+            if freshness_requested and not freshness_satisfied:
+                return "freshness_unsupported"
+            if operation_failures:
+                return "partial_result"
+            mapped_status = web_research_stop_reason_from_status(child_status)
+            return "partial_result" if mapped_status == "sufficient_evidence" else mapped_status
+        if freshness_requested and not freshness_satisfied:
+            return "freshness_unsupported"
+        if self.provider_fallback_payload() and self.provider_fallback_payload().get("used") and self.request.get(
+            "freshness_required"
+        ):
+            return "freshness_unsupported"
+        if budget_rejections or operation_failures:
+            return "partial_result"
+        if inspected_sources < desired_sources:
+            return "partial_result"
+        return "sufficient_evidence"
+
+    def _add_source(self, item: Mapping[str, Any]) -> None:
+        url = str(item.get("url") or "").strip()
+        if not url:
+            return
+        if any(existing.get("url") == url for existing in self.sources):
+            return
+        source = {
+            "id": item.get("id") or item.get("source_handle") or url,
+            "title": item.get("title") or url,
+            "url": url,
+            "source_handle": item.get("source_handle") or item.get("id"),
+            "page_handle": item.get("page_handle"),
+            "domain": item.get("domain"),
+        }
+        self._attach_provider_source_metadata(source, item)
+        self.sources.append(source)
+
+    def _add_evidence(self, item: Mapping[str, Any]) -> None:
+        excerpt = str(item.get("excerpt") or item.get("content") or "").strip()
+        url = str(item.get("url") or "").strip()
+        if not excerpt and not url:
+            return
+        key = (url, excerpt)
+        if any((existing.get("url"), existing.get("excerpt")) == key for existing in self.evidence):
+            return
+        evidence = {
+            "id": item.get("id") or item.get("source_handle") or url,
+            "title": item.get("title"),
+            "url": url,
+            "excerpt": excerpt,
+            "source_handle": item.get("source_handle"),
+            "page_handle": item.get("page_handle"),
+            **_optional_fact_fields(item, ("exact_excerpt", "match_start", "match_end")),
+        }
+        self._attach_provider_source_metadata(evidence, item)
+        self.evidence.append(evidence)
+
+    def _inspected_source_count_locked(self) -> int:
+        keys: set[str] = set()
+        for item in self.evidence:
+            key = _identity_value(item.get("source_handle") or item.get("page_handle") or item.get("url"))
+            if key:
+                keys.add(key)
+        return len(keys)
+
+    def _append_trace(self, event: Mapping[str, Any]) -> None:
+        self.trace.append(dict(event))
+        if len(self.trace) > _DEFAULT_LOOP_TRACE_ITEMS * 4:
+            del self.trace[: len(self.trace) - _DEFAULT_LOOP_TRACE_ITEMS * 4]
+
+    def _append_query(self, query: str) -> None:
+        if any(event.get("event") == "query_planned" and event.get("query") == query for event in self.trace):
+            return
+        self._append_trace({"event": "query_planned", "query": query, "profile": self.profile})
+
+    def _append_page_read(self, page: Mapping[str, Any]) -> None:
+        url = _identity_value(page.get("url"))
+        if not url:
+            return
+        if any(event.get("event") == "page_read" and event.get("url") == url for event in self.trace):
+            return
+        self._append_trace(
+            {
+                "event": "page_read",
+                "url": url,
+                "title": page.get("title"),
+                "source_handle": page.get("source_handle"),
+                "page_handle": page.get("page_handle"),
+            }
+        )
+
+    def _record_provider_and_freshness(self, result: Mapping[str, Any], *, include_freshness: bool = True) -> None:
+        provider = result.get("provider")
+        selection = result.get("provider_selection")
+        fallback = result.get("provider_fallback")
+        if isinstance(provider, Mapping):
+            event = {
+                "provider": dict(provider),
+                "provider_selection": dict(selection) if isinstance(selection, Mapping) else None,
+                "provider_fallback": dict(fallback) if isinstance(fallback, Mapping) else None,
+            }
+            self.provider_events.append(event)
+            if isinstance(fallback, Mapping) and fallback.get("used"):
+                self._append_trace(
+                    {
+                        "event": "provider_fallback",
+                        "from": fallback.get("from"),
+                        "selected": fallback.get("selected"),
+                    }
+                )
+        freshness_scope = result.get("freshness_scope") if include_freshness else None
+        if isinstance(freshness_scope, Mapping):
+            self.freshness_outcomes.append(dict(freshness_scope))
+            status = freshness_scope.get("status")
+            if status in {"enforced", "satisfied", "unsupported", "unsatisfied"}:
+                self._append_trace(
+                    {
+                        "event": "freshness_enforced" if status in {"enforced", "satisfied"} else "freshness_unsupported",
+                        "requested_days": freshness_scope.get("requested_days"),
+                        "status": status,
+                    }
+                )
+
+    def _attach_provider_source_metadata(self, target: dict[str, Any], item: Mapping[str, Any]) -> None:
+        metadata = item.get("metadata")
+        provider = item.get("provider")
+        freshness_scope = item.get("freshness_scope")
+        if isinstance(metadata, Mapping):
+            provider = provider or metadata.get("provider")
+            freshness_scope = freshness_scope or metadata.get("freshness_scope")
+        if isinstance(provider, Mapping):
+            target["provider"] = dict(provider)
+        if isinstance(freshness_scope, Mapping):
+            target["freshness_scope"] = dict(freshness_scope)
 
 
 def build_policy(
@@ -1397,6 +1888,30 @@ def _list_of_mappings(raw: Any) -> list[dict[str, Any]]:
     if not isinstance(raw, list):
         return []
     return [dict(item) for item in raw if isinstance(item, Mapping)]
+
+
+def _identity_value(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _url_from_tool_input(tool_input: Mapping[str, Any]) -> str:
+    source = tool_input.get("source")
+    if isinstance(source, Mapping):
+        url = source.get("url")
+    else:
+        url = None
+    return _identity_value(tool_input.get("url") or url)
+
+
+def _optional_fact_fields(item: Mapping[str, Any], fields: tuple[str, ...]) -> dict[str, Any]:
+    return {field: item[field] for field in fields if field in item}
+
+
+def _first_excerpt(value: Any) -> str:
+    text = str(value or "").strip()
+    if len(text) <= 240:
+        return text
+    return text[:237].rstrip() + "..."
 
 
 def _url_from_reference(raw: Mapping[str, Any]) -> str:

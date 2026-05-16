@@ -83,7 +83,7 @@ Use them when you want one reusable bridge or shared capability without taking a
 | Install name | Import root | Runtime activation | What it adds | Typical use |
 | --- | --- | --- | --- | --- |
 | `weavert-kit-common-retrieval` | `weavert_kit_common_retrieval` | `weavert-shared-retrieval` | Shared retrieval surfaces | Reuse retrieval support across chat or assistant products |
-| `weavert-kit-common-web-research` | `weavert_kit_common_web_research` | `weavert-shared-web-research` | Unified read-only web research surfaces with `web_research`, profile facets, provider metadata, freshness outcomes, and low-level `web_*` primitives | Add web information retrieval without taking a full scenario profile |
+| `weavert-kit-common-web-research` | `weavert_kit_common_web_research` | `weavert-shared-web-research` | Unified read-only web research surfaces with `web_research`, profile facets, provider metadata, freshness outcomes, single-page `web_fetch`, and low-level `web_*` primitives | Add web information retrieval without taking a full scenario profile |
 | `weavert-kit-common-git` | `weavert_kit_common_git` | `weavert-shared-git` | Shared git inspection surfaces | Add repository inspection to a custom coding workflow |
 | `weavert-kit-common-workspace-intelligence` | `weavert_kit_common_workspace_intelligence` | `weavert-shared-workspace-intelligence` | Shared workspace-intelligence surfaces | Add workspace-aware coding support |
 | `weavert-kit-common-browser` | `weavert_kit_common_browser` | `weavert-bridge-browser` | Shared browser bridge surfaces | Add browser-side interaction to a host-centric assistant |
@@ -94,7 +94,7 @@ Use them when you want one reusable bridge or shared capability without taking a
 
 - `weavert-kit-common-retrieval` ranks, excerpts, and prepares citations from grounding items you already have, such as notes, memory, or fetched passages. It does not search the public web and it does not drive a browser.
 - `weavert-kit-common-web-research` owns the recommended `web_research` entrypoint for chat, coding, local-assistant, and other profile-driven public-web research. Use `profile` to select strategy; profile-specific fields appear under `facets.<profile>`.
-- `weavert-kit-common-web-research` performs read-only public-web search, page fetch, and page-local evidence finding. It does not expose browser navigation, clicks, or host-side browser control.
+- `weavert-kit-common-web-research` performs read-only public-web search, single-page page fetch, page-local evidence finding, and multi-page inspection behind `web_research`. It does not expose browser navigation, clicks, public batch-fetch fields, or host-side browser control.
 - `weavert-kit-common-browser` is a host-mediated browser bridge for browser state, navigation, and interaction. It is not a web-search adapter and it does not imply autonomous browser ownership.
 - `weavert-kit-common-local-os` bridges generic local-machine surfaces such as files, clipboard, notifications, and processes. It is broader device plumbing, not structured personal-data tooling.
 - `weavert-kit-common-pim` bridges structured personal-information surfaces such as calendar events, contacts, reminders, and tasks. Use it for PIM objects, not generic local-OS access.

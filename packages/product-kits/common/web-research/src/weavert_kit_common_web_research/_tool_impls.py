@@ -3,11 +3,8 @@ from __future__ import annotations
 import asyncio
 import socket
 from collections.abc import Mapping
-from dataclasses import dataclass, field
 from functools import lru_cache
-from threading import Lock
 from typing import Any
-from uuid import uuid4
 
 from weavert.definitions import ValidationOutcome
 from weavert.tool_runtime import ToolContext
@@ -20,14 +17,17 @@ from weavert_kit_common_retrieval._tool_impls import (
 )
 from weavert_web_research import (
     DuckDuckGoHtmlBackend,
+    WebResearchLoopState,
     WebSearchProviderRegistry,
     build_policy,
     default_web_search_provider_registry,
     find_in_page,
     inspect_page,
+    refine_web_research_stop_reason,
     search_web,
     validate_fetch_input,
     validate_page_find_input,
+    web_research_confidence_from_stop_reason,
     web_urlopen,
 )
 
@@ -41,6 +41,7 @@ _WEB_RESEARCH_DEFAULT_DESIRED_SOURCES = 3
 _WEB_RESEARCH_MAX_TRACE_ITEMS = 8
 _WEB_RESEARCH_DEFAULT_MAX_CONCURRENT_FETCHES = 3
 _WEB_RESEARCH_RUN_ID_METADATA_KEY = "web_research_run_id"
+_WEB_FETCH_PUBLIC_BATCH_FIELDS = frozenset({"urls", "sources", "max_concurrent_fetches"})
 _WEB_RESEARCH_SOURCE_ANNOTATION_FIELDS = frozenset(
     {
         "citation_label",
@@ -69,7 +70,7 @@ _WEB_RESEARCH_EVIDENCE_ANNOTATION_FIELDS = _WEB_RESEARCH_SOURCE_ANNOTATION_FIELD
 
 _web_urlopen = web_urlopen
 _web_search_provider_registry: WebSearchProviderRegistry | None = None
-_web_research_runs: dict[str, "_WebResearchRunState"] = {}
+_web_research_runs: dict[str, WebResearchLoopState] = {}
 
 SUPPORTED_RESEARCH_PROFILES = ("general", "coding", "business", "academic", "legal_compliance", "product_shopping")
 
@@ -135,7 +136,7 @@ async def web_research_tool(tool_input: dict[str, Any], context: ToolContext) ->
     if context.agent_runner is None:
         raise ValueError("web_research requires a runtime agent runner")
     normalized = _normalize_web_research_input(tool_input)
-    state = _WebResearchRunState(normalized)
+    state = WebResearchLoopState(normalized)
     _web_research_runs[state.run_id] = state
     previous_run_id = context.metadata.get(_WEB_RESEARCH_RUN_ID_METADATA_KEY)
     context.metadata[_WEB_RESEARCH_RUN_ID_METADATA_KEY] = state.run_id
@@ -190,8 +191,20 @@ async def web_search_tool(tool_input: dict[str, Any], context: ToolContext) -> d
 
 def validate_web_fetch(tool_input: dict[str, Any], context: ToolContext) -> ValidationOutcome:
     state = _web_research_state(context)
-    if state is not None and _fetch_many_references(tool_input):
-        return _validate_web_fetch_many(tool_input, state)
+    batch_fields = _public_batch_fetch_fields(tool_input)
+    if batch_fields:
+        message = (
+            "web_fetch accepts exactly one url or source; batch fetch fields are not public: "
+            + ", ".join(batch_fields)
+        )
+        if state is not None:
+            state.record_rejection("web_fetch", message, tool_input)
+        return ValidationOutcome(False, message)
+    if "url" in tool_input and "source" in tool_input:
+        message = "web_fetch accepts either url or source, not both"
+        if state is not None:
+            state.record_rejection("web_fetch", message, tool_input)
+        return ValidationOutcome(False, message)
     effective_input = _effective_web_tool_input("fetch", tool_input, context)
     policy = build_policy(
         effective_input,
@@ -214,8 +227,20 @@ def validate_web_fetch(tool_input: dict[str, Any], context: ToolContext) -> Vali
 
 async def web_fetch_tool(tool_input: dict[str, Any], context: ToolContext) -> dict[str, Any]:
     state = _web_research_state(context)
-    if state is not None and _fetch_many_references(tool_input):
-        return await _web_fetch_many_tool(tool_input, context, state=state)
+    batch_fields = _public_batch_fetch_fields(tool_input)
+    if batch_fields:
+        message = (
+            "web_fetch accepts exactly one url or source; batch fetch fields are not public: "
+            + ", ".join(batch_fields)
+        )
+        if state is not None:
+            state.record_rejection("web_fetch", message, tool_input)
+        raise ValueError(message)
+    if "url" in tool_input and "source" in tool_input:
+        message = "web_fetch accepts either url or source, not both"
+        if state is not None:
+            state.record_rejection("web_fetch", message, tool_input)
+        raise ValueError(message)
     result = await _web_fetch_impl(tool_input, context)
     if state is not None:
         state.record_fetch(result)
@@ -333,67 +358,6 @@ async def web_find_tool(tool_input: dict[str, Any], context: ToolContext) -> dic
     return result
 
 
-def _validate_web_fetch_many(tool_input: Mapping[str, Any], state: "_WebResearchRunState") -> ValidationOutcome:
-    refs = _fetch_many_references(tool_input)
-    if not refs:
-        return ValidationOutcome(False, "urls or sources must contain at least one item")
-    if len(refs) > 8:
-        return ValidationOutcome(False, "urls or sources must contain at most 8 items")
-    max_concurrent = tool_input.get("max_concurrent_fetches")
-    if max_concurrent is not None and not isinstance(max_concurrent, int):
-        return ValidationOutcome(False, "max_concurrent_fetches must be an integer")
-    if max_concurrent is not None and (max_concurrent < 1 or max_concurrent > state.max_concurrent_fetches):
-        return ValidationOutcome(False, f"max_concurrent_fetches must be between 1 and {state.max_concurrent_fetches}")
-    return ValidationOutcome(True)
-
-
-async def _web_fetch_many_tool(
-    tool_input: Mapping[str, Any],
-    context: ToolContext,
-    *,
-    state: "_WebResearchRunState",
-) -> dict[str, Any]:
-    refs = _fetch_many_references(tool_input)
-    max_concurrent = _bounded_int(
-        tool_input.get("max_concurrent_fetches"),
-        "max_concurrent_fetches",
-        1,
-        state.max_concurrent_fetches,
-        state.max_concurrent_fetches,
-    )
-    semaphore = asyncio.Semaphore(max_concurrent)
-
-    async def fetch_one(index: int, ref: Mapping[str, Any]) -> dict[str, Any]:
-        async with semaphore:
-            try:
-                page = await _web_fetch_impl(
-                    ref,
-                    context,
-                    failure_tool="web_fetch",
-                    failure_metadata={"input_index": index},
-                )
-            except Exception as exc:
-                return {
-                    "index": index,
-                    "status": "error",
-                    "error": str(exc),
-                    "url": str(ref.get("url") or ""),
-                }
-            return {"index": index, "status": "success", "page": page}
-
-    pages = await asyncio.gather(*(fetch_one(index, ref) for index, ref in enumerate(refs)))
-    pages.sort(key=lambda item: int(item.get("index", 0)))
-    for item in pages:
-        page = item.get("page")
-        if isinstance(page, Mapping):
-            state.record_fetch(page)
-    return {
-        "pages": pages,
-        "budget": state.budget_payload(),
-        "policy": dict(state.public_policy),
-    }
-
-
 def _source_reference(tool_input: Mapping[str, Any]) -> Mapping[str, Any]:
     source = tool_input.get("source")
     if isinstance(source, Mapping):
@@ -401,14 +365,8 @@ def _source_reference(tool_input: Mapping[str, Any]) -> Mapping[str, Any]:
     return {"url": tool_input.get("url")}
 
 
-def _fetch_many_references(tool_input: Mapping[str, Any]) -> list[Mapping[str, Any]]:
-    sources = tool_input.get("sources")
-    if isinstance(sources, list):
-        return [item for item in sources if isinstance(item, Mapping)]
-    urls = tool_input.get("urls")
-    if isinstance(urls, list):
-        return [{"url": item} for item in urls]
-    return []
+def _public_batch_fetch_fields(tool_input: Mapping[str, Any]) -> list[str]:
+    return sorted(field for field in _WEB_FETCH_PUBLIC_BATCH_FIELDS if field in tool_input)
 
 
 def _web_policy_urlopen(request, **kwargs: Any):
@@ -700,7 +658,7 @@ def _project_web_research_result(
     request: Mapping[str, Any],
     child_result: Any,
     *,
-    state: "_WebResearchRunState",
+    state: WebResearchLoopState,
 ) -> dict[str, Any]:
     child_payload = dict(child_result) if isinstance(child_result, Mapping) else {"summary": str(child_result)}
     terminal_metadata = child_payload.get("terminal_metadata")
@@ -730,7 +688,12 @@ def _project_web_research_result(
         trace.append({"event": "delegated_summary", "summary": str(child_payload["summary"])})
     conflicts = _list_of_mappings(structured.get("conflicts"))
     gaps = _derive_gaps(request, sources, evidence, stop_reason, structured.get("gaps"))
-    stop_reason = _refine_stop_reason(stop_reason, child_status=child_status, conflicts=conflicts, gaps=gaps)
+    stop_reason = refine_web_research_stop_reason(
+        stop_reason,
+        child_status=child_status,
+        conflicts=conflicts,
+        gaps=gaps,
+    )
     if stop_reason == "remaining_gaps" and not gaps:
         gaps.append(
             {
@@ -743,7 +706,7 @@ def _project_web_research_result(
         "objective": request["objective"],
         "mode": request.get("mode", "focused"),
         "answer": str(structured.get("answer") or child_payload.get("summary") or "").strip(),
-        "confidence": _confidence_from_stop_reason(stop_reason),
+        "confidence": web_research_confidence_from_stop_reason(stop_reason),
         "sources": sources,
         "evidence": evidence,
         "conflicts": conflicts,
@@ -781,57 +744,7 @@ def _project_web_research_result(
     return result
 
 
-def _stop_reason_from_status(raw_status: Any) -> str:
-    status = str(raw_status or "").strip()
-    if status in {
-        "sufficient_evidence",
-        "partial_result",
-        "budget_exhausted",
-        "policy_blocked",
-        "freshness_unsupported",
-        "unresolved_conflict",
-        "remaining_gaps",
-    }:
-        return status
-    if status in {"conflicting_evidence", "conflict", "conflicts"}:
-        return "unresolved_conflict"
-    if status in {"needs_wider_scope", "gaps_remaining", "gap", "gaps"}:
-        return "remaining_gaps"
-    if status in {"freshness_enforced", "freshness_satisfied"}:
-        return "sufficient_evidence"
-    if status == "provider_fallback":
-        return "partial_result"
-    if status in {"max_turns", "cancelled"}:
-        return "budget_exhausted"
-    return "partial_result"
-
-
-def _confidence_from_stop_reason(stop_reason: str) -> str:
-    if stop_reason == "sufficient_evidence":
-        return "high"
-    if stop_reason in {"partial_result", "freshness_unsupported"}:
-        return "medium"
-    return "low"
-
-
-def _refine_stop_reason(
-    stop_reason: str,
-    *,
-    child_status: Any,
-    conflicts: list[dict[str, Any]],
-    gaps: list[dict[str, Any]],
-) -> str:
-    child_stop = _stop_reason_from_status(child_status)
-    if child_stop in {"unresolved_conflict", "remaining_gaps"}:
-        return child_stop
-    if conflicts and stop_reason == "sufficient_evidence":
-        return "unresolved_conflict"
-    if gaps and stop_reason == "sufficient_evidence":
-        return "remaining_gaps"
-    return stop_reason
-
-
-def _freshness_payload(request: Mapping[str, Any], state: "_WebResearchRunState") -> dict[str, Any]:
+def _freshness_payload(request: Mapping[str, Any], state: WebResearchLoopState) -> dict[str, Any]:
     freshness_scope = state.freshness_scope_payload()
     requested_days = request.get("policy", {}).get("freshness_days")
     if freshness_scope:
@@ -987,457 +900,13 @@ def _identity_value(value: Any) -> str:
     return str(value or "").strip()
 
 
-def _url_from_tool_input(tool_input: Mapping[str, Any]) -> str:
-    source = tool_input.get("source")
-    if isinstance(source, Mapping):
-        url = source.get("url")
-    else:
-        url = None
-    return _identity_value(tool_input.get("url") or url)
-
-
-def _optional_fact_fields(item: Mapping[str, Any], fields: tuple[str, ...]) -> dict[str, Any]:
-    return {field: item[field] for field in fields if field in item}
-
-
 def _list_of_mappings(raw: Any) -> list[dict[str, Any]]:
     if not isinstance(raw, list):
         return []
     return [dict(item) for item in raw if isinstance(item, Mapping)]
 
 
-@dataclass(slots=True)
-class _WebResearchRunState:
-    request: Mapping[str, Any]
-    run_id: str = field(default_factory=lambda: f"webresearch-{uuid4().hex}")
-    search_used: int = 0
-    fetch_used: int = 0
-    find_used: int = 0
-    policy_rejections: int = 0
-    budget_rejections: int = 0
-    operation_failures: int = 0
-    sources: list[dict[str, Any]] = field(default_factory=list)
-    evidence: list[dict[str, Any]] = field(default_factory=list)
-    trace: list[dict[str, Any]] = field(default_factory=list)
-    provider_events: list[dict[str, Any]] = field(default_factory=list)
-    freshness_outcomes: list[dict[str, Any]] = field(default_factory=list)
-    _lock: Lock = field(default_factory=Lock)
-
-    def __post_init__(self) -> None:
-        return None
-
-    @property
-    def public_policy(self) -> Mapping[str, Any]:
-        return self.request["policy"]
-
-    @property
-    def max_concurrent_fetches(self) -> int:
-        return int(self.request["budget"]["max_concurrent_fetches"])
-
-    def reserve(self, kind: str) -> None:
-        budget_key = f"{kind}_budget"
-        used_attr = f"{kind}_used"
-        if budget_key not in self.request["budget"] or not hasattr(self, used_attr):
-            return
-        with self._lock:
-            used = int(getattr(self, used_attr))
-            budget = int(self.request["budget"][budget_key])
-            if used >= budget:
-                self.budget_rejections += 1
-                self._append_trace(
-                    {
-                        "event": "budget_rejected",
-                        "tool": f"web_web_{kind}",
-                        "budget": budget_key,
-                        "used": used,
-                        "limit": budget,
-                    }
-                )
-                raise ValueError(f"web_research {kind} budget exhausted")
-            setattr(self, used_attr, used + 1)
-
-    def record_search(self, result: Mapping[str, Any]) -> None:
-        results = _list_of_mappings(result.get("results"))
-        with self._lock:
-            self._record_provider_and_freshness(result)
-            query = _identity_value(result.get("query"))
-            if query:
-                self._append_query(query)
-            for item in results:
-                self._add_source(item)
-            event = {
-                "event": "searched",
-                "tool": "web_search",
-                "query": result.get("query"),
-                "result_count": len(results),
-            }
-            provider = result.get("provider")
-            if isinstance(provider, Mapping):
-                event["provider"] = provider.get("id")
-            freshness_scope = result.get("freshness_scope")
-            if isinstance(freshness_scope, Mapping):
-                event["freshness_status"] = freshness_scope.get("status")
-            self._append_trace(event)
-
-    def record_fetch(self, result: Mapping[str, Any]) -> None:
-        with self._lock:
-            self._record_provider_and_freshness(result, include_freshness=False)
-            self._add_source(dict(result.get("source") or result))
-            self._append_page_read(result)
-            self._add_evidence(
-                {
-                    "id": result.get("id") or result.get("source_handle"),
-                    "title": result.get("title"),
-                    "url": result.get("url"),
-                    "excerpt": result.get("excerpt") or _first_excerpt(result.get("content")),
-                    "source_handle": result.get("source_handle"),
-                    "page_handle": result.get("page_handle"),
-                }
-            )
-            self._append_trace(
-                {
-                    "event": "fetched",
-                    "tool": "web_fetch",
-                    "url": result.get("url"),
-                }
-            )
-
-    def record_find(self, result: Mapping[str, Any]) -> None:
-        matches = _list_of_mappings(result.get("matches"))
-        with self._lock:
-            self._record_provider_and_freshness(result, include_freshness=False)
-            query = _identity_value(result.get("query"))
-            if query:
-                self._append_query(query)
-            source = result.get("source")
-            if isinstance(source, Mapping):
-                self._add_source(dict(source))
-            for item in matches:
-                self._add_evidence(item)
-            self._append_trace(
-                {
-                    "event": "found",
-                    "tool": "web_find",
-                    "query": result.get("query"),
-                    "match_count": len(matches),
-                }
-            )
-
-    def record_rejection(self, tool: str, error: str, tool_input: Mapping[str, Any]) -> None:
-        with self._lock:
-            if "budget exhausted" in error:
-                self.budget_rejections += 1
-            else:
-                self.policy_rejections += 1
-            self._append_trace(
-                {
-                    "event": "rejected",
-                    "tool": tool,
-                    "error": error,
-                    "url": tool_input.get("url"),
-                }
-            )
-
-    def record_operation_failure(
-        self,
-        tool: str,
-        error: str,
-        tool_input: Mapping[str, Any],
-        *,
-        metadata: Mapping[str, Any] | None = None,
-    ) -> None:
-        with self._lock:
-            self.operation_failures += 1
-            event: dict[str, Any] = {
-                "event": "operation_failed",
-                "tool": tool,
-                "error": _first_excerpt(error),
-            }
-            url = _url_from_tool_input(tool_input)
-            if url:
-                event["url"] = url
-            if metadata:
-                for key, value in metadata.items():
-                    if value is not None:
-                        event[str(key)] = value
-            self._append_trace(event)
-
-    def record_unverified_child_metadata_dropped(self, events: list[dict[str, Any]]) -> None:
-        with self._lock:
-            for event in events:
-                self._append_trace(event)
-
-    def finalize_provider_and_freshness_trace(self) -> None:
-        with self._lock:
-            freshness_days = self.request.get("policy", {}).get("freshness_days")
-            if freshness_days is None:
-                return
-            if any(str(event.get("event", "")).startswith("freshness_") for event in self.trace):
-                return
-            status = "unsupported"
-            if any(outcome.get("status") == "enforced" for outcome in self.freshness_outcomes):
-                status = "enforced"
-            elif any(outcome.get("status") == "satisfied" for outcome in self.freshness_outcomes):
-                status = "satisfied"
-            self._append_trace(
-                {
-                    "event": "freshness_enforced" if status == "enforced" else "freshness_unsupported",
-                    "requested_days": freshness_days,
-                    "status": status,
-                }
-            )
-
-    def sources_payload(self) -> list[dict[str, Any]]:
-        with self._lock:
-            return [dict(item) for item in self.sources]
-
-    def evidence_payload(self) -> list[dict[str, Any]]:
-        with self._lock:
-            return [dict(item) for item in self.evidence]
-
-    def trace_summary(self) -> list[dict[str, Any]]:
-        with self._lock:
-            return [dict(item) for item in self.trace[-_WEB_RESEARCH_MAX_TRACE_ITEMS:]]
-
-    def queries_payload(self) -> list[str]:
-        queries: list[str] = []
-        with self._lock:
-            for event in self.trace:
-                query = _identity_value(event.get("query"))
-                if query and query not in queries:
-                    queries.append(query)
-        return queries
-
-    def pages_read_payload(self) -> list[dict[str, Any]]:
-        pages: list[dict[str, Any]] = []
-        seen: set[str] = set()
-        with self._lock:
-            for source in self.sources:
-                key = _identity_value(source.get("page_handle") or source.get("source_handle") or source.get("url"))
-                if not key or key in seen:
-                    continue
-                if source.get("page_handle") is None and not any(
-                    evidence.get("url") == source.get("url") for evidence in self.evidence
-                ):
-                    continue
-                seen.add(key)
-                pages.append(
-                    {
-                        "url": source.get("url"),
-                        "title": source.get("title"),
-                        "source_handle": source.get("source_handle") or source.get("id"),
-                        "page_handle": source.get("page_handle"),
-                    }
-                )
-        return pages
-
-    def provider_payload(self) -> dict[str, Any] | None:
-        with self._lock:
-            for event in reversed(self.provider_events):
-                if isinstance(event.get("provider_selection"), Mapping):
-                    provider = event.get("provider")
-                    return dict(provider) if isinstance(provider, Mapping) else None
-            for event in reversed(self.provider_events):
-                provider = event.get("provider")
-                if isinstance(provider, Mapping):
-                    return dict(provider)
-            return None
-
-    def provider_selection_payload(self) -> dict[str, Any] | None:
-        with self._lock:
-            for event in reversed(self.provider_events):
-                selection = event.get("provider_selection")
-                if isinstance(selection, Mapping):
-                    return dict(selection)
-            return None
-
-    def provider_fallback_payload(self) -> dict[str, Any] | None:
-        with self._lock:
-            for event in reversed(self.provider_events):
-                fallback = event.get("provider_fallback")
-                if isinstance(fallback, Mapping):
-                    return dict(fallback)
-            return None
-
-    def freshness_scope_payload(self) -> dict[str, Any]:
-        with self._lock:
-            freshness_days = self.request.get("policy", {}).get("freshness_days")
-            if freshness_days is None:
-                return {}
-            status = "unsupported"
-            if any(outcome.get("status") == "enforced" for outcome in self.freshness_outcomes):
-                status = "enforced"
-            elif any(outcome.get("status") == "satisfied" for outcome in self.freshness_outcomes):
-                status = "satisfied"
-            return {"requested_days": freshness_days, "status": status}
-
-    def budget_payload(self) -> dict[str, Any]:
-        with self._lock:
-            budget = dict(self.request["budget"])
-            budget["used"] = {
-                "searches": self.search_used,
-                "fetches": self.fetch_used,
-                "finds": self.find_used,
-            }
-            budget["rejections"] = {
-                "policy": self.policy_rejections,
-                "budget": self.budget_rejections,
-            }
-            budget["operation_failures"] = self.operation_failures
-            return budget
-
-    def stop_reason(self, child_status: Any) -> str:
-        with self._lock:
-            has_evidence = bool(self.evidence)
-            policy_rejections = self.policy_rejections
-            budget_rejections = self.budget_rejections
-            operation_failures = self.operation_failures
-            freshness_requested = self.request["policy"].get("freshness_days") is not None
-            freshness_satisfied = any(
-                outcome.get("status") in {"enforced", "satisfied"} for outcome in self.freshness_outcomes
-            )
-            inspected_sources = self._inspected_source_count_locked()
-            desired_sources = int(self.request["budget"].get("desired_source_count") or 1)
-        if not has_evidence:
-            if policy_rejections:
-                return "policy_blocked"
-            if budget_rejections:
-                return "budget_exhausted"
-            if freshness_requested and not freshness_satisfied:
-                return "freshness_unsupported"
-            if operation_failures:
-                return "partial_result"
-            mapped_status = _stop_reason_from_status(child_status)
-            return "partial_result" if mapped_status == "sufficient_evidence" else mapped_status
-        if freshness_requested and not freshness_satisfied:
-            return "freshness_unsupported"
-        if self.provider_fallback_payload() and self.provider_fallback_payload().get("used") and self.request.get(
-            "freshness_required"
-        ):
-            return "freshness_unsupported"
-        if budget_rejections or operation_failures:
-            return "partial_result"
-        if inspected_sources < desired_sources:
-            return "partial_result"
-        return "sufficient_evidence"
-
-    def _add_source(self, item: Mapping[str, Any]) -> None:
-        url = str(item.get("url") or "").strip()
-        if not url:
-            return
-        if any(existing.get("url") == url for existing in self.sources):
-            return
-        source = {
-            "id": item.get("id") or item.get("source_handle") or url,
-            "title": item.get("title") or url,
-            "url": url,
-            "source_handle": item.get("source_handle") or item.get("id"),
-            "page_handle": item.get("page_handle"),
-            "domain": item.get("domain"),
-        }
-        self._attach_provider_source_metadata(source, item)
-        self.sources.append(source)
-
-    def _add_evidence(self, item: Mapping[str, Any]) -> None:
-        excerpt = str(item.get("excerpt") or item.get("content") or "").strip()
-        url = str(item.get("url") or "").strip()
-        if not excerpt and not url:
-            return
-        key = (url, excerpt)
-        if any((existing.get("url"), existing.get("excerpt")) == key for existing in self.evidence):
-            return
-        evidence = {
-            "id": item.get("id") or item.get("source_handle") or url,
-            "title": item.get("title"),
-            "url": url,
-            "excerpt": excerpt,
-            "source_handle": item.get("source_handle"),
-            "page_handle": item.get("page_handle"),
-            **_optional_fact_fields(item, ("exact_excerpt", "match_start", "match_end")),
-        }
-        self._attach_provider_source_metadata(evidence, item)
-        self.evidence.append(evidence)
-
-    def _inspected_source_count_locked(self) -> int:
-        keys: set[str] = set()
-        for item in self.evidence:
-            key = _identity_value(item.get("source_handle") or item.get("page_handle") or item.get("url"))
-            if key:
-                keys.add(key)
-        return len(keys)
-
-    def _append_trace(self, event: Mapping[str, Any]) -> None:
-        self.trace.append(dict(event))
-        if len(self.trace) > _WEB_RESEARCH_MAX_TRACE_ITEMS * 4:
-            del self.trace[: len(self.trace) - _WEB_RESEARCH_MAX_TRACE_ITEMS * 4]
-
-    def _append_query(self, query: str) -> None:
-        if any(event.get("event") == "query_planned" and event.get("query") == query for event in self.trace):
-            return
-        self._append_trace({"event": "query_planned", "query": query, "profile": self.request.get("profile", "general")})
-
-    def _append_page_read(self, page: Mapping[str, Any]) -> None:
-        url = _identity_value(page.get("url"))
-        if not url:
-            return
-        if any(event.get("event") == "page_read" and event.get("url") == url for event in self.trace):
-            return
-        self._append_trace(
-            {
-                "event": "page_read",
-                "url": url,
-                "title": page.get("title"),
-                "source_handle": page.get("source_handle"),
-                "page_handle": page.get("page_handle"),
-            }
-        )
-
-    def _record_provider_and_freshness(self, result: Mapping[str, Any], *, include_freshness: bool = True) -> None:
-        provider = result.get("provider")
-        selection = result.get("provider_selection")
-        fallback = result.get("provider_fallback")
-        if isinstance(provider, Mapping):
-            event = {
-                "provider": dict(provider),
-                "provider_selection": dict(selection) if isinstance(selection, Mapping) else None,
-                "provider_fallback": dict(fallback) if isinstance(fallback, Mapping) else None,
-            }
-            self.provider_events.append(event)
-            if isinstance(fallback, Mapping) and fallback.get("used"):
-                self._append_trace(
-                    {
-                        "event": "provider_fallback",
-                        "from": fallback.get("from"),
-                        "selected": fallback.get("selected"),
-                    }
-                )
-        freshness_scope = result.get("freshness_scope") if include_freshness else None
-        if isinstance(freshness_scope, Mapping):
-            self.freshness_outcomes.append(dict(freshness_scope))
-            status = freshness_scope.get("status")
-            if status in {"enforced", "satisfied", "unsupported", "unsatisfied"}:
-                self._append_trace(
-                    {
-                        "event": "freshness_enforced" if status in {"enforced", "satisfied"} else "freshness_unsupported",
-                        "requested_days": freshness_scope.get("requested_days"),
-                        "status": status,
-                    }
-                )
-
-    def _attach_provider_source_metadata(self, target: dict[str, Any], item: Mapping[str, Any]) -> None:
-        metadata = item.get("metadata")
-        provider = item.get("provider")
-        freshness_scope = item.get("freshness_scope")
-        if isinstance(metadata, Mapping):
-            provider = provider or metadata.get("provider")
-            freshness_scope = freshness_scope or metadata.get("freshness_scope")
-        if isinstance(provider, Mapping):
-            target["provider"] = dict(provider)
-        if isinstance(freshness_scope, Mapping):
-            target["freshness_scope"] = dict(freshness_scope)
-
-
-def _web_research_state(context: Any) -> _WebResearchRunState | None:
+def _web_research_state(context: Any) -> WebResearchLoopState | None:
     metadata = getattr(context, "metadata", None)
     if not isinstance(metadata, Mapping):
         query = getattr(context, "query", None) or getattr(context, "query_context", None)
@@ -1474,13 +943,6 @@ def _effective_web_tool_input(kind: str, tool_input: Mapping[str, Any], context:
         remaining = max(1, int(state.request["budget"]["find_budget"]) - state.find_used)
         effective.setdefault("limit", min(_WEB_PRIMITIVE_DEFAULT_FIND_LIMIT, remaining))
     return effective
-
-
-def _first_excerpt(value: Any) -> str:
-    text = str(value or "").strip()
-    if len(text) <= 240:
-        return text
-    return text[:237].rstrip() + "..."
 
 
 @lru_cache(maxsize=256)

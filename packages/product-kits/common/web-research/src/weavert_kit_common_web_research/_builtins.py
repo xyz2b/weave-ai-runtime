@@ -289,7 +289,7 @@ def web_research_builtin_tools() -> tuple[ToolDefinition, ...]:
         ),
         ToolDefinition(
             name="web_fetch",
-            description="Inspect a remote page and return web research text plus citation-ready source metadata.",
+            description="Inspect one remote page and return web research text plus citation-ready source metadata.",
             input_schema={
                 "type": "object",
                 "properties": {
@@ -304,26 +304,12 @@ def web_research_builtin_tools() -> tuple[ToolDefinition, ...]:
                         },
                         "additionalProperties": True,
                     },
-                    "urls": {"type": "array", "items": {"type": "string"}},
-                    "sources": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "url": {"type": "string"},
-                                "title": {"type": "string"},
-                                "source_handle": {"type": "string"},
-                                "page_handle": {"type": "string"},
-                            },
-                            "additionalProperties": True,
-                        },
-                    },
                     "domains": {"type": "array", "items": {"type": "string"}},
                     "freshness_days": {"type": "integer", "minimum": 0},
                     "timeout_ms": {"type": "integer", "minimum": 1},
                     "max_chars": {"type": "integer", "minimum": 500, "maximum": 32000},
-                    "max_concurrent_fetches": {"type": "integer", "minimum": 1, "maximum": 5},
                 },
+                "oneOf": [{"required": ["url"]}, {"required": ["source"]}],
                 "additionalProperties": False,
             },
             traits=ToolTraits(read_only=True, concurrency_safe=True),

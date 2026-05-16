@@ -8,6 +8,7 @@ This package is the primitive substrate, not the public owner of the high-level 
 - normalized source, page, and citation-ready web result structures
 - shared public-host and domain-policy enforcement
 - a provider registry for deterministic search provider selection, capability metadata, and fallback reporting
+- framework-owned research-loop state for budget usage, source and evidence ledgers, provider/freshness events, bounded traces, conflicts, gaps, and stop classification
 - a thin backend seam for search, page inspection, and page-local finding
 - the default DuckDuckGo HTML plus direct-fetch backend used by first-party adapters
 - an optional Brave Search API provider path for real recency/freshness-constrained search

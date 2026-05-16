@@ -40,9 +40,9 @@ REFERENCE_SHARED_PACKAGE_SHAPE = ReferenceSharedPackageShape(
     surfaces=(
         "AI-first bounded web_research entrypoint",
         "read-only web search",
-        "bounded remote fetch",
+        "single-page remote fetch",
         "page-local web evidence finding",
-        "bounded concurrent research page inspection",
+        "bounded multi-page inspection behind web_research",
         "HTTP-aware web helpers",
     ),
     tool_ids=WEB_RESEARCH_TOOLS,

@@ -212,7 +212,7 @@ Recommended shared-kit choices:
 ## Commonly confused choices
 
 - Want to rank notes, memory, or already-fetched text into grounding results and citations -> `weavert-kit-common-retrieval`
-- Want read-only public-web search, page fetch, page-local find, or profile-driven research -> `weavert-kit-common-web-research`
+- Want read-only public-web search, single-page page fetch, page-local find, or profile-driven multi-page research -> `weavert-kit-common-web-research`
 - Want browser state, navigation, click, form-fill, or extraction through an app-owned browser bridge -> `weavert-kit-common-browser`
 - Want generic local-machine surfaces such as files, clipboard, notifications, or processes -> `weavert-kit-common-local-os`
 - Want structured calendar, contact, reminder, or task surfaces -> `weavert-kit-common-pim`
