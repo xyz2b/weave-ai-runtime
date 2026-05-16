@@ -10,7 +10,7 @@ from weavert_kit_common_git import (
     reference_shared_package_manifest as git_package_manifest,
 )
 from weavert_kit_common_web_research import (
-    CODING_WEB_RESEARCH_TOOLS,
+    WEB_RESEARCH_TOOLS,
     reference_shared_package_manifest as web_research_package_manifest,
 )
 from weavert_kit_common_workspace_intelligence import (
@@ -91,7 +91,7 @@ REFERENCE_SCENARIO_PACK_SHAPE = ReferenceScenarioPackShape(
         "bash",
         *CODING_WORKFLOW_CONTROL_TOOLS,
         *CODING_SHARED_GIT_TOOLS,
-        *CODING_WEB_RESEARCH_TOOLS,
+        *WEB_RESEARCH_TOOLS,
         *CODING_SHARED_WORKSPACE_TOOLS,
     ),
     expected_agents=(*CODING_SCENARIO_AGENTS, *CODING_GENERIC_AGENTS),
@@ -120,6 +120,7 @@ REFERENCE_SCENARIO_PACK_SHAPE = ReferenceScenarioPackShape(
     profile_prompt_fragments=(
         "Scenario profile: AI coding.",
         "Keep workspace-oriented planning, verification, and review posture visible.",
+        "Default external technical lookup to web_research(profile=\"coding\") and keep low-level web_search, web_fetch, and web_find for explicit source inspection.",
     ),
     notes=(
         "The scenario pack publishes product-role workflow agents without replacing the generic first-party planning layer.",

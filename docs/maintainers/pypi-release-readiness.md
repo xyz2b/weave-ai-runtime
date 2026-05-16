@@ -45,7 +45,7 @@ Framework-pack runtime activation names intentionally match the public install n
 | Package root | PyPI distribution | Import root | Runtime activation | Exposure tier |
 | --- | --- | --- | --- | --- |
 | `packages/product-kits/common/retrieval` | `weavert-kit-common-retrieval` | `weavert_kit_common_retrieval` | `weavert-shared-retrieval` | Lower-layer shared kit |
-| `packages/product-kits/common/web` | `weavert-kit-common-web` | `weavert_kit_common_web` | `weavert-bridge-web` | Lower-layer shared kit |
+| `packages/product-kits/common/web-research` | `weavert-kit-common-web-research` | `weavert_kit_common_web_research` | `weavert-shared-web-research` | Lower-layer shared kit |
 | `packages/product-kits/common/git` | `weavert-kit-common-git` | `weavert_kit_common_git` | `weavert-shared-git` | Lower-layer shared kit |
 | `packages/product-kits/common/workspace-intelligence` | `weavert-kit-common-workspace-intelligence` | `weavert_kit_common_workspace_intelligence` | `weavert-shared-workspace-intelligence` | Lower-layer shared kit |
 | `packages/product-kits/common/browser` | `weavert-kit-common-browser` | `weavert_kit_common_browser` | `weavert-bridge-browser` | Lower-layer shared kit |
@@ -253,7 +253,7 @@ Publish public packages in dependency-aware waves:
 - `weavert-builtin-workflows`
 - `weavert-full`
 - `weavert-kit-common-retrieval`
-- `weavert-kit-common-web`
+- `weavert-kit-common-web-research`
 - `weavert-kit-common-git`
 - `weavert-kit-common-workspace-intelligence`
 - `weavert-kit-common-browser`

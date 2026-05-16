@@ -24,8 +24,8 @@ from weavert_kit_common_retrieval import (
     CHAT_RETRIEVAL_TOOLS,
     reference_shared_package_manifest as retrieval_package_manifest,
 )
-from weavert_kit_common_web import (
-    CHAT_WEB_TOOLS,
+from weavert_kit_common_web_research import (
+    WEB_RESEARCH_TOOLS,
     reference_shared_package_manifest as web_package_manifest,
 )
 
@@ -47,14 +47,14 @@ REFERENCE_SCENARIO_PACK_SHAPE = ReferenceScenarioPackShape(
     recommended_first_party_packages=("weavert-memory",),
     shared_package_dependencies=(
         "weavert-shared-retrieval",
-        "weavert-bridge-web",
+        "weavert-shared-web-research",
         "weavert-bridge-browser",
         "weavert-bridge-local-os",
         "weavert-bridge-pim",
     ),
     expected_tools=(
         *CHAT_RETRIEVAL_TOOLS,
-        *CHAT_WEB_TOOLS,
+        *WEB_RESEARCH_TOOLS,
         *LOCAL_ASSISTANT_WORKFLOW_CONTROL_TOOLS,
         *LOCAL_ASSISTANT_BROWSER_TOOLS,
         *LOCAL_ASSISTANT_LOCAL_OS_TOOLS,
@@ -86,6 +86,7 @@ REFERENCE_SCENARIO_PACK_SHAPE = ReferenceScenarioPackShape(
     profile_prompt_fragments=(
         "Scenario profile: local assistant.",
         "Preserve host-centric defaults and require explicit approval posture for bridge-heavy actions.",
+        "Default read-only web_research to profile=\"general\" unless the app declares a narrower local-assistant research profile.",
         "Prefer web_research for bounded read-only web research while keeping browser mediation in separate bridge tools.",
     ),
     workflow_agent_ids=LOCAL_ASSISTANT_SCENARIO_AGENTS,

@@ -18,13 +18,13 @@ The public install name stays separate from the runtime scenario-pack activation
 ## Shared packages it composes
 
 - `weavert_kit_common_retrieval`
-- `weavert_kit_common_web`
+- `weavert_kit_common_web_research`
 
 ## When to choose this package instead of the nearby ones
 
 - Choose `weavert-kit-chat` when you want a higher-layer profile that already combines retrieval and public-web grounding.
 - Do not choose it if your app primarily needs host-mediated browser, local-machine, or PIM bridges. That is the job of `weavert-kit-local-assistant`.
-- If you only want one lower-layer capability instead of a full chat profile, install `weavert-kit-common-retrieval` or `weavert-kit-common-web` directly.
+- If you only want one lower-layer capability instead of a full chat profile, install `weavert-kit-common-retrieval` or `weavert-kit-common-web-research` directly.
 
 ## See also
 

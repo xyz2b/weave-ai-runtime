@@ -4,7 +4,7 @@ This family groups reusable product-kit packages shared across multiple scenario
 
 ## What this family owns
 
-- reusable bridges such as retrieval, web, git, browser, local-OS, PIM, and workspace intelligence
+- reusable bridges such as retrieval, web research, git, browser, local-OS, PIM, and workspace intelligence
 - shared product-kit packages that stay below scenario-pack ownership
 
 ## Concrete packages
@@ -12,7 +12,7 @@ This family groups reusable product-kit packages shared across multiple scenario
 | Package root | Install name | Import root | Runtime activation | Exposure tier |
 | --- | --- | --- | --- | --- |
 | `retrieval/` | `weavert-kit-common-retrieval` | `weavert_kit_common_retrieval` | `weavert-shared-retrieval` | Lower-layer shared kit |
-| `web/` | `weavert-kit-common-web` | `weavert_kit_common_web` | `weavert-bridge-web` | Lower-layer shared kit |
+| `web-research/` | `weavert-kit-common-web-research` | `weavert_kit_common_web_research` | `weavert-shared-web-research` | Lower-layer shared kit |
 | `git/` | `weavert-kit-common-git` | `weavert_kit_common_git` | `weavert-shared-git` | Lower-layer shared kit |
 | `workspace-intelligence/` | `weavert-kit-common-workspace-intelligence` | `weavert_kit_common_workspace_intelligence` | `weavert-shared-workspace-intelligence` | Lower-layer shared kit |
 | `browser/` | `weavert-kit-common-browser` | `weavert_kit_common_browser` | `weavert-bridge-browser` | Lower-layer shared kit |
@@ -32,7 +32,7 @@ This family groups reusable product-kit packages shared across multiple scenario
 ## Easy boundary checks
 
 - `retrieval` ranks and cites grounding you already have.
-- `web` searches public websites and fetches remote text in a read-only posture.
+- `web-research` runs read-only public-web research and exposes low-level search, fetch, and find primitives.
 - `browser` uses a host-mediated browser bridge for state, navigation, and interaction.
 - `local-os` exposes generic local-machine surfaces such as files, clipboard, notifications, and processes.
 - `pim` exposes structured personal-data surfaces such as calendars, contacts, reminders, and tasks.
@@ -41,6 +41,7 @@ This family groups reusable product-kit packages shared across multiple scenario
 
 - `../README.md`
 - `retrieval/README.md`
+- `web-research/README.md`
 - `git/README.md`
 - `browser/README.md`
 - `../../../docs/maintainers/pypi-release-readiness.md`

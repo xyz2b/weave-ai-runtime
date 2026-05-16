@@ -23,8 +23,7 @@ from weavert.package_system.protocols import HostFacetBinding, PackageOwnership
 from weavert.package_system.resolution import PACKAGE_CANDIDATE_METADATA_KEY
 from weavert.tool_runtime import ToolContext
 from weavert_testing import ScriptedModelClient, text_batch, tool_call_batch
-import weavert_kit_common_web._tool_impls as reference_chat_tool_impls
-import weavert_kit_common_web_research._tool_impls as reference_coding_web_tool_impls
+import weavert_kit_common_web_research._tool_impls as reference_web_tool_impls
 import weavert_web_research.core as reference_web_research_core
 from weavert_kit_chat import (
     CHAT_RETRIEVAL_TOOLS,
@@ -72,20 +71,13 @@ from weavert_kit_common_retrieval import (
     reference_shared_package_shape as retrieval_shared_package_shape,
     reference_shared_package_shapes as retrieval_shared_package_shapes,
 )
-from weavert_kit_common_web import (
-    CHAT_WEB_TOOLS,
-    reference_shared_package_manifest as web_shared_package_manifest,
-    reference_shared_package_shape as web_shared_package_shape,
-    reference_shared_package_shapes as web_shared_package_shapes,
-    validate_grounding_web_fetch,
-)
 from weavert_kit_common_web_research import (
-    CODING_WEB_RESEARCH_TOOLS,
+    WEB_RESEARCH_TOOLS,
     reference_shared_package_manifest as web_research_shared_package_manifest,
     reference_shared_package_shape as web_research_shared_package_shape,
     reference_shared_package_shapes as web_research_shared_package_shapes,
-    validate_technical_web_fetch,
-    validate_technical_web_find,
+    validate_web_fetch,
+    validate_web_find,
 )
 from weavert_devtools.tool_impls import validate_web_fetch as validate_devtools_web_fetch
 from weavert_kit_common_workspace_intelligence import (
@@ -139,7 +131,12 @@ CODING_SHARED_WORKSPACE_TOOLS = {
     "workspace_outline",
     "workspace_test_targets",
 }
-CODING_SHARED_WEB_TOOLS = set(CODING_WEB_RESEARCH_TOOLS)
+CODING_SHARED_WEB_TOOLS = set(WEB_RESEARCH_TOOLS)
+CODING_EXCLUSIVE_SPECIALIZED_TOOLS = (
+    CODING_WORKSPACE_TOOLS
+    | CODING_SHARED_GIT_TOOLS
+    | CODING_SHARED_WORKSPACE_TOOLS
+)
 CODING_WORKFLOW_CONTROL_TOOLS = {
     "agent",
     "skill",
@@ -182,7 +179,7 @@ CODING_SCENARIO_SKILLS = {
 CODING_GENERIC_SKILLS = {"verify", "debug", "stuck", "batch", "simplify"}
 CODING_PROFILE_SKILLS = CODING_SCENARIO_SKILLS | CODING_GENERIC_SKILLS
 CHAT_RETRIEVAL_TOOL_SET = set(CHAT_RETRIEVAL_TOOLS)
-CHAT_WEB_TOOL_SET = set(CHAT_WEB_TOOLS)
+CHAT_WEB_TOOL_SET = set(WEB_RESEARCH_TOOLS)
 CHAT_WORKFLOW_CONTROL_TOOLS = {"ask_user"}
 CHAT_PROFILE_TOOLS = CHAT_RETRIEVAL_TOOL_SET | CHAT_WEB_TOOL_SET | CHAT_WORKFLOW_CONTROL_TOOLS
 CHAT_SCENARIO_AGENTS = set(CHAT_SCENARIO_AGENT_NAMES)
@@ -206,7 +203,6 @@ LOCAL_ASSISTANT_PROFILE_SKILLS = LOCAL_ASSISTANT_SCENARIO_SKILLS | {"remember"}
 
 REFERENCE_SHARED_SHAPES = (
     *retrieval_shared_package_shapes(),
-    *web_shared_package_shapes(),
     *web_research_shared_package_shapes(),
     *browser_shared_package_shapes(),
     *local_os_shared_package_shapes(),
@@ -232,7 +228,6 @@ def reference_scenario_pack_shapes():
 def reference_shared_package_shape(name: str):
     for resolver in (
         retrieval_shared_package_shape,
-        web_shared_package_shape,
         web_research_shared_package_shape,
         browser_shared_package_shape,
         local_os_shared_package_shape,
@@ -263,7 +258,6 @@ def reference_scenario_pack_shape(name: str):
 def reference_shared_package_manifests():
     return (
         retrieval_shared_package_manifest(),
-        web_shared_package_manifest(),
         web_research_shared_package_manifest(),
         browser_shared_package_manifest(),
         local_os_shared_package_manifest(),
@@ -378,7 +372,7 @@ class _FakeUrlopenResponse:
         return False
 
 
-def _grounding_urlopen(request, timeout=10):  # pragma: no cover - exercised through tool calls
+def _web_urlopen(request, timeout=10):  # pragma: no cover - exercised through tool calls
     _ = timeout
     url = request.full_url if hasattr(request, "full_url") else str(request)
     if "duckduckgo.com" in url:
@@ -502,13 +496,13 @@ def test_grounded_reference_shared_packages_can_be_admitted_selected_and_execute
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(reference_chat_tool_impls, "_grounding_urlopen", _grounding_urlopen)
+    monkeypatch.setattr(reference_web_tool_impls, "_web_urlopen", _web_urlopen)
     monkeypatch.setattr(
-        reference_coding_web_tool_impls,
+        reference_web_tool_impls,
         "web_urlopen",
-        lambda request, timeout=10, **_kwargs: _grounding_urlopen(request, timeout=timeout),
+        lambda request, timeout=10, **_kwargs: _web_urlopen(request, timeout=timeout),
     )
-    monkeypatch.setattr(reference_web_research_core, "web_urlopen", _grounding_urlopen)
+    monkeypatch.setattr(reference_web_research_core, "web_urlopen", _web_urlopen)
 
     retrieval_runtime, retrieval_shape, retrieval_root = _assemble_shared_reference_runtime(
         tmp_path,
@@ -557,7 +551,7 @@ def test_grounded_reference_shared_packages_can_be_admitted_selected_and_execute
     assert citations_result["citations"][0]["label"] == "[1]"
     assert "Refund window" in citations_result["citation_block"]
 
-    web_runtime, web_shape, web_root = _assemble_shared_reference_runtime(tmp_path, "weavert-bridge-web")
+    web_runtime, web_shape, web_root = _assemble_shared_reference_runtime(tmp_path, "weavert-shared-web-research")
     web_tool_names = _tool_names(web_runtime)
     assert CHAT_WEB_TOOL_SET <= web_tool_names
     assert web_runtime.kernel.agent_registry.get("web-searcher").metadata["builtin_owner"] == web_shape.package_name
@@ -574,7 +568,7 @@ def test_grounded_reference_shared_packages_can_be_admitted_selected_and_execute
 
     async def agent_runner(agent: str, prompt: str, context: ToolContext, **kwargs: Any) -> dict[str, Any]:
         delegated_calls.append((agent, prompt, kwargs, context))
-        fetched = await context.tool_registry.get("grounding_web_fetch").execute(
+        fetched = await context.tool_registry.get("web_fetch").execute(
             {"url": "https://grounding.example.test/refund-policy"},
             context,
         )
@@ -604,7 +598,7 @@ def test_grounded_reference_shared_packages_can_be_admitted_selected_and_execute
                         }
                     ],
                     "stop_reason": "sufficient_evidence",
-                    "trace_summary": [{"event": "fetched", "tool": "grounding_web_fetch"}],
+                    "trace_summary": [{"event": "fetched", "tool": "web_fetch"}],
                 }
             },
         }
@@ -639,7 +633,7 @@ def test_grounded_reference_shared_packages_can_be_admitted_selected_and_execute
     assert delegated_calls[0][0] == "web-searcher"
     assert delegated_calls[0][2]["background"] is False
     assert delegated_calls[0][2]["max_turns"] == 4
-    assert "grounding_web_search" in delegated_calls[0][1]
+    assert "web_search" in delegated_calls[0][1]
     assert web_research_result["policy"] == {
         "domains": ["grounding.example.test"],
         "blocked_domains": ["blocked.example.test"],
@@ -654,7 +648,7 @@ def test_grounded_reference_shared_packages_can_be_admitted_selected_and_execute
     assert web_research_result["stop_reason"] == "freshness_unsupported"
     assert web_research_result["child_run"]["agent"] == "web-searcher"
 
-    search_tool = web_runtime.kernel.tool_registry.get("grounding_web_search")
+    search_tool = web_runtime.kernel.tool_registry.get("web_search")
     search_result = asyncio.run(
         search_tool.execute({"query": "refund policy", "limit": 3}, _tool_context(web_runtime, web_root))
     )
@@ -677,7 +671,7 @@ def test_grounded_reference_shared_packages_can_be_admitted_selected_and_execute
     assert search_result["results"][0]["source_handle"].startswith("source::")
     assert search_result["results"][0]["page_handle"].startswith("page::")
 
-    fetch_tool = web_runtime.kernel.tool_registry.get("grounding_web_fetch")
+    fetch_tool = web_runtime.kernel.tool_registry.get("web_fetch")
     fetch_result = asyncio.run(
         fetch_tool.execute(
             {"source": search_result["results"][0]},
@@ -688,7 +682,7 @@ def test_grounded_reference_shared_packages_can_be_admitted_selected_and_execute
     assert "30 days" in fetch_result["content"]
     assert fetch_result["source_handle"] == search_result["results"][0]["source_handle"]
 
-    find_tool = web_runtime.kernel.tool_registry.get("grounding_web_find")
+    find_tool = web_runtime.kernel.tool_registry.get("web_find")
     find_result = asyncio.run(
         find_tool.execute(
             {"page": fetch_result, "pattern": "30 days"},
@@ -698,59 +692,74 @@ def test_grounded_reference_shared_packages_can_be_admitted_selected_and_execute
     assert find_result["matches"][0]["exact_excerpt"] == "30 days"
     assert find_result["matches"][0]["source_handle"] == fetch_result["source_handle"]
 
-    coding_runtime, coding_shape, coding_root = _assemble_shared_reference_runtime(
-        tmp_path,
-        "weavert-shared-web-research",
-    )
-    coding_tool_names = _tool_names(coding_runtime)
+    coding_tool_names = _tool_names(web_runtime)
     assert CODING_SHARED_WEB_TOOLS <= coding_tool_names
     assert all(
-        coding_runtime.kernel.tool_registry.get(tool_name).metadata["builtin_owner"] == coding_shape.package_name
+        web_runtime.kernel.tool_registry.get(tool_name).metadata["builtin_owner"] == web_shape.package_name
         for tool_name in CODING_SHARED_WEB_TOOLS
     )
 
-    technical_search_tool = coding_runtime.kernel.tool_registry.get("technical_web_search")
-    technical_search = asyncio.run(
-        technical_search_tool.execute(
-            {"query": "refund policy", "domains": ["grounding.example.test"], "version": "v2"},
-            _tool_context(coding_runtime, coding_root),
+    async def coding_agent_runner(agent: str, _prompt: str, context: ToolContext, **_kwargs: Any) -> dict[str, Any]:
+        await context.tool_registry.get("web_fetch").execute(
+            {"url": "https://grounding.example.test/refund-policy"},
+            context,
         )
-    )
-    assert technical_search["version_scope"]["status"] == "unsatisfied"
+        return {
+            "agent": agent,
+            "status": "completed",
+            "summary": "The API remains available in v2.",
+            "terminal_metadata": {
+                "web_research": {
+                    "answer": "The API remains available in v2.",
+                    "stop_reason": "sufficient_evidence",
+                    "version_scope": {"requested": "v2", "status": "satisfied"},
+                    "api_names": ["refunds.create"],
+                    "compatibility_notes": ["Compatible with v2."],
+                    "breaking_changes": [],
+                }
+            },
+        }
 
-    technical_fetch_tool = coding_runtime.kernel.tool_registry.get("technical_web_fetch")
-    technical_fetch = asyncio.run(
-        technical_fetch_tool.execute(
-            {"source": technical_search["results"][0], "version": "v2"},
-            _tool_context(coding_runtime, coding_root),
+    coding_result = asyncio.run(
+        web_research_tool_def.execute(
+            {
+                "objective": "Check whether refunds.create is still available in v2.",
+                "profile": "coding",
+                "domains": ["grounding.example.test"],
+                "fetch_budget": 1,
+                "desired_source_count": 1,
+            },
+            ToolContext(
+                session_id="coding-web-research",
+                turn_id="turn-1",
+                agent_name="tester",
+                cwd=web_root,
+                tool_registry=web_runtime.kernel.tool_registry,
+                agent_registry=web_runtime.kernel.agent_registry,
+                tool_pool=tuple(web_runtime.kernel.tool_registry.definitions()),
+                runtime_services=web_runtime.services,
+                agent_runner=coding_agent_runner,
+            ),
         )
     )
-    assert technical_fetch["version_scope"]["status"] == "version_mismatch"
-
-    technical_find_tool = coding_runtime.kernel.tool_registry.get("technical_web_find")
-    technical_find = asyncio.run(
-        technical_find_tool.execute(
-            {"page": technical_fetch, "pattern": "30 days", "version": "v2"},
-            _tool_context(coding_runtime, coding_root),
-        )
-    )
-    assert technical_find["matches"][0]["exact_excerpt"] == "30 days"
-    assert technical_find["version_scope"]["status"] == "version_mismatch"
+    assert coding_result["research_trace"]["profile"] == "coding"
+    assert coding_result["facets"]["coding"]["version_scope"] == {"requested": "v2", "status": "satisfied"}
+    assert coding_result["facets"]["coding"]["api_names"] == ["refunds.create"]
 
 
 def test_common_web_generated_artifacts_match_public_research_surfaces() -> None:
-    package_root = Path("packages/product-kits/common/web")
+    package_root = Path("packages/product-kits/common/web-research")
     required_snippets = {
         "__init__.py": (
             "web_research_tool",
-            "web_research_fetch_many_tool",
-            "validate_web_research_fetch_many",
+            "web_fetch_tool",
+            "validate_web_fetch",
             "bounded concurrent research page inspection",
         ),
         "_builtins.py": (
             "web_research",
             "web-searcher",
-            "web_research_fetch_many",
+            "web_fetch",
             '"mode"',
             '"hard_policy"',
             '"preferences"',
@@ -758,22 +767,22 @@ def test_common_web_generated_artifacts_match_public_research_surfaces() -> None
         ),
         "_tool_impls.py": (
             "class _WebResearchRunState",
-            "web_research_fetch_many_tool",
+            "web_fetch_tool",
             "_effective_web_tool_input",
             "budget_profile",
             "preferred_domains",
         ),
     }
     artifact_sources = [
-        package_root / "build/lib/weavert_kit_common_web",
-        package_root / "dist/weavert_kit_common_web-0.1.0-py3-none-any.whl",
-        package_root / "dist/weavert_kit_common_web-0.1.0.tar.gz",
+        package_root / "build/lib/weavert_kit_common_web_research",
+        package_root / "dist/weavert_kit_common_web_research-0.1.0-py3-none-any.whl",
+        package_root / "dist/weavert_kit_common_web_research-0.1.0.tar.gz",
     ]
 
     for artifact in artifact_sources:
         assert artifact.exists(), artifact
         for filename, snippets in required_snippets.items():
-            member = f"weavert_kit_common_web/{filename}"
+            member = f"weavert_kit_common_web_research/{filename}"
             if artifact.is_dir():
                 text = (artifact / filename).read_text()
             else:
@@ -861,23 +870,23 @@ def test_local_assistant_reference_shared_bridge_packages_can_be_admitted_select
             set(),
             set(),
         ),
-        (
-            "weavert-scenario-chat",
-            CHAT_PROFILE_TOOLS,
-            CHAT_SCENARIO_AGENTS,
-            CHAT_PROFILE_SKILLS,
-            CODING_SPECIALIZED_TOOLS,
-            CODING_PROFILE_AGENTS,
-            CODING_PROFILE_SKILLS,
-        ),
+            (
+                "weavert-scenario-chat",
+                CHAT_PROFILE_TOOLS,
+                CHAT_SCENARIO_AGENTS,
+                CHAT_PROFILE_SKILLS,
+                CODING_EXCLUSIVE_SPECIALIZED_TOOLS,
+                CODING_PROFILE_AGENTS,
+                CODING_PROFILE_SKILLS,
+            ),
         (
             "weavert-scenario-local-assistant",
-            LOCAL_ASSISTANT_PROFILE_TOOLS,
-            LOCAL_ASSISTANT_SCENARIO_AGENTS,
-            LOCAL_ASSISTANT_PROFILE_SKILLS,
-            CODING_SPECIALIZED_TOOLS,
-            CODING_PROFILE_AGENTS,
-            CODING_PROFILE_SKILLS,
+                LOCAL_ASSISTANT_PROFILE_TOOLS,
+                LOCAL_ASSISTANT_SCENARIO_AGENTS,
+                LOCAL_ASSISTANT_PROFILE_SKILLS,
+                CODING_EXCLUSIVE_SPECIALIZED_TOOLS,
+                CODING_PROFILE_AGENTS,
+                CODING_PROFILE_SKILLS,
         ),
     ),
 )
@@ -1122,8 +1131,8 @@ def test_non_coding_reference_scenario_packs_warn_when_coding_surfaces_are_enabl
         "https://metadata.google.internal/computeMetadata/v1/",
     ),
 )
-def test_grounding_web_fetch_validation_rejects_non_public_hosts(url: str) -> None:
-    outcome = validate_grounding_web_fetch(
+def test_web_fetch_validation_rejects_non_public_hosts(url: str) -> None:
+    outcome = validate_web_fetch(
         {"url": url},
         ToolContext(session_id="grounding-validation", turn_id="turn-1", agent_name="tester", cwd=Path.cwd()),
     )
@@ -1132,10 +1141,10 @@ def test_grounding_web_fetch_validation_rejects_non_public_hosts(url: str) -> No
     assert outcome.message == "Grounding fetch only supports public web hosts"
 
 
-def test_grounding_web_fetch_validation_rejects_hostnames_that_resolve_to_non_public_addresses(
+def test_web_fetch_validation_rejects_hostnames_that_resolve_to_non_public_addresses(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    reference_chat_tool_impls._grounding_hostname_resolves_publicly.cache_clear()
+    reference_web_tool_impls._web_hostname_resolves_publicly.cache_clear()
 
     def _fake_getaddrinfo(hostname: str, *_args, **_kwargs):
         if hostname == "loopback-proxy.example":
@@ -1152,14 +1161,14 @@ def test_grounding_web_fetch_validation_rejects_hostnames_that_resolve_to_non_pu
             ]
         raise socket.gaierror(-2, "Name or service not known")
 
-    monkeypatch.setattr(reference_chat_tool_impls.socket, "getaddrinfo", _fake_getaddrinfo)
+    monkeypatch.setattr(reference_web_tool_impls.socket, "getaddrinfo", _fake_getaddrinfo)
 
     try:
         for url in (
             "https://loopback-proxy.example/",
             "https://metadata-proxy.example/latest/meta-data/",
         ):
-            outcome = validate_grounding_web_fetch(
+            outcome = validate_web_fetch(
                 {"url": url},
                 ToolContext(
                     session_id="grounding-validation",
@@ -1171,11 +1180,11 @@ def test_grounding_web_fetch_validation_rejects_hostnames_that_resolve_to_non_pu
             assert outcome.valid is False
             assert outcome.message == "Grounding fetch only supports public web hosts"
     finally:
-        reference_chat_tool_impls._grounding_hostname_resolves_publicly.cache_clear()
+        reference_web_tool_impls._web_hostname_resolves_publicly.cache_clear()
 
 
-def test_grounding_web_find_validation_rejects_page_without_url() -> None:
-    outcome = reference_chat_tool_impls.validate_grounding_web_find(
+def test_web_find_validation_rejects_page_without_url() -> None:
+    outcome = reference_web_tool_impls.validate_web_find(
         {"page": {"title": "missing identity"}, "pattern": "needle"},
         ToolContext(session_id="grounding-validation", turn_id="turn-1", agent_name="tester", cwd=Path.cwd()),
     )
@@ -1187,18 +1196,18 @@ def test_grounding_web_find_validation_rejects_page_without_url() -> None:
 def test_web_research_validation_requires_objective_and_bounded_budget() -> None:
     context = ToolContext(session_id="grounding-validation", turn_id="turn-1", agent_name="tester", cwd=Path.cwd())
 
-    missing_objective = reference_chat_tool_impls.validate_web_research({}, context)
+    missing_objective = reference_web_tool_impls.validate_web_research({}, context)
     assert missing_objective.valid is False
     assert "objective must be non-empty" in missing_objective.message
 
-    invalid_budget = reference_chat_tool_impls.validate_web_research(
+    invalid_budget = reference_web_tool_impls.validate_web_research(
         {"objective": "research refunds", "search_budget": 99},
         context,
     )
     assert invalid_budget.valid is False
     assert "search_budget must be between 1 and 8" in invalid_budget.message
 
-    valid = reference_chat_tool_impls.validate_web_research(
+    valid = reference_web_tool_impls.validate_web_research(
         {
             "question": "research refunds",
             "allowed_domains": ["grounding.example.test"],
@@ -1222,7 +1231,7 @@ def test_web_research_validation_requires_objective_and_bounded_budget() -> None
 def test_web_research_compact_request_normalization_and_precedence() -> None:
     context = ToolContext(session_id="grounding-validation", turn_id="turn-1", agent_name="tester", cwd=Path.cwd())
 
-    outcome = reference_chat_tool_impls.validate_web_research(
+    outcome = reference_web_tool_impls.validate_web_research(
         {
             "question": "Find the current API policy.",
             "scope": {
@@ -1259,24 +1268,53 @@ def test_web_research_compact_request_normalization_and_precedence() -> None:
     assert outcome.updated_input["budget"]["desired_source_count"] == 2
 
 
+@pytest.mark.parametrize(
+    ("profile", "expected_priorities", "freshness_required"),
+    (
+        ("general", ["official", "authoritative", "news", "reference"], False),
+        ("coding", ["official_docs", "release_notes", "changelog", "source_repository", "issue_tracker"], False),
+        ("business", ["official_company", "filings", "announcements", "news", "reviews"], False),
+        ("academic", ["papers", "publishers", "institutions", "preprints"], False),
+        ("legal_compliance", ["statutes", "regulations", "standards", "official_guidance"], True),
+        ("product_shopping", ["official_specs", "prices", "reviews", "alternatives", "risk_notes"], True),
+    ),
+)
+def test_web_research_profile_defaults_source_priorities_and_freshness(
+    profile: str,
+    expected_priorities: list[str],
+    freshness_required: bool,
+) -> None:
+    context = ToolContext(session_id="profile-defaults", turn_id="turn-1", agent_name="tester", cwd=Path.cwd())
+
+    outcome = reference_web_tool_impls.validate_web_research(
+        {"objective": "Profile-specific research.", "profile": profile},
+        context,
+    )
+
+    assert outcome.valid is True
+    assert outcome.updated_input["profile"] == profile
+    assert outcome.updated_input["preferences"]["source_priorities"] == expected_priorities
+    assert outcome.updated_input["preferences"]["freshness_required"] is freshness_required
+    assert outcome.updated_input["freshness_required"] is freshness_required
+
+
 def test_web_research_runtime_projects_ledger_evidence_without_terminal_metadata(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(reference_chat_tool_impls, "_grounding_urlopen", _grounding_urlopen)
+    monkeypatch.setattr(reference_web_tool_impls, "_web_urlopen", _web_urlopen)
 
     def _search_request(request):
         assert request.agent is not None
         assert request.agent.name == "web-searcher"
         assert {tool.name for tool in request.tools} == {
-            "grounding_web_search",
-            "grounding_web_fetch",
-            "grounding_web_find",
-            "web_research_fetch_many",
+            "web_search",
+            "web_fetch",
+            "web_find",
         }
         return tool_call_batch(
             request_id="req-web-research-search",
-            tool_name="grounding_web_search",
+            tool_name="web_search",
             tool_input={"query": "refund policy", "limit": 1},
             call_id="call-search",
         )
@@ -1284,7 +1322,7 @@ def test_web_research_runtime_projects_ledger_evidence_without_terminal_metadata
     def _fetch_request(_request):
         return tool_call_batch(
             request_id="req-web-research-fetch",
-            tool_name="grounding_web_fetch",
+            tool_name="web_fetch",
             tool_input={"url": "https://grounding.example.test/refund-policy"},
             call_id="call-fetch",
         )
@@ -1297,7 +1335,7 @@ def test_web_research_runtime_projects_ledger_evidence_without_terminal_metadata
 
     runtime, _shape, runtime_root = _assemble_shared_reference_runtime(
         tmp_path,
-        "weavert-bridge-web",
+        "weavert-shared-web-research",
         model_client=ScriptedModelClient([_search_request, _fetch_request, _final_request]),
     )
 
@@ -1327,7 +1365,7 @@ def test_web_research_runtime_preserves_provider_and_freshness_metadata(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(reference_chat_tool_impls, "_grounding_urlopen", _grounding_urlopen)
+    monkeypatch.setattr(reference_web_tool_impls, "_web_urlopen", _web_urlopen)
     provider = reference_web_research_core.FixtureWebResearchProvider(
         provider_id="fresh-fixture",
         supports_freshness=True,
@@ -1338,15 +1376,15 @@ def test_web_research_runtime_preserves_provider_and_freshness_metadata(
         },
     )
     monkeypatch.setattr(
-        reference_chat_tool_impls,
-        "_grounding_search_provider_registry",
+        reference_web_tool_impls,
+        "_web_search_provider_registry",
         reference_web_research_core.WebSearchProviderRegistry((provider,)),
     )
 
     def _search_request(_request):
         return tool_call_batch(
             request_id="req-web-research-fresh-search",
-            tool_name="grounding_web_search",
+            tool_name="web_search",
             tool_input={"query": "refund policy", "limit": 1},
             call_id="call-fresh-search",
         )
@@ -1354,7 +1392,7 @@ def test_web_research_runtime_preserves_provider_and_freshness_metadata(
     def _fetch_request(_request):
         return tool_call_batch(
             request_id="req-web-research-fresh-fetch",
-            tool_name="grounding_web_fetch",
+            tool_name="web_fetch",
             tool_input={"url": "https://grounding.example.test/refund-policy"},
             call_id="call-fresh-fetch",
         )
@@ -1364,7 +1402,7 @@ def test_web_research_runtime_preserves_provider_and_freshness_metadata(
 
     runtime, _shape, runtime_root = _assemble_shared_reference_runtime(
         tmp_path,
-        "weavert-bridge-web",
+        "weavert-shared-web-research",
         model_client=ScriptedModelClient([_search_request, _fetch_request, _final_request]),
     )
 
@@ -1392,7 +1430,7 @@ def test_web_research_runtime_classifies_provider_fallback_as_freshness_unsuppor
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(reference_chat_tool_impls, "_grounding_urlopen", _grounding_urlopen)
+    monkeypatch.setattr(reference_web_tool_impls, "_web_urlopen", _web_urlopen)
     failing_provider = reference_web_research_core.FixtureWebResearchProvider(
         provider_id="fresh-fixture",
         supports_freshness=True,
@@ -1408,15 +1446,15 @@ def test_web_research_runtime_classifies_provider_fallback_as_freshness_unsuppor
         },
     )
     monkeypatch.setattr(
-        reference_chat_tool_impls,
-        "_grounding_search_provider_registry",
+        reference_web_tool_impls,
+        "_web_search_provider_registry",
         reference_web_research_core.WebSearchProviderRegistry((failing_provider, fallback_provider)),
     )
 
     def _search_request(_request):
         return tool_call_batch(
             request_id="req-web-research-fallback-search",
-            tool_name="grounding_web_search",
+            tool_name="web_search",
             tool_input={"query": "refund policy", "limit": 1},
             call_id="call-fallback-search",
         )
@@ -1424,7 +1462,7 @@ def test_web_research_runtime_classifies_provider_fallback_as_freshness_unsuppor
     def _fetch_request(_request):
         return tool_call_batch(
             request_id="req-web-research-fallback-fetch",
-            tool_name="grounding_web_fetch",
+            tool_name="web_fetch",
             tool_input={"url": "https://grounding.example.test/refund-policy"},
             call_id="call-fallback-fetch",
         )
@@ -1434,7 +1472,7 @@ def test_web_research_runtime_classifies_provider_fallback_as_freshness_unsuppor
 
     runtime, _shape, runtime_root = _assemble_shared_reference_runtime(
         tmp_path,
-        "weavert-bridge-web",
+        "weavert-shared-web-research",
         model_client=ScriptedModelClient([_search_request, _fetch_request, _final_request]),
     )
 
@@ -1472,12 +1510,12 @@ def test_web_research_runtime_enforces_child_policy_and_budget(
             f"<html><head><title>{url}</title></head><body>Evidence from {url}</body></html>"
         )
 
-    monkeypatch.setattr(reference_chat_tool_impls, "_grounding_urlopen", _urlopen)
+    monkeypatch.setattr(reference_web_tool_impls, "_web_urlopen", _urlopen)
 
     def _outside_fetch(_request):
         return tool_call_batch(
             request_id="req-policy-outside",
-            tool_name="grounding_web_fetch",
+            tool_name="web_fetch",
             tool_input={"url": "https://outside.example.test/leak"},
             call_id="call-outside",
         )
@@ -1485,7 +1523,7 @@ def test_web_research_runtime_enforces_child_policy_and_budget(
     def _first_fetch(_request):
         return tool_call_batch(
             request_id="req-policy-first",
-            tool_name="grounding_web_fetch",
+            tool_name="web_fetch",
             tool_input={"url": "https://grounding.example.test/one"},
             call_id="call-one",
         )
@@ -1493,7 +1531,7 @@ def test_web_research_runtime_enforces_child_policy_and_budget(
     def _over_budget_fetch(_request):
         return tool_call_batch(
             request_id="req-policy-over-budget",
-            tool_name="grounding_web_fetch",
+            tool_name="web_fetch",
             tool_input={"url": "https://grounding.example.test/two"},
             call_id="call-two",
         )
@@ -1503,7 +1541,7 @@ def test_web_research_runtime_enforces_child_policy_and_budget(
 
     runtime, _shape, runtime_root = _assemble_shared_reference_runtime(
         tmp_path,
-        "weavert-bridge-web",
+        "weavert-shared-web-research",
         model_client=ScriptedModelClient(
             [_outside_fetch, _first_fetch, _over_budget_fetch, _final_request]
         ),
@@ -1543,12 +1581,12 @@ def test_web_research_open_mode_fetch_many_uses_preferences_and_deterministic_pa
             f"<html><head><title>{url}</title></head><body>Evidence from {url}</body></html>"
         )
 
-    monkeypatch.setattr(reference_chat_tool_impls, "_grounding_urlopen", _urlopen)
+    monkeypatch.setattr(reference_web_tool_impls, "_web_urlopen", _urlopen)
 
     def _fetch_many(_request):
         return tool_call_batch(
             request_id="req-fetch-many",
-            tool_name="web_research_fetch_many",
+            tool_name="web_fetch",
             tool_input={
                 "urls": [
                     "https://preferred.example.test/a",
@@ -1565,7 +1603,7 @@ def test_web_research_open_mode_fetch_many_uses_preferences_and_deterministic_pa
 
     runtime, _shape, runtime_root = _assemble_shared_reference_runtime(
         tmp_path,
-        "weavert-bridge-web",
+        "weavert-shared-web-research",
         model_client=ScriptedModelClient([_fetch_many, _final_request]),
     )
 
@@ -1598,7 +1636,7 @@ def test_web_research_open_mode_fetch_many_uses_preferences_and_deterministic_pa
 def test_web_research_runtime_drops_fabricated_child_metadata_without_ledger(
     tmp_path: Path,
 ) -> None:
-    runtime, _shape, runtime_root = _assemble_shared_reference_runtime(tmp_path, "weavert-bridge-web")
+    runtime, _shape, runtime_root = _assemble_shared_reference_runtime(tmp_path, "weavert-shared-web-research")
 
     async def agent_runner(agent: str, _prompt: str, _context: ToolContext, **_kwargs: Any) -> dict[str, Any]:
         return {
@@ -1652,11 +1690,11 @@ def test_web_research_runtime_merges_child_annotations_without_overriding_ledger
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(reference_chat_tool_impls, "_grounding_urlopen", _grounding_urlopen)
-    runtime, _shape, runtime_root = _assemble_shared_reference_runtime(tmp_path, "weavert-bridge-web")
+    monkeypatch.setattr(reference_web_tool_impls, "_web_urlopen", _web_urlopen)
+    runtime, _shape, runtime_root = _assemble_shared_reference_runtime(tmp_path, "weavert-shared-web-research")
 
     async def agent_runner(agent: str, _prompt: str, context: ToolContext, **_kwargs: Any) -> dict[str, Any]:
-        fetched = await context.tool_registry.get("grounding_web_fetch").execute(
+        fetched = await context.tool_registry.get("web_fetch").execute(
             {"url": "https://grounding.example.test/refund-policy"},
             context,
         )
@@ -1717,7 +1755,7 @@ def test_web_research_runtime_merges_child_annotations_without_overriding_ledger
     assert result["stop_reason"] == "sufficient_evidence"
 
 
-def test_web_research_fetch_many_records_operation_failure_as_partial_result(
+def test_web_fetch_records_operation_failure_as_partial_result(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1732,12 +1770,12 @@ def test_web_research_fetch_many_records_operation_failure_as_partial_result(
             raise urllib.error.URLError("backend unavailable")
         raise AssertionError(f"Unexpected URL requested during test: {url}")
 
-    monkeypatch.setattr(reference_chat_tool_impls, "_grounding_urlopen", _urlopen)
+    monkeypatch.setattr(reference_web_tool_impls, "_web_urlopen", _urlopen)
 
     def _fetch_many(_request):
         return tool_call_batch(
             request_id="req-fetch-many-failure",
-            tool_name="web_research_fetch_many",
+            tool_name="web_fetch",
             tool_input={
                 "urls": [
                     "https://grounding.example.test/good",
@@ -1753,7 +1791,7 @@ def test_web_research_fetch_many_records_operation_failure_as_partial_result(
 
     runtime, _shape, runtime_root = _assemble_shared_reference_runtime(
         tmp_path,
-        "weavert-bridge-web",
+        "weavert-shared-web-research",
         model_client=ScriptedModelClient([_fetch_many, _final_request]),
     )
 
@@ -1778,7 +1816,7 @@ def test_web_research_fetch_many_records_operation_failure_as_partial_result(
     assert failure_events == [
         {
             "event": "operation_failed",
-            "tool": "web_research_fetch_many",
+            "tool": "web_fetch",
             "error": "<urlopen error backend unavailable>",
             "url": "https://grounding.example.test/fail",
             "input_index": 1,
@@ -1790,11 +1828,11 @@ def test_web_research_stop_reason_uses_desired_source_count_and_freshness_limit(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(reference_chat_tool_impls, "_grounding_urlopen", _grounding_urlopen)
-    runtime, _shape, runtime_root = _assemble_shared_reference_runtime(tmp_path, "weavert-bridge-web")
+    monkeypatch.setattr(reference_web_tool_impls, "_web_urlopen", _web_urlopen)
+    runtime, _shape, runtime_root = _assemble_shared_reference_runtime(tmp_path, "weavert-shared-web-research")
 
     async def fetch_once(agent: str, _prompt: str, context: ToolContext, **_kwargs: Any) -> dict[str, Any]:
-        await context.tool_registry.get("grounding_web_fetch").execute(
+        await context.tool_registry.get("web_fetch").execute(
             {"url": "https://grounding.example.test/refund-policy"},
             context,
         )
@@ -1847,8 +1885,8 @@ def test_web_research_stop_reason_uses_desired_source_count_and_freshness_limit(
     )
 
 
-def test_technical_web_fetch_validation_rejects_missing_url() -> None:
-    outcome = validate_technical_web_fetch(
+def test_web_fetch_validation_rejects_missing_url() -> None:
+    outcome = validate_web_fetch(
         {"source": {"title": "missing url"}},
         ToolContext(session_id="coding-validation", turn_id="turn-1", agent_name="tester", cwd=Path.cwd()),
     )
@@ -1857,8 +1895,8 @@ def test_technical_web_fetch_validation_rejects_missing_url() -> None:
     assert outcome.message == "url is required"
 
 
-def test_technical_web_find_validation_rejects_page_without_url() -> None:
-    outcome = validate_technical_web_find(
+def test_web_find_validation_rejects_page_without_url() -> None:
+    outcome = validate_web_find(
         {"page": {"content": "text"}, "pattern": "needle", "domains": ["docs.example.test"]},
         ToolContext(session_id="coding-validation", turn_id="turn-1", agent_name="tester", cwd=Path.cwd()),
     )
@@ -1879,7 +1917,7 @@ def test_devtools_web_fetch_validation_rejects_domain_constrained_mismatch() -> 
 
 def test_shared_core_revalidates_final_fetch_url_and_sets_freshness_scope() -> None:
     backend = reference_web_research_core.DuckDuckGoHtmlBackend(
-        urlopen=lambda request, *, timeout: _grounding_urlopen(request, timeout=timeout)
+        urlopen=lambda request, *, timeout: _web_urlopen(request, timeout=timeout)
     )
     policy = reference_web_research_core.build_policy({"domains": ["grounding.example.test"], "freshness_days": 7})
 
@@ -2067,21 +2105,21 @@ def test_grounded_chat_reference_stack_exercises_retrieval_web_and_memory_surfac
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(reference_chat_tool_impls, "_grounding_urlopen", _grounding_urlopen)
+    monkeypatch.setattr(reference_web_tool_impls, "_web_urlopen", _web_urlopen)
 
     runtime, shape, runtime_root = _assemble_reference_runtime(tmp_path, "weavert-scenario-chat")
-    assert shape.expected_tools == CHAT_RETRIEVAL_TOOLS + CHAT_WEB_TOOLS + ("ask_user",)
+    assert shape.expected_tools == CHAT_RETRIEVAL_TOOLS + WEB_RESEARCH_TOOLS + ("ask_user",)
     assert set(shape.workflow_agent_ids) == CHAT_SCENARIO_AGENTS
     assert set(shape.workflow_skill_ids) == CHAT_SCENARIO_SKILLS
 
-    search_tool = runtime.kernel.tool_registry.get("grounding_web_search")
+    search_tool = runtime.kernel.tool_registry.get("web_search")
     search_result = asyncio.run(
         search_tool.execute({"query": "refund policy"}, _tool_context(runtime, runtime_root))
     )
     assert search_result["results"][0]["url"] == "https://grounding.example.test/refund-policy"
     assert search_result["results"][0]["source_handle"].startswith("source::")
 
-    fetch_tool = runtime.kernel.tool_registry.get("grounding_web_fetch")
+    fetch_tool = runtime.kernel.tool_registry.get("web_fetch")
     fetched = asyncio.run(
         fetch_tool.execute(
             {"source": search_result["results"][0]},
@@ -2091,7 +2129,7 @@ def test_grounded_chat_reference_stack_exercises_retrieval_web_and_memory_surfac
     assert "30 days" in fetched["content"]
     assert fetched["source_handle"] == search_result["results"][0]["source_handle"]
 
-    find_tool = runtime.kernel.tool_registry.get("grounding_web_find")
+    find_tool = runtime.kernel.tool_registry.get("web_find")
     findings = asyncio.run(
         find_tool.execute(
             {"page": fetched, "pattern": "30 days"},
@@ -2230,7 +2268,7 @@ def test_local_assistant_bridge_tools_keep_host_mediation_allowlists_and_audit_a
 
     assert shape.expected_tools == (
         CHAT_RETRIEVAL_TOOLS
-        + CHAT_WEB_TOOLS
+        + WEB_RESEARCH_TOOLS
         + ("ask_user", "skill")
         + LOCAL_ASSISTANT_BROWSER_TOOLS
         + LOCAL_ASSISTANT_LOCAL_OS_TOOLS
@@ -2441,9 +2479,9 @@ def test_local_assistant_daily_brief_skill_fork_exposes_skill_tool_to_assistant_
     assert captured["planner_tools"] == {
         "ask_user",
         "web_research",
-        "grounding_web_fetch",
-        "grounding_web_find",
-        "grounding_web_search",
+        "web_fetch",
+        "web_find",
+        "web_search",
         "browser_snapshot",
         "local_os_snapshot",
         "pim_list_agenda",

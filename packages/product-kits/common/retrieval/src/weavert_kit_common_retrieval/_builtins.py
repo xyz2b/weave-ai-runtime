@@ -17,12 +17,8 @@ from weavert.definitions import (
     ToolUsePresentation,
 )
 from ._tool_impls import (
-    grounding_web_fetch_tool,
-    grounding_web_search_tool,
     prepare_citations_tool,
     retrieve_context_tool,
-    validate_grounding_web_fetch,
-    validate_grounding_web_search,
     validate_prepare_citations_tool,
     validate_retrieve_context_tool,
 )
@@ -32,8 +28,10 @@ CHAT_RETRIEVAL_TOOLS = (
     "prepare_citations",
 )
 CHAT_WEB_TOOLS = (
-    "grounding_web_search",
-    "grounding_web_fetch",
+    "web_research",
+    "web_search",
+    "web_fetch",
+    "web_find",
 )
 CHAT_SCENARIO_AGENTS = (
     "researcher",
@@ -123,61 +121,6 @@ def chat_shared_retrieval_builtin_tools() -> tuple[ToolDefinition, ...]:
     )
 
 
-def chat_web_grounding_builtin_tools() -> tuple[ToolDefinition, ...]:
-    origin = DefinitionOrigin(DefinitionSource.BUNDLED)
-    return (
-        ToolDefinition(
-            name="grounding_web_search",
-            description="Search the web for chat-safe grounding candidates.",
-            input_schema={
-                "type": "object",
-                "properties": {
-                    "query": {"type": "string"},
-                    "limit": {"type": "integer", "minimum": 1, "maximum": 8},
-                },
-                "required": ["query"],
-                "additionalProperties": False,
-            },
-            traits=ToolTraits(read_only=True, concurrency_safe=True),
-            semantics=_network_tool_semantics(
-                title="Search grounding sources",
-                operation="grounding_web_search",
-                summary_prefix="Search grounding sources",
-                subtitle_key="query",
-                tags=("grounding", "web", "search"),
-            ),
-            validate_input=validate_grounding_web_search,
-            execute=grounding_web_search_tool,
-            origin=origin,
-        ),
-        ToolDefinition(
-            name="grounding_web_fetch",
-            description="Fetch a remote page and return chat-safe text for grounding.",
-            input_schema={
-                "type": "object",
-                "properties": {
-                    "url": {"type": "string"},
-                    "timeout_ms": {"type": "integer", "minimum": 1},
-                    "max_chars": {"type": "integer", "minimum": 500, "maximum": 32000},
-                },
-                "required": ["url"],
-                "additionalProperties": False,
-            },
-            traits=ToolTraits(read_only=True, concurrency_safe=True),
-            semantics=_network_tool_semantics(
-                title="Fetch grounding page",
-                operation="grounding_web_fetch",
-                summary_prefix="Fetch grounding page",
-                subtitle_key="url",
-                tags=("grounding", "web", "fetch"),
-            ),
-            validate_input=validate_grounding_web_fetch,
-            execute=grounding_web_fetch_tool,
-            origin=origin,
-        ),
-    )
-
-
 def chat_scenario_builtin_agents() -> tuple[AgentDefinition, ...]:
     origin = DefinitionOrigin(DefinitionSource.BUNDLED)
     return (
@@ -188,7 +131,7 @@ def chat_scenario_builtin_agents() -> tuple[AgentDefinition, ...]:
                 "You are the grounded-chat researcher.\n\n"
                 "Workflow contract:\n"
                 "1. Start with read-only grounding surfaces.\n"
-                "2. Use `grounding_web_search` and `grounding_web_fetch` for fresh external facts when needed.\n"
+                "2. Use `web_research` and unified `web_*` primitives for fresh external facts when needed.\n"
                 "3. Use `retrieve_context` to rank notes, memory, or fetched passages before summarizing.\n"
                 "4. Use `prepare_citations` before handing off a final evidence bundle.\n"
                 "5. Never imply shell access, workspace mutation, or uninspected sources."
@@ -208,7 +151,7 @@ def chat_scenario_builtin_agents() -> tuple[AgentDefinition, ...]:
                 "Workflow contract:\n"
                 "1. Clarify the user's goal when the policy, product, or account scope is ambiguous.\n"
                 "2. Prefer cited, read-only answers over unsupported guesses.\n"
-                "3. Use retrieval and web grounding surfaces before finalizing an answer.\n"
+                "3. Use retrieval and unified web research surfaces before finalizing an answer.\n"
                 "4. Capture durable user preferences only when they are explicit and stable.\n"
                 "5. Do not request workspace or shell mutation as part of the default support flow."
             ),
@@ -367,5 +310,4 @@ __all__ = [
     "chat_scenario_builtin_agents",
     "chat_scenario_builtin_skills",
     "chat_shared_retrieval_builtin_tools",
-    "chat_web_grounding_builtin_tools",
 ]

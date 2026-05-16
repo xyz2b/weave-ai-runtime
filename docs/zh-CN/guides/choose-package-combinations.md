@@ -189,7 +189,7 @@ python -m pip install weavert-testing
 
 ```bash
 python -m pip install weavert-full weavert-kit-common-git
-python -m pip install weavert-full weavert-kit-common-web
+python -m pip install weavert-full weavert-kit-common-web-research
 python -m pip install weavert-full weavert-kit-common-browser
 ```
 
@@ -203,7 +203,7 @@ python -m pip install weavert-full weavert-kit-common-browser
 
 - 只要 repository inspection -> `weavert-kit-common-git`
 - 只要 retrieval -> `weavert-kit-common-retrieval`
-- 只要 web grounding -> `weavert-kit-common-web`
+- 只要 web research -> `weavert-kit-common-web-research`
 - 只要 browser bridge -> `weavert-kit-common-browser`
 - 只要 local machine bridge -> `weavert-kit-common-local-os`
 - 只要 PIM bridge -> `weavert-kit-common-pim`
@@ -212,7 +212,7 @@ python -m pip install weavert-full weavert-kit-common-browser
 ## 常见易混选择
 
 - 想把 notes、memory 或已经抓回来的文本排成 grounding 结果并准备 citations -> `weavert-kit-common-retrieval`
-- 想在只读 grounding 姿态下搜索公网网页或抓取页面文本 -> `weavert-kit-common-web`
+- 想在只读姿态下搜索公网网页、抓取页面、页面内查找或做 profile-driven research -> `weavert-kit-common-web-research`
 - 想通过 app-owned browser bridge 获取浏览器状态、导航、点击、填表或提取 -> `weavert-kit-common-browser`
 - 想接入 files、clipboard、notifications、processes 这类通用本地机器表面 -> `weavert-kit-common-local-os`
 - 想接入 calendar、contacts、reminders、tasks 这类结构化个人信息表面 -> `weavert-kit-common-pim`

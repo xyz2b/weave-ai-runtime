@@ -1,0 +1,10 @@
+README.md
+pyproject.toml
+src/weavert_kit_common_web_research/__init__.py
+src/weavert_kit_common_web_research/_builtins.py
+src/weavert_kit_common_web_research/_tool_impls.py
+src/weavert_kit_common_web_research.egg-info/PKG-INFO
+src/weavert_kit_common_web_research.egg-info/SOURCES.txt
+src/weavert_kit_common_web_research.egg-info/dependency_links.txt
+src/weavert_kit_common_web_research.egg-info/requires.txt
+src/weavert_kit_common_web_research.egg-info/top_level.txt

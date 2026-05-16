@@ -185,7 +185,6 @@ def main() -> int:
         "packages/product-kits/common/local-os",
         "packages/product-kits/common/pim",
         "packages/product-kits/common/retrieval",
-        "packages/product-kits/common/web",
         "packages/product-kits/common/web-research",
         "packages/product-kits/common/workspace-intelligence",
         "packages/product-kits/local-assistant",

@@ -18,7 +18,7 @@ The public install name stays separate from the runtime scenario-pack activation
 ## Shared packages it composes
 
 - `weavert_kit_common_retrieval`
-- `weavert_kit_common_web`
+- `weavert_kit_common_web_research`
 - `weavert_kit_common_browser`
 - `weavert_kit_common_local_os`
 - `weavert_kit_common_pim`

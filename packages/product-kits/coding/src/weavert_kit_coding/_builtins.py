@@ -310,7 +310,7 @@ def coding_scenario_builtin_skills() -> tuple[SkillDefinition, ...]:
                 "3. Inspect the workspace with `glob`, `grep`, `read`, or the `workspace_*` tools before editing.\n"
                 "4. Make the smallest useful edit with `edit` or `write`.\n"
                 "5. Use the shared `git_*` tools for repo state when they answer the question more directly than ad hoc shell usage.\n"
-                "6. Use `technical_web_search`, `technical_web_fetch`, and `technical_web_find` when external technical references or versioned docs materially affect the answer.\n"
+                "6. Use `web_research` with profile `coding` for external technical lookup; use `web_search`, `web_fetch`, and `web_find` for explicit source inspection.\n"
                 "7. Run verification through `bash`, using session actions or jobs only when the command is longer-lived.\n"
                 "8. Run the explicit verification phase and then the explicit review phase before the final summary.\n"
                 "9. Make sure verifier output starts with `verification: pass` or `verification: fail`.\n"

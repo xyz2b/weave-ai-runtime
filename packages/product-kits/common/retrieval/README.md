@@ -18,7 +18,7 @@ The public install name stays separate from the lower-layer runtime package acti
 ## How not to confuse it
 
 - Choose this package when you already have grounding candidates such as notes, memory, or fetched passages and need ranking plus citation preparation.
-- Pair it with `weavert-kit-common-web` when you need public-web search or remote fetch before retrieval.
+- Pair it with `weavert-kit-common-web-research` when you need public-web search, remote fetch, page-local find, or profile-driven web research before retrieval.
 - Do not choose it when you need browser navigation or interaction. That belongs to `weavert-kit-common-browser`.
 
 ## See also

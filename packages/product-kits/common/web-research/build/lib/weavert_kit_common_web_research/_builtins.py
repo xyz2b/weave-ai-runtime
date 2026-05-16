@@ -17,19 +17,17 @@ from weavert.definitions import (
     ToolUsePresentation,
 )
 from ._tool_impls import (
-    grounding_web_fetch_tool,
-    grounding_web_find_tool,
-    grounding_web_search_tool,
+    web_fetch_tool,
+    web_find_tool,
+    web_search_tool,
     prepare_citations_tool,
     retrieve_context_tool,
-    validate_grounding_web_fetch,
-    validate_grounding_web_find,
-    validate_grounding_web_search,
+    validate_web_fetch,
+    validate_web_find,
+    validate_web_search,
     validate_prepare_citations_tool,
     validate_retrieve_context_tool,
     validate_web_research,
-    validate_web_research_fetch_many,
-    web_research_fetch_many_tool,
     web_research_tool,
 )
 
@@ -37,12 +35,11 @@ CHAT_RETRIEVAL_TOOLS = (
     "retrieve_context",
     "prepare_citations",
 )
-CHAT_WEB_TOOLS = (
+WEB_RESEARCH_TOOLS = (
     "web_research",
-    "grounding_web_search",
-    "grounding_web_fetch",
-    "grounding_web_find",
-    "web_research_fetch_many",
+    "web_search",
+    "web_fetch",
+    "web_find",
 )
 WEB_RESEARCH_WORKER_AGENTS = ("web-searcher",)
 CHAT_SCENARIO_AGENTS = (
@@ -76,7 +73,7 @@ def chat_shared_retrieval_builtin_tools() -> tuple[ToolDefinition, ...]:
     return (
         ToolDefinition(
             name="retrieve_context",
-            description="Rank grounding notes, passages, and optional runtime memory for a chat query.",
+            description="Rank web notes, passages, and optional runtime memory for a chat query.",
             input_schema={
                 "type": "object",
                 "properties": {
@@ -94,12 +91,12 @@ def chat_shared_retrieval_builtin_tools() -> tuple[ToolDefinition, ...]:
             },
             traits=ToolTraits(read_only=True, concurrency_safe=True),
             semantics=_read_only_tool_semantics(
-                title="Retrieve grounding context",
+                title="Retrieve web context",
                 operation="retrieve_context",
-                summary_prefix="Retrieve grounding context",
+                summary_prefix="Retrieve web context",
                 subtitle_key="query",
                 risk_level=ToolRiskLevel.READ,
-                tags=("grounding", "retrieval"),
+                tags=("web", "retrieval"),
             ),
             validate_input=validate_retrieve_context_tool,
             execute=retrieve_context_tool,
@@ -107,7 +104,7 @@ def chat_shared_retrieval_builtin_tools() -> tuple[ToolDefinition, ...]:
         ),
         ToolDefinition(
             name="prepare_citations",
-            description="Turn retrieved grounding items into a flat citation bundle for chat answers.",
+            description="Turn retrieved web items into a flat citation bundle for chat answers.",
             input_schema={
                 "type": "object",
                 "properties": {
@@ -124,7 +121,7 @@ def chat_shared_retrieval_builtin_tools() -> tuple[ToolDefinition, ...]:
                 summary_prefix="Prepare citations",
                 subtitle_key="limit",
                 risk_level=ToolRiskLevel.READ,
-                tags=("grounding", "citations"),
+                tags=("web", "citations"),
             ),
             validate_input=validate_prepare_citations_tool,
             execute=prepare_citations_tool,
@@ -133,7 +130,7 @@ def chat_shared_retrieval_builtin_tools() -> tuple[ToolDefinition, ...]:
     )
 
 
-def chat_web_grounding_builtin_tools() -> tuple[ToolDefinition, ...]:
+def web_research_builtin_tools() -> tuple[ToolDefinition, ...]:
     origin = DefinitionOrigin(DefinitionSource.BUNDLED)
     return (
         ToolDefinition(
@@ -144,6 +141,10 @@ def chat_web_grounding_builtin_tools() -> tuple[ToolDefinition, ...]:
                 "properties": {
                     "objective": {"type": "string"},
                     "question": {"type": "string"},
+                    "profile": {
+                        "type": "string",
+                        "enum": ["general", "coding", "business", "academic", "legal_compliance", "product_shopping"],
+                    },
                     "mode": {"type": "string", "enum": ["focused", "open"]},
                     "scope": {
                         "type": "object",
@@ -198,13 +199,19 @@ def chat_web_grounding_builtin_tools() -> tuple[ToolDefinition, ...]:
                     "objective": {"type": "string"},
                     "mode": {"type": "string"},
                     "answer": {"type": "string"},
+                    "confidence": {"type": "string"},
                     "sources": {"type": "array", "items": {"type": "object"}},
                     "evidence": {"type": "array", "items": {"type": "object"}},
+                    "conflicts": {"type": "array", "items": {"type": "object"}},
+                    "gaps": {"type": "array", "items": {"type": "object"}},
+                    "freshness": {"type": "object"},
                     "policy": {"type": "object"},
                     "hard_policy": {"type": "object"},
                     "preferences": {"type": "object"},
                     "budget": {"type": "object"},
                     "stop_reason": {"type": "string"},
+                    "research_trace": {"type": "object"},
+                    "facets": {"type": "object"},
                     "trace_summary": {"type": "array", "items": {"type": "object"}},
                     "child_run": {"type": "object"},
                     "provider": {"type": "object"},
@@ -216,13 +223,22 @@ def chat_web_grounding_builtin_tools() -> tuple[ToolDefinition, ...]:
                     "objective",
                     "mode",
                     "answer",
+                    "confidence",
                     "sources",
                     "evidence",
+                    "conflicts",
+                    "gaps",
+                    "freshness",
+                    "provider",
+                    "provider_selection",
+                    "provider_fallback",
                     "policy",
                     "hard_policy",
                     "preferences",
                     "budget",
                     "stop_reason",
+                    "research_trace",
+                    "facets",
                     "trace_summary",
                     "child_run",
                 ],
@@ -234,7 +250,7 @@ def chat_web_grounding_builtin_tools() -> tuple[ToolDefinition, ...]:
                 operation="web_research",
                 summary_prefix="Research web evidence",
                 subtitle_key="objective",
-                tags=("grounding", "web", "research"),
+                tags=("web", "web", "research"),
             ),
             validate_input=validate_web_research,
             execute=web_research_tool,
@@ -242,8 +258,8 @@ def chat_web_grounding_builtin_tools() -> tuple[ToolDefinition, ...]:
             origin=origin,
         ),
         ToolDefinition(
-            name="grounding_web_search",
-            description="Search the public web for chat-safe grounding candidates with explicit source handles.",
+            name="web_search",
+            description="Search the public web for web research candidates with explicit source handles.",
             input_schema={
                 "type": "object",
                 "properties": {
@@ -261,19 +277,19 @@ def chat_web_grounding_builtin_tools() -> tuple[ToolDefinition, ...]:
             },
             traits=ToolTraits(read_only=True, concurrency_safe=True),
             semantics=_network_tool_semantics(
-                title="Search grounding sources",
-                operation="grounding_web_search",
-                summary_prefix="Search grounding sources",
+                title="Search web sources",
+                operation="web_search",
+                summary_prefix="Search web sources",
                 subtitle_key="query",
-                tags=("grounding", "web", "search"),
+                tags=("web", "web", "search"),
             ),
-            validate_input=validate_grounding_web_search,
-            execute=grounding_web_search_tool,
+            validate_input=validate_web_search,
+            execute=web_search_tool,
             origin=origin,
         ),
         ToolDefinition(
-            name="grounding_web_fetch",
-            description="Inspect a remote page and return chat-safe text plus citation-ready source metadata.",
+            name="web_fetch",
+            description="Inspect a remote page and return web research text plus citation-ready source metadata.",
             input_schema={
                 "type": "object",
                 "properties": {
@@ -288,28 +304,43 @@ def chat_web_grounding_builtin_tools() -> tuple[ToolDefinition, ...]:
                         },
                         "additionalProperties": True,
                     },
+                    "urls": {"type": "array", "items": {"type": "string"}},
+                    "sources": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "url": {"type": "string"},
+                                "title": {"type": "string"},
+                                "source_handle": {"type": "string"},
+                                "page_handle": {"type": "string"},
+                            },
+                            "additionalProperties": True,
+                        },
+                    },
                     "domains": {"type": "array", "items": {"type": "string"}},
                     "freshness_days": {"type": "integer", "minimum": 0},
                     "timeout_ms": {"type": "integer", "minimum": 1},
                     "max_chars": {"type": "integer", "minimum": 500, "maximum": 32000},
+                    "max_concurrent_fetches": {"type": "integer", "minimum": 1, "maximum": 5},
                 },
                 "additionalProperties": False,
             },
             traits=ToolTraits(read_only=True, concurrency_safe=True),
             semantics=_network_tool_semantics(
-                title="Fetch grounding page",
-                operation="grounding_web_fetch",
-                summary_prefix="Fetch grounding page",
+                title="Fetch web page",
+                operation="web_fetch",
+                summary_prefix="Fetch web page",
                 subtitle_key="url",
-                tags=("grounding", "web", "fetch"),
+                tags=("web", "web", "fetch"),
             ),
-            validate_input=validate_grounding_web_fetch,
-            execute=grounding_web_fetch_tool,
+            validate_input=validate_web_fetch,
+            execute=web_fetch_tool,
             origin=origin,
         ),
         ToolDefinition(
-            name="grounding_web_find",
-            description="Find local evidence inside an inspected grounding page without re-fetching it.",
+            name="web_find",
+            description="Find local evidence inside an inspected web page without re-fetching it.",
             input_schema={
                 "type": "object",
                 "properties": {
@@ -332,41 +363,15 @@ def chat_web_grounding_builtin_tools() -> tuple[ToolDefinition, ...]:
             },
             traits=ToolTraits(read_only=True, concurrency_safe=True),
             semantics=_read_only_tool_semantics(
-                title="Find grounding evidence",
-                operation="grounding_web_find",
-                summary_prefix="Find grounding evidence",
+                title="Find web evidence",
+                operation="web_find",
+                summary_prefix="Find web evidence",
                 subtitle_key="pattern",
                 risk_level=ToolRiskLevel.READ,
-                tags=("grounding", "web", "find"),
+                tags=("web", "web", "find"),
             ),
-            validate_input=validate_grounding_web_find,
-            execute=grounding_web_find_tool,
-            origin=origin,
-        ),
-        ToolDefinition(
-            name="web_research_fetch_many",
-            description="Inspect multiple web research candidate URLs concurrently inside the active web_research policy and budget.",
-            input_schema={
-                "type": "object",
-                "properties": {
-                    "urls": {"type": "array", "items": {"type": "string"}},
-                    "sources": {"type": "array", "items": {"type": "object"}},
-                    "max_concurrent_fetches": {"type": "integer", "minimum": 1, "maximum": 5},
-                    "timeout_ms": {"type": "integer", "minimum": 1},
-                    "max_chars": {"type": "integer", "minimum": 500, "maximum": 32000},
-                },
-                "additionalProperties": False,
-            },
-            traits=ToolTraits(read_only=True, concurrency_safe=False),
-            semantics=_network_tool_semantics(
-                title="Fetch research pages",
-                operation="web_research_fetch_many",
-                summary_prefix="Fetch research pages",
-                subtitle_key="max_concurrent_fetches",
-                tags=("grounding", "web", "research", "fetch"),
-            ),
-            validate_input=validate_web_research_fetch_many,
-            execute=web_research_fetch_many_tool,
+            validate_input=validate_web_find,
+            execute=web_find_tool,
             origin=origin,
         ),
     )
@@ -381,14 +386,14 @@ def chat_scenario_builtin_agents() -> tuple[AgentDefinition, ...]:
             prompt=(
                 "You are the grounded-chat researcher.\n\n"
                 "Workflow contract:\n"
-                "1. Start with read-only grounding surfaces.\n"
+                "1. Start with read-only web surfaces.\n"
                 "2. Prefer `web_research` for fresh external facts that need bounded source discovery and inspection.\n"
-                "3. Use `grounding_web_search`, `grounding_web_fetch`, and `grounding_web_find` only when explicit low-level orchestration is needed.\n"
+                "3. Use `web_search`, `web_fetch`, and `web_find` only when explicit low-level orchestration is needed.\n"
                 "4. Use `retrieve_context` to rank notes, memory, or inspected passages before summarizing.\n"
                 "5. Use `prepare_citations` before handing off a final evidence bundle.\n"
                 "6. Never imply shell access, workspace mutation, or uninspected sources."
             ),
-            tools=(*CHAT_RETRIEVAL_TOOLS, *CHAT_WEB_TOOLS, "ask_user"),
+            tools=(*CHAT_RETRIEVAL_TOOLS, *WEB_RESEARCH_TOOLS, "ask_user"),
             skills=("chat-summarize", "answer-with-citations", "clarify-request"),
             permission_mode=PermissionMode.DEFAULT,
             max_turns=6,
@@ -407,7 +412,7 @@ def chat_scenario_builtin_agents() -> tuple[AgentDefinition, ...]:
                 "4. Capture durable user preferences only when they are explicit and stable.\n"
                 "5. Do not request workspace or shell mutation as part of the default support flow."
             ),
-            tools=(*CHAT_RETRIEVAL_TOOLS, *CHAT_WEB_TOOLS, "ask_user"),
+            tools=(*CHAT_RETRIEVAL_TOOLS, *WEB_RESEARCH_TOOLS, "ask_user"),
             skills=(
                 "chat-summarize",
                 "answer-with-citations",
@@ -448,19 +453,18 @@ def web_research_worker_builtin_agents() -> tuple[AgentDefinition, ...]:
             name="web-searcher",
             description="Package-owned delegated worker for bounded read-only web_research execution.",
             prompt=(
-                "You are the common-web package delegated web research worker.\n\n"
+                "You are the common-web-research package delegated web research worker.\n\n"
                 "Workflow contract:\n"
                 "1. Serve only `web_research` child runs or package extension paths.\n"
-                "2. Use the controlled read-only tool pool: `grounding_web_search`, "
-                "`grounding_web_fetch`, `grounding_web_find`, and `web_research_fetch_many`.\n"
+                "2. Use the controlled read-only tool pool: `web_search`, `web_fetch`, and `web_find`.\n"
                 "3. Stay inside caller-provided hard policy and budgets; open-mode preferences guide ranking, not safety.\n"
                 "4. Treat provider, provider fallback, and freshness_scope fields as part of the evidence contract.\n"
                 "5. Do not present a freshness-constrained answer as confirmed when search reports unsupported freshness or a provider downgrade.\n"
                 "6. Inspect evidence before citing it, and return source references plus concise evidence.\n"
-                "7. Use `web_research_fetch_many` only for bounded concurrent page inspection.\n"
+                "7. Keep any bounded concurrent page inspection inside the package-owned workflow.\n"
                 "8. Do not request shell access, workspace mutation, browser navigation, or direct user adoption."
             ),
-            tools=("grounding_web_search", "grounding_web_fetch", "grounding_web_find", "web_research_fetch_many"),
+            tools=("web_search", "web_fetch", "web_find"),
             permission_mode=PermissionMode.DEFAULT,
             max_turns=4,
             origin=origin,
@@ -473,7 +477,7 @@ def chat_scenario_builtin_skills() -> tuple[SkillDefinition, ...]:
     return (
         SkillDefinition(
             name="chat-summarize",
-            description="Summarize retrieved grounding without dropping important caveats.",
+            description="Summarize retrieved web without dropping important caveats.",
             content=(
                 "Summarize the material already in hand.\n\n"
                 "1. Start from retrieved notes, fetched passages, or durable memory.\n"
@@ -487,23 +491,23 @@ def chat_scenario_builtin_skills() -> tuple[SkillDefinition, ...]:
             name="answer-with-citations",
             description="Assemble a grounded answer that cites supporting evidence explicitly.",
             content=(
-                "Answer with visible grounding.\n\n"
+                "Answer with visible web.\n\n"
                 "1. Retrieve or fetch the best evidence first.\n"
                 "2. Call `prepare_citations` on the supporting items before drafting the answer.\n"
                 "3. Cite only evidence you actually inspected.\n"
-                "4. State uncertainty when the grounding is thin or incomplete."
+                "4. State uncertainty when the web is thin or incomplete."
             ),
             execution_context=SkillExecutionContext.INLINE,
             origin=origin,
         ),
         SkillDefinition(
             name="clarify-request",
-            description="Ask a short clarification before grounding an ambiguous request.",
+            description="Ask a short clarification before web an ambiguous request.",
             content=(
                 "When the request is ambiguous or missing the policy/product scope:\n\n"
                 "1. Ask the shortest question that unblocks a grounded answer.\n"
                 "2. Prefer one focused clarification over a long questionnaire.\n"
-                "3. Resume grounding once the missing detail is provided."
+                "3. Resume web once the missing detail is provided."
             ),
             execution_context=SkillExecutionContext.INLINE,
             origin=origin,
@@ -537,12 +541,12 @@ def _read_only_tool_semantics(
         concurrency_safe=True,
         tool_use_presentation=lambda tool_input, _context: ToolUsePresentation(
             title=title,
-            subtitle=str(tool_input.get(subtitle_key) or "grounding"),
+            subtitle=str(tool_input.get(subtitle_key) or "web"),
             emphasis=ToolPresentationEmphasis.LOW,
         ),
         classifier_input=lambda tool_input, _context: ToolClassifierInput(
             operation=operation,
-            summary=f"{summary_prefix}: {tool_input.get(subtitle_key) or 'grounding'}",
+            summary=f"{summary_prefix}: {tool_input.get(subtitle_key) or 'web'}",
             risk_level=risk_level,
             side_effects=False,
             tags=tags,
@@ -563,12 +567,12 @@ def _network_tool_semantics(
         concurrency_safe=True,
         tool_use_presentation=lambda tool_input, _context: ToolUsePresentation(
             title=title,
-            subtitle=str(tool_input.get(subtitle_key) or "grounding"),
+            subtitle=str(tool_input.get(subtitle_key) or "web"),
             emphasis=ToolPresentationEmphasis.LOW,
         ),
         classifier_input=lambda tool_input, _context: ToolClassifierInput(
             operation=operation,
-            summary=f"{summary_prefix}: {tool_input.get(subtitle_key) or 'grounding'}",
+            summary=f"{summary_prefix}: {tool_input.get(subtitle_key) or 'web'}",
             target_urls=(
                 (str(tool_input[subtitle_key]),)
                 if subtitle_key == "url" and tool_input.get(subtitle_key) is not None
@@ -585,11 +589,11 @@ __all__ = [
     "CHAT_RETRIEVAL_TOOLS",
     "CHAT_SCENARIO_AGENTS",
     "CHAT_SCENARIO_SKILLS",
-    "CHAT_WEB_TOOLS",
+    "WEB_RESEARCH_TOOLS",
     "WEB_RESEARCH_WORKER_AGENTS",
     "chat_scenario_builtin_agents",
     "chat_scenario_builtin_skills",
     "chat_shared_retrieval_builtin_tools",
-    "chat_web_grounding_builtin_tools",
+    "web_research_builtin_tools",
     "web_research_worker_builtin_agents",
 ]

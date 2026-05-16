@@ -139,6 +139,45 @@ class PageValidationResult:
     source: Mapping[str, Any]
 
 
+@dataclass(frozen=True, slots=True)
+class ResearchProfile:
+    name: str
+    query_templates: tuple[str, ...] = ()
+    source_priorities: tuple[str, ...] = ()
+    freshness_policy: Mapping[str, Any] = field(default_factory=dict)
+    evidence_schema: Mapping[str, Any] = field(default_factory=dict)
+    conflict_rules: tuple[str, ...] = ()
+    stop_conditions: tuple[str, ...] = ()
+    facet_keys: tuple[str, ...] = ()
+    defaults: Mapping[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class WebResearchLoopState:
+    profile: str
+    queries: list[str] = field(default_factory=list)
+    pages_read: list[Mapping[str, Any]] = field(default_factory=list)
+    evidence: list[Mapping[str, Any]] = field(default_factory=list)
+    conflicts: list[Mapping[str, Any]] = field(default_factory=list)
+    gaps: list[Mapping[str, Any]] = field(default_factory=list)
+    provider: Mapping[str, Any] = field(default_factory=dict)
+    freshness: Mapping[str, Any] = field(default_factory=dict)
+
+
+class ResearchProfileRegistry:
+    def __init__(self, profiles: Sequence[ResearchProfile]) -> None:
+        self._profiles = {profile.name: profile for profile in profiles}
+
+    def get(self, name: str) -> ResearchProfile:
+        try:
+            return self._profiles[name]
+        except KeyError as exc:
+            raise KeyError(f"Unknown research profile: {name}") from exc
+
+    def names(self) -> tuple[str, ...]:
+        return tuple(self._profiles)
+
+
 def build_policy(
     raw: Mapping[str, Any] | None = None,
     *,

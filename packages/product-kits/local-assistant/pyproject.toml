@@ -16,7 +16,7 @@ dependencies = [
   "weavert-kit-common-local-os>=0.1.0,<0.2.0",
   "weavert-kit-common-pim>=0.1.0,<0.2.0",
   "weavert-kit-common-retrieval>=0.1.0,<0.2.0",
-  "weavert-kit-common-web>=0.1.0,<0.2.0",
+  "weavert-kit-common-web-research>=0.1.0,<0.2.0",
 ]
 keywords = ["weavert", "agents", "ai", "product-kit", "scenario-pack"]
 classifiers = [

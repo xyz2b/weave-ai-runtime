@@ -15,7 +15,7 @@
 ## 不要把它和这些包混在一起
 
 - 当你已经有 notes、memory 或 fetched passages 这类 grounding candidates，只需要排序与 citation 准备时，选这个包。
-- 如果你还需要先做公网 web 搜索或远程抓取，再搭配 `weavert-kit-common-web`。
+- 如果你还需要先做公网 web 搜索、远程抓取、页面内查找或 profile-driven research，再搭配 `weavert-kit-common-web-research`。
 - 如果你需要浏览器导航或交互，不要选它；那属于 `weavert-kit-common-browser`。
 
 ## 另见

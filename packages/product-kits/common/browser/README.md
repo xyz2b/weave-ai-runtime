@@ -18,7 +18,7 @@ The public install name stays separate from the lower-layer runtime package acti
 ## How not to confuse it
 
 - Choose this package when your app owns a browser bridge and the assistant needs browser state, navigation, click, form-fill, or extraction steps.
-- Do not choose it for public-web search or remote page fetch. That belongs to `weavert-kit-common-web`.
+- Do not choose it for public-web search or remote page fetch. That belongs to `weavert-kit-common-web-research`.
 - Do not choose it for generic local-machine surfaces such as files or clipboard. That belongs to `weavert-kit-common-local-os`.
 
 ## See also

@@ -6,31 +6,54 @@ from weavert.extension_contracts.scenario_runtime_packs import (
     build_reference_shared_package_manifest,
 )
 
-from ._builtins import CODING_WEB_RESEARCH_TOOLS, shared_coding_web_research_builtin_tools
+from ._builtins import (
+    WEB_RESEARCH_TOOLS,
+    WEB_RESEARCH_WORKER_AGENTS,
+    web_research_builtin_tools,
+    web_research_worker_builtin_agents,
+)
 from ._tool_impls import (
-    technical_web_fetch_tool,
-    technical_web_find_tool,
-    technical_web_search_tool,
-    validate_technical_web_fetch,
-    validate_technical_web_find,
-    validate_technical_web_search,
+    web_fetch_tool,
+    web_find_tool,
+    web_search_tool,
+    validate_web_fetch,
+    validate_web_find,
+    validate_web_search,
+    validate_web_research,
+    web_research_tool,
 )
 
 REFERENCE_SHARED_PACKAGE_SHAPE = ReferenceSharedPackageShape(
     package_name="weavert-shared-web-research",
     capability_key="weavert.reference.shared.web_research",
-    description="Reference shared package for coding-oriented technical web research surfaces.",
-    shared_surface_family="coding-web-research",
-    intended_profiles=("coding",),
-    surfaces=(
-        "domain-scoped technical web search",
-        "version-aware inspected-page retrieval",
-        "page-local exact evidence finding",
+    description="Reference shared package for AI-first web_research plus low-level read-only web primitives.",
+    shared_surface_family="web-research",
+    intended_profiles=(
+        "chat",
+        "coding",
+        "local_assistant",
+        "business",
+        "academic",
+        "legal_compliance",
+        "product_shopping",
     ),
-    tool_ids=CODING_WEB_RESEARCH_TOOLS,
+    surfaces=(
+        "AI-first bounded web_research entrypoint",
+        "read-only web search",
+        "bounded remote fetch",
+        "page-local web evidence finding",
+        "bounded concurrent research page inspection",
+        "HTTP-aware web helpers",
+    ),
+    tool_ids=WEB_RESEARCH_TOOLS,
+    agent_ids=WEB_RESEARCH_WORKER_AGENTS,
     notes=(
-        "Keep coding-oriented external reference lookup reusable so coding products do not rely on app-local-only helpers.",
-        "The coding web package stays distinct from the chat-facing web adapter and from browser staging packages.",
+        "Scenario packs should recommend web_research as the public web research entrypoint.",
+        "Scenario packs set default research profiles without changing public web tool names.",
+        "Low-level primitives remain available for explicit search, fetch, and page-local find flows.",
+        "web-searcher is a package-owned delegated worker behind web_research, not the recommended public path.",
+        "The default posture stays read-only and web research even when external web is enabled.",
+        "Browser navigation or interaction still requires a separate browser bridge package.",
     ),
 )
 
@@ -46,13 +69,14 @@ def reference_shared_package_shape(name: str | None = None) -> ReferenceSharedPa
         REFERENCE_SHARED_PACKAGE_SHAPE.capability_key,
     }:
         return REFERENCE_SHARED_PACKAGE_SHAPE
-    raise KeyError(f"Unknown coding web shared package shape: {name}")
+    raise KeyError(f"Unknown web shared package shape: {name}")
 
 
 def reference_shared_package_manifest() -> RuntimePackageManifest:
     return build_reference_shared_package_manifest(
         REFERENCE_SHARED_PACKAGE_SHAPE,
-        builtin_tools=shared_coding_web_research_builtin_tools,
+        builtin_tools=web_research_builtin_tools,
+        builtin_agents=web_research_worker_builtin_agents,
     )
 
 
@@ -61,17 +85,20 @@ def reference_shared_package_manifests() -> tuple[RuntimePackageManifest, ...]:
 
 
 __all__ = [
-    "CODING_WEB_RESEARCH_TOOLS",
+    "WEB_RESEARCH_TOOLS",
     "REFERENCE_SHARED_PACKAGE_SHAPE",
+    "WEB_RESEARCH_WORKER_AGENTS",
+    "web_fetch_tool",
+    "web_find_tool",
+    "web_search_tool",
     "reference_shared_package_manifest",
     "reference_shared_package_manifests",
     "reference_shared_package_shape",
     "reference_shared_package_shapes",
-    "shared_coding_web_research_builtin_tools",
-    "technical_web_fetch_tool",
-    "technical_web_find_tool",
-    "technical_web_search_tool",
-    "validate_technical_web_fetch",
-    "validate_technical_web_find",
-    "validate_technical_web_search",
+    "validate_web_fetch",
+    "validate_web_find",
+    "validate_web_search",
+    "validate_web_research",
+    "web_research_tool",
+    "web_research_worker_builtin_agents",
 ]

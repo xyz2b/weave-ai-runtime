@@ -11,8 +11,8 @@
 
 ## 3. Adapter And Compatibility Alignment
 
-- [x] 3.1 Update chat web adapter validation and execution in `packages/product-kits/common/web/` to consume the hardened shared-core redirect, top-level `freshness_scope`, and deterministic validation behavior.
-- [x] 3.2 Update coding web adapter validation and execution in `packages/product-kits/common/web-research/` to preserve domain-scope, explicit top-level `freshness_scope`, and validator or executor parity.
+- [x] 3.1 Update unified web research adapter validation and execution in `packages/product-kits/common/web-research/` to consume the hardened shared-core redirect, top-level `freshness_scope`, and deterministic validation behavior.
+- [x] 3.2 Update coding-profile web research validation and execution in `packages/product-kits/common/web-research/` to preserve domain-scope, explicit top-level `freshness_scope`, and validator or executor parity.
 - [x] 3.3 Update built-in devtools compatibility wrappers in `packages/framework-packs/workflows/devtools/` so `web_fetch` validation honors caller domain constraints and built-in web results project additive top-level `freshness_scope` metadata without diverging from the shared core.
 
 ## 4. Regression Coverage

@@ -17,14 +17,8 @@ from weavert.definitions import (
     ToolUsePresentation,
 )
 from ._tool_impls import (
-    grounding_web_fetch_tool,
-    grounding_web_find_tool,
-    grounding_web_search_tool,
     prepare_citations_tool,
     retrieve_context_tool,
-    validate_grounding_web_fetch,
-    validate_grounding_web_find,
-    validate_grounding_web_search,
     validate_prepare_citations_tool,
     validate_retrieve_context_tool,
 )
@@ -33,10 +27,10 @@ CHAT_RETRIEVAL_TOOLS = (
     "retrieve_context",
     "prepare_citations",
 )
-CHAT_WEB_TOOLS = (
-    "grounding_web_search",
-    "grounding_web_fetch",
-    "grounding_web_find",
+WEB_RESEARCH_TOOLS = (
+    "web_search",
+    "web_fetch",
+    "web_find",
 )
 CHAT_SCENARIO_AGENTS = (
     "researcher",
@@ -126,110 +120,6 @@ def chat_shared_retrieval_builtin_tools() -> tuple[ToolDefinition, ...]:
     )
 
 
-def chat_web_grounding_builtin_tools() -> tuple[ToolDefinition, ...]:
-    origin = DefinitionOrigin(DefinitionSource.BUNDLED)
-    return (
-        ToolDefinition(
-            name="grounding_web_search",
-            description="Search the public web for chat-safe grounding candidates with explicit source handles.",
-            input_schema={
-                "type": "object",
-                "properties": {
-                    "query": {"type": "string"},
-                    "domains": {"type": "array", "items": {"type": "string"}},
-                    "freshness_days": {"type": "integer", "minimum": 0},
-                    "limit": {"type": "integer", "minimum": 1, "maximum": 8},
-                },
-                "required": ["query"],
-                "additionalProperties": False,
-            },
-            traits=ToolTraits(read_only=True, concurrency_safe=True),
-            semantics=_network_tool_semantics(
-                title="Search grounding sources",
-                operation="grounding_web_search",
-                summary_prefix="Search grounding sources",
-                subtitle_key="query",
-                tags=("grounding", "web", "search"),
-            ),
-            validate_input=validate_grounding_web_search,
-            execute=grounding_web_search_tool,
-            origin=origin,
-        ),
-        ToolDefinition(
-            name="grounding_web_fetch",
-            description="Inspect a remote page and return chat-safe text plus citation-ready source metadata.",
-            input_schema={
-                "type": "object",
-                "properties": {
-                    "url": {"type": "string"},
-                    "source": {
-                        "type": "object",
-                        "properties": {
-                            "url": {"type": "string"},
-                            "title": {"type": "string"},
-                            "source_handle": {"type": "string"},
-                            "page_handle": {"type": "string"},
-                        },
-                        "additionalProperties": True,
-                    },
-                    "domains": {"type": "array", "items": {"type": "string"}},
-                    "freshness_days": {"type": "integer", "minimum": 0},
-                    "timeout_ms": {"type": "integer", "minimum": 1},
-                    "max_chars": {"type": "integer", "minimum": 500, "maximum": 32000},
-                },
-                "additionalProperties": False,
-            },
-            traits=ToolTraits(read_only=True, concurrency_safe=True),
-            semantics=_network_tool_semantics(
-                title="Fetch grounding page",
-                operation="grounding_web_fetch",
-                summary_prefix="Fetch grounding page",
-                subtitle_key="url",
-                tags=("grounding", "web", "fetch"),
-            ),
-            validate_input=validate_grounding_web_fetch,
-            execute=grounding_web_fetch_tool,
-            origin=origin,
-        ),
-        ToolDefinition(
-            name="grounding_web_find",
-            description="Find local evidence inside an inspected grounding page without re-fetching it.",
-            input_schema={
-                "type": "object",
-                "properties": {
-                    "page": {
-                        "type": "object",
-                        "properties": {
-                            "url": {"type": "string"},
-                            "title": {"type": "string"},
-                            "content": {"type": "string"},
-                            "source_handle": {"type": "string"},
-                            "page_handle": {"type": "string"},
-                        },
-                        "additionalProperties": True,
-                    },
-                    "pattern": {"type": "string"},
-                    "limit": {"type": "integer", "minimum": 1, "maximum": 8},
-                },
-                "required": ["page", "pattern"],
-                "additionalProperties": False,
-            },
-            traits=ToolTraits(read_only=True, concurrency_safe=True),
-            semantics=_read_only_tool_semantics(
-                title="Find grounding evidence",
-                operation="grounding_web_find",
-                summary_prefix="Find grounding evidence",
-                subtitle_key="pattern",
-                risk_level=ToolRiskLevel.READ,
-                tags=("grounding", "web", "find"),
-            ),
-            validate_input=validate_grounding_web_find,
-            execute=grounding_web_find_tool,
-            origin=origin,
-        ),
-    )
-
-
 def chat_scenario_builtin_agents() -> tuple[AgentDefinition, ...]:
     origin = DefinitionOrigin(DefinitionSource.BUNDLED)
     return (
@@ -240,12 +130,12 @@ def chat_scenario_builtin_agents() -> tuple[AgentDefinition, ...]:
                 "You are the grounded-chat researcher.\n\n"
                 "Workflow contract:\n"
                 "1. Start with read-only grounding surfaces.\n"
-                "2. Use `grounding_web_search`, `grounding_web_fetch`, and `grounding_web_find` for fresh external facts when needed.\n"
+                "2. Use `web_search`, `web_fetch`, and `web_find` for fresh external facts when needed.\n"
                 "3. Use `retrieve_context` to rank notes, memory, or inspected passages before summarizing.\n"
                 "4. Use `prepare_citations` before handing off a final evidence bundle.\n"
                 "5. Never imply shell access, workspace mutation, or uninspected sources."
             ),
-            tools=(*CHAT_RETRIEVAL_TOOLS, *CHAT_WEB_TOOLS, "ask_user"),
+            tools=(*CHAT_RETRIEVAL_TOOLS, *WEB_RESEARCH_TOOLS, "ask_user"),
             skills=("chat-summarize", "answer-with-citations", "clarify-request"),
             permission_mode=PermissionMode.DEFAULT,
             max_turns=6,
@@ -264,7 +154,7 @@ def chat_scenario_builtin_agents() -> tuple[AgentDefinition, ...]:
                 "4. Capture durable user preferences only when they are explicit and stable.\n"
                 "5. Do not request workspace or shell mutation as part of the default support flow."
             ),
-            tools=(*CHAT_RETRIEVAL_TOOLS, *CHAT_WEB_TOOLS, "ask_user"),
+            tools=(*CHAT_RETRIEVAL_TOOLS, *WEB_RESEARCH_TOOLS, "ask_user"),
             skills=(
                 "chat-summarize",
                 "answer-with-citations",
@@ -415,9 +305,8 @@ __all__ = [
     "CHAT_RETRIEVAL_TOOLS",
     "CHAT_SCENARIO_AGENTS",
     "CHAT_SCENARIO_SKILLS",
-    "CHAT_WEB_TOOLS",
+    "WEB_RESEARCH_TOOLS",
     "chat_scenario_builtin_agents",
     "chat_scenario_builtin_skills",
     "chat_shared_retrieval_builtin_tools",
-    "chat_web_grounding_builtin_tools",
 ]

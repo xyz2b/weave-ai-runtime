@@ -6,7 +6,7 @@ from weavert.extension_contracts.scenario_runtime_packs import (
     build_reference_scenario_pack_manifest,
 )
 from weavert_kit_common_retrieval import CHAT_RETRIEVAL_TOOLS, reference_shared_package_manifest as retrieval_package_manifest
-from weavert_kit_common_web import CHAT_WEB_TOOLS, reference_shared_package_manifest as web_package_manifest
+from weavert_kit_common_web_research import WEB_RESEARCH_TOOLS, reference_shared_package_manifest as web_package_manifest
 
 from ._builtins import (
     CHAT_SCENARIO_AGENTS,
@@ -26,9 +26,9 @@ REFERENCE_SCENARIO_PACK_SHAPE = ReferenceScenarioPackShape(
     recommended_first_party_packages=("weavert-memory",),
     shared_package_dependencies=(
         "weavert-shared-retrieval",
-        "weavert-bridge-web",
+        "weavert-shared-web-research",
     ),
-    expected_tools=(*CHAT_RETRIEVAL_TOOLS, *CHAT_WEB_TOOLS, *CHAT_WORKFLOW_CONTROL_TOOLS),
+    expected_tools=(*CHAT_RETRIEVAL_TOOLS, *WEB_RESEARCH_TOOLS, *CHAT_WORKFLOW_CONTROL_TOOLS),
     expected_agents=CHAT_SCENARIO_AGENTS,
     expected_skills=("remember", *CHAT_SCENARIO_SKILLS),
     default_boundaries=(
@@ -52,6 +52,7 @@ REFERENCE_SCENARIO_PACK_SHAPE = ReferenceScenarioPackShape(
     profile_prompt_fragments=(
         "Scenario profile: AI chat.",
         "Preserve read-mostly defaults and avoid implicit workspace mutation or shell execution.",
+        "Default web_research to profile=\"general\" unless the app declares a more specific first-party profile.",
         "Prefer web_research for bounded public web research; use low-level web primitives only for explicit search, fetch, or page-local find orchestration.",
     ),
     workflow_agent_ids=CHAT_SCENARIO_AGENTS,

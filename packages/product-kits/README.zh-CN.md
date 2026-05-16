@@ -17,7 +17,7 @@
 ## 共享 product-kit packages
 
 - `common/retrieval/` -> `weavert_kit_common_retrieval`
-- `common/web/` -> `weavert_kit_common_web`
+- `common/web-research/` -> `weavert_kit_common_web_research`
 - `common/git/` -> `weavert_kit_common_git`
 - `common/workspace-intelligence/` -> `weavert_kit_common_workspace_intelligence`
 - `common/browser/` -> `weavert_kit_common_browser`
@@ -26,9 +26,9 @@
 
 ## 组合摘要
 
-- `weavert_kit_chat` 组合 retrieval 与 web common kits。
-- `weavert_kit_coding` 组合 git 与 workspace-intelligence common kits。
-- `weavert_kit_local_assistant` 组合 retrieval、browser、local-OS 与 PIM common kits。
+- `weavert_kit_chat` 组合 retrieval 与 web-research common kits。
+- `weavert_kit_coding` 组合 git、web-research 与 workspace-intelligence common kits。
+- `weavert_kit_local_assistant` 组合 retrieval、web-research、browser、local-OS 与 PIM common kits。
 
 ## 另见
 

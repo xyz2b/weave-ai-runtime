@@ -189,7 +189,7 @@ Install examples:
 
 ```bash
 python -m pip install weavert-full weavert-kit-common-git
-python -m pip install weavert-full weavert-kit-common-web
+python -m pip install weavert-full weavert-kit-common-web-research
 python -m pip install weavert-full weavert-kit-common-browser
 ```
 
@@ -203,7 +203,7 @@ Recommended shared-kit choices:
 
 - repository inspection only -> `weavert-kit-common-git`
 - retrieval only -> `weavert-kit-common-retrieval`
-- web grounding only -> `weavert-kit-common-web`
+- web research only -> `weavert-kit-common-web-research`
 - browser bridge only -> `weavert-kit-common-browser`
 - local machine bridge only -> `weavert-kit-common-local-os`
 - PIM bridge only -> `weavert-kit-common-pim`
@@ -212,7 +212,7 @@ Recommended shared-kit choices:
 ## Commonly confused choices
 
 - Want to rank notes, memory, or already-fetched text into grounding results and citations -> `weavert-kit-common-retrieval`
-- Want to search the public web or fetch page text in a read-only grounding posture -> `weavert-kit-common-web`
+- Want read-only public-web search, page fetch, page-local find, or profile-driven research -> `weavert-kit-common-web-research`
 - Want browser state, navigation, click, form-fill, or extraction through an app-owned browser bridge -> `weavert-kit-common-browser`
 - Want generic local-machine surfaces such as files, clipboard, notifications, or processes -> `weavert-kit-common-local-os`
 - Want structured calendar, contact, reminder, or task surfaces -> `weavert-kit-common-pim`

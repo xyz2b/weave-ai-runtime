@@ -4,13 +4,13 @@
 
 ## 这个 family 拥有什么
 
-- 可复用桥接能力，如 retrieval、web、git、browser、local-OS、PIM 与 workspace intelligence
+- 可复用桥接能力，如 retrieval、web-research、git、browser、local-OS、PIM 与 workspace intelligence
 - 位于 scenario-pack 所有权之下的共享 product-kit packages
 
 ## 具体 packages
 
 - `retrieval/` -> `weavert_kit_common_retrieval`
-- `web/` -> `weavert_kit_common_web`
+- `web-research/` -> `weavert_kit_common_web_research`
 - `git/` -> `weavert_kit_common_git`
 - `workspace-intelligence/` -> `weavert_kit_common_workspace_intelligence`
 - `browser/` -> `weavert_kit_common_browser`
@@ -25,7 +25,7 @@
 ## 快速边界检查
 
 - `retrieval` 负责对你已经拿到的 grounding 做排序和 citation 准备。
-- `web` 负责只读地搜索公网网站并抓取远程文本。
+- `web-research` 负责只读地搜索公网网站、抓取远程文本、页面内查找，并通过 `web_research` 支持 profile-driven research。
 - `browser` 负责通过 host-mediated browser bridge 提供状态、导航与交互。
 - `local-os` 负责暴露 files、clipboard、notifications、processes 这类通用本地机器表面。
 - `pim` 负责暴露 calendars、contacts、reminders、tasks 这类结构化个人数据表面。

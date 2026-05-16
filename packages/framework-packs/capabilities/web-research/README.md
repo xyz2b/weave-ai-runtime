@@ -20,7 +20,7 @@ This package is the primitive substrate, not the public owner of the high-level 
 - Brave domain allow/block constraints are mapped with `site:` and `-site:` query operators, then revalidated by the shared core.
 - Default tests use deterministic `FixtureWebResearchProvider` instances. Live-provider smoke checks are opt-in by setting provider credentials and running targeted tests outside the default deterministic suite.
 
-Higher-level packages such as `weavert-kit-common-web` compose this core through their package adapters. The shared common web kit owns the public `web_research` tool and its package-owned delegated worker.
+Higher-level packages such as `weavert-kit-common-web-research` compose this core through their package adapters. The shared common web research kit owns the public `web_research` tool and its package-owned delegated worker.
 
 ## Canonical names
 
@@ -30,5 +30,4 @@ Higher-level packages such as `weavert-kit-common-web` compose this core through
 ## See also
 
 - `../../README.md`
-- `../../../product-kits/common/web/README.md`
 - `../../../product-kits/common/web-research/README.md`

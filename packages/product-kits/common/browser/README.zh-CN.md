@@ -15,7 +15,7 @@
 ## 不要把它和这些包混在一起
 
 - 当你的 app 自己拥有 browser bridge，而 assistant 需要浏览器状态、导航、点击、填表或提取步骤时，选这个包。
-- 如果你要的是公网 web 搜索或远程页面抓取，不要选它；那属于 `weavert-kit-common-web`。
+- 如果你要的是公网 web 搜索、远程页面抓取或 profile-driven web research，不要选它；那属于 `weavert-kit-common-web-research`。
 - 如果你要的是 files、clipboard 这类通用本地机器表面，也不要选它；那属于 `weavert-kit-common-local-os`。
 
 ## 另见

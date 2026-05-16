@@ -103,7 +103,7 @@ The current reference profiles are:
 | Profile | Recommended first-party packages | Typical shared-package dependencies | Primary posture |
 | --- | --- | --- | --- |
 | coding | `weavert-devtools`, `weavert-planning`, `weavert-builtin-workflows` | `weavert-shared-git`, `weavert-shared-workspace-intelligence` | workspace-oriented, shell-capable, review/verification visible |
-| chat | `weavert-memory` | `weavert-shared-retrieval`, `weavert-bridge-web` | read-mostly, grounded answers, citations, memory-assisted workflows |
+| chat | `weavert-memory` | `weavert-shared-retrieval`, `weavert-shared-web-research` | read-mostly, grounded answers, citations, memory-assisted workflows |
 | local assistant | `weavert-memory` | `weavert-shared-retrieval`, `weavert-bridge-browser`, `weavert-bridge-local-os`, `weavert-bridge-pim` | host-centric, staged actions, stronger approval and audit expectations |
 
 What each profile contributes conceptually:
