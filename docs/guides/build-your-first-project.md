@@ -7,7 +7,7 @@ Framework users who want their first real WeaveRT project, not just a demo run.
 ## Prerequisites
 
 - Python 3.11+
-- the local install from `../getting-started/installation.md`
+- the install from `../getting-started/installation.md` or `../getting-started/install-from-source.md`
 - a successful starter quickstart from `../getting-started/quickstart.md`
 
 ## Recommended baseline

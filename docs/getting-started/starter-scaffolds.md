@@ -16,6 +16,7 @@ The starter catalog exists to provide:
 ## Prerequisites
 
 - Finish `installation.md` first.
+- If you are working from a repository checkout, use `install-from-source.md` instead.
 - Read `quickstart.md` if you want the smallest runnable path before comparing scaffold shapes.
 
 ## Official generation path

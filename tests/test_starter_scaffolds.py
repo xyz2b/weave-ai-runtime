@@ -75,9 +75,11 @@ def test_generate_starter_scaffold_uses_canonical_layout_and_public_imports(tmp_
 
     readme = (result.destination / "README.md").read_text(encoding="utf-8")
     assert "python3 -m venv .venv" in readme
-    assert "python -m pip install -e /path/to/weave-ai-runtime/packages/framework-core" in readme
+    assert "python -m pip install -e ." in readme
+    assert "docs/getting-started/install-from-source.md" in readme
+    assert "python -m pip install weavert-full" in readme
     if shape != "live-smoke":
-        assert "python -m pip install -e /path/to/weave-ai-runtime/packages/toolchain/testing" in readme
+        assert "python -m pip install weavert-full weavert-testing" in readme
 
     python_files = sorted(result.destination.rglob("*.py"))
     assert python_files

@@ -28,33 +28,19 @@ You can start with a small project-local workflow, then grow into coding, chat, 
 The default first run is the starter, not `examples/`.
 Starter is the adoption path. Examples are the validation path.
 
-From a local checkout, the shortest path is:
+From a published package index, the shortest path is:
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-python -m pip install \
-  -e packages/framework-core \
-  -e packages/framework-packs/capabilities/memory \
-  -e packages/framework-packs/capabilities/team \
-  -e packages/framework-packs/mechanisms/compaction \
-  -e packages/framework-packs/mechanisms/isolation \
-  -e packages/framework-packs/integrations/openai \
-  -e packages/framework-packs/integrations/hosts-reference \
-  -e packages/framework-packs/integrations/stores-file \
-  -e packages/framework-packs/workflows/builtin-workflows \
-  -e packages/framework-packs/workflows/planning \
-  -e packages/framework-packs/workflows/devtools \
-  -e packages/distributions/full \
-  -e packages/toolchain/starter \
-  -e packages/toolchain/testing
+python -m pip install weavert-starter weavert-testing
 weavert-starter generate minimal-project ./my-weavert-app
 cd my-weavert-app
 python -m pip install -e .
 python app.py
 ```
 
-From a published package index, the matching starter-first install is `python -m pip install weavert-starter weavert-testing`.
+If you are editing WeaveRT itself from a local source checkout, use [docs/getting-started/install-from-source.md](docs/getting-started/install-from-source.md) and then follow the same starter flow.
 
 Expected first-run anchors:
 

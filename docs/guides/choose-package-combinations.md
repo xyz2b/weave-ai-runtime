@@ -244,4 +244,5 @@ Choose shared or scenario kits when:
 
 - public inventory and canonical names: `../reference/public-package-catalog.md`
 - scenario-pack activation workflow: `use-scenario-packs.md`
-- install path overview: `../getting-started/installation.md`
+- default starter-first install path: `../getting-started/installation.md`
+- source-checkout install path: `../getting-started/install-from-source.md`

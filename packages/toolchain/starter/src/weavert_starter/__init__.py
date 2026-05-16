@@ -759,7 +759,7 @@ def _minimal_readme(context: _TemplateContext) -> str:
         4. `python -m pip install -e .`
         5. `python app.py`
 
-        If you are using a local source checkout of `weave-ai-runtime` instead of published packages, install the repository quickstart baseline first and then continue from step 4.
+        If you are using a local source checkout of `weave-ai-runtime` instead of published packages, install the source baseline from that repository's `docs/getting-started/install-from-source.md` guide first and then continue from step 4.
         If step 3 points at published packages, `app.py` can run without a sibling checkout because the ordinary-workflow baseline already arrived through `weavert-full`.
 
         Extension points:
@@ -797,7 +797,7 @@ def _headless_readme(context: _TemplateContext) -> str:
         4. `python -m pip install -e .`
         5. `python workflow_runner.py`
 
-        If you are using a local source checkout of `weave-ai-runtime` instead of published packages, install the repository quickstart baseline first and then continue from step 4.
+        If you are using a local source checkout of `weave-ai-runtime` instead of published packages, install the source baseline from that repository's `docs/getting-started/install-from-source.md` guide first and then continue from step 4.
         If step 3 points at published packages, `workflow_runner.py` can run without a sibling checkout because the ordinary-workflow baseline already arrived through `weavert-full`.
 
         Extension points:
@@ -841,7 +841,7 @@ def _live_readme(context: _TemplateContext) -> str:
         5. `export OPENAI_API_KEY=your-key`
         6. `python live_smoke.py`
 
-        If you are using a local source checkout of `weave-ai-runtime` instead of published packages, install the repository quickstart baseline first and then continue from step 4.
+        If you are using a local source checkout of `weave-ai-runtime` instead of published packages, install the source baseline from that repository's `docs/getting-started/install-from-source.md` guide first and then continue from step 4.
         If step 3 points at published packages, `live_smoke.py` can run without a sibling checkout because the headless-live baseline already arrived through `weavert-full`.
 
         If preflight fails, fix the reported environment or route issue first. The scaffold does not silently drop back to an offline path.

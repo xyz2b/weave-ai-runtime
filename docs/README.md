@@ -32,6 +32,7 @@ Examples are the validation path.
 ### 2. Getting Started
 
 - [getting-started/installation.md](getting-started/installation.md)
+- [getting-started/install-from-source.md](getting-started/install-from-source.md)
 - [getting-started/quickstart.md](getting-started/quickstart.md)
 - [getting-started/starter-scaffolds.md](getting-started/starter-scaffolds.md)
 
@@ -87,6 +88,7 @@ Examples are the validation path.
 - I want the first real project path -> [guides/build-your-first-project.md](guides/build-your-first-project.md)
 - I need the published package catalog -> [reference/public-package-catalog.md](reference/public-package-catalog.md)
 - I need package-combination recommendations -> [guides/choose-package-combinations.md](guides/choose-package-combinations.md)
+- I am working from a repository checkout -> [getting-started/install-from-source.md](getting-started/install-from-source.md)
 - I want to understand the runtime model -> [concepts/runtime-model.md](concepts/runtime-model.md)
 - I want to understand memory behavior -> [concepts/memory-model.md](concepts/memory-model.md)
 - I want to extend tools, agents, or skills -> [guides/add-a-tool.md](guides/add-a-tool.md), [guides/add-an-agent.md](guides/add-an-agent.md), and [guides/add-a-skill.md](guides/add-a-skill.md)

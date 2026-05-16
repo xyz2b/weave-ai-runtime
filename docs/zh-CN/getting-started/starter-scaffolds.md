@@ -16,6 +16,7 @@ Starter 目录存在的目的，是提供：
 ## 前置条件
 
 - 先完成 `installation.md`
+- 如果你是在仓库 checkout 里工作，请改用 `install-from-source.md`
 - 如果你想先走最小可运行路径再比较各个 scaffold 形状，先读 `quickstart.md`
 
 ## 官方生成路径

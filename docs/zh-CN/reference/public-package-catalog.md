@@ -158,4 +158,5 @@ runtime = assemble_runtime(config)
 - 按场景选包组合：`../guides/choose-package-combinations.md`
 - scenario-pack 激活细节：`../guides/use-scenario-packs.md`
 - runtime package-selection 模型：`../architecture/package-system.md`
-- getting started 安装路径：`../getting-started/installation.md`
+- 默认 getting started 安装路径：`../getting-started/installation.md`
+- source checkout 安装路径：`../getting-started/install-from-source.md`

@@ -244,4 +244,5 @@ python -m pip install weavert-full weavert-kit-common-browser
 
 - 公开包目录与规范名字：`../reference/public-package-catalog.md`
 - scenario-pack 激活流程：`use-scenario-packs.md`
-- 安装路径总览：`../getting-started/installation.md`
+- 默认 starter-first 安装路径：`../getting-started/installation.md`
+- source checkout 安装路径：`../getting-started/install-from-source.md`

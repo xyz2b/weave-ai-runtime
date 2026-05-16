@@ -158,4 +158,5 @@ For the other shared kits, keep the pattern and swap:
 - package combinations by scenario: `../guides/choose-package-combinations.md`
 - scenario-pack activation details: `../guides/use-scenario-packs.md`
 - runtime package-selection model: `../architecture/package-system.md`
-- getting started install path: `../getting-started/installation.md`
+- default getting-started install path: `../getting-started/installation.md`
+- source-checkout install path: `../getting-started/install-from-source.md`

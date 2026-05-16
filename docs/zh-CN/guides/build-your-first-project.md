@@ -7,7 +7,7 @@
 ## 前置条件
 
 - Python 3.11+
-- 已完成 `../getting-started/installation.md` 的本地安装
+- 已完成 `../getting-started/installation.md` 或 `../getting-started/install-from-source.md`
 - 已成功跑通 `../getting-started/quickstart.md`
 
 ## 推荐基线
