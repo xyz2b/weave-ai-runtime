@@ -2233,6 +2233,8 @@ def test_default_registry_includes_configured_google_and_falls_back(monkeypatch:
     monkeypatch.setenv("GOOGLE_SEARCH_API_KEY", "google-token")
     monkeypatch.setenv("GOOGLE_SEARCH_CX", "search-engine-id")
     monkeypatch.setenv("WEAVERT_WEB_SEARCH_PROVIDER", "google-search")
+    monkeypatch.delenv("BRAVE_SEARCH_API_KEY", raising=False)
+    monkeypatch.delenv("WEAVERT_BRAVE_SEARCH_API_KEY", raising=False)
     registry = reference_web_research_core.default_web_search_provider_registry()
 
     assert [provider.provider_metadata.provider_id for provider in registry.providers] == [
