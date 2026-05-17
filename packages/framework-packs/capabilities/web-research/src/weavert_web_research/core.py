@@ -448,8 +448,14 @@ class WebResearchLoopState:
                 key = _identity_value(source.get("page_handle") or source.get("source_handle") or source.get("url"))
                 if not key or key in seen:
                     continue
-                if source.get("page_handle") is None and not any(
-                    evidence.get("url") == source.get("url") for evidence in self.evidence
+                source_handle = _identity_value(source.get("source_handle") or source.get("id"))
+                page_handle = _identity_value(source.get("page_handle"))
+                url = _identity_value(source.get("url"))
+                if not any(
+                    _identity_value(evidence.get("url")) == url
+                    or (source_handle and _identity_value(evidence.get("source_handle")) == source_handle)
+                    or (page_handle and _identity_value(evidence.get("page_handle")) == page_handle)
+                    for evidence in self.evidence
                 ):
                     continue
                 seen.add(key)

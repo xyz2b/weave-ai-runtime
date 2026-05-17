@@ -91,6 +91,35 @@ _WEB_RESEARCH_CLAIM_ANNOTATION_FIELDS = frozenset(
         "rationale",
     }
 )
+_WEB_RESEARCH_INTERNAL_INPUT_FIELDS = frozenset(
+    {
+        "answer",
+        "auxiliary_signals",
+        "budget",
+        "candidate_sources",
+        "child_run",
+        "claims",
+        "conflicts",
+        "evidence",
+        "facets",
+        "freshness_scope",
+        "gaps",
+        "inspected_evidence",
+        "loop_decisions",
+        "plan",
+        "policy",
+        "query_candidates",
+        "research_plan",
+        "research_trace",
+        "selected_pages",
+        "source_references",
+        "sources",
+        "stop_reason",
+        "subquestions",
+        "trace",
+        "trace_summary",
+    }
+)
 
 _web_urlopen = web_urlopen
 _web_search_provider_registry: WebSearchProviderRegistry | None = None
@@ -1123,6 +1152,9 @@ def _web_research_objective(tool_input: Mapping[str, Any]) -> str:
 
 
 def _normalize_web_research_input(tool_input: Mapping[str, Any]) -> dict[str, Any]:
+    internal_fields = sorted(field for field in _WEB_RESEARCH_INTERNAL_INPUT_FIELDS if field in tool_input)
+    if internal_fields:
+        raise ValueError("internal web_research metadata is not accepted as input: " + ", ".join(internal_fields))
     objective = _web_research_objective(tool_input)
     profile = _normalize_research_profile(tool_input.get("profile"))
     scope = tool_input.get("scope")

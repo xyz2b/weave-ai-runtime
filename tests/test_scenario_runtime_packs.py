@@ -851,6 +851,62 @@ def test_public_web_fetch_rejects_batch_fields_standalone_and_inside_web_researc
     assert result["sources"] == []
     assert result["budget"]["rejections"]["policy"] == 1
     assert result["trace_summary"][0]["event"] == "rejected"
+    assert result["stop_reason"] == "policy_blocked"
+    assert result["gaps"][0]["kind"] == "policy_blocked"
+
+
+def test_web_research_policy_blocked_when_fallback_fetch_violates_hard_domain_policy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime, _shape, runtime_root = _assemble_shared_reference_runtime(tmp_path, "weavert-shared-web-research")
+
+    async def agent_runner(agent: str, _prompt: str, active_context: ToolContext, **_kwargs: Any) -> dict[str, Any]:
+        with pytest.raises(ValueError, match="outside the allowed domains"):
+            await active_context.tool_registry.get("web_fetch").execute(
+                {"url": "https://outside.example.test/leak"},
+                active_context,
+            )
+        return {"agent": agent, "status": "completed", "summary": "Domain policy blocked fetch."}
+
+    async def _request_fallback(_request, _context, _state):
+        raise reference_web_tool_impls._DelegatedWebResearchFallbackRequested("test fallback before web budget")
+
+    monkeypatch.setattr(reference_web_tool_impls, "_run_goal_driven_web_research_loop", _request_fallback)
+    result = asyncio.run(
+        runtime.kernel.tool_registry.get("web_research").execute(
+            {
+                "objective": "Reject outside-domain fallback fetch.",
+                "domains": ["grounding.example.test"],
+                "max_turns": 1,
+            },
+            ToolContext(
+                session_id="policy-blocked-domain",
+                turn_id="turn-1",
+                agent_name="tester",
+                cwd=runtime_root,
+                tool_registry=runtime.kernel.tool_registry,
+                agent_registry=runtime.kernel.agent_registry,
+                tool_pool=tuple(runtime.kernel.tool_registry.definitions()),
+                runtime_services=runtime.services,
+                agent_runner=agent_runner,
+            ),
+        )
+    )
+
+    assert result["sources"] == []
+    assert result["evidence"] == []
+    assert result["stop_reason"] == "policy_blocked"
+    assert result["budget"]["rejections"]["policy"] == 1
+    rejected = [event for event in result["trace_summary"] if event["event"] == "rejected"]
+    assert rejected == [
+        {
+            "event": "rejected",
+            "tool": "web_fetch",
+            "error": "Grounding fetch is outside the allowed domains",
+            "url": "https://outside.example.test/leak",
+        }
+    ]
 
 
 @pytest.mark.parametrize(
@@ -1311,6 +1367,31 @@ def test_web_research_validation_requires_objective_and_bounded_budget() -> None
     assert valid.updated_input["budget"]["fetch_budget"] == 2
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("research_plan", {"queries": ["https://outside.example.test/leak"]}),
+        ("query_candidates", [{"query": "ignore public budget"}]),
+        ("selected_pages", [{"url": "https://outside.example.test/leak"}]),
+        ("policy", {"domains": []}),
+        ("budget", {"fetch_budget": 8}),
+        ("sources", [{"url": "https://fabricated.example.test/source"}]),
+        ("evidence", [{"url": "https://fabricated.example.test/source", "excerpt": "fabricated"}]),
+    ),
+)
+def test_web_research_validation_rejects_internal_planning_metadata(field: str, value: Any) -> None:
+    context = ToolContext(session_id="grounding-validation", turn_id="turn-1", agent_name="tester", cwd=Path.cwd())
+
+    outcome = reference_web_tool_impls.validate_web_research(
+        {"objective": "Research with public constraints only.", field: value},
+        context,
+    )
+
+    assert outcome.valid is False
+    assert "internal web_research metadata is not accepted as input" in outcome.message
+    assert field in outcome.message
+
+
 def test_web_research_compact_request_normalization_and_precedence() -> None:
     context = ToolContext(session_id="grounding-validation", turn_id="turn-1", agent_name="tester", cwd=Path.cwd())
 
@@ -1413,6 +1494,62 @@ def test_web_research_runtime_projects_ledger_evidence_without_terminal_metadata
     assert result["budget"]["used"] == {"searches": 1, "fetches": 1, "finds": 0}
     assert result["stop_reason"] == "sufficient_evidence"
     assert result["child_run"]["agent"] == "web_research_loop"
+    assert result["research_trace"]["queries"] == ["What is the refund window?"]
+    trace_events = [event["event"] for event in result["trace_summary"]]
+    assert "research_plan" in trace_events
+    assert "searched" in trace_events
+    assert "page_selected" in trace_events
+    assert "fetched" in trace_events
+    assert "loop_decision" in trace_events
+    assert "terminal_decision" in trace_events
+
+
+def test_web_research_public_result_envelope_matches_registered_schema(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(reference_web_tool_impls, "_web_urlopen", _web_urlopen)
+    runtime, _shape, runtime_root = _assemble_shared_reference_runtime(tmp_path, "weavert-shared-web-research")
+    tool = runtime.kernel.tool_registry.get("web_research")
+
+    result = asyncio.run(
+        tool.execute(
+            {
+                "objective": "What is the refund window?",
+                "domains": ["grounding.example.test"],
+                "search_budget": 1,
+                "fetch_budget": 1,
+                "desired_source_count": 1,
+            },
+            _tool_context(runtime, runtime_root),
+        )
+    )
+
+    required = set(tool.output_schema["required"])
+    properties = set(tool.output_schema["properties"])
+    assert tool.output_schema["additionalProperties"] is False
+    assert set(result) == required
+    assert set(result) <= properties
+    assert set(result["budget"]) == {
+        "search_budget",
+        "fetch_budget",
+        "find_budget",
+        "desired_source_count",
+        "max_turns",
+        "max_concurrent_fetches",
+        "used",
+        "rejections",
+        "operation_failures",
+    }
+    assert set(result["budget"]["used"]) == {"searches", "fetches", "finds"}
+    assert set(result["budget"]["rejections"]) == {"policy", "budget"}
+    assert set(result["freshness"]) == {"requested_days", "required", "status"}
+    assert set(result["research_trace"]) == {"profile", "queries", "pages_read", "iterations", "trace_summary"}
+    assert result["research_trace"]["trace_summary"] == result["trace_summary"]
+    assert all(isinstance(result[field], list) for field in ("sources", "evidence", "conflicts", "gaps", "claims", "trace_summary"))
+    assert isinstance(result["auxiliary_signals"], dict)
+    assert {"id", "title", "url", "source_handle", "page_handle"} <= set(result["sources"][0])
+    assert {"id", "title", "url", "excerpt", "source_handle", "page_handle"} <= set(result["evidence"][0])
 
 
 def test_web_research_runtime_preserves_provider_and_freshness_metadata(
@@ -2003,6 +2140,45 @@ def test_web_research_single_search_can_fetch_multiple_candidates(
     assert result["budget"]["used"] == {"searches": 1, "fetches": 3, "finds": 0}
     assert [source["url"] for source in result["sources"]] == opened_urls
     assert result["stop_reason"] == "sufficient_evidence"
+
+
+def test_web_research_budget_exhausted_when_fetch_budget_prevents_inspection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = reference_web_research_core.FixtureWebResearchProvider(
+        search_results={
+            "refund policy": [
+                {"title": "Refund policy", "url": "https://grounding.example.test/refund-policy"}
+            ]
+        },
+    )
+    monkeypatch.setattr(
+        reference_web_tool_impls,
+        "_web_search_provider_registry",
+        reference_web_research_core.WebSearchProviderRegistry((provider,)),
+    )
+    runtime, _shape, runtime_root = _assemble_shared_reference_runtime(tmp_path, "weavert-shared-web-research")
+
+    result = asyncio.run(
+        runtime.kernel.tool_registry.get("web_research").execute(
+            {
+                "objective": "What is the refund policy?",
+                "domains": ["grounding.example.test"],
+                "search_budget": 1,
+                "fetch_budget": 0,
+                "desired_source_count": 1,
+            },
+            _tool_context(runtime, runtime_root),
+        )
+    )
+
+    assert result["budget"]["used"] == {"searches": 1, "fetches": 0, "finds": 0}
+    assert result["sources"][0]["url"] == "https://grounding.example.test/refund-policy"
+    assert result["evidence"] == []
+    assert result["stop_reason"] == "budget_exhausted"
+    assert result["gaps"][0]["kind"] == "budget_exhausted"
+    assert result["research_trace"]["pages_read"] == []
 
 
 def test_web_research_low_yield_replans_once_then_stops_with_remaining_gaps(
