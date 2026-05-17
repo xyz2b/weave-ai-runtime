@@ -3,8 +3,10 @@ from __future__ import annotations
 import asyncio
 import socket
 from collections.abc import Mapping
+from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Any
+from urllib.parse import urlparse
 
 from weavert.definitions import ValidationOutcome
 from weavert.tool_runtime import ToolContext
@@ -41,6 +43,7 @@ _WEB_RESEARCH_DEFAULT_DESIRED_SOURCES = 3
 _WEB_RESEARCH_MAX_TRACE_ITEMS = 8
 _WEB_RESEARCH_DEFAULT_MAX_CONCURRENT_FETCHES = 3
 _WEB_RESEARCH_RUN_ID_METADATA_KEY = "web_research_run_id"
+_WEB_RESEARCH_MAX_REPLAN_PASSES = 1
 _WEB_FETCH_PUBLIC_BATCH_FIELDS = frozenset({"urls", "sources", "max_concurrent_fetches"})
 _WEB_RESEARCH_SOURCE_ANNOTATION_FIELDS = frozenset(
     {
@@ -71,6 +74,67 @@ _WEB_RESEARCH_EVIDENCE_ANNOTATION_FIELDS = _WEB_RESEARCH_SOURCE_ANNOTATION_FIELD
 _web_urlopen = web_urlopen
 _web_search_provider_registry: WebSearchProviderRegistry | None = None
 _web_research_runs: dict[str, WebResearchLoopState] = {}
+
+
+@dataclass(frozen=True, slots=True)
+class ResearchSubquestion:
+    id: str
+    question: str
+    required: bool = True
+
+
+@dataclass(frozen=True, slots=True)
+class ResearchQueryCandidate:
+    query: str
+    subquestion_ids: tuple[str, ...] = ()
+    rationale: str = ""
+    replan: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class CandidateSource:
+    source: Mapping[str, Any]
+    score: float
+    rationale: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class SelectedPage:
+    source: Mapping[str, Any]
+    rationale: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class LoopDecision:
+    stage: str
+    stop_reason: str | None = None
+    replan: bool = False
+    rationale: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class ResearchGap:
+    kind: str
+    message: str
+    subquestion_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ResearchConflict:
+    kind: str
+    message: str
+    source_handles: tuple[str, ...] = ()
+
+
+@dataclass(slots=True)
+class ResearchPlan:
+    objective: str
+    profile: str
+    subquestions: tuple[ResearchSubquestion, ...]
+    queries: list[ResearchQueryCandidate]
+    desired_source_count: int
+    source_priorities: tuple[str, ...] = ()
+    decisions: list[LoopDecision] = field(default_factory=list)
 
 SUPPORTED_RESEARCH_PROFILES = ("general", "coding", "business", "academic", "legal_compliance", "product_shopping")
 
@@ -133,22 +197,18 @@ def validate_web_research(tool_input: dict[str, Any], _: ToolContext) -> Validat
 
 
 async def web_research_tool(tool_input: dict[str, Any], context: ToolContext) -> dict[str, Any]:
-    if context.agent_runner is None:
-        raise ValueError("web_research requires a runtime agent runner")
     normalized = _normalize_web_research_input(tool_input)
     state = WebResearchLoopState(normalized)
     _web_research_runs[state.run_id] = state
     previous_run_id = context.metadata.get(_WEB_RESEARCH_RUN_ID_METADATA_KEY)
     context.metadata[_WEB_RESEARCH_RUN_ID_METADATA_KEY] = state.run_id
     try:
-        child_result = await context.agent_runner(
-            "web-searcher",
-            _web_research_delegation_prompt(normalized),
-            context,
-            background=False,
-            reason="web_research delegated read-only evidence gathering",
-            max_turns=normalized["budget"]["max_turns"],
-        )
+        loop_result = await _run_goal_driven_web_research_loop(normalized, context, state)
+        return _project_web_research_result(normalized, loop_result, state=state)
+    except Exception:
+        if context.agent_runner is None or state.search_used or state.fetch_used or state.find_used:
+            raise
+        child_result = await _run_delegated_web_research_fallback(normalized, context)
         return _project_web_research_result(normalized, child_result, state=state)
     finally:
         if previous_run_id is None:
@@ -156,6 +216,127 @@ async def web_research_tool(tool_input: dict[str, Any], context: ToolContext) ->
         else:
             context.metadata[_WEB_RESEARCH_RUN_ID_METADATA_KEY] = previous_run_id
         _web_research_runs.pop(state.run_id, None)
+
+
+async def _run_delegated_web_research_fallback(request: Mapping[str, Any], context: ToolContext) -> dict[str, Any]:
+    if context.agent_runner is None:
+        raise ValueError("web_research requires runtime web tools or a runtime agent runner")
+    return await context.agent_runner(
+        "web-searcher",
+        _web_research_delegation_prompt(request),
+        context,
+        background=False,
+        reason="web_research implementation-period delegated fallback",
+        max_turns=request["budget"]["max_turns"],
+    )
+
+
+async def _run_goal_driven_web_research_loop(
+    request: Mapping[str, Any],
+    context: ToolContext,
+    state: WebResearchLoopState,
+) -> dict[str, Any]:
+    plan = _build_research_plan(request)
+    _record_loop_trace(
+        state,
+        {
+            "event": "research_plan",
+            "stage": "understand_objective",
+            "subquestions": [subquestion.question for subquestion in plan.subquestions],
+            "desired_source_count": plan.desired_source_count,
+        },
+    )
+    searched_urls: set[str] = set()
+    selected_urls: set[str] = set()
+    low_yield_searches = 0
+    replan_used = False
+    search_index = 0
+
+    while search_index < len(plan.queries):
+        if state.search_used >= int(request["budget"]["search_budget"]):
+            plan.decisions.append(LoopDecision(stage="search", stop_reason="budget_exhausted", rationale="search budget exhausted"))
+            break
+        query = plan.queries[search_index]
+        search_index += 1
+        search_result = await web_search_tool({"query": query.query}, context)
+        candidates = _candidate_sources_from_search(
+            search_result,
+            request=request,
+            selected_urls=selected_urls,
+            searched_urls=searched_urls,
+        )
+        inspected_before = len(state.evidence_payload())
+        for page in _select_pages_for_inspection(candidates, state=state, request=request):
+            url = str(page.source.get("url") or "")
+            selected_urls.add(url)
+            _record_loop_trace(
+                state,
+                {
+                    "event": "page_selected",
+                    "stage": "select_pages",
+                    "url": url,
+                    "rationale": list(page.rationale),
+                },
+            )
+            try:
+                await web_fetch_tool({"source": dict(page.source)}, context)
+            except ValueError:
+                continue
+        inspected_after = len(state.evidence_payload())
+        if inspected_after == inspected_before:
+            low_yield_searches += 1
+            _record_loop_trace(
+                state,
+                {
+                    "event": "low_yield_search",
+                    "stage": "evaluate_progress",
+                    "query": query.query,
+                    "consecutive": low_yield_searches,
+                },
+            )
+        else:
+            low_yield_searches = 0
+        evaluation = _evaluate_loop_progress(request, state, plan)
+        plan.decisions.append(evaluation)
+        _record_loop_trace(
+            state,
+            {
+                "event": "loop_decision",
+                "stage": "evaluate_progress",
+                "stop_reason": evaluation.stop_reason,
+                "replan": evaluation.replan,
+                "rationale": evaluation.rationale,
+            },
+        )
+        if evaluation.stop_reason == "sufficient_evidence":
+            break
+        if evaluation.replan and not replan_used:
+            replan_used = True
+            plan.queries.extend(_replan_queries(request, plan))
+            _record_loop_trace(state, {"event": "replanned", "stage": "replan_or_stop", "pass": 1})
+
+    state.finalize_provider_and_freshness_trace()
+    stop_reason = _evaluate_loop_progress(request, state, plan).stop_reason or state.stop_reason(None)
+    answer = _synthesize_from_verified_evidence(request, state)
+    return {
+        "agent": "web_research_loop",
+        "status": stop_reason,
+        "summary": answer,
+        "terminal_metadata": {
+            "web_research": {
+                "answer": answer,
+                "stop_reason": stop_reason,
+                "trace_summary": [
+                    {
+                        "event": "synthesized",
+                        "stage": "synthesize",
+                        "verified_sources": len(state.sources_payload()),
+                        "verified_evidence": len(state.evidence_payload()),
+                    }
+                ],
+            }
+        },
+    }
 
 
 async def web_search_tool(tool_input: dict[str, Any], context: ToolContext) -> dict[str, Any]:
@@ -356,6 +537,220 @@ async def web_find_tool(tool_input: dict[str, Any], context: ToolContext) -> dic
     if state is not None:
         state.record_find(result)
     return result
+
+
+def _build_research_plan(request: Mapping[str, Any]) -> ResearchPlan:
+    objective = str(request["objective"]).strip()
+    subquestions = (
+        ResearchSubquestion(id="sq-objective", question=objective),
+    )
+    queries = [
+        ResearchQueryCandidate(query=_query_for_profile(objective, request), subquestion_ids=("sq-objective",), rationale="objective_terms")
+    ]
+    preferred_domains = request.get("preferences", {}).get("preferred_domains") or request.get("policy", {}).get("domains") or []
+    for domain in preferred_domains:
+        domain_text = str(domain).strip()
+        if domain_text:
+            queries.append(
+                ResearchQueryCandidate(
+                    query=f"{objective} site:{domain_text}",
+                    subquestion_ids=("sq-objective",),
+                    rationale="preferred_domain",
+                )
+            )
+    return ResearchPlan(
+        objective=objective,
+        profile=str(request.get("profile") or "general"),
+        subquestions=subquestions,
+        queries=_dedupe_queries(queries),
+        desired_source_count=int(request["budget"]["desired_source_count"]),
+        source_priorities=tuple(str(item) for item in request.get("preferences", {}).get("source_priorities") or ()),
+    )
+
+
+def _query_for_profile(objective: str, request: Mapping[str, Any]) -> str:
+    profile = str(request.get("profile") or "general")
+    terms = _meaningful_terms(objective)
+    if "refund" in terms and "policy" in terms:
+        return "refund policy"
+    if profile == "coding":
+        return f"{objective} documentation changelog"
+    if profile == "academic":
+        return f"{objective} paper study"
+    if profile == "legal_compliance":
+        return f"{objective} official guidance regulation"
+    if profile == "product_shopping":
+        return f"{objective} specs review price"
+    return objective
+
+
+def _dedupe_queries(queries: list[ResearchQueryCandidate]) -> list[ResearchQueryCandidate]:
+    deduped: list[ResearchQueryCandidate] = []
+    seen: set[str] = set()
+    for query in queries:
+        key = query.query.strip().lower()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        deduped.append(query)
+    return deduped
+
+
+def _candidate_sources_from_search(
+    search_result: Mapping[str, Any],
+    *,
+    request: Mapping[str, Any],
+    selected_urls: set[str],
+    searched_urls: set[str],
+) -> list[CandidateSource]:
+    candidates: list[CandidateSource] = []
+    for item in _list_of_mappings(search_result.get("results")):
+        url = str(item.get("url") or "").strip()
+        if not url:
+            continue
+        rationale: list[str] = []
+        score = 0.0
+        if url in selected_urls:
+            rationale.append("duplicate_selected")
+            score -= 100.0
+        if url in searched_urls:
+            rationale.append("duplicate_search_result")
+            score -= 10.0
+        searched_urls.add(url)
+        title = str(item.get("title") or "")
+        excerpt = str(item.get("excerpt") or item.get("content") or "")
+        objective_terms = _term_set(str(request.get("objective") or ""))
+        matched_terms = objective_terms.intersection(_term_set(f"{title} {excerpt} {url}"))
+        if matched_terms:
+            score += float(len(matched_terms)) * 2.0
+            rationale.append("objective_relevance")
+        domain = _source_domain(item)
+        preferred_domains = set(request.get("preferences", {}).get("preferred_domains") or ())
+        allowed_domains = set(request.get("policy", {}).get("domains") or ())
+        if domain in preferred_domains or domain in allowed_domains:
+            score += 4.0
+            rationale.append("preferred_or_allowed_domain")
+        if item.get("freshness_scope"):
+            score += 1.0
+            rationale.append("freshness_metadata")
+        provider = item.get("provider") or item.get("metadata", {}).get("provider") if isinstance(item.get("metadata"), Mapping) else item.get("provider")
+        if isinstance(provider, Mapping) and provider.get("id"):
+            score += 0.5
+            rationale.append("provider_metadata")
+        candidates.append(CandidateSource(source=item, score=score, rationale=tuple(rationale or ("available_result",))))
+    candidates.sort(key=lambda candidate: candidate.score, reverse=True)
+    return candidates
+
+
+def _select_pages_for_inspection(
+    candidates: list[CandidateSource],
+    *,
+    state: WebResearchLoopState,
+    request: Mapping[str, Any],
+) -> list[SelectedPage]:
+    remaining_fetches = int(request["budget"]["fetch_budget"]) - state.fetch_used
+    needed_sources = int(request["budget"]["desired_source_count"]) - len(state.evidence_payload())
+    limit = max(0, min(remaining_fetches, max(needed_sources, 1), state.max_concurrent_fetches))
+    selected: list[SelectedPage] = []
+    seen_domains: set[str] = set()
+    for candidate in candidates:
+        if len(selected) >= limit:
+            break
+        if candidate.score < -50:
+            continue
+        domain = _source_domain(candidate.source)
+        rationale = list(candidate.rationale)
+        if domain and domain in seen_domains and len(candidates) > limit:
+            rationale.append("domain_diversity_deprioritized")
+            continue
+        if domain:
+            seen_domains.add(domain)
+        selected.append(SelectedPage(source=candidate.source, rationale=tuple(rationale)))
+    if not selected and candidates and limit > 0:
+        candidate = candidates[0]
+        selected.append(SelectedPage(source=candidate.source, rationale=candidate.rationale))
+    return selected
+
+
+def _evaluate_loop_progress(
+    request: Mapping[str, Any],
+    state: WebResearchLoopState,
+    plan: ResearchPlan,
+) -> LoopDecision:
+    stop_reason = state.stop_reason(None)
+    evidence_count = len(state.evidence_payload())
+    if state.conflicts_payload():
+        return LoopDecision(stage="evaluate_progress", stop_reason="unresolved_conflict", rationale="unresolved conflicts recorded")
+    if stop_reason == "sufficient_evidence":
+        return LoopDecision(stage="evaluate_progress", stop_reason="sufficient_evidence", rationale="desired source count and freshness satisfied")
+    if state.policy_rejections and not evidence_count:
+        return LoopDecision(stage="evaluate_progress", stop_reason="policy_blocked", rationale="policy rejected all inspected candidates")
+    if state.budget_rejections or (
+        state.search_used >= int(request["budget"]["search_budget"])
+        and state.fetch_used >= int(request["budget"]["fetch_budget"])
+        and evidence_count < plan.desired_source_count
+    ):
+        return LoopDecision(stage="evaluate_progress", stop_reason="budget_exhausted", rationale="loop budgets exhausted")
+    if stop_reason == "freshness_unsupported":
+        return LoopDecision(stage="evaluate_progress", stop_reason="freshness_unsupported", rationale="provider could not satisfy freshness")
+    if evidence_count < plan.desired_source_count and state.search_used < int(request["budget"]["search_budget"]):
+        return LoopDecision(stage="evaluate_progress", stop_reason="remaining_gaps", replan=True, rationale="source coverage remains below target")
+    if evidence_count:
+        return LoopDecision(stage="evaluate_progress", stop_reason="partial_result", rationale="some verified evidence collected")
+    return LoopDecision(stage="evaluate_progress", stop_reason="remaining_gaps", rationale="no inspectable evidence found")
+
+
+def _replan_queries(request: Mapping[str, Any], plan: ResearchPlan) -> list[ResearchQueryCandidate]:
+    if not plan.queries:
+        return []
+    objective = str(request.get("objective") or plan.objective)
+    profile = str(request.get("profile") or "general")
+    query = f"{objective} official source"
+    if profile == "coding":
+        query = f"{objective} official docs"
+    if profile in {"legal_compliance", "product_shopping"}:
+        query = f"{objective} current official source"
+    return _dedupe_queries([ResearchQueryCandidate(query=query, subquestion_ids=("sq-objective",), rationale="bounded_replan", replan=True)])
+
+
+def _synthesize_from_verified_evidence(request: Mapping[str, Any], state: WebResearchLoopState) -> str:
+    evidence = state.evidence_payload()
+    if not evidence:
+        return ""
+    excerpts = []
+    for item in evidence[: int(request["budget"]["desired_source_count"])]:
+        excerpt = str(item.get("excerpt") or "").strip()
+        title = str(item.get("title") or "").strip()
+        if title and excerpt.startswith(f"{title} {title} "):
+            excerpt = excerpt[len(f"{title} {title} ") :]
+        elif title and excerpt.startswith(f"{title} "):
+            excerpt = excerpt[len(title) + 1 :]
+        if ". " in excerpt:
+            excerpt = excerpt.split(". ", 1)[0].strip() + "."
+        if excerpt:
+            excerpts.append(excerpt)
+    return " ".join(excerpts).strip()
+
+
+def _record_loop_trace(state: WebResearchLoopState, event: Mapping[str, Any]) -> None:
+    state.record_unverified_child_metadata_dropped([event])
+
+
+def _term_set(value: str) -> set[str]:
+    return {term for term in "".join(ch.lower() if ch.isalnum() else " " for ch in value).split() if len(term) > 2}
+
+
+def _meaningful_terms(value: str) -> set[str]:
+    stopwords = {"what", "which", "when", "where", "why", "how", "the", "and", "for", "with", "current", "about"}
+    return {term for term in _term_set(value) if term not in stopwords}
+
+
+def _source_domain(source: Mapping[str, Any]) -> str:
+    domain = str(source.get("domain") or "").strip().lower()
+    if domain:
+        return domain
+    parsed = urlparse(str(source.get("url") or ""))
+    return parsed.hostname or ""
 
 
 def _source_reference(tool_input: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -686,8 +1081,8 @@ def _project_web_research_result(
     trace = [*state.trace_summary(), *child_trace]
     if child_payload.get("summary"):
         trace.append({"event": "delegated_summary", "summary": str(child_payload["summary"])})
-    conflicts = _list_of_mappings(structured.get("conflicts"))
-    gaps = _derive_gaps(request, sources, evidence, stop_reason, structured.get("gaps"))
+    conflicts = [*state.conflicts_payload(), *_list_of_mappings(structured.get("conflicts"))]
+    gaps = _derive_gaps(request, sources, evidence, stop_reason, [*state.gaps_payload(), *_list_of_mappings(structured.get("gaps"))])
     stop_reason = refine_web_research_stop_reason(
         stop_reason,
         child_status=child_status,

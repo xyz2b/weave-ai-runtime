@@ -135,7 +135,7 @@ def web_research_builtin_tools() -> tuple[ToolDefinition, ...]:
     return (
         ToolDefinition(
             name="web_research",
-            description="Run bounded AI-first read-only web research through the package-owned delegated web-searcher agent.",
+            description="Run bounded goal-driven read-only web research with package-owned planning, source selection, inspection, and synthesis.",
             input_schema={
                 "type": "object",
                 "properties": {
