@@ -67,6 +67,8 @@ Framework-pack runtime activation names intentionally match the public install n
 | `packages/toolchain/starter` | `weavert-starter` | `weavert_starter` | none | Developer entrypoint |
 | `packages/toolchain/testing` | `weavert-testing` | `weavert_testing` | none | Developer entrypoint |
 
+`weavert-kit-common-web` is retired and must stay out of the public package matrix. The public replacement is `weavert-kit-common-web-research`, which owns the read-only public-web search, fetch, find, and profile-driven research surfaces.
+
 ## Repository-bound maintainer utilities
 
 | Package root | Local install name | Import or script surface | Runtime activation | Exposure tier |
