@@ -291,7 +291,7 @@ def validate_web_research(tool_input: dict[str, Any], _: ToolContext) -> Validat
 
 
 async def web_research_tool(tool_input: dict[str, Any], context: ToolContext) -> dict[str, Any]:
-    normalized = _normalize_web_research_input(tool_input)
+    normalized = _normalized_web_research_execution_input(tool_input)
     state = WebResearchLoopState(normalized)
     _web_research_runs[state.run_id] = state
     previous_run_id = context.metadata.get(_WEB_RESEARCH_RUN_ID_METADATA_KEY)
@@ -1152,6 +1152,70 @@ def _web_provider_registry() -> WebSearchProviderRegistry:
 
 def _web_research_objective(tool_input: Mapping[str, Any]) -> str:
     return str(tool_input.get("objective") or tool_input.get("question") or "").strip()
+
+
+def _normalized_web_research_execution_input(tool_input: Mapping[str, Any]) -> dict[str, Any]:
+    if _is_validated_web_research_input(tool_input):
+        return {
+            "objective": str(tool_input["objective"]),
+            "profile": str(tool_input["profile"]),
+            "mode": str(tool_input["mode"]),
+            "policy": dict(tool_input["policy"]),
+            "hard_policy": dict(tool_input["hard_policy"]),
+            "preferences": dict(tool_input["preferences"]),
+            "budget": dict(tool_input["budget"]),
+            "budget_profile": str(tool_input["budget_profile"]),
+            "freshness_required": bool(tool_input["freshness_required"]),
+            "output_hints": dict(tool_input["output_hints"]),
+        }
+    return _normalize_web_research_input(tool_input)
+
+
+def _is_validated_web_research_input(tool_input: Mapping[str, Any]) -> bool:
+    normalized_keys = {
+        "objective",
+        "profile",
+        "mode",
+        "policy",
+        "hard_policy",
+        "preferences",
+        "budget",
+        "budget_profile",
+        "freshness_required",
+        "output_hints",
+    }
+    if any(field in tool_input for field in _WEB_RESEARCH_INTERNAL_INPUT_FIELDS - {"policy", "budget"}):
+        return False
+    if not normalized_keys.issubset(tool_input):
+        return False
+    if not str(tool_input.get("objective") or "").strip():
+        return False
+    mapping_fields = ("policy", "hard_policy", "preferences", "budget", "output_hints")
+    if any(not isinstance(tool_input.get(field), Mapping) for field in mapping_fields):
+        return False
+    if not isinstance(tool_input.get("profile"), str) or str(tool_input["profile"]) not in RESEARCH_PROFILES.names():
+        return False
+    if not isinstance(tool_input.get("mode"), str) or tool_input["mode"] not in {"focused", "open"}:
+        return False
+    if not isinstance(tool_input.get("budget_profile"), str):
+        return False
+    if not isinstance(tool_input.get("freshness_required"), bool):
+        return False
+    budget = tool_input["budget"]
+    budget_ranges = (
+        ("search_budget", 1, 8),
+        ("fetch_budget", 0, 8),
+        ("find_budget", 0, 12),
+        ("desired_source_count", 1, 8),
+        ("max_turns", 1, 8),
+        ("max_concurrent_fetches", 1, 5),
+    )
+    return all(_validated_budget_int(budget, key, minimum, maximum) for key, minimum, maximum in budget_ranges)
+
+
+def _validated_budget_int(budget: Mapping[str, Any], key: str, minimum: int, maximum: int) -> bool:
+    value = budget.get(key)
+    return isinstance(value, int) and not isinstance(value, bool) and minimum <= value <= maximum
 
 
 def _normalize_web_research_input(tool_input: Mapping[str, Any]) -> dict[str, Any]:

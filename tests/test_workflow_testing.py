@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from email.message import Message
 from pathlib import Path
 
 import pytest
@@ -8,6 +9,9 @@ import pytest
 from weavert.contracts import TurnContext
 from weavert.definitions import AgentDefinition
 from weavert.runtime_kernel import BuiltinPackConfig, ModelRouteBinding, RuntimeConfig, WorkflowRunReport
+from weavert_kit_common_web_research import reference_shared_package_manifest as web_research_shared_package_manifest
+import weavert_kit_common_web_research._tool_impls as reference_web_tool_impls
+import weavert_web_research.core as reference_web_research_core
 from weavert_testing import (
     ScriptedModelClient,
     ScriptedModelExhaustionError,
@@ -33,6 +37,27 @@ from weavert.turn_engine import ModelRequest
 ROOT = Path(__file__).resolve().parents[1]
 CODING_FIXTURE = ROOT / "examples" / "projects" / "workspaces" / "coding_workflow"
 VERIFICATION_COMMAND = "python3 -m unittest discover -s tests"
+
+
+class _FakeUrlopenResponse:
+    def __init__(self, body: str, *, url: str = "https://grounding.example.test/refund-policy") -> None:
+        self._body = body.encode("utf-8")
+        self._url = url
+        self.status = 200
+        self.headers = Message()
+        self.headers["Content-Type"] = "text/html; charset=utf-8"
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return None
+
+    def read(self, _size: int = -1) -> bytes:
+        return self._body
+
+    def geturl(self) -> str:
+        return self._url
 
 
 async def _drain_stream(client: ScriptedModelClient, request: ModelRequest) -> list[object]:
@@ -180,6 +205,27 @@ def _minimal_runtime_config(workspace: Path, *, model_client=None) -> RuntimeCon
     )
 
 
+def _web_research_runtime_config(workspace: Path, *, model_client=None) -> RuntimeConfig:
+    return RuntimeConfig(
+        working_directory=workspace,
+        distribution="weavert-core",
+        requested_packages={"weavert-shared-web-research"},
+        extra_package_manifests=(web_research_shared_package_manifest(),),
+        model_client=model_client,
+        builtins=BuiltinPackConfig(
+            extra_agents=[
+                AgentDefinition(
+                    name="web-qa",
+                    description="Web research usability test agent",
+                    prompt="Use web_research when fresh public evidence is needed, then answer from the tool result.",
+                    tools=("web_research",),
+                )
+            ]
+        ),
+        default_agent="web-qa",
+    )
+
+
 def test_scripted_model_client_records_requests_and_raises_when_batches_are_exhausted() -> None:
     client = ScriptedModelClient([text_batch(request_id="req-scripted-1", text="first reply")])
     request = _fake_request()
@@ -239,6 +285,93 @@ def test_run_workflow_test_preserves_explicit_empty_discovery_sources(tmp_path: 
         assert report.discovery_sources == ()
         assert report.messages[-1].text == "ok"
         assert len(report.scripted_requests) == 1
+
+    asyncio.run(_run())
+
+
+def test_run_workflow_test_exercises_web_research_end_to_end(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = reference_web_research_core.FixtureWebResearchProvider(
+        search_results={
+            "refund policy": [
+                {
+                    "title": "Refund policy",
+                    "url": "https://grounding.example.test/refund-policy",
+                    "excerpt": "Refunds stay available for 30 days after purchase.",
+                }
+            ]
+        }
+    )
+    monkeypatch.setattr(
+        reference_web_tool_impls,
+        "_web_search_provider_registry",
+        reference_web_research_core.WebSearchProviderRegistry((provider,)),
+    )
+
+    def _urlopen(request, timeout=10, **_kwargs):
+        _ = timeout
+        url = request.full_url if hasattr(request, "full_url") else str(request)
+        assert url == "https://grounding.example.test/refund-policy"
+        return _FakeUrlopenResponse(
+            "<html><head><title>Refund policy</title></head><body>"
+            "Refunds stay available for 30 days after purchase."
+            "</body></html>",
+            url=url,
+        )
+
+    monkeypatch.setattr(reference_web_tool_impls, "_web_urlopen", _urlopen)
+
+    def _request_web_research(request):
+        assert request.agent is not None
+        assert request.agent.name == "web-qa"
+        assert "web_research" in set(request.turn_context.available_tools)
+        return tool_call_batch(
+            request_id="req-web-usability-tool",
+            tool_name="web_research",
+            tool_input={
+                "objective": "What is the refund policy?",
+                "domains": ["grounding.example.test"],
+                "search_budget": 1,
+                "fetch_budget": 1,
+                "desired_source_count": 1,
+            },
+            call_id="call-web-research",
+        )
+
+    def _final_answer(request):
+        transcript = str(request.messages)
+        assert "Refunds stay available for 30 days" in transcript
+        return text_batch(
+            request_id="req-web-usability-final",
+            text="Refunds stay available for 30 days after purchase.",
+        )
+
+    client = ScriptedModelClient([_request_web_research, _final_answer])
+
+    async def _run() -> None:
+        report = await run_workflow_test(
+            "Use web research to answer: What is the refund policy?",
+            workspace=tmp_path,
+            runtime_config=_web_research_runtime_config(tmp_path, model_client=client),
+            discovery_sources=(),
+            session_id="workflow-testing-web-research-e2e",
+            agent_name="web-qa",
+        )
+
+        assert_no_terminal_failure(report)
+        assert report.final_status == "completed"
+        assert report.messages[-1].text == "Refunds stay available for 30 days after purchase."
+        outcome = assert_tool_outcome(report, "web_research")
+        assert_web_research_outcome(outcome.output, stop_reason="sufficient_evidence", min_sources=1)
+        assert_web_research_ledger_evidence(
+            outcome.output,
+            urls=("https://grounding.example.test/refund-policy",),
+        )
+        assert outcome.output["child_run"]["agent"] == "web_research_loop"
+        assert report.scripted_batch_count_consumed == 2
+        assert report.scripted_batch_count_remaining == 0
 
     asyncio.run(_run())
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timedelta, timezone
 import os
+import signal
 import subprocess
 import sys
 from pathlib import Path

@@ -39,7 +39,7 @@ It owns scenario packs plus shared product-kit packages.
 - `weavert_kit_chat` composes retrieval plus the unified web research kit, defaulting web research to `general`.
 - `weavert_kit_coding` composes git, the unified web research kit with coding defaults, and workspace-intelligence common kits.
 - `weavert_kit_local_assistant` composes retrieval, read-only web research, browser, local-OS, and PIM common kits.
-- Web research provider selection is configured through the shared core (`WEAVERT_WEB_SEARCH_PROVIDER=google-search` or `brave-search` with credentials) while public tool names remain unchanged.
+- Web research provider selection is configured through the shared core (`WEAVERT_WEB_SEARCH_PROVIDER=bing-grounding`, `google-search`, or `brave-search` with credentials) while public tool names remain unchanged.
 
 ## See also
 

@@ -30,9 +30,10 @@ Public tool names stay stable: callers continue to use `web_research`, `web_sear
 
 - `google-search`: set `GOOGLE_SEARCH_API_KEY` and `GOOGLE_SEARCH_CX`; optionally set `WEAVERT_WEB_SEARCH_PROVIDER=google-search`.
 - `brave-search`: set `BRAVE_SEARCH_API_KEY` or `WEAVERT_BRAVE_SEARCH_API_KEY`; optionally set `WEAVERT_WEB_SEARCH_PROVIDER=brave-search`.
+- `bing-grounding`: set `FOUNDRY_PROJECT_ENDPOINT`, `FOUNDRY_MODEL_DEPLOYMENT_NAME`, `BING_PROJECT_CONNECTION_ID`, and `AGENT_TOKEN`; optionally set `WEAVERT_WEB_SEARCH_PROVIDER=bing-grounding`.
 - `duckduckgo-html`: no-credential fallback. It does not expose a stable freshness filter through this adapter.
 
-Google and Brave map domain constraints into provider query operators where supported, while the shared core still revalidates accepted result URLs against allowed domains, blocked domains, and public-host policy. Freshness semantics are provider-specific: Google uses approximate `dateRestrict`, Brave uses its `freshness` parameter, and DuckDuckGo reports freshness as unsupported.
+Bing grounding uses Azure AI Foundry Responses API `bing_grounding` and normalizes stable public URL citations into the shared result shape. It is not the retired Bing Search API v7 endpoint. Google and Brave map domain constraints into provider query operators where supported, while Bing grounding and DuckDuckGo report those controls as framework-filtered. The shared core still revalidates accepted result URLs against allowed domains, blocked domains, and public-host policy. Freshness semantics are provider-specific: Google uses approximate `dateRestrict`, Brave uses its `freshness` parameter, Bing grounding maps supported 1/7/30 day freshness windows, and DuckDuckGo reports freshness as unsupported.
 
 ## Research Profiles and Quality Signals
 

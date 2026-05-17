@@ -7,6 +7,7 @@ import json
 import os
 import re
 import socket
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -1085,6 +1086,238 @@ class GoogleSearchApiProvider:
         raise NotImplementedError("GoogleSearchApiProvider only implements search")
 
 
+class BingGroundingSearchProvider:
+    provider_metadata = WebSearchProviderMetadata(
+        provider_id="bing-grounding",
+        display_name="Azure AI Foundry Bing Grounding",
+        capabilities=WebSearchProviderCapabilities(
+            domain_filtering=False,
+            blocked_domain_filtering=False,
+            result_limit=True,
+            freshness=True,
+            fetch=False,
+            page_find=False,
+            usage=(
+                "Optional live provider. Configure with FOUNDRY_PROJECT_ENDPOINT, "
+                "FOUNDRY_MODEL_DEPLOYMENT_NAME, BING_PROJECT_CONNECTION_ID, and AGENT_TOKEN. "
+                "Uses Azure AI Foundry Responses API bing_grounding; domain controls are "
+                "revalidated by the shared core."
+            ),
+        ),
+        credential_required=True,
+        configured=False,
+        notes=(
+            "Uses Azure AI Foundry Bing grounding, not the retired Bing Search API v7 endpoint. "
+            "Only stable public URL citations are accepted as search results."
+        ),
+    )
+
+    def __init__(
+        self,
+        *,
+        project_endpoint: str | None = None,
+        model_deployment: str | None = None,
+        bing_connection_id: str | None = None,
+        agent_token: str | None = None,
+        api_version: str | None = None,
+        urlopen: Callable[..., Any] | None = None,
+        poll_interval: float = 0.5,
+        max_polls: int = 20,
+    ) -> None:
+        self._project_endpoint = _normalize_optional_string(
+            project_endpoint or os.environ.get("FOUNDRY_PROJECT_ENDPOINT")
+        )
+        self._model_deployment = _normalize_optional_string(
+            model_deployment or os.environ.get("FOUNDRY_MODEL_DEPLOYMENT_NAME")
+        )
+        self._bing_connection_id = _normalize_optional_string(
+            bing_connection_id or os.environ.get("BING_PROJECT_CONNECTION_ID")
+        )
+        self._agent_token = _normalize_optional_string(agent_token or os.environ.get("AGENT_TOKEN"))
+        self._api_version = _normalize_optional_string(api_version or os.environ.get("FOUNDRY_API_VERSION"))
+        self._urlopen = urlopen or web_urlopen
+        self._poll_interval = poll_interval
+        self._max_polls = max(1, int(max_polls))
+        configured = bool(
+            self._project_endpoint and self._model_deployment and self._bing_connection_id and self._agent_token
+        )
+        self.provider_metadata = WebSearchProviderMetadata(
+            provider_id="bing-grounding",
+            display_name="Azure AI Foundry Bing Grounding",
+            capabilities=self.__class__.provider_metadata.capabilities,
+            credential_required=True,
+            configured=configured,
+            notes=self.__class__.provider_metadata.notes,
+        )
+
+    @property
+    def configured(self) -> bool:
+        return bool(self._project_endpoint and self._model_deployment and self._bing_connection_id and self._agent_token)
+
+    def build_request_payload(
+        self,
+        query: str,
+        *,
+        limit: int,
+        policy: WebResearchPolicy | None = None,
+    ) -> dict[str, Any]:
+        resolved_policy = policy or WebResearchPolicy()
+        instructions = [
+            "Return public web sources for the user's query.",
+            "Prefer concise citation-backed answers.",
+            "Only cite stable http or https URLs.",
+            f"Return up to {max(1, int(limit))} distinct web sources.",
+        ]
+        if resolved_policy.allowed_domains:
+            instructions.append(
+                "The caller requested allowed domains; citations outside those domains will be rejected by the framework."
+            )
+        if resolved_policy.blocked_domains:
+            instructions.append(
+                "The caller requested blocked domains; citations from those domains will be rejected by the framework."
+            )
+        search_configuration: dict[str, Any] = {
+            "project_connection_id": self._bing_connection_id,
+            "count": max(1, min(int(limit), 50)),
+        }
+        freshness = _bing_grounding_freshness_parameter(resolved_policy.freshness_days)
+        if freshness is not None:
+            search_configuration["freshness"] = freshness
+        return {
+            "model": self._model_deployment,
+            "input": query,
+            "tool_choice": "required",
+            "instructions": " ".join(instructions),
+            "tools": [
+                {
+                    "type": "bing_grounding",
+                    "bing_grounding": {"search_configurations": [search_configuration]},
+                }
+            ],
+        }
+
+    def search(
+        self,
+        query: str,
+        *,
+        limit: int,
+        policy: WebResearchPolicy | None = None,
+    ) -> list[BackendSearchResult]:
+        if not self.configured:
+            raise ValueError(
+                "Bing grounding provider requires FOUNDRY_PROJECT_ENDPOINT, "
+                "FOUNDRY_MODEL_DEPLOYMENT_NAME, BING_PROJECT_CONNECTION_ID, and AGENT_TOKEN"
+            )
+        payload = self.build_request_payload(query, limit=limit, policy=policy)
+        response_payload = self._post_responses(payload)
+        return self.normalize_response(response_payload, limit=limit)
+
+    def normalize_response(self, payload: Mapping[str, Any], *, limit: int) -> list[BackendSearchResult]:
+        results: list[BackendSearchResult] = []
+        seen: set[str] = set()
+        for raw in _walk_mappings(payload):
+            url = normalize_web_url(
+                raw.get("url")
+                or raw.get("uri")
+                or raw.get("href")
+                or raw.get("source_url")
+                or raw.get("content_url")
+            )
+            if url is None or url in seen:
+                continue
+            title = _normalize_optional_string(raw.get("title") or raw.get("name") or raw.get("text")) or url
+            excerpt = _normalize_optional_string(
+                raw.get("snippet") or raw.get("excerpt") or raw.get("description") or raw.get("content")
+            ) or ""
+            metadata = {
+                "provider": "bing-grounding",
+                "grounding_type": _normalize_optional_string(raw.get("type")),
+            }
+            for key in ("id", "index", "source_id"):
+                if key in raw:
+                    metadata[key] = raw[key]
+            results.append(BackendSearchResult(title=title, url=url, excerpt=excerpt, metadata=metadata))
+            seen.add(url)
+            if len(results) >= limit:
+                break
+        return results
+
+    def fetch(self, url: str, *, timeout: float, max_bytes: int) -> BackendFetchResult:
+        _ = url, timeout, max_bytes
+        raise NotImplementedError("BingGroundingSearchProvider only implements search")
+
+    def find(
+        self,
+        page: Mapping[str, Any],
+        pattern: str,
+        *,
+        limit: int,
+        excerpt_chars: int,
+    ) -> list[BackendFindMatch]:
+        _ = page, pattern, limit, excerpt_chars
+        raise NotImplementedError("BingGroundingSearchProvider only implements search")
+
+    def _post_responses(self, payload: Mapping[str, Any]) -> Mapping[str, Any]:
+        assert self._project_endpoint is not None
+        assert self._agent_token is not None
+        endpoint = self._responses_endpoint()
+        request = urllib.request.Request(
+            endpoint,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "Accept": "application/json",
+                "Accept-Encoding": "identity",
+                "Authorization": f"Bearer {self._agent_token}",
+                "Content-Type": "application/json",
+                "User-Agent": "weavert/0.1",
+            },
+            method="POST",
+        )
+        with self._urlopen(request, timeout=30) as response:
+            body = response.read().decode("utf-8", errors="replace")
+        result = json.loads(body)
+        if not isinstance(result, Mapping):
+            raise ValueError("Bing grounding response was not a JSON object")
+        completed = self._poll_if_needed(result)
+        return completed
+
+    def _poll_if_needed(self, payload: Mapping[str, Any]) -> Mapping[str, Any]:
+        status = _normalize_optional_string(payload.get("status"))
+        response_id = _normalize_optional_string(payload.get("id"))
+        if status not in {"queued", "in_progress"} or not response_id:
+            return payload
+        current = dict(payload)
+        for _ in range(self._max_polls):
+            time.sleep(self._poll_interval)
+            request = urllib.request.Request(
+                f"{self._responses_endpoint()}/{urllib.parse.quote(response_id)}",
+                headers={
+                    "Accept": "application/json",
+                    "Accept-Encoding": "identity",
+                    "Authorization": f"Bearer {self._agent_token}",
+                    "User-Agent": "weavert/0.1",
+                },
+                method="GET",
+            )
+            with self._urlopen(request, timeout=30) as response:
+                body = response.read().decode("utf-8", errors="replace")
+            raw = json.loads(body)
+            if not isinstance(raw, Mapping):
+                break
+            current = dict(raw)
+            if _normalize_optional_string(current.get("status")) not in {"queued", "in_progress"}:
+                break
+        return current
+
+    def _responses_endpoint(self) -> str:
+        assert self._project_endpoint is not None
+        base = self._project_endpoint.rstrip("/")
+        endpoint = f"{base}/openai/v1/responses"
+        if self._api_version:
+            endpoint = f"{endpoint}?{urllib.parse.urlencode({'api-version': self._api_version})}"
+        return endpoint
+
+
 class FixtureWebResearchProvider:
     def __init__(
         self,
@@ -1225,6 +1458,9 @@ def default_web_search_provider_registry(
 ) -> WebSearchProviderRegistry:
     requested = _normalize_optional_string(os.environ.get("WEAVERT_WEB_SEARCH_PROVIDER"))
     providers: list[WebResearchBackend] = []
+    bing = BingGroundingSearchProvider()
+    if bing.configured:
+        providers.append(bing)
     google = GoogleSearchApiProvider()
     if google.configured:
         providers.append(google)
@@ -2009,6 +2245,18 @@ def _google_date_restrict_parameter(days: int | None) -> str | None:
     return f"y{max(1, round(days / 365))}"
 
 
+def _bing_grounding_freshness_parameter(days: int | None) -> str | None:
+    if days is None:
+        return None
+    if days <= 1:
+        return "1d"
+    if days <= 7:
+        return "7d"
+    if days <= 30:
+        return "30d"
+    return None
+
+
 def _first_error_line(exc: Exception) -> str:
     return str(exc).splitlines()[0][:240]
 
@@ -2074,6 +2322,19 @@ def _list_of_mappings(raw: Any) -> list[dict[str, Any]]:
     if not isinstance(raw, list):
         return []
     return [dict(item) for item in raw if isinstance(item, Mapping)]
+
+
+def _walk_mappings(raw: Any) -> list[Mapping[str, Any]]:
+    items: list[Mapping[str, Any]] = []
+    stack = [raw]
+    while stack:
+        item = stack.pop(0)
+        if isinstance(item, Mapping):
+            items.append(item)
+            stack[0:0] = list(item.values())
+        elif isinstance(item, Sequence) and not isinstance(item, (str, bytes, bytearray)):
+            stack[0:0] = list(item)
+    return items
 
 
 def _identity_value(value: Any) -> str:
