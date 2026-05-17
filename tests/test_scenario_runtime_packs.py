@@ -1800,6 +1800,147 @@ def test_web_research_records_search_provider_failure_as_structured_result(
     assert "fixture search failure" in failure_events[0]["error"]
 
 
+def test_web_research_profile_source_scoring_is_traceable_and_deterministic(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    opened_urls: list[str] = []
+
+    def _urlopen(request, timeout=10, **_kwargs):
+        _ = timeout
+        url = request.full_url if hasattr(request, "full_url") else str(request)
+        opened_urls.append(url)
+        return _FakeUrlopenResponse(
+            f"<html><head><title>{url}</title></head><body>API v2 compatibility evidence from {url}</body></html>"
+        )
+
+    monkeypatch.setattr(reference_web_tool_impls, "_web_urlopen", _urlopen)
+    query = "Widget API v2 documentation changelog"
+    provider = reference_web_research_core.FixtureWebResearchProvider(
+        search_results={
+            query: [
+                {"title": "Blog copy", "url": "https://blog.example.test/widget-api-v2"},
+                {"title": "Widget API reference documentation", "url": "https://docs.example.test/widget-api-v2"},
+                {"title": "Widget changelog", "url": "https://docs.example.test/widget-api-v2/changelog"},
+            ]
+        }
+    )
+    monkeypatch.setattr(
+        reference_web_tool_impls,
+        "_web_search_provider_registry",
+        reference_web_research_core.WebSearchProviderRegistry((provider,)),
+    )
+    runtime, _shape, runtime_root = _assemble_shared_reference_runtime(tmp_path, "weavert-shared-web-research")
+
+    result = asyncio.run(
+        runtime.kernel.tool_registry.get("web_research").execute(
+            {
+                "objective": "Widget API v2",
+                "profile": "coding",
+                "search_budget": 1,
+                "fetch_budget": 1,
+                "desired_source_count": 1,
+            },
+            _tool_context(runtime, runtime_root),
+        )
+    )
+
+    assert opened_urls == ["https://docs.example.test/widget-api-v2"]
+    selected_source = next(source for source in result["sources"] if source["url"] == "https://docs.example.test/widget-api-v2")
+    assert selected_source["source_class"] == "official_docs"
+    assert "profile_priority:official_docs" in selected_source["quality"]["signals"]
+    selected = [event for event in result["trace_summary"] if event["event"] == "page_selected"]
+    assert selected
+    assert "profile_priority:official_docs" in selected[0]["rationale"]
+
+
+def test_web_research_accepts_only_ledger_bound_claims_and_projects_conflicts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _urlopen(request, timeout=10):
+        _ = timeout
+        url = request.full_url if hasattr(request, "full_url") else str(request)
+        if url == "https://grounding.example.test/refund-policy-conflict":
+            return _FakeUrlopenResponse(
+                "<html><head><title>Refund conflict</title></head><body>"
+                "<p>Refunds are not available after purchase in this older notice from 2020.</p>"
+                "</body></html>"
+            )
+        return _web_urlopen(request, timeout=timeout)
+
+    monkeypatch.setattr(reference_web_tool_impls, "_web_urlopen", _urlopen)
+    runtime, _shape, runtime_root = _assemble_shared_reference_runtime(tmp_path, "weavert-shared-web-research")
+
+    async def _request_fallback(_request, _context, _state):
+        raise reference_web_tool_impls._DelegatedWebResearchFallbackRequested("test fallback before web budget")
+
+    async def agent_runner(agent: str, _prompt: str, context: ToolContext, **_kwargs: Any) -> dict[str, Any]:
+        first = await context.tool_registry.get("web_fetch").execute(
+            {"url": "https://grounding.example.test/refund-policy"},
+            context,
+        )
+        second = await context.tool_registry.get("web_fetch").execute(
+            {"url": "https://grounding.example.test/refund-policy-conflict"},
+            context,
+        )
+        return {
+            "agent": agent,
+            "status": "completed",
+            "terminal_metadata": {
+                "web_research": {
+                    "claims": [
+                        {
+                            "claim": "Refunds are available for 30 days.",
+                            "claim_key": "refund_window",
+                            "stance": "supports",
+                            "source_handle": first["source_handle"],
+                        },
+                        {
+                            "claim": "Refunds are not available after purchase.",
+                            "claim_key": "refund_window",
+                            "stance": "disputes",
+                            "source_handle": second["source_handle"],
+                        },
+                        {"claim": "Unbound claim.", "claim_key": "refund_window", "stance": "supports"},
+                    ],
+                    "stop_reason": "sufficient_evidence",
+                }
+            },
+        }
+
+    monkeypatch.setattr(reference_web_tool_impls, "_run_goal_driven_web_research_loop", _request_fallback)
+    result = asyncio.run(
+        runtime.kernel.tool_registry.get("web_research").execute(
+            {
+                "objective": "Check refund conflicts.",
+                "domains": ["grounding.example.test"],
+                "fetch_budget": 2,
+                "desired_source_count": 2,
+            },
+            ToolContext(
+                session_id="claim-conflict",
+                turn_id="turn-1",
+                agent_name="tester",
+                cwd=runtime_root,
+                tool_registry=runtime.kernel.tool_registry,
+                agent_registry=runtime.kernel.agent_registry,
+                tool_pool=tuple(runtime.kernel.tool_registry.definitions()),
+                runtime_services=runtime.services,
+                agent_runner=agent_runner,
+            ),
+        )
+    )
+
+    assert len(result["claims"]) == 2
+    assert all(claim.get("source_handle") for claim in result["claims"])
+    assert result["conflicts"][0]["claim_key"] == "refund_window"
+    assert result["conflicts"][0]["resolved"] is False
+    assert result["stop_reason"] == "unresolved_conflict"
+    assert any(event["event"] == "unverified_child_metadata_dropped" and event["kind"] == "claim" for event in result["trace_summary"])
+    assert result["auxiliary_signals"]["numbers"]
+
+
 def test_web_research_single_search_can_fetch_multiple_candidates(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -34,6 +34,20 @@ Public tool names stay stable: callers continue to use `web_research`, `web_sear
 
 Google and Brave map domain constraints into provider query operators where supported, while the shared core still revalidates accepted result URLs against allowed domains, blocked domains, and public-host policy. Freshness semantics are provider-specific: Google uses approximate `dateRestrict`, Brave uses its `freshness` parameter, and DuckDuckGo reports freshness as unsupported.
 
+## Research Profiles and Quality Signals
+
+`web_research` applies profile strategy before inspecting pages. Coding prioritizes official documentation, release notes, changelogs, source repositories, and issue trackers, with facets for API names, versions, compatibility notes, and breaking changes. Legal compliance prioritizes statutes, regulations, standards, and official guidance, and preserves jurisdiction, authority, freshness, and effective-date gaps. Business research favors company sources, filings, announcements, credible news, reviews, competitors, timelines, comparison axes, and market claims. Academic research favors papers, publishers, institutions, preprints, methods, experiments, conclusions, and citation metadata. Product shopping favors official specs, current prices, reviews, alternatives, comparison axes, and purchase-risk signals.
+
+Candidate sources receive traceable quality metadata before fetch: objective relevance, profile priority, provider metadata, freshness signals, preferred or allowed domains, duplicate clusters, and deterministic tie-breaking by domain and URL. After inspection, ledger evidence keeps source class and quality metadata so callers and tests can explain why a source was selected.
+
+## Claims, Conflicts, Gaps, and Limits
+
+Claim annotations are accepted only when they bind to an inspected ledger source, page, or evidence item. Unbound annotations are dropped and traced. Rule-derived dates, versions, prices, numbers, source-type hints, and duplicate signals appear as `auxiliary_signals`; they help diagnostics and facets but do not prove claim correctness.
+
+Conflicting ledger-bound claims are projected into `conflicts`. Unresolved conflicts lower confidence and produce `stop_reason="unresolved_conflict"`; resolved conflicts keep a resolution rationale when stronger evidence is identified. Gaps describe missing preferred evidence, unsupported freshness, provider fallback, policy blocks, or partial results.
+
+Remaining limits are explicit: this kit does not drive a browser, click through pages, authenticate, inspect local workspaces, run shell-assisted searches, or guarantee truth beyond inspected public evidence. Host-level browser bridges, local workspace search, and shell tools remain separate surfaces.
+
 ## See also
 
 - `../README.md`

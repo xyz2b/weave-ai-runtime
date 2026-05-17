@@ -130,6 +130,69 @@ def assert_web_research_ledger_evidence(source: Any, *, urls: Sequence[str] = ()
     return evidence
 
 
+def assert_web_research_source_classes(source: Any, expected: Sequence[str]) -> list[dict[str, Any]]:
+    payload = _web_research_payload(source)
+    sources = _list_of_mappings(payload.get("sources"))
+    observed = [str(item.get("source_class") or "") for item in sources]
+    missing = [item for item in expected if item not in observed]
+    if missing:
+        raise AssertionError(f"Missing web_research source class(es): {', '.join(missing)}.")
+    return sources
+
+
+def assert_web_research_selection_rationale(source: Any, *, contains: Sequence[str] = ()) -> list[dict[str, Any]]:
+    payload = _web_research_payload(source)
+    traces = _list_of_mappings(payload.get("trace_summary")) + _list_of_mappings(
+        payload.get("research_trace", {}).get("trace_summary") if isinstance(payload.get("research_trace"), Mapping) else None
+    )
+    selected = [event for event in traces if event.get("event") == "page_selected"]
+    if not selected:
+        raise AssertionError("Expected web_research page selection rationale.")
+    flattened = " ".join(" ".join(str(value) for value in _as_sequence(event.get("rationale"))) for event in selected)
+    missing = [value for value in contains if value not in flattened]
+    if missing:
+        raise AssertionError(f"Missing web_research selection rationale signal(s): {', '.join(missing)}.")
+    return selected
+
+
+def assert_web_research_claims_bound(source: Any) -> list[dict[str, Any]]:
+    payload = _web_research_payload(source)
+    claims = _list_of_mappings(payload.get("claims"))
+    if not claims:
+        raise AssertionError("Expected ledger-bound web_research claims.")
+    unbound = [
+        claim
+        for claim in claims
+        if not (claim.get("source_handle") or claim.get("page_handle") or claim.get("evidence_id"))
+    ]
+    if unbound:
+        raise AssertionError("Expected every web_research claim to reference ledger evidence.")
+    return claims
+
+
+def assert_web_research_conflicts(source: Any, *, resolved: bool | None = None, min_count: int = 1) -> list[dict[str, Any]]:
+    payload = _web_research_payload(source)
+    conflicts = _list_of_mappings(payload.get("conflicts"))
+    if resolved is not None:
+        conflicts = [item for item in conflicts if bool(item.get("resolved")) is resolved]
+    if len(conflicts) < min_count:
+        state = "resolved " if resolved is True else "unresolved " if resolved is False else ""
+        raise AssertionError(f"Expected at least {min_count} {state}web_research conflict(s).")
+    return conflicts
+
+
+def assert_web_research_gaps(source: Any, *, kinds: Sequence[str] = ()) -> list[dict[str, Any]]:
+    payload = _web_research_payload(source)
+    gaps = _list_of_mappings(payload.get("gaps"))
+    if not gaps:
+        raise AssertionError("Expected web_research gap entries.")
+    observed = {str(item.get("kind") or "") for item in gaps}
+    missing = [kind for kind in kinds if kind not in observed]
+    if missing:
+        raise AssertionError(f"Missing web_research gap kind(s): {', '.join(missing)}.")
+    return gaps
+
+
 
 def _messages_from_source(source: Any) -> tuple[RuntimeMessage, ...]:
     if isinstance(source, tuple) and _is_message_tuple(source):
@@ -165,6 +228,16 @@ def _list_of_mappings(raw: Any) -> list[dict[str, Any]]:
     return [dict(item) for item in raw if isinstance(item, Mapping)]
 
 
+def _as_sequence(raw: Any) -> tuple[Any, ...]:
+    if isinstance(raw, tuple):
+        return raw
+    if isinstance(raw, list):
+        return tuple(raw)
+    if raw is None:
+        return ()
+    return (raw,)
+
+
 __all__ = [
     "assert_child_summary",
     "assert_delegated_web_research_tool_use",
@@ -173,6 +246,11 @@ __all__ = [
     "assert_tool_outcome",
     "assert_tool_result",
     "assert_web_research_ledger_evidence",
+    "assert_web_research_claims_bound",
+    "assert_web_research_conflicts",
+    "assert_web_research_gaps",
     "assert_web_research_outcome",
+    "assert_web_research_selection_rationale",
+    "assert_web_research_source_classes",
     "extract_tool_result",
 ]

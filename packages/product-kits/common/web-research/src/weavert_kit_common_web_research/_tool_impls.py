@@ -68,8 +68,27 @@ _WEB_RESEARCH_SOURCE_ANNOTATION_FIELDS = frozenset(
 )
 _WEB_RESEARCH_EVIDENCE_ANNOTATION_FIELDS = _WEB_RESEARCH_SOURCE_ANNOTATION_FIELDS | frozenset(
     {
+        "claim_key",
+        "stance",
         "supports",
         "supports_claim",
+    }
+)
+_WEB_RESEARCH_CLAIM_ANNOTATION_FIELDS = frozenset(
+    {
+        "id",
+        "claim",
+        "claim_text",
+        "claim_key",
+        "key",
+        "stance",
+        "subquestion_id",
+        "source_handle",
+        "page_handle",
+        "evidence_id",
+        "resolved",
+        "resolution_rationale",
+        "rationale",
     }
 )
 
@@ -148,37 +167,74 @@ RESEARCH_PROFILES = ResearchProfileRegistry(
     (
         ResearchProfile(
             name="general",
+            query_templates=("{objective}", "{objective} official source"),
             source_priorities=("official", "authoritative", "news", "reference"),
+            evidence_schema={"expected": ("facts", "source dates", "authoritative citations")},
             freshness_policy={"required": False},
             facet_keys=(),
         ),
         ResearchProfile(
             name="coding",
+            query_templates=(
+                "{objective} official documentation",
+                "{objective} release notes changelog",
+                "{objective} GitHub issue API version breaking change",
+            ),
             source_priorities=("official_docs", "release_notes", "changelog", "source_repository", "issue_tracker"),
+            evidence_schema={"expected": ("api_names", "versions", "compatibility_notes", "breaking_changes")},
+            defaults={"quality_signals": ("official_docs", "release_notes", "repository", "issue_tracker", "version")},
             freshness_policy={"required": False},
             facet_keys=("version_scope", "api_names", "compatibility_notes", "breaking_changes"),
         ),
         ResearchProfile(
             name="business",
+            query_templates=(
+                "{objective} company official announcement",
+                "{objective} filing annual report investor relations",
+                "{objective} competitor comparison market claim",
+            ),
             source_priorities=("official_company", "filings", "announcements", "news", "reviews"),
+            evidence_schema={"expected": ("companies", "competitors", "timelines", "comparison_axes", "market_claims")},
+            defaults={"quality_signals": ("official_company", "filing", "announcement", "credible_news", "review")},
             freshness_policy={"required": False},
             facet_keys=("companies", "competitors", "timelines", "comparison_axes", "market_claims"),
         ),
         ResearchProfile(
             name="academic",
+            query_templates=(
+                "{objective} paper method experiment conclusion",
+                "{objective} publisher institution citation",
+                "{objective} preprint study",
+            ),
             source_priorities=("papers", "publishers", "institutions", "preprints"),
+            evidence_schema={"expected": ("papers", "methods", "experiments", "conclusions", "citation_metadata")},
+            defaults={"quality_signals": ("paper", "publisher", "institution", "preprint", "citation")},
             freshness_policy={"required": False},
             facet_keys=("papers", "methods", "experiments", "conclusions", "citation_metadata"),
         ),
         ResearchProfile(
             name="legal_compliance",
+            query_templates=(
+                "{objective} statute regulation official guidance",
+                "{objective} standard jurisdiction authority effective date",
+                "{objective} current compliance requirement",
+            ),
             source_priorities=("statutes", "regulations", "standards", "official_guidance"),
+            evidence_schema={"expected": ("jurisdiction", "authorities", "effective_dates", "compliance_gaps")},
+            defaults={"quality_signals": ("statute", "regulation", "standard", "official_guidance", "effective_date")},
             freshness_policy={"required": True},
             facet_keys=("jurisdiction", "authorities", "effective_dates", "compliance_gaps"),
         ),
         ResearchProfile(
             name="product_shopping",
+            query_templates=(
+                "{objective} official specs current price",
+                "{objective} review alternative comparison",
+                "{objective} purchase risk warranty",
+            ),
             source_priorities=("official_specs", "prices", "reviews", "alternatives", "risk_notes"),
+            evidence_schema={"expected": ("products", "prices", "alternatives", "comparison_axes", "purchase_risks")},
+            defaults={"quality_signals": ("official_specs", "price", "review", "alternative", "risk")},
             freshness_policy={"required": True},
             facet_keys=("products", "prices", "alternatives", "comparison_axes", "purchase_risks"),
         ),
@@ -623,12 +679,25 @@ async def web_find_tool(tool_input: dict[str, Any], context: ToolContext) -> dic
 
 def _build_research_plan(request: Mapping[str, Any]) -> ResearchPlan:
     objective = str(request["objective"]).strip()
+    profile_definition = RESEARCH_PROFILES.get(str(request.get("profile") or "general"))
     subquestions = (
         ResearchSubquestion(id="sq-objective", question=objective),
     )
     queries = [
-        ResearchQueryCandidate(query=_query_for_profile(objective, request), subquestion_ids=("sq-objective",), rationale="objective_terms")
+        ResearchQueryCandidate(
+            query=_query_for_profile(objective, request),
+            subquestion_ids=("sq-objective",),
+            rationale="objective_terms",
+        )
     ]
+    for index, template in enumerate(profile_definition.query_templates or ("{objective}",)):
+        queries.append(
+            ResearchQueryCandidate(
+                query=template.format(objective=objective),
+                subquestion_ids=("sq-objective",),
+                rationale="profile_template" if index else "profile_objective_template",
+            )
+        )
     preferred_domains = request.get("preferences", {}).get("preferred_domains") or request.get("policy", {}).get("domains") or []
     for domain in preferred_domains:
         domain_text = str(domain).strip()
@@ -686,6 +755,10 @@ def _candidate_sources_from_search(
     searched_urls: set[str],
 ) -> list[CandidateSource]:
     candidates: list[CandidateSource] = []
+    duplicate_counts: dict[str, int] = {}
+    for item in _list_of_mappings(search_result.get("results")):
+        cluster = _duplicate_cluster_key(item)
+        duplicate_counts[cluster] = duplicate_counts.get(cluster, 0) + 1
     for item in _list_of_mappings(search_result.get("results")):
         url = str(item.get("url") or "").strip()
         if not url:
@@ -706,6 +779,11 @@ def _candidate_sources_from_search(
         if matched_terms:
             score += float(len(matched_terms)) * 2.0
             rationale.append("objective_relevance")
+        source_class = _classify_source(item, str(request.get("profile") or "general"))
+        priority_score = _profile_source_priority_score(source_class, request)
+        if priority_score:
+            score += priority_score
+            rationale.append(f"profile_priority:{source_class}")
         domain = _source_domain(item)
         preferred_domains = set(request.get("preferences", {}).get("preferred_domains") or ())
         allowed_domains = set(request.get("policy", {}).get("domains") or ())
@@ -719,8 +797,31 @@ def _candidate_sources_from_search(
         if isinstance(provider, Mapping) and provider.get("id"):
             score += 0.5
             rationale.append("provider_metadata")
-        candidates.append(CandidateSource(source=item, score=score, rationale=tuple(rationale or ("available_result",))))
-    candidates.sort(key=lambda candidate: candidate.score, reverse=True)
+        if _has_freshness_signal(item):
+            score += 0.75
+            rationale.append("freshness_signal")
+        cluster_key = _duplicate_cluster_key(item)
+        if duplicate_counts.get(cluster_key, 0) > 1:
+            score -= 0.75
+            rationale.append("duplicate_cluster")
+        annotated = dict(item)
+        quality = {
+            "score": round(score, 3),
+            "signals": list(rationale or ("available_result",)),
+            "source_class": source_class,
+            "duplicate_cluster": cluster_key,
+        }
+        annotated["quality"] = quality
+        annotated["source_class"] = source_class
+        candidates.append(CandidateSource(source=annotated, score=score, rationale=tuple(quality["signals"])))
+    candidates.sort(
+        key=lambda candidate: (
+            -candidate.score,
+            int(candidate.source.get("rank") or 999_999),
+            _source_domain(candidate.source),
+            str(candidate.source.get("url") or ""),
+        )
+    )
     return candidates
 
 
@@ -780,6 +881,8 @@ def _evaluate_loop_progress(
         return LoopDecision(stage="evaluate_progress", stop_reason="budget_exhausted", rationale="loop budgets exhausted")
     if stop_reason == "freshness_unsupported":
         return LoopDecision(stage="evaluate_progress", stop_reason="freshness_unsupported", rationale="provider could not satisfy freshness")
+    if stop_reason == "partial_result" and state.operation_failures and evidence_count:
+        return LoopDecision(stage="evaluate_progress", stop_reason="partial_result", rationale="some evidence collected after an inspection failure")
     if low_yield_searches:
         if not replan_used and state.search_used < search_budget:
             return LoopDecision(
@@ -836,7 +939,10 @@ def _replan_queries(request: Mapping[str, Any], plan: ResearchPlan) -> list[Rese
 
 
 def _synthesize_from_verified_evidence(request: Mapping[str, Any], state: WebResearchLoopState) -> str:
-    return _synthesize_answer_from_evidence(request, state.evidence_payload())
+    conflicts = state.conflicts_payload()
+    unresolved = [conflict for conflict in conflicts if not conflict.get("resolved")]
+    prefix = "Unresolved conflict: " if unresolved else ""
+    return prefix + _synthesize_answer_from_evidence(request, state.evidence_payload())
 
 
 def _synthesize_answer_from_evidence(request: Mapping[str, Any], evidence: list[dict[str, Any]]) -> str:
@@ -890,6 +996,95 @@ def _source_domain(source: Mapping[str, Any]) -> str:
         return domain
     parsed = urlparse(str(source.get("url") or ""))
     return parsed.hostname or ""
+
+
+def _classify_source(source: Mapping[str, Any], profile: str) -> str:
+    text = " ".join(
+        str(source.get(key) or "")
+        for key in ("title", "url", "excerpt", "content")
+    ).lower()
+    domain = _source_domain(source)
+    if profile == "coding":
+        if "github.com" in domain or "gitlab.com" in domain:
+            if "/issues" in text:
+                return "issue_tracker"
+            return "source_repository"
+        if "changelog" in text:
+            return "changelog"
+        if "release" in text:
+            return "release_notes"
+        if any(token in text for token in ("docs", "documentation", "api reference")):
+            return "official_docs"
+    if profile == "legal_compliance":
+        if any(token in domain for token in (".gov", ".gob", ".europa.eu")) or "official guidance" in text:
+            return "official_guidance"
+        if "statute" in text or "code" in text:
+            return "statutes"
+        if "regulation" in text or "rule" in text:
+            return "regulations"
+        if "standard" in text or "iso" in text:
+            return "standards"
+    if profile == "business":
+        if any(token in text for token in ("investor", "press release", "company")):
+            return "official_company"
+        if any(token in text for token in ("10-k", "10-q", "sec filing", "annual report")):
+            return "filings"
+        if "announce" in text:
+            return "announcements"
+        if "review" in text:
+            return "reviews"
+        if "news" in text:
+            return "news"
+    if profile == "academic":
+        if any(token in domain for token in ("arxiv.org", "biorxiv.org", "medrxiv.org")):
+            return "preprints"
+        if any(token in text for token in ("doi", "journal", "paper", "study")):
+            return "papers"
+        if any(token in text for token in ("publisher", "springer", "acm", "ieee", "elsevier")):
+            return "publishers"
+        if any(token in text for token in ("university", "institute", ".edu")):
+            return "institutions"
+    if profile == "product_shopping":
+        if any(token in text for token in ("spec", "datasheet", "technical details")):
+            return "official_specs"
+        if any(token in text for token in ("price", "$", "deal")):
+            return "prices"
+        if "review" in text:
+            return "reviews"
+        if any(token in text for token in ("alternative", "compare", "versus", " vs ")):
+            return "alternatives"
+        if any(token in text for token in ("risk", "warranty", "return")):
+            return "risk_notes"
+    if any(token in text for token in ("official", "documentation", "guidance")):
+        return "official"
+    if "news" in text:
+        return "news"
+    if any(token in text for token in ("reference", "wiki", "encyclopedia")):
+        return "reference"
+    return "general_reference"
+
+
+def _profile_source_priority_score(source_class: str, request: Mapping[str, Any]) -> float:
+    priorities = [str(item) for item in request.get("preferences", {}).get("source_priorities") or ()]
+    if source_class not in priorities:
+        return 0.0
+    return float(max(1, len(priorities) - priorities.index(source_class))) * 2.5
+
+
+def _duplicate_cluster_key(source: Mapping[str, Any]) -> str:
+    url = str(source.get("url") or "").strip().lower()
+    parsed = urlparse(url)
+    path = parsed.path.rstrip("/")
+    title_terms = "-".join(sorted(_meaningful_terms(str(source.get("title") or "")))[:6])
+    return f"{parsed.hostname or ''}{path or '/'}:{title_terms}"
+
+
+def _has_freshness_signal(source: Mapping[str, Any]) -> bool:
+    metadata = source.get("metadata")
+    values = [source.get("freshness_scope"), source.get("published"), source.get("date")]
+    if isinstance(metadata, Mapping):
+        values.extend(metadata.get(key) for key in ("freshness_scope", "provider_result_metadata", "published", "age", "page_age"))
+    return any(value for value in values)
 
 
 def _source_reference(tool_input: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -1230,7 +1425,24 @@ def _project_web_research_result(
                     "summary": _bounded_trace_text(child_answer),
                 }
             )
-    conflicts = [*state.conflicts_payload(), *_list_of_mappings(structured.get("conflicts"))]
+    annotated_claims, dropped_claims = _ledger_bound_claims(structured, sources, evidence)
+    if dropped_claims:
+        state.record_unverified_child_metadata_dropped(dropped_claims)
+        trace.extend(dropped_claims)
+    for claim in annotated_claims:
+        match = _find_unique_child_match(
+            claim,
+            evidence,
+            identity_fields=("evidence_id", "source_handle", "page_handle", "id"),
+            fallback_fields=("url",),
+        )
+        if match is not None:
+            match.setdefault("claims", []).append(claim)
+    conflicts = [
+        *state.conflicts_payload(),
+        *_list_of_mappings(structured.get("conflicts")),
+        *_detect_claim_conflicts(annotated_claims),
+    ]
     gaps = _derive_gaps(request, sources, evidence, stop_reason, [*state.gaps_payload(), *_list_of_mappings(structured.get("gaps"))])
     stop_reason = refine_web_research_stop_reason(
         stop_reason,
@@ -1269,6 +1481,8 @@ def _project_web_research_result(
             "trace_summary": trace[:_WEB_RESEARCH_MAX_TRACE_ITEMS],
         },
         "facets": _build_profile_facets(request, structured),
+        "claims": annotated_claims,
+        "auxiliary_signals": _auxiliary_signals(evidence),
         "trace_summary": trace[:_WEB_RESEARCH_MAX_TRACE_ITEMS],
         "child_run": {
             "agent": child_payload.get("agent") or child_payload.get("agent_name") or "web-searcher",
@@ -1329,13 +1543,135 @@ def _build_profile_facets(request: Mapping[str, Any], structured: Mapping[str, A
     else:
         result = {}
     profile_facet = dict(result.get(profile) or {})
-    if profile == "coding":
-        for key in ("version_scope", "api_names", "compatibility_notes", "breaking_changes"):
-            value = structured.get(key)
-            if value is not None and key not in profile_facet:
-                profile_facet[key] = value
+    for key in RESEARCH_PROFILES.get(profile).facet_keys:
+        value = structured.get(key)
+        if value is not None and key not in profile_facet:
+            profile_facet[key] = value
     result[profile] = profile_facet
     return result
+
+
+def _ledger_bound_claims(
+    structured: Mapping[str, Any],
+    sources: list[dict[str, Any]],
+    evidence: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    accepted: list[dict[str, Any]] = []
+    dropped: list[dict[str, Any]] = []
+    raw_claims = _list_of_mappings(structured.get("claims") or structured.get("claim_annotations"))
+    for index, raw in enumerate(raw_claims):
+        claim = {field: raw[field] for field in _WEB_RESEARCH_CLAIM_ANNOTATION_FIELDS if field in raw}
+        if "claim_key" not in claim and "key" in claim:
+            claim["claim_key"] = claim["key"]
+        claim_text = _identity_value(claim.get("claim") or claim.get("claim_text"))
+        if claim_text:
+            claim["claim"] = claim_text
+        source_match = _find_unique_child_match(
+            raw,
+            sources,
+            identity_fields=("source_handle", "page_handle", "id"),
+            fallback_fields=("url",),
+        )
+        evidence_match = _find_unique_child_match(
+            raw,
+            evidence,
+            identity_fields=("evidence_id", "source_handle", "page_handle", "id"),
+            compound_fields=(("url", "excerpt"),),
+            fallback_fields=("url",),
+        )
+        if source_match is None and evidence_match is None:
+            dropped.append(_unverified_child_metadata_event("claim", raw, index))
+            continue
+        bound = evidence_match or source_match or {}
+        claim.setdefault("id", _identity_value(raw.get("id")) or f"claim-{index + 1}")
+        claim.setdefault("source_handle", bound.get("source_handle") or bound.get("id"))
+        claim.setdefault("page_handle", bound.get("page_handle"))
+        if evidence_match is not None:
+            claim.setdefault("evidence_id", evidence_match.get("id"))
+            claim.setdefault("url", evidence_match.get("url"))
+        elif source_match is not None:
+            claim.setdefault("url", source_match.get("url"))
+        claim.setdefault("claim_key", _claim_key(claim))
+        claim.setdefault("stance", _claim_stance(claim))
+        accepted.append(claim)
+    return accepted, dropped
+
+
+def _detect_claim_conflicts(claims: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for claim in claims:
+        grouped.setdefault(_identity_value(claim.get("claim_key")) or _claim_key(claim), []).append(claim)
+    conflicts: list[dict[str, Any]] = []
+    for key, group in grouped.items():
+        stances = {_identity_value(claim.get("stance")).lower() for claim in group if _identity_value(claim.get("stance"))}
+        incompatible = len(stances.intersection({"supports", "for", "yes", "true"})) > 0 and len(
+            stances.intersection({"disputes", "against", "no", "false"})
+        ) > 0
+        texts = {_identity_value(claim.get("claim")).lower() for claim in group if _identity_value(claim.get("claim"))}
+        if not incompatible and len(texts) < 2:
+            continue
+        resolved_claims = [claim for claim in group if claim.get("resolved") or claim.get("resolution_rationale")]
+        conflicts.append(
+            {
+                "kind": "claim_conflict",
+                "claim_key": key,
+                "message": "Ledger-bound claims disagree." if not resolved_claims else "Conflict resolved by stronger evidence.",
+                "claims": group,
+                "source_handles": sorted(
+                    {
+                        str(claim.get("source_handle"))
+                        for claim in group
+                        if _identity_value(claim.get("source_handle"))
+                    }
+                ),
+                "resolved": bool(resolved_claims),
+                **(
+                    {"resolution_rationale": resolved_claims[0].get("resolution_rationale") or resolved_claims[0].get("rationale")}
+                    if resolved_claims
+                    else {}
+                ),
+            }
+        )
+    return conflicts
+
+
+def _claim_key(claim: Mapping[str, Any]) -> str:
+    return _identity_value(claim.get("subquestion_id")) or _identity_value(claim.get("claim")).lower()[:80] or "claim"
+
+
+def _claim_stance(claim: Mapping[str, Any]) -> str:
+    raw = _identity_value(claim.get("stance")).lower()
+    if raw:
+        return raw
+    text = _identity_value(claim.get("claim")).lower()
+    if any(token in text for token in (" not ", " no ", "false", "unsupported", "discontinued")):
+        return "disputes"
+    return "supports"
+
+
+def _auxiliary_signals(evidence: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    signals: dict[str, list[dict[str, Any]]] = {"dates": [], "versions": [], "prices": [], "numbers": [], "source_types": [], "duplicates": []}
+    seen_excerpt: dict[str, str] = {}
+    for item in evidence:
+        excerpt = str(item.get("excerpt") or "")
+        ref = {"source_handle": item.get("source_handle"), "page_handle": item.get("page_handle"), "url": item.get("url")}
+        for value in sorted(set(__import__("re").findall(r"\b(?:19|20)\d{2}(?:-\d{2}-\d{2})?\b", excerpt))):
+            signals["dates"].append({"value": value, **ref})
+        for value in sorted(set(__import__("re").findall(r"\bv?\d+(?:\.\d+){1,3}\b", excerpt, flags=__import__("re").I))):
+            signals["versions"].append({"value": value, **ref})
+        for value in sorted(set(__import__("re").findall(r"\$\s?\d+(?:,\d{3})*(?:\.\d{2})?", excerpt))):
+            signals["prices"].append({"value": value, **ref})
+        for value in sorted(set(__import__("re").findall(r"\b\d+(?:\.\d+)?%?\b", excerpt))):
+            signals["numbers"].append({"value": value, **ref})
+        source_type = _classify_source(item, "general")
+        if source_type != "general_reference":
+            signals["source_types"].append({"value": source_type, **ref})
+        key = " ".join(excerpt.lower().split())[:120]
+        if key and key in seen_excerpt:
+            signals["duplicates"].append({"value": "similar_excerpt", "source_handle": item.get("source_handle"), "other_source_handle": seen_excerpt[key]})
+        elif key:
+            seen_excerpt[key] = str(item.get("source_handle") or item.get("url") or "")
+    return {key: value for key, value in signals.items() if value}
 
 
 def _merge_verified_child_web_research_metadata(
@@ -1500,7 +1836,8 @@ def _web_research_candidate_search_limit(state: WebResearchLoopState) -> int:
     remaining_fetches = max(1, int(budget["fetch_budget"]) - state.fetch_used)
     remaining_sources = max(1, int(budget["desired_source_count"]) - len(state.evidence_payload()))
     candidate_need = min(remaining_fetches, remaining_sources, max(1, state.max_concurrent_fetches))
-    return min(_WEB_PRIMITIVE_DEFAULT_SEARCH_LIMIT, candidate_need)
+    breadth = 4 if int(budget["desired_source_count"]) == 1 else int(budget["desired_source_count"])
+    return min(_WEB_PRIMITIVE_DEFAULT_SEARCH_LIMIT, max(candidate_need, breadth))
 
 
 @lru_cache(maxsize=256)

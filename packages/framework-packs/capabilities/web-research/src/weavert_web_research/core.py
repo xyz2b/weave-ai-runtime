@@ -557,7 +557,12 @@ class WebResearchLoopState:
         url = str(item.get("url") or "").strip()
         if not url:
             return
-        if any(existing.get("url") == url for existing in self.sources):
+        for existing in self.sources:
+            if existing.get("url") != url:
+                continue
+            for key in ("source_class", "quality"):
+                if key in item:
+                    existing[key] = item[key]
             return
         source = {
             "id": item.get("id") or item.get("source_handle") or url,
@@ -567,6 +572,9 @@ class WebResearchLoopState:
             "page_handle": item.get("page_handle"),
             "domain": item.get("domain"),
         }
+        for key in ("source_class", "quality"):
+            if key in item:
+                source[key] = item[key]
         self._attach_provider_source_metadata(source, item)
         self.sources.append(source)
 
@@ -587,6 +595,9 @@ class WebResearchLoopState:
             "page_handle": item.get("page_handle"),
             **_optional_fact_fields(item, ("exact_excerpt", "match_start", "match_end")),
         }
+        for key in ("source_class", "quality"):
+            if key in item:
+                evidence[key] = item[key]
         self._attach_provider_source_metadata(evidence, item)
         self.evidence.append(evidence)
 
@@ -1292,6 +1303,9 @@ def inspect_page(
     source_handle = _stable_handle("source", resolved_url)
     title = fetched.title or _normalize_optional_string(raw.get("title")) or resolved_url
     source = _source_descriptor(title=title, url=resolved_url, page_handle=page_handle, source_handle=source_handle)
+    for key in ("source_class", "quality"):
+        if key in raw:
+            source[key] = raw[key]
     policy_payload = _policy_dict(resolved_policy)
     policy_payload["truncated"] = truncated
     return {
@@ -1315,6 +1329,8 @@ def inspect_page(
         "source_handle": source_handle,
         "page_handle": page_handle,
         "source": source,
+        **({"source_class": raw["source_class"]} if "source_class" in raw else {}),
+        **({"quality": dict(raw["quality"])} if isinstance(raw.get("quality"), Mapping) else {}),
         "policy": policy_payload,
         "provider": provider_metadata,
         "browser_handoff": build_browser_handoff(source),

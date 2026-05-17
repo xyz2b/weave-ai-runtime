@@ -17,7 +17,12 @@ from weavert_testing import (
     assert_tool_outcome,
     assert_tool_result,
     assert_web_research_ledger_evidence,
+    assert_web_research_claims_bound,
+    assert_web_research_conflicts,
+    assert_web_research_gaps,
     assert_web_research_outcome,
+    assert_web_research_selection_rationale,
+    assert_web_research_source_classes,
     copied_fixture_workspace,
     run_workflow_test,
     text_batch,
@@ -256,6 +261,29 @@ def test_web_research_testing_assertions_accept_result_payloads() -> None:
     )
     evidence = assert_web_research_ledger_evidence(payload, urls=("https://example.test/source",))
     assert evidence[0]["excerpt"] == "Verified evidence."
+
+
+def test_web_research_testing_assertions_cover_quality_claims_conflicts_and_gaps() -> None:
+    payload = {
+        "sources": [
+            {
+                "url": "https://docs.example.test/api",
+                "source_class": "official_docs",
+                "quality": {"signals": ["profile_priority:official_docs"]},
+            }
+        ],
+        "evidence": [{"url": "https://docs.example.test/api", "excerpt": "API v2 costs $10 in 2026.", "source_handle": "s1"}],
+        "claims": [{"claim": "API v2 is current.", "source_handle": "s1", "claim_key": "api_v2"}],
+        "conflicts": [{"kind": "claim_conflict", "claim_key": "api_v2", "resolved": False}],
+        "gaps": [{"kind": "remaining_gaps", "message": "Need release notes."}],
+        "trace_summary": [{"event": "page_selected", "rationale": ["profile_priority:official_docs"]}],
+    }
+
+    assert_web_research_source_classes(payload, ("official_docs",))
+    assert_web_research_selection_rationale(payload, contains=("profile_priority:official_docs",))
+    assert_web_research_claims_bound(payload)
+    assert_web_research_conflicts(payload, resolved=False)
+    assert_web_research_gaps(payload, kinds=("remaining_gaps",))
 
 
 def test_run_workflow_test_collects_scripted_diagnostics_from_route_model_client(tmp_path: Path) -> None:
