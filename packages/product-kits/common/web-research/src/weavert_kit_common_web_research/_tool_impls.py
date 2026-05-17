@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import socket
+import urllib.error
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from functools import lru_cache
@@ -74,6 +76,10 @@ _WEB_RESEARCH_EVIDENCE_ANNOTATION_FIELDS = _WEB_RESEARCH_SOURCE_ANNOTATION_FIELD
 _web_urlopen = web_urlopen
 _web_search_provider_registry: WebSearchProviderRegistry | None = None
 _web_research_runs: dict[str, WebResearchLoopState] = {}
+
+
+class _DelegatedWebResearchFallbackRequested(Exception):
+    """Raised only when the package-owned loop deliberately hands off before using web budget."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -205,7 +211,7 @@ async def web_research_tool(tool_input: dict[str, Any], context: ToolContext) ->
     try:
         loop_result = await _run_goal_driven_web_research_loop(normalized, context, state)
         return _project_web_research_result(normalized, loop_result, state=state)
-    except Exception:
+    except _DelegatedWebResearchFallbackRequested:
         if context.agent_runner is None or state.search_used or state.fetch_used or state.find_used:
             raise
         child_result = await _run_delegated_web_research_fallback(normalized, context)
@@ -258,7 +264,55 @@ async def _run_goal_driven_web_research_loop(
             break
         query = plan.queries[search_index]
         search_index += 1
-        search_result = await web_search_tool({"query": query.query}, context)
+        try:
+            search_result = await web_search_tool({"query": query.query}, context)
+        except Exception as exc:
+            if not _is_recoverable_web_operation_error(exc):
+                raise
+            low_yield_searches += 1
+            state.record_gap(
+                {
+                    "kind": "operation_failed",
+                    "message": "Search failed before returning inspectable candidates.",
+                    "query": query.query,
+                }
+            )
+            _record_loop_trace(
+                state,
+                {
+                    "event": "low_yield_search",
+                    "stage": "evaluate_progress",
+                    "query": query.query,
+                    "consecutive": low_yield_searches,
+                    "reason": "search_failed",
+                },
+            )
+            evaluation = _evaluate_loop_progress(
+                request,
+                state,
+                plan,
+                low_yield_searches=low_yield_searches,
+                replan_used=replan_used,
+            )
+            plan.decisions.append(evaluation)
+            _record_loop_trace(
+                state,
+                {
+                    "event": "loop_decision",
+                    "stage": "evaluate_progress",
+                    "stop_reason": evaluation.stop_reason,
+                    "replan": evaluation.replan,
+                    "rationale": evaluation.rationale,
+                },
+            )
+            if evaluation.replan and not replan_used:
+                replan_used = True
+                plan.queries.extend(_replan_queries(request, plan))
+                _record_loop_trace(state, {"event": "replanned", "stage": "replan_or_stop", "pass": 1})
+                continue
+            if _loop_decision_is_terminal(evaluation, low_yield_searches=low_yield_searches, replan_used=replan_used):
+                break
+            continue
         candidates = _candidate_sources_from_search(
             search_result,
             request=request,
@@ -280,7 +334,9 @@ async def _run_goal_driven_web_research_loop(
             )
             try:
                 await web_fetch_tool({"source": dict(page.source)}, context)
-            except ValueError:
+            except Exception as exc:
+                if not _is_recoverable_web_operation_error(exc):
+                    raise
                 continue
         inspected_after = len(state.evidence_payload())
         if inspected_after == inspected_before:
@@ -296,7 +352,13 @@ async def _run_goal_driven_web_research_loop(
             )
         else:
             low_yield_searches = 0
-        evaluation = _evaluate_loop_progress(request, state, plan)
+        evaluation = _evaluate_loop_progress(
+            request,
+            state,
+            plan,
+            low_yield_searches=low_yield_searches,
+            replan_used=replan_used,
+        )
         plan.decisions.append(evaluation)
         _record_loop_trace(
             state,
@@ -314,9 +376,29 @@ async def _run_goal_driven_web_research_loop(
             replan_used = True
             plan.queries.extend(_replan_queries(request, plan))
             _record_loop_trace(state, {"event": "replanned", "stage": "replan_or_stop", "pass": 1})
+            continue
+        if _loop_decision_is_terminal(evaluation, low_yield_searches=low_yield_searches, replan_used=replan_used):
+            break
 
     state.finalize_provider_and_freshness_trace()
-    stop_reason = _evaluate_loop_progress(request, state, plan).stop_reason or state.stop_reason(None)
+    stop_reason = (
+        _evaluate_loop_progress(
+            request,
+            state,
+            plan,
+            low_yield_searches=low_yield_searches,
+            replan_used=replan_used,
+        ).stop_reason
+        or state.stop_reason(None)
+    )
+    _record_loop_trace(
+        state,
+        {
+            "event": "terminal_decision",
+            "stage": "synthesize",
+            "stop_reason": stop_reason,
+        },
+    )
     answer = _synthesize_from_verified_evidence(request, state)
     return {
         "agent": "web_research_loop",
@@ -676,9 +758,14 @@ def _evaluate_loop_progress(
     request: Mapping[str, Any],
     state: WebResearchLoopState,
     plan: ResearchPlan,
+    *,
+    low_yield_searches: int = 0,
+    replan_used: bool = False,
 ) -> LoopDecision:
     stop_reason = state.stop_reason(None)
     evidence_count = len(state.evidence_payload())
+    search_budget = int(request["budget"]["search_budget"])
+    fetch_budget = int(request["budget"]["fetch_budget"])
     if state.conflicts_payload():
         return LoopDecision(stage="evaluate_progress", stop_reason="unresolved_conflict", rationale="unresolved conflicts recorded")
     if stop_reason == "sufficient_evidence":
@@ -686,18 +773,53 @@ def _evaluate_loop_progress(
     if state.policy_rejections and not evidence_count:
         return LoopDecision(stage="evaluate_progress", stop_reason="policy_blocked", rationale="policy rejected all inspected candidates")
     if state.budget_rejections or (
-        state.search_used >= int(request["budget"]["search_budget"])
-        and state.fetch_used >= int(request["budget"]["fetch_budget"])
+        state.search_used >= search_budget
+        and state.fetch_used >= fetch_budget
         and evidence_count < plan.desired_source_count
     ):
         return LoopDecision(stage="evaluate_progress", stop_reason="budget_exhausted", rationale="loop budgets exhausted")
     if stop_reason == "freshness_unsupported":
         return LoopDecision(stage="evaluate_progress", stop_reason="freshness_unsupported", rationale="provider could not satisfy freshness")
-    if evidence_count < plan.desired_source_count and state.search_used < int(request["budget"]["search_budget"]):
+    if low_yield_searches:
+        if not replan_used and state.search_used < search_budget:
+            return LoopDecision(
+                stage="evaluate_progress",
+                stop_reason="remaining_gaps",
+                replan=True,
+                rationale="low-yield search left source coverage below target",
+            )
+        if replan_used and evidence_count:
+            return LoopDecision(
+                stage="evaluate_progress",
+                stop_reason="partial_result",
+                rationale="repeated low-yield searches left partial verified evidence",
+            )
+        return LoopDecision(
+            stage="evaluate_progress",
+            stop_reason="remaining_gaps",
+            rationale="repeated low-yield searches found no inspectable evidence",
+        )
+    if evidence_count < plan.desired_source_count and state.search_used < search_budget and not replan_used:
         return LoopDecision(stage="evaluate_progress", stop_reason="remaining_gaps", replan=True, rationale="source coverage remains below target")
     if evidence_count:
         return LoopDecision(stage="evaluate_progress", stop_reason="partial_result", rationale="some verified evidence collected")
     return LoopDecision(stage="evaluate_progress", stop_reason="remaining_gaps", rationale="no inspectable evidence found")
+
+
+def _loop_decision_is_terminal(
+    decision: LoopDecision,
+    *,
+    low_yield_searches: int,
+    replan_used: bool,
+) -> bool:
+    if decision.stop_reason in {"budget_exhausted", "policy_blocked", "freshness_unsupported", "unresolved_conflict"}:
+        return True
+    return bool(
+        replan_used
+        and low_yield_searches
+        and decision.stop_reason in {"remaining_gaps", "partial_result"}
+        and not decision.replan
+    )
 
 
 def _replan_queries(request: Mapping[str, Any], plan: ResearchPlan) -> list[ResearchQueryCandidate]:
@@ -714,7 +836,10 @@ def _replan_queries(request: Mapping[str, Any], plan: ResearchPlan) -> list[Rese
 
 
 def _synthesize_from_verified_evidence(request: Mapping[str, Any], state: WebResearchLoopState) -> str:
-    evidence = state.evidence_payload()
+    return _synthesize_answer_from_evidence(request, state.evidence_payload())
+
+
+def _synthesize_answer_from_evidence(request: Mapping[str, Any], evidence: list[dict[str, Any]]) -> str:
     if not evidence:
         return ""
     excerpts = []
@@ -734,6 +859,20 @@ def _synthesize_from_verified_evidence(request: Mapping[str, Any], state: WebRes
 
 def _record_loop_trace(state: WebResearchLoopState, event: Mapping[str, Any]) -> None:
     state.record_unverified_child_metadata_dropped([event])
+
+
+def _is_recoverable_web_operation_error(exc: BaseException) -> bool:
+    return isinstance(
+        exc,
+        (
+            ValueError,
+            OSError,
+            TimeoutError,
+            urllib.error.HTTPError,
+            urllib.error.URLError,
+            json.JSONDecodeError,
+        ),
+    )
 
 
 def _term_set(value: str) -> set[str]:
@@ -1079,8 +1218,18 @@ def _project_web_research_result(
     stop_reason = state.stop_reason(child_status)
     state.finalize_provider_and_freshness_trace()
     trace = [*state.trace_summary(), *child_trace]
-    if child_payload.get("summary"):
-        trace.append({"event": "delegated_summary", "summary": str(child_payload["summary"])})
+    child_answer = str(structured.get("answer") or child_payload.get("summary") or "").strip()
+    answer = _synthesize_answer_from_evidence(request, evidence)
+    if child_answer:
+        trace.append({"event": "delegated_summary", "summary": _bounded_trace_text(child_answer)})
+        if child_answer != answer:
+            trace.append(
+                {
+                    "event": "unverified_child_answer_dropped",
+                    "reason": "answer_not_synthesized_from_ledger_evidence",
+                    "summary": _bounded_trace_text(child_answer),
+                }
+            )
     conflicts = [*state.conflicts_payload(), *_list_of_mappings(structured.get("conflicts"))]
     gaps = _derive_gaps(request, sources, evidence, stop_reason, [*state.gaps_payload(), *_list_of_mappings(structured.get("gaps"))])
     stop_reason = refine_web_research_stop_reason(
@@ -1100,7 +1249,7 @@ def _project_web_research_result(
     result = {
         "objective": request["objective"],
         "mode": request.get("mode", "focused"),
-        "answer": str(structured.get("answer") or child_payload.get("summary") or "").strip(),
+        "answer": answer,
         "confidence": web_research_confidence_from_stop_reason(stop_reason),
         "sources": sources,
         "evidence": evidence,
@@ -1291,6 +1440,13 @@ def _unverified_child_metadata_event(kind: str, item: Mapping[str, Any], index: 
     return event
 
 
+def _bounded_trace_text(value: Any, *, limit: int = 280) -> str:
+    text = " ".join(str(value or "").split())
+    if len(text) <= limit:
+        return text
+    return text[: limit - 3].rstrip() + "..."
+
+
 def _identity_value(value: Any) -> str:
     return str(value or "").strip()
 
@@ -1332,12 +1488,19 @@ def _effective_web_tool_input(kind: str, tool_input: Mapping[str, Any], context:
     if provider:
         effective["provider"] = provider
     if kind == "search":
-        remaining = max(1, int(state.request["budget"]["search_budget"]) - state.search_used)
-        effective.setdefault("limit", min(_WEB_PRIMITIVE_DEFAULT_SEARCH_LIMIT, remaining))
+        effective.setdefault("limit", _web_research_candidate_search_limit(state))
     if kind == "find":
         remaining = max(1, int(state.request["budget"]["find_budget"]) - state.find_used)
         effective.setdefault("limit", min(_WEB_PRIMITIVE_DEFAULT_FIND_LIMIT, remaining))
     return effective
+
+
+def _web_research_candidate_search_limit(state: WebResearchLoopState) -> int:
+    budget = state.request["budget"]
+    remaining_fetches = max(1, int(budget["fetch_budget"]) - state.fetch_used)
+    remaining_sources = max(1, int(budget["desired_source_count"]) - len(state.evidence_payload()))
+    candidate_need = min(remaining_fetches, remaining_sources, max(1, state.max_concurrent_fetches))
+    return min(_WEB_PRIMITIVE_DEFAULT_SEARCH_LIMIT, candidate_need)
 
 
 @lru_cache(maxsize=256)

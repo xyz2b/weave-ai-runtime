@@ -588,40 +588,7 @@ def test_grounded_reference_shared_packages_can_be_admitted_selected_and_execute
 
     async def agent_runner(agent: str, prompt: str, context: ToolContext, **kwargs: Any) -> dict[str, Any]:
         delegated_calls.append((agent, prompt, kwargs, context))
-        fetched = await context.tool_registry.get("web_fetch").execute(
-            {"url": "https://grounding.example.test/refund-policy"},
-            context,
-        )
-        return {
-            "agent": agent,
-            "status": "completed",
-            "run_id": "child-web-1",
-            "parent_run_id": "parent-web-1",
-            "summary": "Refunds stay available for 30 days.",
-            "terminal_metadata": {
-                "web_research": {
-                    "answer": "Refunds stay available for 30 days.",
-                    "sources": [
-                        {
-                            "url": "https://fabricated.example.test/refund-policy",
-                            "title": "Fabricated refund policy",
-                            "source_handle": fetched["source_handle"],
-                            "relevance": "high",
-                        }
-                    ],
-                    "evidence": [
-                        {
-                            "url": "https://fabricated.example.test/refund-policy",
-                            "source_handle": fetched["source_handle"],
-                            "excerpt": "Fabricated child excerpt.",
-                            "claim": "Refunds stay available for 30 days.",
-                        }
-                    ],
-                    "stop_reason": "sufficient_evidence",
-                    "trace_summary": [{"event": "fetched", "tool": "web_fetch"}],
-                }
-            },
-        }
+        raise AssertionError("normal web_research execution should use the package-owned loop")
 
     web_research_context = ToolContext(
         session_id="reference-shared-tool",
@@ -638,7 +605,7 @@ def test_grounded_reference_shared_packages_can_be_admitted_selected_and_execute
     web_research_result = asyncio.run(
         web_research_tool_def.execute(
             {
-                "objective": "What is the refund window?",
+                "objective": "What is the refund policy?",
                 "domains": ["grounding.example.test"],
                 "blocked_domains": ["blocked.example.test"],
                 "freshness_days": 14,
@@ -650,23 +617,20 @@ def test_grounded_reference_shared_packages_can_be_admitted_selected_and_execute
             web_research_context,
         )
     )
-    assert delegated_calls[0][0] == "web-searcher"
-    assert delegated_calls[0][2]["background"] is False
-    assert delegated_calls[0][2]["max_turns"] == 4
-    assert "web_search" in delegated_calls[0][1]
+    assert delegated_calls == []
     assert web_research_result["policy"] == {
         "domains": ["grounding.example.test"],
         "blocked_domains": ["blocked.example.test"],
         "freshness_days": 14,
     }
     assert web_research_result["budget"]["fetch_budget"] == 1
+    assert web_research_result["budget"]["used"] == {"searches": 1, "fetches": 1, "finds": 0}
     assert web_research_result["sources"][0]["url"] == "https://grounding.example.test/refund-policy"
     assert web_research_result["sources"][0]["title"] == "Refund policy"
-    assert web_research_result["sources"][0]["relevance"] == "high"
     assert "Refunds stay available" in web_research_result["evidence"][0]["excerpt"]
-    assert web_research_result["evidence"][0]["claim"] == "Refunds stay available for 30 days."
+    assert "Refunds stay available" in web_research_result["answer"]
     assert web_research_result["stop_reason"] == "freshness_unsupported"
-    assert web_research_result["child_run"]["agent"] == "web-searcher"
+    assert web_research_result["child_run"]["agent"] == "web_research_loop"
 
     search_tool = web_runtime.kernel.tool_registry.get("web_search")
     search_result = asyncio.run(
@@ -740,6 +704,10 @@ def test_grounded_reference_shared_packages_can_be_admitted_selected_and_execute
             },
         }
 
+    async def _request_coding_fallback(_request, _context, _state):
+        raise reference_web_tool_impls._DelegatedWebResearchFallbackRequested("test fallback before web budget")
+
+    monkeypatch.setattr(reference_web_tool_impls, "_run_goal_driven_web_research_loop", _request_coding_fallback)
     coding_result = asyncio.run(
         web_research_tool_def.execute(
             {
@@ -834,7 +802,10 @@ def test_public_web_fetch_schema_is_single_page_only(tmp_path: Path) -> None:
     assert both.message == "web_fetch accepts either url or source, not both"
 
 
-def test_public_web_fetch_rejects_batch_fields_standalone_and_inside_web_research(tmp_path: Path) -> None:
+def test_public_web_fetch_rejects_batch_fields_standalone_and_inside_web_research(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     runtime, _shape, runtime_root = _assemble_shared_reference_runtime(tmp_path, "weavert-shared-web-research")
     context = _tool_context(runtime, runtime_root)
 
@@ -856,6 +827,10 @@ def test_public_web_fetch_rejects_batch_fields_standalone_and_inside_web_researc
             )
         return {"agent": agent, "status": "completed", "summary": "Batch fetch was rejected."}
 
+    async def _request_fallback(_request, _context, _state):
+        raise reference_web_tool_impls._DelegatedWebResearchFallbackRequested("test fallback before web budget")
+
+    monkeypatch.setattr(reference_web_tool_impls, "_run_goal_driven_web_research_loop", _request_fallback)
     result = asyncio.run(
         runtime.kernel.tool_registry.get("web_research").execute(
             {"objective": "Reject public batch fetch.", "max_turns": 1},
@@ -1412,39 +1387,9 @@ def test_web_research_runtime_projects_ledger_evidence_without_terminal_metadata
 ) -> None:
     monkeypatch.setattr(reference_web_tool_impls, "_web_urlopen", _web_urlopen)
 
-    def _search_request(request):
-        assert request.agent is not None
-        assert request.agent.name == "web-searcher"
-        assert {tool.name for tool in request.tools} == {
-            "web_search",
-            "web_fetch",
-            "web_find",
-        }
-        return tool_call_batch(
-            request_id="req-web-research-search",
-            tool_name="web_search",
-            tool_input={"query": "refund policy", "limit": 1},
-            call_id="call-search",
-        )
-
-    def _fetch_request(_request):
-        return tool_call_batch(
-            request_id="req-web-research-fetch",
-            tool_name="web_fetch",
-            tool_input={"url": "https://grounding.example.test/refund-policy"},
-            call_id="call-fetch",
-        )
-
-    def _final_request(_request):
-        return text_batch(
-            request_id="req-web-research-final",
-            text="Refunds stay available for 30 days.",
-        )
-
     runtime, _shape, runtime_root = _assemble_shared_reference_runtime(
         tmp_path,
         "weavert-shared-web-research",
-        model_client=ScriptedModelClient([_search_request, _fetch_request, _final_request]),
     )
 
     tool = runtime.kernel.tool_registry.get("web_research")
@@ -1461,12 +1406,13 @@ def test_web_research_runtime_projects_ledger_evidence_without_terminal_metadata
         )
     )
 
-    assert result["answer"] == "Refunds stay available for 30 days."
+    assert result["answer"] == "Refunds stay available for 30 days after purchase."
     assert result["sources"][0]["url"] == "https://grounding.example.test/refund-policy"
     assert result["evidence"][0]["url"] == "https://grounding.example.test/refund-policy"
     assert "30 days" in result["evidence"][0]["excerpt"]
     assert result["budget"]["used"] == {"searches": 1, "fetches": 1, "finds": 0}
     assert result["stop_reason"] == "sufficient_evidence"
+    assert result["child_run"]["agent"] == "web_research_loop"
 
 
 def test_web_research_runtime_preserves_provider_and_freshness_metadata(
@@ -1489,29 +1435,9 @@ def test_web_research_runtime_preserves_provider_and_freshness_metadata(
         reference_web_research_core.WebSearchProviderRegistry((provider,)),
     )
 
-    def _search_request(_request):
-        return tool_call_batch(
-            request_id="req-web-research-fresh-search",
-            tool_name="web_search",
-            tool_input={"query": "refund policy", "limit": 1},
-            call_id="call-fresh-search",
-        )
-
-    def _fetch_request(_request):
-        return tool_call_batch(
-            request_id="req-web-research-fresh-fetch",
-            tool_name="web_fetch",
-            tool_input={"url": "https://grounding.example.test/refund-policy"},
-            call_id="call-fresh-fetch",
-        )
-
-    def _final_request(_request):
-        return text_batch(request_id="req-web-research-fresh-final", text="Fresh refund evidence inspected.")
-
     runtime, _shape, runtime_root = _assemble_shared_reference_runtime(
         tmp_path,
         "weavert-shared-web-research",
-        model_client=ScriptedModelClient([_search_request, _fetch_request, _final_request]),
     )
 
     result = asyncio.run(
@@ -1559,29 +1485,9 @@ def test_web_research_runtime_classifies_provider_fallback_as_freshness_unsuppor
         reference_web_research_core.WebSearchProviderRegistry((failing_provider, fallback_provider)),
     )
 
-    def _search_request(_request):
-        return tool_call_batch(
-            request_id="req-web-research-fallback-search",
-            tool_name="web_search",
-            tool_input={"query": "refund policy", "limit": 1},
-            call_id="call-fallback-search",
-        )
-
-    def _fetch_request(_request):
-        return tool_call_batch(
-            request_id="req-web-research-fallback-fetch",
-            tool_name="web_fetch",
-            tool_input={"url": "https://grounding.example.test/refund-policy"},
-            call_id="call-fallback-fetch",
-        )
-
-    def _final_request(_request):
-        return text_batch(request_id="req-web-research-fallback-final", text="Fallback evidence inspected.")
-
     runtime, _shape, runtime_root = _assemble_shared_reference_runtime(
         tmp_path,
         "weavert-shared-web-research",
-        model_client=ScriptedModelClient([_search_request, _fetch_request, _final_request]),
     )
 
     result = asyncio.run(
@@ -1604,7 +1510,7 @@ def test_web_research_runtime_classifies_provider_fallback_as_freshness_unsuppor
     assert result["stop_reason"] == "freshness_unsupported"
 
 
-def test_web_research_runtime_enforces_child_policy_and_budget(
+def test_web_research_runtime_enforces_policy_and_budget_in_package_loop(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1619,40 +1525,24 @@ def test_web_research_runtime_enforces_child_policy_and_budget(
         )
 
     monkeypatch.setattr(reference_web_tool_impls, "_web_urlopen", _urlopen)
-
-    def _outside_fetch(_request):
-        return tool_call_batch(
-            request_id="req-policy-outside",
-            tool_name="web_fetch",
-            tool_input={"url": "https://outside.example.test/leak"},
-            call_id="call-outside",
-        )
-
-    def _first_fetch(_request):
-        return tool_call_batch(
-            request_id="req-policy-first",
-            tool_name="web_fetch",
-            tool_input={"url": "https://grounding.example.test/one"},
-            call_id="call-one",
-        )
-
-    def _over_budget_fetch(_request):
-        return tool_call_batch(
-            request_id="req-policy-over-budget",
-            tool_name="web_fetch",
-            tool_input={"url": "https://grounding.example.test/two"},
-            call_id="call-two",
-        )
-
-    def _final_request(_request):
-        return text_batch(request_id="req-policy-final", text="Partial result.")
+    provider = reference_web_research_core.FixtureWebResearchProvider(
+        search_results={
+            "Only inspect the grounding domain.": [
+                {"title": "Outside", "url": "https://outside.example.test/leak"},
+                {"title": "Allowed one", "url": "https://grounding.example.test/one"},
+                {"title": "Allowed two", "url": "https://grounding.example.test/two"},
+            ]
+        },
+    )
+    monkeypatch.setattr(
+        reference_web_tool_impls,
+        "_web_search_provider_registry",
+        reference_web_research_core.WebSearchProviderRegistry((provider,)),
+    )
 
     runtime, _shape, runtime_root = _assemble_shared_reference_runtime(
         tmp_path,
         "weavert-shared-web-research",
-        model_client=ScriptedModelClient(
-            [_outside_fetch, _first_fetch, _over_budget_fetch, _final_request]
-        ),
     )
 
     result = asyncio.run(
@@ -1661,6 +1551,7 @@ def test_web_research_runtime_enforces_child_policy_and_budget(
                 "objective": "Only inspect the grounding domain.",
                 "domains": ["grounding.example.test"],
                 "fetch_budget": 1,
+                "desired_source_count": 1,
                 "max_turns": 4,
             },
             _tool_context(runtime, runtime_root),
@@ -1669,10 +1560,9 @@ def test_web_research_runtime_enforces_child_policy_and_budget(
 
     assert opened_urls == ["https://grounding.example.test/one"]
     assert result["budget"]["used"]["fetches"] == 1
-    assert result["budget"]["rejections"] == {"policy": 1, "budget": 1}
-    assert result["stop_reason"] == "partial_result"
-    assert any(event["event"] == "rejected" for event in result["trace_summary"])
-    assert any(event["event"] == "budget_rejected" for event in result["trace_summary"])
+    assert result["budget"]["rejections"] == {"policy": 0, "budget": 0}
+    assert result["stop_reason"] == "sufficient_evidence"
+    assert result["child_run"]["agent"] == "web_research_loop"
 
 
 def test_web_research_open_mode_repeated_fetch_uses_preferences_and_deterministic_partial_results(
@@ -1690,38 +1580,24 @@ def test_web_research_open_mode_repeated_fetch_uses_preferences_and_deterministi
         )
 
     monkeypatch.setattr(reference_web_tool_impls, "_web_urlopen", _urlopen)
-
-    def _fetch_preferred(_request):
-        return tool_call_batch(
-            request_id="req-repeated-fetch-preferred",
-            tool_name="web_fetch",
-            tool_input={"url": "https://preferred.example.test/a"},
-            call_id="call-fetch-preferred",
-        )
-
-    def _fetch_blocked(_request):
-        return tool_call_batch(
-            request_id="req-repeated-fetch-blocked",
-            tool_name="web_fetch",
-            tool_input={"url": "http://127.0.0.1:8000/admin"},
-            call_id="call-fetch-blocked",
-        )
-
-    def _fetch_outside(_request):
-        return tool_call_batch(
-            request_id="req-repeated-fetch-outside",
-            tool_name="web_fetch",
-            tool_input={"url": "https://outside.example.test/c"},
-            call_id="call-fetch-outside",
-        )
-
-    def _final_request(_request):
-        return text_batch(request_id="req-repeated-fetch-final", text="Open research finished.")
+    provider = reference_web_research_core.FixtureWebResearchProvider(
+        search_results={
+            "Explore public sources.": [
+                {"title": "Preferred", "url": "https://preferred.example.test/a"},
+                {"title": "Unsafe internal", "url": "http://127.0.0.1:8000/admin"},
+                {"title": "Outside", "url": "https://outside.example.test/c"},
+            ]
+        },
+    )
+    monkeypatch.setattr(
+        reference_web_tool_impls,
+        "_web_search_provider_registry",
+        reference_web_research_core.WebSearchProviderRegistry((provider,)),
+    )
 
     runtime, _shape, runtime_root = _assemble_shared_reference_runtime(
         tmp_path,
         "weavert-shared-web-research",
-        model_client=ScriptedModelClient([_fetch_preferred, _fetch_blocked, _fetch_outside, _final_request]),
     )
 
     result = asyncio.run(
@@ -1731,6 +1607,7 @@ def test_web_research_open_mode_repeated_fetch_uses_preferences_and_deterministi
                 "mode": "open",
                 "domains": ["preferred.example.test"],
                 "fetch_budget": 3,
+                "desired_source_count": 2,
                 "max_turns": 4,
             },
             _tool_context(runtime, runtime_root),
@@ -1745,16 +1622,22 @@ def test_web_research_open_mode_repeated_fetch_uses_preferences_and_deterministi
         "https://outside.example.test/c",
     ]
     assert result["budget"]["used"]["fetches"] == 2
-    assert result["budget"]["rejections"]["policy"] == 1
-    assert result["stop_reason"] == "partial_result"
+    assert result["budget"]["rejections"]["policy"] == 0
+    assert result["stop_reason"] == "sufficient_evidence"
 
 
 def test_web_research_runtime_drops_fabricated_child_metadata_without_ledger(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     runtime, _shape, runtime_root = _assemble_shared_reference_runtime(tmp_path, "weavert-shared-web-research")
+    delegated_calls: list[str] = []
+
+    async def _request_fallback(_request, _context, _state):
+        raise reference_web_tool_impls._DelegatedWebResearchFallbackRequested("test fallback before web budget")
 
     async def agent_runner(agent: str, _prompt: str, _context: ToolContext, **_kwargs: Any) -> dict[str, Any]:
+        delegated_calls.append(agent)
         return {
             "agent": agent,
             "status": "completed",
@@ -1778,6 +1661,7 @@ def test_web_research_runtime_drops_fabricated_child_metadata_without_ledger(
             },
         }
 
+    monkeypatch.setattr(reference_web_tool_impls, "_run_goal_driven_web_research_loop", _request_fallback)
     result = asyncio.run(
         runtime.kernel.tool_registry.get("web_research").execute(
             {"objective": "Verify fabricated child metadata.", "desired_source_count": 1},
@@ -1797,9 +1681,13 @@ def test_web_research_runtime_drops_fabricated_child_metadata_without_ledger(
 
     assert result["sources"] == []
     assert result["evidence"] == []
+    assert result["answer"] == ""
     assert result["stop_reason"] == "partial_result"
+    assert result["budget"]["used"] == {"searches": 0, "fetches": 0, "finds": 0}
+    assert delegated_calls == ["web-searcher"]
     dropped = [event for event in result["trace_summary"] if event["event"] == "unverified_child_metadata_dropped"]
     assert {event["kind"] for event in dropped} == {"source", "evidence"}
+    assert any(event["event"] == "unverified_child_answer_dropped" for event in result["trace_summary"])
 
 
 def test_web_research_runtime_merges_child_annotations_without_overriding_ledger_facts(
@@ -1808,6 +1696,9 @@ def test_web_research_runtime_merges_child_annotations_without_overriding_ledger
 ) -> None:
     monkeypatch.setattr(reference_web_tool_impls, "_web_urlopen", _web_urlopen)
     runtime, _shape, runtime_root = _assemble_shared_reference_runtime(tmp_path, "weavert-shared-web-research")
+
+    async def _request_fallback(_request, _context, _state):
+        raise reference_web_tool_impls._DelegatedWebResearchFallbackRequested("test fallback before web budget")
 
     async def agent_runner(agent: str, _prompt: str, context: ToolContext, **_kwargs: Any) -> dict[str, Any]:
         fetched = await context.tool_registry.get("web_fetch").execute(
@@ -1840,6 +1731,7 @@ def test_web_research_runtime_merges_child_annotations_without_overriding_ledger
             },
         }
 
+    monkeypatch.setattr(reference_web_tool_impls, "_run_goal_driven_web_research_loop", _request_fallback)
     result = asyncio.run(
         runtime.kernel.tool_registry.get("web_research").execute(
             {
@@ -1868,10 +1760,225 @@ def test_web_research_runtime_merges_child_annotations_without_overriding_ledger
     assert result["evidence"][0]["url"] == "https://grounding.example.test/refund-policy"
     assert "Refunds stay available" in result["evidence"][0]["excerpt"]
     assert result["evidence"][0]["claim"] == "Refunds remain available for 30 days."
+    assert result["answer"] == "Refunds stay available for 30 days after purchase."
     assert result["stop_reason"] == "sufficient_evidence"
 
 
-def test_web_fetch_records_operation_failure_as_partial_result(
+def test_web_research_records_search_provider_failure_as_structured_result(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = reference_web_research_core.FixtureWebResearchProvider(fail_search=True)
+    monkeypatch.setattr(
+        reference_web_tool_impls,
+        "_web_search_provider_registry",
+        reference_web_research_core.WebSearchProviderRegistry((provider,)),
+    )
+    runtime, _shape, runtime_root = _assemble_shared_reference_runtime(tmp_path, "weavert-shared-web-research")
+
+    result = asyncio.run(
+        runtime.kernel.tool_registry.get("web_research").execute(
+            {
+                "objective": "Search provider outage.",
+                "search_budget": 1,
+                "fetch_budget": 1,
+                "desired_source_count": 1,
+            },
+            _tool_context(runtime, runtime_root),
+        )
+    )
+
+    assert result["sources"] == []
+    assert result["evidence"] == []
+    assert result["answer"] == ""
+    assert result["budget"]["used"] == {"searches": 1, "fetches": 0, "finds": 0}
+    assert result["budget"]["operation_failures"] == 1
+    assert result["stop_reason"] in {"partial_result", "remaining_gaps", "budget_exhausted"}
+    assert result["child_run"]["agent"] == "web_research_loop"
+    failure_events = [event for event in result["trace_summary"] if event["event"] == "operation_failed"]
+    assert failure_events[0]["tool"] == "web_search"
+    assert "fixture search failure" in failure_events[0]["error"]
+
+
+def test_web_research_single_search_can_fetch_multiple_candidates(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    opened_urls: list[str] = []
+
+    def _urlopen(request, timeout=10, **_kwargs):
+        _ = timeout
+        url = request.full_url if hasattr(request, "full_url") else str(request)
+        opened_urls.append(url)
+        return _FakeUrlopenResponse(
+            f"<html><head><title>{url}</title></head><body>Refund evidence from {url}.</body></html>"
+        )
+
+    class _CapturingProvider(reference_web_research_core.FixtureWebResearchProvider):
+        def __init__(self) -> None:
+            super().__init__(
+                search_results={
+                    "refund policy": [
+                        {"title": "Refund source one", "url": "https://grounding.example.test/one"},
+                        {"title": "Refund source two", "url": "https://grounding.example.test/two"},
+                        {"title": "Refund source three", "url": "https://grounding.example.test/three"},
+                    ]
+                }
+            )
+            self.search_limits: list[int] = []
+
+        def search(self, query: str, *, limit: int, policy=None):
+            self.search_limits.append(limit)
+            return super().search(query, limit=limit, policy=policy)
+
+    provider = _CapturingProvider()
+    monkeypatch.setattr(reference_web_tool_impls, "_web_urlopen", _urlopen)
+    monkeypatch.setattr(
+        reference_web_tool_impls,
+        "_web_search_provider_registry",
+        reference_web_research_core.WebSearchProviderRegistry((provider,)),
+    )
+    runtime, _shape, runtime_root = _assemble_shared_reference_runtime(tmp_path, "weavert-shared-web-research")
+
+    result = asyncio.run(
+        runtime.kernel.tool_registry.get("web_research").execute(
+            {
+                "objective": "Compare refund policy sources.",
+                "domains": ["grounding.example.test"],
+                "search_budget": 1,
+                "fetch_budget": 3,
+                "desired_source_count": 3,
+            },
+            _tool_context(runtime, runtime_root),
+        )
+    )
+
+    assert provider.search_limits == [3]
+    assert opened_urls == [
+        "https://grounding.example.test/one",
+        "https://grounding.example.test/two",
+        "https://grounding.example.test/three",
+    ]
+    assert result["budget"]["used"] == {"searches": 1, "fetches": 3, "finds": 0}
+    assert [source["url"] for source in result["sources"]] == opened_urls
+    assert result["stop_reason"] == "sufficient_evidence"
+
+
+def test_web_research_low_yield_replans_once_then_stops_with_remaining_gaps(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = reference_web_research_core.FixtureWebResearchProvider(
+        search_results={
+            "refund policy": [],
+            "Low yield refund policy official source": [],
+        },
+    )
+    monkeypatch.setattr(
+        reference_web_tool_impls,
+        "_web_search_provider_registry",
+        reference_web_research_core.WebSearchProviderRegistry((provider,)),
+    )
+    runtime, _shape, runtime_root = _assemble_shared_reference_runtime(tmp_path, "weavert-shared-web-research")
+
+    result = asyncio.run(
+        runtime.kernel.tool_registry.get("web_research").execute(
+            {
+                "objective": "Low yield refund policy",
+                "search_budget": 2,
+                "fetch_budget": 1,
+                "desired_source_count": 1,
+            },
+            _tool_context(runtime, runtime_root),
+        )
+    )
+
+    assert result["budget"]["used"] == {"searches": 2, "fetches": 0, "finds": 0}
+    assert result["stop_reason"] == "remaining_gaps"
+    events = [event["event"] for event in result["trace_summary"]]
+    assert events.count("replanned") == 1
+    assert events.count("low_yield_search") == 2
+
+
+def test_web_research_low_yield_after_replan_stops_with_partial_result(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(reference_web_tool_impls, "_web_urlopen", _web_urlopen)
+    provider = reference_web_research_core.FixtureWebResearchProvider(
+        search_results={
+            "refund policy": [
+                {"title": "Refund policy", "url": "https://grounding.example.test/refund-policy"}
+            ],
+            "Partial refund policy official source": [],
+        },
+    )
+    monkeypatch.setattr(
+        reference_web_tool_impls,
+        "_web_search_provider_registry",
+        reference_web_research_core.WebSearchProviderRegistry((provider,)),
+    )
+    runtime, _shape, runtime_root = _assemble_shared_reference_runtime(tmp_path, "weavert-shared-web-research")
+
+    result = asyncio.run(
+        runtime.kernel.tool_registry.get("web_research").execute(
+            {
+                "objective": "Partial refund policy",
+                "domains": ["grounding.example.test"],
+                "search_budget": 2,
+                "fetch_budget": 2,
+                "desired_source_count": 2,
+            },
+            _tool_context(runtime, runtime_root),
+        )
+    )
+
+    assert len(result["evidence"]) == 1
+    assert result["budget"]["used"] == {"searches": 2, "fetches": 1, "finds": 0}
+    assert result["stop_reason"] == "partial_result"
+    events = [event["event"] for event in result["trace_summary"]]
+    assert events.count("replanned") == 1
+    assert "low_yield_search" in events
+
+
+def test_web_research_internal_invariant_failure_is_not_projected_as_partial_result(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime, _shape, runtime_root = _assemble_shared_reference_runtime(tmp_path, "weavert-shared-web-research")
+    delegated_calls: list[str] = []
+
+    async def _raise_invariant(_request, _context, _state):
+        raise AssertionError("loop invariant failed")
+
+    async def agent_runner(agent: str, _prompt: str, _context: ToolContext, **_kwargs: Any) -> dict[str, Any]:
+        delegated_calls.append(agent)
+        return {"agent": agent, "status": "completed", "summary": "fallback should not run"}
+
+    monkeypatch.setattr(reference_web_tool_impls, "_run_goal_driven_web_research_loop", _raise_invariant)
+
+    with pytest.raises(AssertionError, match="loop invariant failed"):
+        asyncio.run(
+            runtime.kernel.tool_registry.get("web_research").execute(
+                {"objective": "Trigger invariant failure."},
+                ToolContext(
+                    session_id="invariant-failure",
+                    turn_id="turn-1",
+                    agent_name="tester",
+                    cwd=runtime_root,
+                    tool_registry=runtime.kernel.tool_registry,
+                    agent_registry=runtime.kernel.agent_registry,
+                    tool_pool=tuple(runtime.kernel.tool_registry.definitions()),
+                    runtime_services=runtime.services,
+                    agent_runner=agent_runner,
+                ),
+            )
+        )
+
+    assert delegated_calls == []
+
+
+def test_web_research_records_page_inspection_failure_as_partial_result(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1887,30 +1994,23 @@ def test_web_fetch_records_operation_failure_as_partial_result(
         raise AssertionError(f"Unexpected URL requested during test: {url}")
 
     monkeypatch.setattr(reference_web_tool_impls, "_web_urlopen", _urlopen)
-
-    def _fetch_good(_request):
-        return tool_call_batch(
-            request_id="req-repeated-fetch-good",
-            tool_name="web_fetch",
-            tool_input={"url": "https://grounding.example.test/good"},
-            call_id="call-fetch-good",
-        )
-
-    def _fetch_fail(_request):
-        return tool_call_batch(
-            request_id="req-repeated-fetch-fail",
-            tool_name="web_fetch",
-            tool_input={"url": "https://grounding.example.test/fail"},
-            call_id="call-fetch-fail",
-        )
-
-    def _final_request(_request):
-        return text_batch(request_id="req-repeated-fetch-failure-final", text="One page was inspected.")
+    provider = reference_web_research_core.FixtureWebResearchProvider(
+        search_results={
+            "Inspect two candidate sources.": [
+                {"title": "Good source", "url": "https://grounding.example.test/good"},
+                {"title": "Failing source", "url": "https://grounding.example.test/fail"},
+            ]
+        },
+    )
+    monkeypatch.setattr(
+        reference_web_tool_impls,
+        "_web_search_provider_registry",
+        reference_web_research_core.WebSearchProviderRegistry((provider,)),
+    )
 
     runtime, _shape, runtime_root = _assemble_shared_reference_runtime(
         tmp_path,
         "weavert-shared-web-research",
-        model_client=ScriptedModelClient([_fetch_good, _fetch_fail, _final_request]),
     )
 
     result = asyncio.run(
@@ -1918,14 +2018,14 @@ def test_web_fetch_records_operation_failure_as_partial_result(
             {
                 "objective": "Inspect two candidate sources.",
                 "fetch_budget": 2,
-                "desired_source_count": 1,
+                "desired_source_count": 2,
                 "max_turns": 3,
             },
             _tool_context(runtime, runtime_root),
         )
     )
 
-    assert [source["url"] for source in result["sources"]] == ["https://grounding.example.test/good"]
+    assert [item["url"] for item in result["evidence"]] == ["https://grounding.example.test/good"]
     assert result["budget"]["used"]["fetches"] == 2
     assert result["budget"]["operation_failures"] == 1
     assert result["stop_reason"] == "partial_result"
@@ -1945,37 +2045,29 @@ def test_web_research_stop_reason_uses_desired_source_count_and_freshness_limit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(reference_web_tool_impls, "_web_urlopen", _web_urlopen)
+    provider = reference_web_research_core.FixtureWebResearchProvider(
+        search_results={
+            "refund policy": [
+                {"title": "Refund policy", "url": "https://grounding.example.test/refund-policy"}
+            ]
+        },
+    )
+    monkeypatch.setattr(
+        reference_web_tool_impls,
+        "_web_search_provider_registry",
+        reference_web_research_core.WebSearchProviderRegistry((provider,)),
+    )
     runtime, _shape, runtime_root = _assemble_shared_reference_runtime(tmp_path, "weavert-shared-web-research")
-
-    async def fetch_once(agent: str, _prompt: str, context: ToolContext, **_kwargs: Any) -> dict[str, Any]:
-        await context.tool_registry.get("web_fetch").execute(
-            {"url": "https://grounding.example.test/refund-policy"},
-            context,
-        )
-        return {"agent": agent, "status": "completed", "summary": "One source inspected."}
-
-    def _context(session_id: str) -> ToolContext:
-        return ToolContext(
-            session_id=session_id,
-            turn_id="turn-1",
-            agent_name="tester",
-            cwd=runtime_root,
-            tool_registry=runtime.kernel.tool_registry,
-            agent_registry=runtime.kernel.agent_registry,
-            tool_pool=tuple(runtime.kernel.tool_registry.definitions()),
-            runtime_services=runtime.services,
-            agent_runner=fetch_once,
-        )
 
     unmet_count = asyncio.run(
         runtime.kernel.tool_registry.get("web_research").execute(
             {
-                "objective": "Collect two refund sources.",
+                "objective": "Collect two refund policy sources.",
                 "domains": ["grounding.example.test"],
                 "fetch_budget": 1,
                 "desired_source_count": 2,
             },
-            _context("desired-source-count"),
+            _tool_context(runtime, runtime_root),
         )
     )
     assert len(unmet_count["evidence"]) == 1
@@ -1984,13 +2076,13 @@ def test_web_research_stop_reason_uses_desired_source_count_and_freshness_limit(
     freshness_limited = asyncio.run(
         runtime.kernel.tool_registry.get("web_research").execute(
             {
-                "objective": "Collect fresh refund evidence.",
+                "objective": "Collect fresh refund policy evidence.",
                 "domains": ["grounding.example.test"],
                 "freshness_days": 7,
                 "fetch_budget": 1,
                 "desired_source_count": 1,
             },
-            _context("freshness-limited"),
+            _tool_context(runtime, runtime_root),
         )
     )
     assert len(freshness_limited["evidence"]) == 1
