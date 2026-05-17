@@ -94,7 +94,6 @@ python -m pip install weavert
 
 - `weavert-kit-common-retrieval` 负责对你已经拿到的 grounding 项做排序、摘录和 citation 准备，比如 notes、memory 或 fetched passages。它自己不做公网搜索，也不驱动浏览器。
 - `weavert-kit-common-web-research` 负责只读的公网 web 搜索、页面抓取、页面内 evidence 查找和 profile-driven `web_research`。Profile-specific 字段放在 `facets.<profile>` 下。它不提供浏览器导航、点击，或宿主侧浏览器控制。
-- 已退役的 `weavert-kit-common-web` distribution 不再属于公开 package set。只读公网搜索、抓取、查找和 profile-driven research surfaces 统一使用 `weavert-kit-common-web-research`。
 - `weavert-kit-common-browser` 是一个经由 host mediation 的 browser bridge，用于浏览器状态、导航和交互。它不是 web 搜索适配器，也不意味着 runtime 自主拥有浏览器。
 - `weavert-kit-common-local-os` 桥接的是 files、clipboard、notifications、processes 这类通用本地机器表面。它是更宽的设备桥接，不是结构化个人信息工具。
 - `weavert-kit-common-pim` 桥接的是 calendar events、contacts、reminders、tasks 这类结构化个人信息表面。需要 PIM objects 时选它，不要把它和通用 local-OS access 混在一起。
