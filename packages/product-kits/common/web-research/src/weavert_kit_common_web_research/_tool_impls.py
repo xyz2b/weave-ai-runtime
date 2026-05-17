@@ -86,6 +86,9 @@ _WEB_RESEARCH_CLAIM_ANNOTATION_FIELDS = frozenset(
         "source_handle",
         "page_handle",
         "evidence_id",
+        "conflicts_with",
+        "explicit_incompatibility",
+        "incompatible_with",
         "resolved",
         "resolution_rationale",
         "rationale",
@@ -896,7 +899,7 @@ def _evaluate_loop_progress(
     evidence_count = len(state.evidence_payload())
     search_budget = int(request["budget"]["search_budget"])
     fetch_budget = int(request["budget"]["fetch_budget"])
-    if state.conflicts_payload():
+    if any(not conflict.get("resolved") for conflict in state.conflicts_payload()):
         return LoopDecision(stage="evaluate_progress", stop_reason="unresolved_conflict", rationale="unresolved conflicts recorded")
     if stop_reason == "sufficient_evidence":
         return LoopDecision(stage="evaluate_progress", stop_reason="sufficient_evidence", rationale="desired source count and freshness satisfied")
@@ -1470,9 +1473,18 @@ def _project_web_research_result(
         )
         if match is not None:
             match.setdefault("claims", []).append(claim)
+    child_conflicts, dropped_conflicts = _ledger_bound_conflicts(
+        structured,
+        sources,
+        evidence,
+        annotated_claims,
+    )
+    if dropped_conflicts:
+        state.record_unverified_child_metadata_dropped(dropped_conflicts)
+        trace.extend(dropped_conflicts)
     conflicts = [
         *state.conflicts_payload(),
-        *_list_of_mappings(structured.get("conflicts")),
+        *child_conflicts,
         *_detect_claim_conflicts(annotated_claims),
     ]
     gaps = _derive_gaps(request, sources, evidence, stop_reason, [*state.gaps_payload(), *_list_of_mappings(structured.get("gaps"))])
@@ -1635,14 +1647,17 @@ def _detect_claim_conflicts(claims: list[dict[str, Any]]) -> list[dict[str, Any]
         grouped.setdefault(_identity_value(claim.get("claim_key")) or _claim_key(claim), []).append(claim)
     conflicts: list[dict[str, Any]] = []
     for key, group in grouped.items():
-        stances = {_identity_value(claim.get("stance")).lower() for claim in group if _identity_value(claim.get("stance"))}
-        incompatible = len(stances.intersection({"supports", "for", "yes", "true"})) > 0 and len(
-            stances.intersection({"disputes", "against", "no", "false"})
-        ) > 0
-        texts = {_identity_value(claim.get("claim")).lower() for claim in group if _identity_value(claim.get("claim"))}
-        if not incompatible and len(texts) < 2:
-            continue
+        positive = [claim for claim in group if _claim_stance_family(claim) == "positive"]
+        negative = [claim for claim in group if _claim_stance_family(claim) == "negative"]
+        explicit = [
+            claim
+            for claim in group
+            if claim.get("incompatible_with") or claim.get("conflicts_with") or claim.get("explicit_incompatibility")
+        ]
         resolved_claims = [claim for claim in group if claim.get("resolved") or claim.get("resolution_rationale")]
+        incompatible = bool(positive and negative) or bool(explicit) or bool(resolved_claims)
+        if not incompatible:
+            continue
         conflicts.append(
             {
                 "kind": "claim_conflict",
@@ -1665,6 +1680,81 @@ def _detect_claim_conflicts(claims: list[dict[str, Any]]) -> list[dict[str, Any]
             }
         )
     return conflicts
+
+
+def _ledger_bound_conflicts(
+    structured: Mapping[str, Any],
+    sources: list[dict[str, Any]],
+    evidence: list[dict[str, Any]],
+    claims: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    accepted: list[dict[str, Any]] = []
+    dropped: list[dict[str, Any]] = []
+    raw_conflicts = _list_of_mappings(structured.get("conflicts"))
+    for index, raw in enumerate(raw_conflicts):
+        conflict = dict(raw)
+        if _conflict_is_ledger_bound(conflict, sources, evidence, claims):
+            conflict.setdefault("kind", "claim_conflict")
+            accepted.append(conflict)
+            continue
+        dropped.append(_unverified_child_metadata_event("conflict", raw, index))
+    return accepted, dropped
+
+
+def _conflict_is_ledger_bound(
+    conflict: Mapping[str, Any],
+    sources: list[dict[str, Any]],
+    evidence: list[dict[str, Any]],
+    claims: list[dict[str, Any]],
+) -> bool:
+    if _find_unique_child_match(
+        conflict,
+        sources,
+        identity_fields=("source_handle", "page_handle", "id"),
+        fallback_fields=("url",),
+    ):
+        return True
+    if _find_unique_child_match(
+        conflict,
+        evidence,
+        identity_fields=("evidence_id", "source_handle", "page_handle", "id"),
+        fallback_fields=("url",),
+    ):
+        return True
+    claim_ids = {_identity_value(claim.get("id")) for claim in claims if _identity_value(claim.get("id"))}
+    claim_keys = {_identity_value(claim.get("claim_key")) for claim in claims if _identity_value(claim.get("claim_key"))}
+    for value in _conflict_reference_values(conflict):
+        if value in claim_ids or value in claim_keys:
+            return True
+    return False
+
+
+def _conflict_reference_values(conflict: Mapping[str, Any]) -> set[str]:
+    values = {
+        _identity_value(conflict.get(key))
+        for key in ("claim_id", "claim_key", "source_handle", "page_handle", "evidence_id")
+    }
+    for key in ("claim_ids", "claim_keys", "claims", "source_handles", "page_handles", "evidence_ids"):
+        raw = conflict.get(key)
+        if isinstance(raw, list):
+            for item in raw:
+                if isinstance(item, Mapping):
+                    values.update(
+                        _identity_value(item.get(field))
+                        for field in ("id", "claim_key", "source_handle", "page_handle", "evidence_id")
+                    )
+                else:
+                    values.add(_identity_value(item))
+    return {value for value in values if value}
+
+
+def _claim_stance_family(claim: Mapping[str, Any]) -> str:
+    stance = _identity_value(claim.get("stance")).lower()
+    if stance in {"supports", "support", "for", "yes", "true", "affirmed", "positive"}:
+        return "positive"
+    if stance in {"disputes", "dispute", "against", "no", "false", "refutes", "negative"}:
+        return "negative"
+    return "neutral"
 
 
 def _claim_key(claim: Mapping[str, Any]) -> str:

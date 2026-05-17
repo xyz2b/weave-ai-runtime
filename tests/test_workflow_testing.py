@@ -272,7 +272,18 @@ def test_web_research_testing_assertions_cover_quality_claims_conflicts_and_gaps
                 "quality": {"signals": ["profile_priority:official_docs"]},
             }
         ],
-        "evidence": [{"url": "https://docs.example.test/api", "excerpt": "API v2 costs $10 in 2026.", "source_handle": "s1"}],
+        "evidence": [
+            {
+                "url": "https://docs.example.test/api",
+                "excerpt": "API v2 costs $10 in 2026.",
+                "source_handle": "s1",
+                "source_class": "official_docs",
+                "quality": {
+                    "signals": ["profile_priority:official_docs", "inspection_success"],
+                    "diagnostic_only": True,
+                },
+            }
+        ],
         "claims": [{"claim": "API v2 is current.", "source_handle": "s1", "claim_key": "api_v2"}],
         "conflicts": [{"kind": "claim_conflict", "claim_key": "api_v2", "resolved": False}],
         "gaps": [{"kind": "remaining_gaps", "message": "Need release notes."}],
@@ -284,6 +295,7 @@ def test_web_research_testing_assertions_cover_quality_claims_conflicts_and_gaps
     assert_web_research_claims_bound(payload)
     assert_web_research_conflicts(payload, resolved=False)
     assert_web_research_gaps(payload, kinds=("remaining_gaps",))
+    assert payload["evidence"][0]["quality"]["diagnostic_only"] is True
 
 
 def test_run_workflow_test_collects_scripted_diagnostics_from_route_model_client(tmp_path: Path) -> None:

@@ -1986,6 +1986,11 @@ def test_web_research_profile_source_scoring_is_traceable_and_deterministic(
     selected_source = next(source for source in result["sources"] if source["url"] == "https://docs.example.test/widget-api-v2")
     assert selected_source["source_class"] == "official_docs"
     assert "profile_priority:official_docs" in selected_source["quality"]["signals"]
+    inspected_evidence = next(item for item in result["evidence"] if item["url"] == "https://docs.example.test/widget-api-v2")
+    assert inspected_evidence["source_class"] == "official_docs"
+    assert "profile_priority:official_docs" in inspected_evidence["quality"]["signals"]
+    assert "inspection_success" in inspected_evidence["quality"]["signals"]
+    assert inspected_evidence["quality"]["diagnostic_only"] is True
     selected = [event for event in result["trace_summary"] if event["event"] == "page_selected"]
     assert selected
     assert "profile_priority:official_docs" in selected[0]["rationale"]
@@ -2076,6 +2081,278 @@ def test_web_research_accepts_only_ledger_bound_claims_and_projects_conflicts(
     assert result["stop_reason"] == "unresolved_conflict"
     assert any(event["event"] == "unverified_child_metadata_dropped" and event["kind"] == "claim" for event in result["trace_summary"])
     assert result["auxiliary_signals"]["numbers"]
+
+
+def test_web_research_unresolved_child_conflict_overrides_partial_result(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(reference_web_tool_impls, "_web_urlopen", _web_urlopen)
+    runtime, _shape, runtime_root = _assemble_shared_reference_runtime(tmp_path, "weavert-shared-web-research")
+
+    async def _request_fallback(_request, _context, _state):
+        raise reference_web_tool_impls._DelegatedWebResearchFallbackRequested("test fallback before web budget")
+
+    async def agent_runner(agent: str, _prompt: str, context: ToolContext, **_kwargs: Any) -> dict[str, Any]:
+        fetched = await context.tool_registry.get("web_fetch").execute(
+            {"url": "https://grounding.example.test/refund-policy"},
+            context,
+        )
+        return {
+            "agent": agent,
+            "status": "completed",
+            "terminal_metadata": {
+                "web_research": {
+                    "claims": [
+                        {
+                            "id": "claim-refund",
+                            "claim": "Refunds are available for 30 days.",
+                            "claim_key": "refund_window",
+                            "source_handle": fetched["source_handle"],
+                        }
+                    ],
+                    "conflicts": [
+                        {
+                            "kind": "claim_conflict",
+                            "claim_key": "refund_window",
+                            "claim_ids": ["claim-refund"],
+                            "source_handles": [fetched["source_handle"]],
+                            "resolved": False,
+                        }
+                    ],
+                    "stop_reason": "partial_result",
+                }
+            },
+        }
+
+    monkeypatch.setattr(reference_web_tool_impls, "_run_goal_driven_web_research_loop", _request_fallback)
+    result = asyncio.run(
+        runtime.kernel.tool_registry.get("web_research").execute(
+            {
+                "objective": "Check partial conflict evidence.",
+                "domains": ["grounding.example.test"],
+                "fetch_budget": 1,
+                "desired_source_count": 2,
+            },
+            ToolContext(
+                session_id="partial-conflict",
+                turn_id="turn-1",
+                agent_name="tester",
+                cwd=runtime_root,
+                tool_registry=runtime.kernel.tool_registry,
+                agent_registry=runtime.kernel.agent_registry,
+                tool_pool=tuple(runtime.kernel.tool_registry.definitions()),
+                runtime_services=runtime.services,
+                agent_runner=agent_runner,
+            ),
+        )
+    )
+
+    assert result["conflicts"][0]["claim_key"] == "refund_window"
+    assert result["stop_reason"] == "unresolved_conflict"
+
+
+def test_web_research_resolved_child_conflict_preserves_rationale_without_unresolved_stop(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(reference_web_tool_impls, "_web_urlopen", _web_urlopen)
+    runtime, _shape, runtime_root = _assemble_shared_reference_runtime(tmp_path, "weavert-shared-web-research")
+
+    async def _request_fallback(_request, _context, _state):
+        raise reference_web_tool_impls._DelegatedWebResearchFallbackRequested("test fallback before web budget")
+
+    async def agent_runner(agent: str, _prompt: str, context: ToolContext, **_kwargs: Any) -> dict[str, Any]:
+        fetched = await context.tool_registry.get("web_fetch").execute(
+            {"url": "https://grounding.example.test/refund-policy"},
+            context,
+        )
+        return {
+            "agent": agent,
+            "status": "completed",
+            "terminal_metadata": {
+                "web_research": {
+                    "claims": [
+                        {
+                            "id": "claim-refund",
+                            "claim": "Refunds are available for 30 days.",
+                            "claim_key": "refund_window",
+                            "source_handle": fetched["source_handle"],
+                        }
+                    ],
+                    "conflicts": [
+                        {
+                            "kind": "claim_conflict",
+                            "claim_key": "refund_window",
+                            "claim_ids": ["claim-refund"],
+                            "source_handles": [fetched["source_handle"]],
+                            "resolved": True,
+                            "resolution_rationale": "Current policy supersedes the older notice.",
+                        }
+                    ],
+                    "stop_reason": "sufficient_evidence",
+                }
+            },
+        }
+
+    monkeypatch.setattr(reference_web_tool_impls, "_run_goal_driven_web_research_loop", _request_fallback)
+    result = asyncio.run(
+        runtime.kernel.tool_registry.get("web_research").execute(
+            {
+                "objective": "Check resolved refund evidence.",
+                "domains": ["grounding.example.test"],
+                "fetch_budget": 1,
+                "desired_source_count": 1,
+            },
+            ToolContext(
+                session_id="resolved-conflict",
+                turn_id="turn-1",
+                agent_name="tester",
+                cwd=runtime_root,
+                tool_registry=runtime.kernel.tool_registry,
+                agent_registry=runtime.kernel.agent_registry,
+                tool_pool=tuple(runtime.kernel.tool_registry.definitions()),
+                runtime_services=runtime.services,
+                agent_runner=agent_runner,
+            ),
+        )
+    )
+
+    assert result["conflicts"][0]["resolved"] is True
+    assert result["conflicts"][0]["resolution_rationale"] == "Current policy supersedes the older notice."
+    assert result["stop_reason"] == "sufficient_evidence"
+
+
+def test_web_research_compatible_same_key_claims_are_not_text_conflicts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(reference_web_tool_impls, "_web_urlopen", _web_urlopen)
+    runtime, _shape, runtime_root = _assemble_shared_reference_runtime(tmp_path, "weavert-shared-web-research")
+
+    async def _request_fallback(_request, _context, _state):
+        raise reference_web_tool_impls._DelegatedWebResearchFallbackRequested("test fallback before web budget")
+
+    async def agent_runner(agent: str, _prompt: str, context: ToolContext, **_kwargs: Any) -> dict[str, Any]:
+        first = await context.tool_registry.get("web_fetch").execute(
+            {"url": "https://grounding.example.test/refund-policy"},
+            context,
+        )
+        second = await context.tool_registry.get("web_fetch").execute(
+            {"url": "https://grounding.example.test/refund-policy"},
+            context,
+        )
+        return {
+            "agent": agent,
+            "status": "completed",
+            "terminal_metadata": {
+                "web_research": {
+                    "claims": [
+                        {
+                            "claim": "Refunds are available for 30 days.",
+                            "claim_key": "refund_window",
+                            "stance": "supports",
+                            "source_handle": first["source_handle"],
+                        },
+                        {
+                            "claim": "Customers may request refunds within thirty days.",
+                            "claim_key": "refund_window",
+                            "stance": "supports",
+                            "source_handle": second["source_handle"],
+                        },
+                    ],
+                    "stop_reason": "sufficient_evidence",
+                }
+            },
+        }
+
+    monkeypatch.setattr(reference_web_tool_impls, "_run_goal_driven_web_research_loop", _request_fallback)
+    result = asyncio.run(
+        runtime.kernel.tool_registry.get("web_research").execute(
+            {
+                "objective": "Check compatible refund claims.",
+                "domains": ["grounding.example.test"],
+                "fetch_budget": 2,
+                "desired_source_count": 1,
+            },
+            ToolContext(
+                session_id="compatible-claims",
+                turn_id="turn-1",
+                agent_name="tester",
+                cwd=runtime_root,
+                tool_registry=runtime.kernel.tool_registry,
+                agent_registry=runtime.kernel.agent_registry,
+                tool_pool=tuple(runtime.kernel.tool_registry.definitions()),
+                runtime_services=runtime.services,
+                agent_runner=agent_runner,
+            ),
+        )
+    )
+
+    assert len(result["claims"]) == 2
+    assert result["conflicts"] == []
+    assert result["stop_reason"] != "unresolved_conflict"
+
+
+def test_web_research_drops_unbound_child_conflicts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(reference_web_tool_impls, "_web_urlopen", _web_urlopen)
+    runtime, _shape, runtime_root = _assemble_shared_reference_runtime(tmp_path, "weavert-shared-web-research")
+
+    async def _request_fallback(_request, _context, _state):
+        raise reference_web_tool_impls._DelegatedWebResearchFallbackRequested("test fallback before web budget")
+
+    async def agent_runner(agent: str, _prompt: str, context: ToolContext, **_kwargs: Any) -> dict[str, Any]:
+        await context.tool_registry.get("web_fetch").execute(
+            {"url": "https://grounding.example.test/refund-policy"},
+            context,
+        )
+        return {
+            "agent": agent,
+            "status": "completed",
+            "terminal_metadata": {
+                "web_research": {
+                    "conflicts": [
+                        {
+                            "kind": "claim_conflict",
+                            "claim_key": "fabricated",
+                            "source_handles": ["missing-source"],
+                            "resolved": False,
+                        }
+                    ],
+                    "stop_reason": "sufficient_evidence",
+                }
+            },
+        }
+
+    monkeypatch.setattr(reference_web_tool_impls, "_run_goal_driven_web_research_loop", _request_fallback)
+    result = asyncio.run(
+        runtime.kernel.tool_registry.get("web_research").execute(
+            {
+                "objective": "Drop fabricated conflicts.",
+                "domains": ["grounding.example.test"],
+                "fetch_budget": 1,
+                "desired_source_count": 1,
+            },
+            ToolContext(
+                session_id="unbound-conflict",
+                turn_id="turn-1",
+                agent_name="tester",
+                cwd=runtime_root,
+                tool_registry=runtime.kernel.tool_registry,
+                agent_registry=runtime.kernel.agent_registry,
+                tool_pool=tuple(runtime.kernel.tool_registry.definitions()),
+                runtime_services=runtime.services,
+                agent_runner=agent_runner,
+            ),
+        )
+    )
+
+    assert result["conflicts"] == []
+    assert result["stop_reason"] == "sufficient_evidence"
+    assert any(event["event"] == "unverified_child_metadata_dropped" and event["kind"] == "conflict" for event in result["trace_summary"])
 
 
 def test_web_research_single_search_can_fetch_multiple_candidates(

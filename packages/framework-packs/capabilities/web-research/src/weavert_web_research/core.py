@@ -202,6 +202,28 @@ def web_research_confidence_from_stop_reason(stop_reason: str) -> str:
     return "low"
 
 
+def _inspection_quality(result: Mapping[str, Any]) -> dict[str, Any] | None:
+    source = result.get("source") if isinstance(result.get("source"), Mapping) else {}
+    raw_quality = result.get("quality") if isinstance(result.get("quality"), Mapping) else source.get("quality")
+    quality = dict(raw_quality) if isinstance(raw_quality, Mapping) else {}
+    signals = list(quality.get("signals") or ())
+    for signal in ("inspection_success", "content_relevance", "evidence_density"):
+        if signal not in signals:
+            signals.append(signal)
+    if result.get("freshness_scope") or source.get("freshness_scope"):
+        signals.append("freshness_metadata")
+    source_class = result.get("source_class") or source.get("source_class")
+    if source_class:
+        quality.setdefault("source_class", source_class)
+        signals.append(f"source_class:{source_class}")
+    excerpt = _identity_value(result.get("excerpt") or _first_excerpt(result.get("content")))
+    if excerpt:
+        quality["inspected_excerpt_length"] = len(excerpt)
+    quality["signals"] = list(dict.fromkeys(str(signal) for signal in signals if signal))
+    quality["diagnostic_only"] = True
+    return quality or None
+
+
 def refine_web_research_stop_reason(
     stop_reason: str,
     *,
@@ -210,9 +232,12 @@ def refine_web_research_stop_reason(
     gaps: Sequence[Mapping[str, Any]] = (),
 ) -> str:
     child_stop = web_research_stop_reason_from_status(child_status)
-    if child_stop in {"unresolved_conflict", "remaining_gaps"}:
+    unresolved_conflicts = [conflict for conflict in conflicts if not conflict.get("resolved")]
+    if child_stop == "unresolved_conflict" and unresolved_conflicts:
         return child_stop
-    if conflicts and stop_reason == "sufficient_evidence":
+    if child_stop == "remaining_gaps":
+        return child_stop
+    if unresolved_conflicts and stop_reason in {"sufficient_evidence", "partial_result"}:
         return "unresolved_conflict"
     if gaps and stop_reason == "sufficient_evidence":
         return "remaining_gaps"
@@ -308,6 +333,9 @@ class WebResearchLoopState:
                     "excerpt": result.get("excerpt") or _first_excerpt(result.get("content")),
                     "source_handle": result.get("source_handle"),
                     "page_handle": result.get("page_handle"),
+                    "source_class": result.get("source_class")
+                    or (result.get("source") if isinstance(result.get("source"), Mapping) else {}).get("source_class"),
+                    "quality": _inspection_quality(result),
                 }
             )
             self._append_trace(
