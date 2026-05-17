@@ -23,6 +23,16 @@ Use `web_research` for AI-first research and pass `profile="coding"` or another 
 
 This package is read-only. Browser navigation, clicks, form filling, authenticated browsing, and DOM interaction remain browser-bridge responsibilities.
 
+## Search Provider Selection
+
+Public tool names stay stable: callers continue to use `web_research`, `web_search`, `web_fetch`, and `web_find`. Search provider selection is handled by the shared `weavert-web-research` core.
+
+- `google-search`: set `GOOGLE_SEARCH_API_KEY` and `GOOGLE_SEARCH_CX`; optionally set `WEAVERT_WEB_SEARCH_PROVIDER=google-search`.
+- `brave-search`: set `BRAVE_SEARCH_API_KEY` or `WEAVERT_BRAVE_SEARCH_API_KEY`; optionally set `WEAVERT_WEB_SEARCH_PROVIDER=brave-search`.
+- `duckduckgo-html`: no-credential fallback. It does not expose a stable freshness filter through this adapter.
+
+Google and Brave map domain constraints into provider query operators where supported, while the shared core still revalidates accepted result URLs against allowed domains, blocked domains, and public-host policy. Freshness semantics are provider-specific: Google uses approximate `dateRestrict`, Brave uses its `freshness` parameter, and DuckDuckGo reports freshness as unsupported.
+
 ## See also
 
 - `../README.md`

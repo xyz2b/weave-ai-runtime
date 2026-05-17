@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from email.message import Message
+import json
 import os
 from pathlib import Path
 import socket
@@ -2164,6 +2165,115 @@ def test_brave_provider_maps_freshness_and_domain_filters() -> None:
     assert result["freshness_scope"] == {"requested_days": 7, "status": "enforced"}
 
 
+def test_google_provider_maps_query_parameters_and_normalizes_results() -> None:
+    requested_urls: list[str] = []
+
+    def _google_urlopen(request, timeout=10, **_kwargs):
+        _ = timeout
+        requested_urls.append(request.full_url)
+        return _FakeUrlopenResponse(
+            json.dumps(
+                {
+                    "items": [
+                        {
+                            "title": "Fresh docs",
+                            "link": "https://docs.example.test/current",
+                            "snippet": "Fresh Google result",
+                            "displayLink": "docs.example.test",
+                            "formattedUrl": "https://docs.example.test/current",
+                        },
+                        {
+                            "title": "Outside",
+                            "link": "https://outside.example.test/current",
+                            "snippet": "Filtered by core",
+                        },
+                    ]
+                }
+            ),
+            content_type="application/json",
+        )
+
+    provider = reference_web_research_core.GoogleSearchApiProvider(
+        api_key="google-token",
+        cx="search-engine-id",
+        urlopen=_google_urlopen,
+    )
+    policy = reference_web_research_core.build_policy(
+        {
+            "domains": ["docs.example.test"],
+            "blocked_domains": ["old.example.test"],
+            "freshness_days": 7,
+            "limit": 2,
+        }
+    )
+
+    result = reference_web_research_core.search_web(
+        "api reference",
+        provider="google-search",
+        registry=reference_web_research_core.WebSearchProviderRegistry((provider,)),
+        policy=policy,
+    )
+
+    parsed = urllib.parse.urlparse(requested_urls[0])
+    query_params = urllib.parse.parse_qs(parsed.query)
+    assert query_params["key"] == ["google-token"]
+    assert query_params["cx"] == ["search-engine-id"]
+    assert query_params["num"] == ["2"]
+    assert query_params["dateRestrict"] == ["d7"]
+    assert "site:docs.example.test" in query_params["q"][0]
+    assert "-site:old.example.test" in query_params["q"][0]
+    assert result["provider"]["id"] == "google-search"
+    assert result["provider_selection"]["selected"] == "google-search"
+    assert result["freshness_scope"] == {"requested_days": 7, "status": "enforced"}
+    assert [item["url"] for item in result["results"]] == ["https://docs.example.test/current"]
+    assert result["results"][0]["metadata"]["provider_result_metadata"]["displayLink"] == "docs.example.test"
+
+
+def test_default_registry_includes_configured_google_and_falls_back(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GOOGLE_SEARCH_API_KEY", "google-token")
+    monkeypatch.setenv("GOOGLE_SEARCH_CX", "search-engine-id")
+    monkeypatch.setenv("WEAVERT_WEB_SEARCH_PROVIDER", "google-search")
+    registry = reference_web_research_core.default_web_search_provider_registry()
+
+    assert [provider.provider_metadata.provider_id for provider in registry.providers] == [
+        "google-search",
+        "duckduckgo-html",
+    ]
+
+    class _FailingGoogleProvider:
+        provider_metadata = reference_web_research_core.GoogleSearchApiProvider(
+            api_key="google-token",
+            cx="search-engine-id",
+        ).provider_metadata
+
+        def search(self, query: str, *, limit: int, policy=None):
+            _ = query, limit, policy
+            raise ValueError("google unavailable")
+
+        def fetch(self, url: str, *, timeout: float, max_bytes: int):
+            _ = url, timeout, max_bytes
+            raise NotImplementedError
+
+        def find(self, page: dict[str, Any], pattern: str, *, limit: int, excerpt_chars: int):
+            _ = page, pattern, limit, excerpt_chars
+            raise NotImplementedError
+
+    fallback_provider = reference_web_research_core.FixtureWebResearchProvider(
+        provider_id="legacy-fixture",
+        search_results={"refund policy": [{"title": "Refund policy", "url": "https://grounding.example.test/refund"}]},
+    )
+    fallback = reference_web_research_core.search_web(
+        "refund policy",
+        provider="google-search",
+        registry=reference_web_research_core.WebSearchProviderRegistry((_FailingGoogleProvider(), fallback_provider)),
+        policy=reference_web_research_core.build_policy({"domains": ["grounding.example.test"], "limit": 1}),
+    )
+
+    assert fallback["provider"]["id"] == "legacy-fixture"
+    assert fallback["provider_selection"]["status"] == "fallback"
+    assert fallback["provider_fallback"]["from"] == "google-search"
+
+
 @pytest.mark.skipif(
     not os.environ.get("WEAVERT_LIVE_WEB_PROVIDER_SMOKE"),
     reason="live web provider smoke validation is opt-in",
@@ -2181,6 +2291,27 @@ def test_live_brave_provider_smoke_validation_is_opt_in() -> None:
     )
 
     assert result["provider"]["id"] == "brave-search"
+    assert result["freshness_scope"]["status"] == "enforced"
+    assert result["results"]
+
+
+@pytest.mark.skipif(
+    not os.environ.get("WEAVERT_LIVE_GOOGLE_SEARCH_SMOKE"),
+    reason="live Google provider smoke validation is opt-in",
+)
+def test_live_google_provider_smoke_validation_is_opt_in() -> None:
+    if not (os.environ.get("GOOGLE_SEARCH_API_KEY") and os.environ.get("GOOGLE_SEARCH_CX")):
+        pytest.skip("GOOGLE_SEARCH_API_KEY and GOOGLE_SEARCH_CX are required")
+
+    result = reference_web_research_core.search_web(
+        "WeaveRT runtime",
+        registry=reference_web_research_core.WebSearchProviderRegistry(
+            (reference_web_research_core.GoogleSearchApiProvider(),)
+        ),
+        policy=reference_web_research_core.build_policy({"freshness_days": 31, "limit": 2}),
+    )
+
+    assert result["provider"]["id"] == "google-search"
     assert result["freshness_scope"]["status"] == "enforced"
     assert result["results"]
 

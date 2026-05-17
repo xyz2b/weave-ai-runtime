@@ -917,6 +917,129 @@ class BraveSearchApiProvider:
         raise NotImplementedError("BraveSearchApiProvider only implements search")
 
 
+class GoogleSearchApiProvider:
+    provider_metadata = WebSearchProviderMetadata(
+        provider_id="google-search",
+        display_name="Google Programmable Search JSON API",
+        capabilities=WebSearchProviderCapabilities(
+            domain_filtering=True,
+            blocked_domain_filtering=True,
+            result_limit=True,
+            freshness=True,
+            fetch=False,
+            page_find=False,
+            usage=(
+                "Optional live provider. Configure with GOOGLE_SEARCH_API_KEY and "
+                "GOOGLE_SEARCH_CX; freshness maps to Google's dateRestrict parameter."
+            ),
+        ),
+        credential_required=True,
+        configured=False,
+        notes="Domain allow/block constraints are mapped to Google query operators and still revalidated by the core.",
+    )
+
+    def __init__(
+        self,
+        *,
+        api_key: str | None = None,
+        cx: str | None = None,
+        urlopen: Callable[..., Any] | None = None,
+        endpoint: str = "https://www.googleapis.com/customsearch/v1",
+    ) -> None:
+        self._api_key = api_key or os.environ.get("GOOGLE_SEARCH_API_KEY")
+        self._cx = cx or os.environ.get("GOOGLE_SEARCH_CX")
+        self._urlopen = urlopen or web_urlopen
+        self._endpoint = endpoint
+        configured = bool(self._api_key and self._cx)
+        self.provider_metadata = WebSearchProviderMetadata(
+            provider_id="google-search",
+            display_name="Google Programmable Search JSON API",
+            capabilities=self.__class__.provider_metadata.capabilities,
+            credential_required=True,
+            configured=configured,
+            notes=self.__class__.provider_metadata.notes,
+        )
+
+    @property
+    def configured(self) -> bool:
+        return bool(self._api_key and self._cx)
+
+    def search(
+        self,
+        query: str,
+        *,
+        limit: int,
+        policy: WebResearchPolicy | None = None,
+    ) -> list[BackendSearchResult]:
+        if not self._api_key or not self._cx:
+            raise ValueError("Google Search API provider requires GOOGLE_SEARCH_API_KEY and GOOGLE_SEARCH_CX")
+        resolved_policy = policy or WebResearchPolicy()
+        params: dict[str, Any] = {
+            "key": self._api_key,
+            "cx": self._cx,
+            "q": _query_with_domain_operators(
+                query,
+                allowed_domains=resolved_policy.allowed_domains,
+                blocked_domains=resolved_policy.blocked_domains,
+            ),
+            "num": max(1, min(int(limit), 10)),
+        }
+        date_restrict = _google_date_restrict_parameter(resolved_policy.freshness_days)
+        if date_restrict is not None:
+            params["dateRestrict"] = date_restrict
+        request = urllib.request.Request(
+            f"{self._endpoint}?{urllib.parse.urlencode(params)}",
+            headers={
+                "Accept": "application/json",
+                "Accept-Encoding": "identity",
+                "User-Agent": "weavert/0.1",
+            },
+        )
+        with self._urlopen(request, timeout=10) as response:
+            body = response.read().decode("utf-8", errors="replace")
+        payload = json.loads(body)
+        raw_results = payload.get("items", [])
+        if not isinstance(raw_results, list):
+            return []
+        results: list[BackendSearchResult] = []
+        for raw in raw_results:
+            if not isinstance(raw, Mapping):
+                continue
+            normalized_url = normalize_web_url(raw.get("link"))
+            if normalized_url is None:
+                continue
+            title = _normalize_optional_string(raw.get("title")) or normalized_url
+            excerpt = _normalize_optional_string(raw.get("snippet")) or _normalize_optional_string(
+                raw.get("htmlSnippet")
+            ) or ""
+            metadata = {
+                key: raw[key]
+                for key in ("displayLink", "formattedUrl", "htmlFormattedUrl", "mime", "fileFormat")
+                if key in raw
+            }
+            if "pagemap" in raw and isinstance(raw["pagemap"], Mapping):
+                metadata["pagemap"] = dict(raw["pagemap"])
+            results.append(BackendSearchResult(title=title, url=normalized_url, excerpt=excerpt, metadata=metadata))
+            if len(results) >= limit:
+                break
+        return results
+
+    def fetch(self, url: str, *, timeout: float, max_bytes: int) -> BackendFetchResult:
+        _ = url, timeout, max_bytes
+        raise NotImplementedError("GoogleSearchApiProvider only implements search")
+
+    def find(
+        self,
+        page: Mapping[str, Any],
+        pattern: str,
+        *,
+        limit: int,
+        excerpt_chars: int,
+    ) -> list[BackendFindMatch]:
+        _ = page, pattern, limit, excerpt_chars
+        raise NotImplementedError("GoogleSearchApiProvider only implements search")
+
+
 class FixtureWebResearchProvider:
     def __init__(
         self,
@@ -1057,6 +1180,9 @@ def default_web_search_provider_registry(
 ) -> WebSearchProviderRegistry:
     requested = _normalize_optional_string(os.environ.get("WEAVERT_WEB_SEARCH_PROVIDER"))
     providers: list[WebResearchBackend] = []
+    google = GoogleSearchApiProvider()
+    if google.configured:
+        providers.append(google)
     brave = BraveSearchApiProvider()
     if brave.configured:
         providers.append(brave)
@@ -1821,6 +1947,16 @@ def _brave_freshness_parameter(days: int | None) -> str | None:
     today = datetime.now(timezone.utc).date()
     start = today - timedelta(days=days)
     return f"{start.strftime('%Y-%m-%d')}to{today.strftime('%Y-%m-%d')}"
+
+
+def _google_date_restrict_parameter(days: int | None) -> str | None:
+    if days is None:
+        return None
+    if days <= 31:
+        return f"d{max(1, days)}"
+    if days <= 365:
+        return f"m{max(1, round(days / 30))}"
+    return f"y{max(1, round(days / 365))}"
 
 
 def _first_error_line(exc: Exception) -> str:
