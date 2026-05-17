@@ -20,6 +20,10 @@ on:
           - "1"
           - "2"
           - "3"
+      package:
+        description: Optional public distribution name within the selected wave
+        required: false
+        type: string
       skip_existing:
         description: Skip duplicate files when retrying an upload
         required: true
@@ -53,7 +57,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 packages/toolchain/scripts/publish_workspace_packages.py matrix --wave "${{ inputs.wave }}" > matrix.json
+          args=(matrix --wave "${{ inputs.wave }}")
+          if [ -n "${{ inputs.package }}" ]; then
+            args+=(--package "${{ inputs.package }}")
+          fi
+          python3 packages/toolchain/scripts/publish_workspace_packages.py "${args[@]}" > matrix.json
           package_count="$(python3 -c 'import json; print(len(json.load(open("matrix.json", "r", encoding="utf-8"))))')"
           echo "matrix=$(cat matrix.json)" >> "$GITHUB_OUTPUT"
           echo "package_count=$package_count" >> "$GITHUB_OUTPUT"
