@@ -83,7 +83,7 @@ python -m pip install weavert
 | Install name | Import root | Runtime activation | 增加什么 | 典型用途 |
 | --- | --- | --- | --- | --- |
 | `weavert-kit-common-retrieval` | `weavert_kit_common_retrieval` | `weavert-shared-retrieval` | Shared retrieval surfaces | 在 chat 或 assistant 产品间复用 retrieval support |
-| `weavert-kit-common-web-research` | `weavert_kit_common_web_research` | `weavert-shared-web-research` | 带 `web_research`、profile facets、provider metadata、freshness outcome 和低层 `web_*` primitives 的统一只读 web research surfaces | 增加 web 信息检索，但不采用完整 scenario profile |
+| `weavert-kit-common-web-research` | `weavert_kit_common_web_research` | `weavert-shared-web-research` | 带 `web_research`、profile facets、provider metadata、Bing grounding/Google/SerpAPI/Brave/DuckDuckGo search selection、freshness outcomes、单页 `web_fetch` 和低层 `web_*` primitives 的统一只读 web research surfaces | 增加 web 信息检索，但不采用完整 scenario profile |
 | `weavert-kit-common-git` | `weavert_kit_common_git` | `weavert-shared-git` | Shared git inspection surfaces | 给自定义 coding workflow 增加 repository inspection |
 | `weavert-kit-common-workspace-intelligence` | `weavert_kit_common_workspace_intelligence` | `weavert-shared-workspace-intelligence` | Shared workspace-intelligence surfaces | 增加 workspace-aware coding support |
 | `weavert-kit-common-browser` | `weavert_kit_common_browser` | `weavert-bridge-browser` | Shared browser bridge surfaces | 给 host-centric assistant 增加 browser-side interaction |
@@ -93,7 +93,8 @@ python -m pip install weavert
 ## 常见易混 shared kits
 
 - `weavert-kit-common-retrieval` 负责对你已经拿到的 grounding 项做排序、摘录和 citation 准备，比如 notes、memory 或 fetched passages。它自己不做公网搜索，也不驱动浏览器。
-- `weavert-kit-common-web-research` 负责只读的公网 web 搜索、页面抓取、页面内 evidence 查找和 profile-driven `web_research`。Profile-specific 字段放在 `facets.<profile>` 下。它不提供浏览器导航、点击，或宿主侧浏览器控制。
+- `weavert-kit-common-web-research` 负责推荐的 `web_research` 入口，适用于 chat、coding、local-assistant 和其他 profile-driven 公网 research。使用 `profile` 选择策略；profile-specific 字段放在 `facets.<profile>` 下。
+- `weavert-kit-common-web-research` 负责只读的公网 web 搜索、单页抓取、页面内 evidence 查找，以及 `web_research` 背后的多页 inspection。Provider selection 由 shared core 处理，可以使用 Azure AI Foundry Bing grounding（`bing-grounding`）、Google Programmable Search（`google-search`）、SerpAPI Google Search（`serpapi-google-search`）、Brave 或 DuckDuckGo，public tool names 不变。它不提供浏览器导航、点击、public batch-fetch fields，或宿主侧浏览器控制。
 - `weavert-kit-common-browser` 是一个经由 host mediation 的 browser bridge，用于浏览器状态、导航和交互。它不是 web 搜索适配器，也不意味着 runtime 自主拥有浏览器。
 - `weavert-kit-common-local-os` 桥接的是 files、clipboard、notifications、processes 这类通用本地机器表面。它是更宽的设备桥接，不是结构化个人信息工具。
 - `weavert-kit-common-pim` 桥接的是 calendar events、contacts、reminders、tasks 这类结构化个人信息表面。需要 PIM objects 时选它，不要把它和通用 local-OS access 混在一起。
