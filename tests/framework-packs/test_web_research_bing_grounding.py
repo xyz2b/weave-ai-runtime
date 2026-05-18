@@ -310,6 +310,58 @@ def test_serpapi_google_maps_request_parameters_domains_and_normalizes_organic_r
     }
 
 
+@pytest.mark.parametrize(
+    ("payload", "expected_error_fragment"),
+    (
+        (
+            {
+                "error": (
+                    "Invalid key serpapi-secret while calling "
+                    "https://serpapi.com/search.json?engine=google&api_key=serpapi-secret"
+                )
+            },
+            "SerpAPI Google Search error",
+        ),
+        (
+            {"search_metadata": {"status": "Error", "message": "Account quota exhausted"}},
+            "SerpAPI Google Search status error",
+        ),
+    ),
+)
+def test_serpapi_error_payload_records_failed_attempt_and_falls_back(
+    payload: dict[str, Any],
+    expected_error_fragment: str,
+) -> None:
+    def fake_urlopen(_request: Any, *, timeout: float) -> _JsonResponse:
+        assert timeout == 10
+        return _JsonResponse(payload)
+
+    serpapi = SerpApiGoogleSearchProvider(api_key="serpapi-secret", urlopen=fake_urlopen)
+    fallback = FixtureWebResearchProvider(
+        provider_id="google-search",
+        display_name="Google Fixture",
+        search_results={"query": [{"title": "Fallback", "url": "https://fallback.example/page"}]},
+        supports_freshness=True,
+    )
+
+    result = search_web(
+        "query",
+        registry=WebSearchProviderRegistry((serpapi, fallback), default_provider="serpapi-google-search"),
+        policy=WebResearchPolicy(max_search_results=5),
+    )
+
+    failed_attempt = result["provider_fallback"]["attempts"][0]
+    assert result["provider"]["id"] == "google-search"
+    assert result["provider_selection"]["status"] == "fallback"
+    assert result["provider_fallback"]["from"] == "serpapi-google-search"
+    assert failed_attempt["provider"] == "serpapi-google-search"
+    assert failed_attempt["status"] == "failed"
+    assert expected_error_fragment in failed_attempt["error"]
+    assert "serpapi-secret" not in failed_attempt["error"]
+    assert "https://serpapi.com/search.json" not in failed_attempt["error"]
+    assert result["results"][0]["url"] == "https://fallback.example/page"
+
+
 def test_default_registry_includes_serpapi_and_explicit_selection(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SERPAPI_API_KEY", "serpapi-key")
     monkeypatch.setenv("WEAVERT_WEB_SEARCH_PROVIDER", "serpapi-google-search")
@@ -330,6 +382,80 @@ def test_default_registry_includes_serpapi_and_explicit_selection(monkeypatch: p
     ]
     _events, plan = registry.plan()
     assert [provider.provider_metadata.provider_id for provider in plan] == [
+        "serpapi-google-search",
+        "duckduckgo-html",
+    ]
+
+
+def test_freshness_preference_preserves_serpapi_before_duckduckgo_order() -> None:
+    def fake_urlopen(_request: Any, *, timeout: float) -> _JsonResponse:
+        assert timeout == 10
+        return _JsonResponse(
+            {
+                "organic_results": [
+                    {
+                        "title": "SerpAPI result",
+                        "link": "https://docs.example.test/serpapi",
+                        "snippet": "Selected before fallback",
+                    }
+                ]
+            }
+        )
+
+    serpapi = SerpApiGoogleSearchProvider(api_key="serpapi-token", urlopen=fake_urlopen)
+    duckduckgo = FixtureWebResearchProvider(
+        provider_id="duckduckgo-html",
+        display_name="DuckDuckGo Fixture",
+        search_results={"query": [{"title": "Fallback", "url": "https://fallback.example/page"}]},
+        supports_freshness=False,
+    )
+    registry = WebSearchProviderRegistry((serpapi, duckduckgo))
+
+    _events, freshness_plan = registry.plan(prefer_freshness=True)
+    assert [provider.provider_metadata.provider_id for provider in freshness_plan] == [
+        "serpapi-google-search",
+        "duckduckgo-html",
+    ]
+
+    result = search_web(
+        "query",
+        registry=registry,
+        policy=WebResearchPolicy(freshness_days=7),
+    )
+
+    assert result["provider"]["id"] == "serpapi-google-search"
+    assert result["freshness_scope"] == {"requested_days": 7, "status": "unsupported"}
+    assert result["results"][0]["url"] == "https://docs.example.test/serpapi"
+
+
+def test_freshness_preference_stably_partitions_capability_groups() -> None:
+    serpapi = FixtureWebResearchProvider(
+        provider_id="serpapi-google-search",
+        display_name="SerpAPI Fixture",
+        supports_freshness=False,
+    )
+    fresh_a = FixtureWebResearchProvider(
+        provider_id="bing-grounding",
+        display_name="Bing Grounding Fixture",
+        supports_freshness=True,
+    )
+    duckduckgo = FixtureWebResearchProvider(
+        provider_id="duckduckgo-html",
+        display_name="DuckDuckGo Fixture",
+        supports_freshness=False,
+    )
+    fresh_b = FixtureWebResearchProvider(
+        provider_id="google-search",
+        display_name="Google Fixture",
+        supports_freshness=True,
+    )
+    registry = WebSearchProviderRegistry((serpapi, fresh_a, duckduckgo, fresh_b))
+
+    _events, freshness_plan = registry.plan(prefer_freshness=True)
+
+    assert [provider.provider_metadata.provider_id for provider in freshness_plan] == [
+        "bing-grounding",
+        "google-search",
         "serpapi-google-search",
         "duckduckgo-html",
     ]

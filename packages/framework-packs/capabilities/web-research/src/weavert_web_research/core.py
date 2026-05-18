@@ -1177,6 +1177,11 @@ class SerpApiGoogleSearchProvider:
         with self._urlopen(request, timeout=10) as response:
             body = response.read().decode("utf-8", errors="replace")
         payload = json.loads(body)
+        if not isinstance(payload, Mapping):
+            return []
+        failure_message = self._serpapi_failure_message(payload)
+        if failure_message is not None:
+            raise ValueError(failure_message)
         raw_results = payload.get("organic_results", [])
         if not isinstance(raw_results, list):
             return []
@@ -1198,6 +1203,27 @@ class SerpApiGoogleSearchProvider:
             if len(results) >= limit:
                 break
         return results
+
+    def _serpapi_failure_message(self, payload: Mapping[str, Any]) -> str | None:
+        error = _normalize_optional_string(payload.get("error"))
+        if error is not None:
+            return f"SerpAPI Google Search error: {self._bounded_serpapi_failure_detail(error)}"
+        metadata = payload.get("search_metadata")
+        if isinstance(metadata, Mapping):
+            status = _normalize_optional_string(metadata.get("status"))
+            if status is not None and status.casefold() == "error":
+                detail = self._bounded_serpapi_failure_detail(
+                    metadata.get("error") or metadata.get("message") or status
+                )
+                return f"SerpAPI Google Search status error: {detail}"
+        return None
+
+    def _bounded_serpapi_failure_detail(self, value: Any) -> str:
+        detail = _normalize_optional_string(value) or "error"
+        if self._api_key:
+            detail = detail.replace(self._api_key, "[redacted]")
+        detail = re.sub(r"https?://\S+", "[redacted-url]", detail)
+        return detail[:200]
 
     def fetch(self, url: str, *, timeout: float, max_bytes: int) -> BackendFetchResult:
         _ = url, timeout, max_bytes
@@ -1577,7 +1603,13 @@ class WebSearchProviderRegistry:
             )
         providers = list(self._providers)
         if prefer_freshness:
-            providers.sort(key=lambda provider: (not _provider_capabilities(provider).freshness, _provider_id(provider)))
+            freshness_capable = [
+                provider for provider in providers if _provider_capabilities(provider).freshness
+            ]
+            freshness_unsupported = [
+                provider for provider in providers if not _provider_capabilities(provider).freshness
+            ]
+            providers = [*freshness_capable, *freshness_unsupported]
         return initial_events, providers
 
 
