@@ -6,7 +6,7 @@ Canonical import root: `weavert_kit_common_web_research`
 
 - the unified public `web_research` entrypoint for read-only public-web information retrieval
 - low-level `web_search`, single-page `web_fetch`, and `web_find` primitives backed by `weavert-web-research`
-- a package-owned goal-driven research loop behind `web_research` that plans queries, selects pages, evaluates evidence coverage, and stops with explicit reasons
+- package-owned research loops behind `web_research`: the deterministic goal-driven loop and the opt-in model-directed Pro loop
 - the package-owned `web-searcher` delegated worker reserved for bounded implementation-period fallback paths
 - first-party research profiles: `general`, `coding`, `business`, `academic`, `legal_compliance`, and `product_shopping`
 - common result envelopes with sources, evidence, conflicts, gaps, freshness, provider metadata, research trace, and profile facets
@@ -20,9 +20,27 @@ Canonical import root: `weavert_kit_common_web_research`
 
 ## Boundary
 
-Use `web_research` for goal-driven AI-first research and pass `profile="coding"` or another supported profile when the scenario needs profile-specific source ranking or facets. `web_research` is the supported path for multi-page source discovery and inspection: it derives bounded queries from the objective, ranks candidate pages, inspects ledger-verified sources, reports gaps or conflicts, and exposes loop decisions in `research_trace` and `trace_summary`. Use low-level `web_fetch` only for one explicit page at a time; callers that need manual multi-page inspection should issue repeated single-page fetches.
+Use `web_research` for goal-driven AI-first research and pass `profile="coding"` or another supported profile when the scenario needs profile-specific source ranking or facets. `web_research` is the supported path for multi-page source discovery and inspection: it derives or plans bounded queries, ranks or validates candidate pages, inspects ledger-verified sources, reports gaps or conflicts, and exposes loop decisions in `research_trace` and `trace_summary`. Use low-level `web_fetch` only for one explicit page at a time; callers that need manual multi-page inspection should issue repeated single-page fetches.
 
 This package is read-only. Browser navigation, clicks, form filling, authenticated browsing, and DOM interaction remain browser-bridge responsibilities.
+
+## Strategy Selection
+
+`web_research` supports backward-compatible strategy selection:
+
+- Omit `strategy` to use the deterministic package-owned loop unless the host runtime explicitly opts eligible calls into Pro mode.
+- Set `strategy="pro"` to request model-directed Pro research behind the same public tool name.
+- Unknown strategy values are rejected during input validation instead of being silently reinterpreted.
+
+Pro mode asks an internal planner model turn for structured actions, then treats those actions as proposals. Runtime validation still owns allowed domains, blocked domains, public-host checks, search/fetch/find budgets, source-handle identity, direct-URL provenance, freshness metadata, the authoritative evidence ledger, public stop reason, and public confidence. If Pro model support is unavailable, hosts can keep deterministic behavior as the fallback baseline without changing callers from `web_research`.
+
+In Pro mode the model may propose `search`, `fetch`, `find`, `direct_url_fetch`, or `stop`. `fetch` must reference a known source from prior search or inspected ledger state. Direct URL inspection must use explicit `direct_url_fetch`; accepted direct-URL evidence is traced with direct-URL provenance so callers can distinguish it from search-discovered evidence. Direct-URL-only evidence does not silently satisfy broader source-discovery or profile-coverage expectations.
+
+## Model-Directed Synthesis
+
+Pro synthesis is evidence-bound. The synthesizer receives bounded ledger evidence, conflicts, gaps, freshness metadata, provider metadata, and the objective, then returns answer text plus structured claims. Runtime accepts only claims whose evidence ids exist in inspected ledger evidence. Optional excerpt spans or exact excerpts are validated when supplied; invalid span metadata is marked unsupported without making the model a source of truth.
+
+When unsupported synthesis remains, runtime allows at most one configured repair turn, drops still-unsupported claims, downgrades the terminal result through gaps or stop-reason refinement, and records bounded trace events. Unresolved ledger-bound conflicts and unsupported freshness remain visible even if the planner or synthesizer ignores them.
 
 ## Search Provider Selection
 
@@ -47,7 +65,7 @@ Claim annotations are accepted only when they bind to an inspected ledger source
 
 Conflicting ledger-bound claims are projected into `conflicts`. Unresolved conflicts lower confidence and produce `stop_reason="unresolved_conflict"`; resolved conflicts keep a resolution rationale when stronger evidence is identified. Gaps describe missing preferred evidence, unsupported freshness, provider fallback, policy blocks, or partial results.
 
-Remaining limits are explicit: this kit does not drive a browser, click through pages, authenticate, inspect local workspaces, run shell-assisted searches, or guarantee truth beyond inspected public evidence. Host-level browser bridges, local workspace search, and shell tools remain separate surfaces.
+Remaining limits are explicit: this kit does not drive a browser, click through pages, authenticate, inspect local workspaces, run shell-assisted searches, or guarantee truth beyond inspected public evidence. Runtime enforcement prevents unsupported confidence and uninspected citations from becoming public evidence, but it does not prove that inspected web content is true in the real world. Host-level browser bridges, local workspace search, and shell tools remain separate surfaces.
 
 ## See also
 

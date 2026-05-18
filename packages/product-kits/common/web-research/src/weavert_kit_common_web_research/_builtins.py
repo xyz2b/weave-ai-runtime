@@ -145,6 +145,7 @@ def web_research_builtin_tools() -> tuple[ToolDefinition, ...]:
                         "type": "string",
                         "enum": ["general", "coding", "business", "academic", "legal_compliance", "product_shopping"],
                     },
+                    "strategy": {"type": "string", "enum": ["deterministic", "pro"]},
                     "mode": {"type": "string", "enum": ["focused", "open"]},
                     "scope": {
                         "type": "object",
@@ -198,6 +199,8 @@ def web_research_builtin_tools() -> tuple[ToolDefinition, ...]:
                 "properties": {
                     "objective": {"type": "string"},
                     "mode": {"type": "string"},
+                    "strategy": {"type": "string"},
+                    "requested_strategy": {"type": "string"},
                     "answer": {"type": "string"},
                     "confidence": {"type": "string"},
                     "sources": {"type": "array", "items": {"type": "object"}},
@@ -224,6 +227,7 @@ def web_research_builtin_tools() -> tuple[ToolDefinition, ...]:
                 "required": [
                     "objective",
                     "mode",
+                    "strategy",
                     "answer",
                     "confidence",
                     "sources",

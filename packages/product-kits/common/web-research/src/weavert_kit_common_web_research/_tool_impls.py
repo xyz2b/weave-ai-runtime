@@ -46,6 +46,9 @@ _WEB_RESEARCH_MAX_TRACE_ITEMS = 8
 _WEB_RESEARCH_DEFAULT_MAX_CONCURRENT_FETCHES = 3
 _WEB_RESEARCH_RUN_ID_METADATA_KEY = "web_research_run_id"
 _WEB_RESEARCH_MAX_REPLAN_PASSES = 1
+_WEB_RESEARCH_SUPPORTED_STRATEGIES = frozenset({"deterministic", "pro"})
+_WEB_RESEARCH_MODEL_RESPONSE_METADATA_KEY = "web_research_model_responses"
+_WEB_RESEARCH_DEFAULT_SYNTHESIS_REPAIR_TURNS = 1
 _WEB_FETCH_PUBLIC_BATCH_FIELDS = frozenset({"urls", "sources", "max_concurrent_fetches"})
 _WEB_RESEARCH_SOURCE_ANNOTATION_FIELDS = frozenset(
     {
@@ -193,6 +196,65 @@ class ResearchPlan:
     source_priorities: tuple[str, ...] = ()
     decisions: list[LoopDecision] = field(default_factory=list)
 
+
+@dataclass(frozen=True, slots=True)
+class ResearchAction:
+    type: str
+    query: str | None = None
+    source_handle: str | None = None
+    page_handle: str | None = None
+    url: str | None = None
+    pattern: str | None = None
+    rationale: str = ""
+    stop_intent: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class CoverageAssessment:
+    status: str
+    confidence: str | None = None
+    missing: tuple[str, ...] = ()
+    rationale: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class PlannerGap:
+    kind: str
+    message: str
+    subquestion_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class PlannerDecision:
+    actions: tuple[ResearchAction, ...]
+    rationale: str = ""
+    coverage: CoverageAssessment | None = None
+    expected_gaps: tuple[PlannerGap, ...] = ()
+    stop_intent: str | None = None
+    raw: Mapping[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class SynthesisClaim:
+    claim: str
+    evidence_ids: tuple[str, ...]
+    id: str | None = None
+    excerpt: str | None = None
+    start: int | None = None
+    end: int | None = None
+    confidence: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SynthesisResponse:
+    answer: str
+    claims: tuple[SynthesisClaim, ...] = ()
+    limitations: tuple[str, ...] = ()
+    conflict_treatment: str = ""
+    confidence: str | None = None
+    confidence_rationale: str = ""
+    raw: Mapping[str, Any] = field(default_factory=dict)
+
 SUPPORTED_RESEARCH_PROFILES = ("general", "coding", "business", "academic", "legal_compliance", "product_shopping")
 
 RESEARCH_PROFILES = ResearchProfileRegistry(
@@ -292,12 +354,20 @@ def validate_web_research(tool_input: dict[str, Any], _: ToolContext) -> Validat
 
 async def web_research_tool(tool_input: dict[str, Any], context: ToolContext) -> dict[str, Any]:
     normalized = _normalized_web_research_execution_input(tool_input)
+    if normalized.get("strategy") == "pro" and not _pro_model_provider_available(context):
+        normalized = dict(normalized)
+        normalized["requested_strategy"] = "pro"
+        normalized["strategy"] = "deterministic"
+        normalized["strategy_fallback_reason"] = "pro_model_unavailable"
     state = WebResearchLoopState(normalized)
     _web_research_runs[state.run_id] = state
     previous_run_id = context.metadata.get(_WEB_RESEARCH_RUN_ID_METADATA_KEY)
     context.metadata[_WEB_RESEARCH_RUN_ID_METADATA_KEY] = state.run_id
     try:
-        loop_result = await _run_goal_driven_web_research_loop(normalized, context, state)
+        if _select_web_research_strategy(normalized, context) == "pro":
+            loop_result = await _run_pro_web_research_loop(normalized, context, state)
+        else:
+            loop_result = await _run_goal_driven_web_research_loop(normalized, context, state)
         return _project_web_research_result(normalized, loop_result, state=state)
     except _DelegatedWebResearchFallbackRequested:
         if context.agent_runner is None or state.search_used or state.fetch_used or state.find_used:
@@ -310,6 +380,26 @@ async def web_research_tool(tool_input: dict[str, Any], context: ToolContext) ->
         else:
             context.metadata[_WEB_RESEARCH_RUN_ID_METADATA_KEY] = previous_run_id
         _web_research_runs.pop(state.run_id, None)
+
+
+def _select_web_research_strategy(request: Mapping[str, Any], context: ToolContext) -> str:
+    strategy = str(request.get("strategy") or "").strip().lower()
+    if strategy:
+        return strategy
+    config = getattr(context, "runtime_services", None)
+    default_strategy = getattr(config, "web_research_default_strategy", None)
+    if default_strategy is None:
+        default_strategy = context.metadata.get("web_research_default_strategy")
+    if str(default_strategy or "").strip().lower() == "pro":
+        return "pro"
+    return "deterministic"
+
+
+def _pro_model_provider_available(context: ToolContext) -> bool:
+    scripted = context.metadata.get(_WEB_RESEARCH_MODEL_RESPONSE_METADATA_KEY)
+    if isinstance(scripted, list) and scripted:
+        return True
+    return callable(context.metadata.get("web_research_model_client"))
 
 
 async def _run_delegated_web_research_fallback(request: Mapping[str, Any], context: ToolContext) -> dict[str, Any]:
@@ -336,6 +426,11 @@ async def _run_goal_driven_web_research_loop(
         {
             "event": "research_plan",
             "stage": "understand_objective",
+            **(
+                {"strategy_fallback_reason": request.get("strategy_fallback_reason"), "requested_strategy": request.get("requested_strategy")}
+                if request.get("strategy_fallback_reason")
+                else {}
+            ),
             "subquestions": [subquestion.question for subquestion in plan.subquestions],
             "desired_source_count": plan.desired_source_count,
         },
@@ -504,6 +599,88 @@ async def _run_goal_driven_web_research_loop(
                         "verified_evidence": len(state.evidence_payload()),
                     }
                 ],
+            }
+        },
+    }
+
+
+async def _run_pro_web_research_loop(
+    request: Mapping[str, Any],
+    context: ToolContext,
+    state: WebResearchLoopState,
+) -> dict[str, Any]:
+    _record_loop_trace(state, {"event": "strategy_selected", "strategy": "pro"})
+    invalid_actions = 0
+    stop_intent: str | None = None
+    max_turns = int(request["budget"]["max_turns"])
+    for turn_index in range(max_turns):
+        payload = _build_planner_request_payload(request, state, turn_index=turn_index)
+        _record_loop_trace(
+            state,
+            {
+                "event": "planner_request",
+                "turn": turn_index + 1,
+                "known_sources": len(payload["known_sources"]),
+                "inspected_evidence": len(payload["inspected_evidence"]),
+            },
+        )
+        try:
+            decision = await _request_planner_decision(payload, context)
+        except ValueError as exc:
+            _record_loop_trace(state, {"event": "planner_malformed", "turn": turn_index + 1, "error": _bounded_trace_text(exc)})
+            state.record_gap({"kind": "malformed_planner_output", "message": "Planner response could not be parsed as a bounded decision."})
+            break
+        _record_planner_decision_trace(state, decision, turn_index=turn_index)
+        if decision.expected_gaps:
+            for gap in decision.expected_gaps:
+                state.record_gap({"kind": gap.kind, "message": gap.message, **({"subquestion_id": gap.subquestion_id} if gap.subquestion_id else {})})
+        if decision.stop_intent:
+            stop_intent = decision.stop_intent
+        executed = False
+        for action in decision.actions:
+            accepted = await _execute_validated_planner_action(action, request, context, state)
+            if accepted:
+                executed = True
+            else:
+                invalid_actions += 1
+        runtime_decision = _pro_runtime_terminal_decision(request, state, stop_intent=stop_intent)
+        if runtime_decision == "sufficient_evidence" or (stop_intent and not executed) or invalid_actions >= 3:
+            if stop_intent == "sufficient_evidence" and runtime_decision != "sufficient_evidence":
+                _record_loop_trace(
+                    state,
+                    {
+                        "event": "stop_intent_overridden",
+                        "planner_stop_intent": stop_intent,
+                        "runtime_stop_reason": runtime_decision,
+                    },
+                )
+                state.record_gap({"kind": "invalid_stop_intent", "message": "Planner stop intent was not supported by ledger coverage."})
+            break
+    state.finalize_provider_and_freshness_trace()
+    stop_reason = _pro_runtime_terminal_decision(request, state, stop_intent=stop_intent)
+    synthesis = await _run_pro_synthesis(request, context, state)
+    answer = synthesis["answer"] or _synthesize_from_verified_evidence(request, state)
+    _record_loop_trace(
+        state,
+        {
+            "event": "terminal_decision",
+            "strategy": "pro",
+            "stage": "synthesize",
+            "stop_reason": stop_reason,
+        },
+    )
+    return {
+        "agent": "web_research_pro_loop",
+        "status": stop_reason,
+        "summary": answer,
+        "terminal_metadata": {
+            "web_research": {
+                "answer": answer,
+                "claims": synthesis["claims"],
+                "gaps": synthesis["gaps"],
+                "stop_reason": stop_reason,
+                "trace_summary": synthesis["trace"],
+                "strategy": {"selected": "pro"},
             }
         },
     }
@@ -999,6 +1176,363 @@ def _record_loop_trace(state: WebResearchLoopState, event: Mapping[str, Any]) ->
     state.record_unverified_child_metadata_dropped([event])
 
 
+def _build_planner_request_payload(request: Mapping[str, Any], state: WebResearchLoopState, *, turn_index: int) -> dict[str, Any]:
+    budget = state.budget_payload()
+    used = budget.get("used") if isinstance(budget.get("used"), Mapping) else {}
+    return {
+        "objective": request["objective"],
+        "profile": request.get("profile", "general"),
+        "mode": request.get("mode", "focused"),
+        "hard_policy": dict(request.get("hard_policy") or {}),
+        "policy": dict(request.get("policy") or {}),
+        "preferences": dict(request.get("preferences") or {}),
+        "remaining_budgets": {
+            "searches": max(0, int(request["budget"]["search_budget"]) - int(used.get("searches") or 0)),
+            "fetches": max(0, int(request["budget"]["fetch_budget"]) - int(used.get("fetches") or 0)),
+            "finds": max(0, int(request["budget"]["find_budget"]) - int(used.get("finds") or 0)),
+            "planner_turns": max(0, int(request["budget"]["max_turns"]) - turn_index),
+        },
+        "known_sources": _bounded_items(state.sources_payload(), limit=12, text_limit=400),
+        "inspected_evidence": _bounded_items(state.evidence_payload(), limit=12, text_limit=700),
+        "conflicts": _bounded_items(state.conflicts_payload(), limit=8, text_limit=400),
+        "gaps": _bounded_items(state.gaps_payload(), limit=8, text_limit=400),
+        "trace_context": _bounded_items(state.trace_summary(max_items=8), limit=8, text_limit=300),
+        "authority": "planner proposes actions only; runtime validates policy, identity, budgets, evidence, stop reason, and confidence",
+    }
+
+
+async def _request_planner_decision(payload: Mapping[str, Any], context: ToolContext) -> PlannerDecision:
+    raw = await _request_internal_model_json("planner", payload, context)
+    try:
+        return _parse_planner_decision(raw)
+    except ValueError:
+        repaired = await _request_internal_model_json("planner_repair", {"invalid_response": raw, "payload": payload}, context, required=False)
+        if repaired is not None:
+            return _parse_planner_decision(repaired)
+        raise
+
+
+async def _request_synthesis_response(payload: Mapping[str, Any], context: ToolContext) -> SynthesisResponse:
+    raw = await _request_internal_model_json("synthesizer", payload, context)
+    return _parse_synthesis_response(raw)
+
+
+async def _request_internal_model_json(kind: str, payload: Mapping[str, Any], context: ToolContext, *, required: bool = True) -> Mapping[str, Any] | None:
+    scripted = context.metadata.get(_WEB_RESEARCH_MODEL_RESPONSE_METADATA_KEY)
+    if isinstance(scripted, list) and scripted:
+        item = scripted.pop(0)
+        if callable(item):
+            item = item(kind, payload)
+        if isinstance(item, str):
+            return _json_object(item)
+        if isinstance(item, Mapping):
+            return dict(item)
+    client = context.metadata.get("web_research_model_client")
+    if callable(client):
+        item = client(kind, payload)
+        if hasattr(item, "__await__"):
+            item = await item
+        if isinstance(item, str):
+            return _json_object(item)
+        if isinstance(item, Mapping):
+            return dict(item)
+    if required:
+        raise ValueError("Pro web_research requires an internal model response provider")
+    return None
+
+
+def _parse_planner_decision(raw: Mapping[str, Any]) -> PlannerDecision:
+    actions: list[ResearchAction] = []
+    for item in _list_of_mappings(raw.get("actions")):
+        action_type = str(item.get("type") or item.get("action") or "").strip().lower()
+        if action_type not in {"search", "fetch", "find", "direct_url_fetch", "stop"}:
+            raise ValueError("planner action type must be search, fetch, find, direct_url_fetch, or stop")
+        actions.append(
+            ResearchAction(
+                type=action_type,
+                query=_optional_text(item.get("query")),
+                source_handle=_optional_text(item.get("source_handle") or item.get("source_id")),
+                page_handle=_optional_text(item.get("page_handle") or item.get("page_id")),
+                url=_optional_text(item.get("url")),
+                pattern=_optional_text(item.get("pattern")),
+                rationale=_bounded_trace_text(item.get("rationale") or ""),
+                stop_intent=_optional_text(item.get("stop_intent") or item.get("stop_reason")),
+            )
+        )
+    stop_intent = _optional_text(raw.get("stop_intent") or raw.get("stop_reason"))
+    coverage_raw = raw.get("coverage") or raw.get("coverage_assessment")
+    coverage = None
+    if isinstance(coverage_raw, Mapping):
+        coverage = CoverageAssessment(
+            status=str(coverage_raw.get("status") or "unknown"),
+            confidence=_optional_text(coverage_raw.get("confidence")),
+            missing=tuple(str(item) for item in coverage_raw.get("missing") or () if str(item).strip()) if isinstance(coverage_raw.get("missing"), list) else (),
+            rationale=_bounded_trace_text(coverage_raw.get("rationale") or ""),
+        )
+    gaps = tuple(
+        PlannerGap(kind=str(item.get("kind") or "planner_gap"), message=_bounded_trace_text(item.get("message") or item.get("gap") or ""), subquestion_id=_optional_text(item.get("subquestion_id")))
+        for item in _list_of_mappings(raw.get("expected_gaps") or raw.get("gaps"))
+        if str(item.get("message") or item.get("gap") or "").strip()
+    )
+    if not actions and not stop_intent:
+        raise ValueError("planner decision must include actions or stop_intent")
+    return PlannerDecision(actions=tuple(actions), rationale=_bounded_trace_text(raw.get("rationale") or ""), coverage=coverage, expected_gaps=gaps, stop_intent=stop_intent, raw=dict(raw))
+
+
+def _parse_synthesis_response(raw: Mapping[str, Any]) -> SynthesisResponse:
+    claims: list[SynthesisClaim] = []
+    for index, item in enumerate(_list_of_mappings(raw.get("claims"))):
+        evidence_ids = item.get("evidence_ids")
+        if not isinstance(evidence_ids, list):
+            evidence_id = item.get("evidence_id")
+            evidence_ids = [evidence_id] if evidence_id else []
+        claims.append(
+            SynthesisClaim(
+                id=_optional_text(item.get("id")) or f"claim-{index + 1}",
+                claim=str(item.get("claim") or item.get("text") or "").strip(),
+                evidence_ids=tuple(str(value).strip() for value in evidence_ids if str(value).strip()),
+                excerpt=_optional_text(item.get("excerpt") or item.get("exact_excerpt")),
+                start=item.get("start") if isinstance(item.get("start"), int) else item.get("match_start") if isinstance(item.get("match_start"), int) else None,
+                end=item.get("end") if isinstance(item.get("end"), int) else item.get("match_end") if isinstance(item.get("match_end"), int) else None,
+                confidence=_optional_text(item.get("confidence")),
+            )
+        )
+    limitations = raw.get("limitations") or raw.get("gaps") or ()
+    if not isinstance(limitations, list):
+        limitations = []
+    return SynthesisResponse(
+        answer=str(raw.get("answer") or raw.get("summary") or "").strip(),
+        claims=tuple(claims),
+        limitations=tuple(_bounded_trace_text(item) for item in limitations if str(item).strip()),
+        conflict_treatment=_bounded_trace_text(raw.get("conflict_treatment") or ""),
+        confidence=_optional_text(raw.get("confidence")),
+        confidence_rationale=_bounded_trace_text(raw.get("confidence_rationale") or raw.get("rationale") or ""),
+        raw=dict(raw),
+    )
+
+
+def _record_planner_decision_trace(state: WebResearchLoopState, decision: PlannerDecision, *, turn_index: int) -> None:
+    event: dict[str, Any] = {
+        "event": "planner_decision",
+        "turn": turn_index + 1,
+        "actions": [action.type for action in decision.actions],
+        "rationale": decision.rationale,
+    }
+    if decision.stop_intent:
+        event["stop_intent"] = decision.stop_intent
+    if decision.coverage is not None:
+        event["coverage"] = {
+            "status": decision.coverage.status,
+            "confidence": decision.coverage.confidence,
+            "missing": list(decision.coverage.missing),
+            "rationale": decision.coverage.rationale,
+        }
+    if decision.expected_gaps:
+        event["expected_gaps"] = [{"kind": gap.kind, "message": gap.message} for gap in decision.expected_gaps]
+    _record_loop_trace(state, event)
+
+
+async def _execute_validated_planner_action(
+    action: ResearchAction,
+    request: Mapping[str, Any],
+    context: ToolContext,
+    state: WebResearchLoopState,
+) -> bool:
+    try:
+        if action.type == "search":
+            query = str(action.query or "").strip()
+            if not query:
+                raise ValueError("planner search query must be non-empty")
+            await web_search_tool({"query": query}, context)
+        elif action.type == "fetch":
+            source = _resolve_planner_source(action, state)
+            await web_fetch_tool({"source": source}, context)
+        elif action.type == "direct_url_fetch":
+            url = str(action.url or "").strip()
+            if not url:
+                raise ValueError("planner direct_url_fetch url must be non-empty")
+            result = await _web_fetch_impl(
+                {"url": url},
+                context,
+                failure_tool="web_direct_url_fetch",
+                failure_metadata={"provenance": "direct_url"},
+            )
+            source = dict(result.get("source") or {})
+            source["provenance"] = "direct_url"
+            source["quality"] = {**(source.get("quality") if isinstance(source.get("quality"), Mapping) else {}), "provenance": "direct_url"}
+            result = dict(result)
+            result["source"] = source
+            result["provenance"] = "direct_url"
+            state.record_fetch(result)
+            _record_loop_trace(state, {"event": "direct_url_fetch", "url": url, "provenance": "direct_url"})
+        elif action.type == "find":
+            page = _resolve_planner_page(action, state)
+            pattern = str(action.pattern or "").strip()
+            if not pattern:
+                raise ValueError("planner find pattern must be non-empty")
+            await web_find_tool({"page": page, "pattern": pattern}, context)
+        elif action.type == "stop":
+            return False
+        else:
+            raise ValueError(f"unsupported planner action: {action.type}")
+    except Exception as exc:
+        if not _is_recoverable_web_operation_error(exc):
+            raise
+        state.record_gap({"kind": "rejected_planner_action", "message": _bounded_trace_text(exc), "action": action.type})
+        _record_loop_trace(
+            state,
+            {
+                "event": "planner_action_rejected",
+                "action": action.type,
+                "reason": _bounded_trace_text(exc),
+                **({"source_handle": action.source_handle} if action.source_handle else {}),
+                **({"url": action.url} if action.url else {}),
+            },
+        )
+        return False
+    _record_loop_trace(state, {"event": "planner_action_accepted", "action": action.type, **({"rationale": action.rationale} if action.rationale else {})})
+    return True
+
+
+def _resolve_planner_source(action: ResearchAction, state: WebResearchLoopState) -> Mapping[str, Any]:
+    handle = _identity_value(action.source_handle or action.page_handle)
+    if not handle:
+        raise ValueError("planner fetch requires a known source_handle")
+    for source in state.sources_payload():
+        values = {_identity_value(source.get(key)) for key in ("id", "source_handle", "page_handle", "url")}
+        if handle in values:
+            return source
+    raise ValueError("planner fetch referenced an unknown source_handle")
+
+
+def _resolve_planner_page(action: ResearchAction, state: WebResearchLoopState) -> Mapping[str, Any]:
+    handle = _identity_value(action.page_handle or action.source_handle or action.url)
+    if not handle:
+        raise ValueError("planner find requires an inspected page identity")
+    for page in state.pages_read_payload():
+        values = {_identity_value(page.get(key)) for key in ("page_handle", "source_handle", "url")}
+        if handle in values:
+            return page
+    raise ValueError("planner find referenced an uninspected page")
+
+
+def _pro_runtime_terminal_decision(request: Mapping[str, Any], state: WebResearchLoopState, *, stop_intent: str | None) -> str:
+    base = state.stop_reason(stop_intent)
+    if any(not conflict.get("resolved") for conflict in state.conflicts_payload()):
+        return "unresolved_conflict"
+    if _direct_url_only_evidence(state) and int(request["budget"].get("desired_source_count") or 1) > 1:
+        return "remaining_gaps"
+    if stop_intent == "sufficient_evidence" and base != "sufficient_evidence":
+        return base
+    return base
+
+
+def _direct_url_only_evidence(state: WebResearchLoopState) -> bool:
+    evidence = state.evidence_payload()
+    if not evidence:
+        return False
+    sources = state.sources_payload()
+    direct_urls = {
+        source.get("url")
+        for source in sources
+        if source.get("provenance") == "direct_url" or source.get("quality", {}).get("provenance") == "direct_url"
+    }
+    trace_direct_urls = {event.get("url") for event in state.trace_summary(max_items=32) if event.get("event") == "direct_url_fetch"}
+    direct_urls.update(trace_direct_urls)
+    return bool(direct_urls) and all(item.get("url") in direct_urls for item in evidence)
+
+
+async def _run_pro_synthesis(request: Mapping[str, Any], context: ToolContext, state: WebResearchLoopState) -> dict[str, Any]:
+    payload = {
+        "objective": request["objective"],
+        "evidence": _bounded_items(state.evidence_payload(), limit=16, text_limit=900),
+        "conflicts": _bounded_items(state.conflicts_payload(), limit=8, text_limit=500),
+        "gaps": _bounded_items(state.gaps_payload(), limit=8, text_limit=500),
+        "freshness": _freshness_payload(request, state),
+        "provider": state.provider_payload() or {},
+    }
+    trace: list[dict[str, Any]] = []
+    try:
+        response = await _request_synthesis_response(payload, context)
+    except ValueError as exc:
+        state.record_gap({"kind": "unsupported_synthesis", "message": "Synthesizer response could not be parsed."})
+        return {"answer": "", "claims": [], "gaps": [], "trace": [{"event": "synthesis_malformed", "error": _bounded_trace_text(exc)}]}
+    accepted, rejected = _validate_synthesis_claims(response, state.evidence_payload())
+    repair_used = False
+    if rejected and _WEB_RESEARCH_DEFAULT_SYNTHESIS_REPAIR_TURNS > 0:
+        repair_used = True
+        trace.append({"event": "synthesis_repair_attempt", "unsupported_claims": len(rejected)})
+        repaired_raw = await _request_internal_model_json(
+            "synthesis_repair",
+            {"invalid_claims": rejected, "payload": payload},
+            context,
+            required=False,
+        )
+        if repaired_raw is not None:
+            repaired = _parse_synthesis_response(repaired_raw)
+            response = repaired
+            accepted, rejected = _validate_synthesis_claims(repaired, state.evidence_payload())
+    gaps = [{"kind": "synthesis_limitation", "message": item} for item in response.limitations]
+    if rejected:
+        state.record_gap({"kind": "unsupported_synthesis", "message": "Unsupported synthesis claims were dropped."})
+        gaps.append({"kind": "unsupported_synthesis", "message": "Unsupported synthesis claims were dropped."})
+        trace.append({"event": "unsupported_synthesis_dropped", "claims": len(rejected), "repair_used": repair_used})
+    trace.append({"event": "synthesis_validated", "accepted_claims": len(accepted), "unsupported_claims": len(rejected)})
+    state.record_unverified_child_metadata_dropped(trace)
+    return {"answer": response.answer, "claims": accepted, "gaps": gaps, "trace": trace}
+
+
+def _validate_synthesis_claims(response: SynthesisResponse, evidence: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    evidence_by_id = {_identity_value(item.get("id")): item for item in evidence if _identity_value(item.get("id"))}
+    accepted: list[dict[str, Any]] = []
+    rejected: list[dict[str, Any]] = []
+    for claim in response.claims:
+        if not claim.claim or not claim.evidence_ids:
+            rejected.append({"claim": claim.claim, "reason": "missing_evidence_ids"})
+            continue
+        matches = [evidence_by_id[eid] for eid in claim.evidence_ids if eid in evidence_by_id]
+        if len(matches) != len(claim.evidence_ids):
+            rejected.append({"claim": claim.claim, "evidence_ids": list(claim.evidence_ids), "reason": "unknown_evidence_id"})
+            continue
+        span_valid = _synthesis_span_valid(claim, matches)
+        item = {
+            "id": claim.id or f"claim-{len(accepted) + 1}",
+            "claim": claim.claim,
+            "evidence_ids": list(claim.evidence_ids),
+            "evidence_id": claim.evidence_ids[0],
+            "source_handle": matches[0].get("source_handle"),
+            "page_handle": matches[0].get("page_handle"),
+            "url": matches[0].get("url"),
+            "stance": "supports",
+            "claim_key": claim.claim[:80].lower(),
+        }
+        if claim.confidence:
+            item["confidence"] = claim.confidence
+        if claim.excerpt and span_valid:
+            item["exact_excerpt"] = claim.excerpt
+        if claim.start is not None and claim.end is not None and span_valid:
+            item["match_start"] = claim.start
+            item["match_end"] = claim.end
+        if not span_valid:
+            item["span_validation"] = "invalid"
+        accepted.append(item)
+    return accepted, rejected
+
+
+def _synthesis_span_valid(claim: SynthesisClaim, evidence: list[dict[str, Any]]) -> bool:
+    if claim.excerpt is None and (claim.start is None or claim.end is None):
+        return True
+    for item in evidence:
+        excerpt = str(item.get("excerpt") or "")
+        if claim.excerpt is not None and claim.excerpt not in excerpt:
+            continue
+        if claim.start is not None and claim.end is not None:
+            if claim.start < 0 or claim.end < claim.start or claim.end > len(excerpt):
+                continue
+        return True
+    return False
+
+
 def _is_recoverable_web_operation_error(exc: BaseException) -> bool:
     return isinstance(
         exc,
@@ -1160,6 +1694,7 @@ def _normalized_web_research_execution_input(tool_input: Mapping[str, Any]) -> d
             "objective": str(tool_input["objective"]),
             "profile": str(tool_input["profile"]),
             "mode": str(tool_input["mode"]),
+            "strategy": str(tool_input.get("strategy") or "deterministic"),
             "policy": dict(tool_input["policy"]),
             "hard_policy": dict(tool_input["hard_policy"]),
             "preferences": dict(tool_input["preferences"]),
@@ -1176,6 +1711,7 @@ def _is_validated_web_research_input(tool_input: Mapping[str, Any]) -> bool:
         "objective",
         "profile",
         "mode",
+        "strategy",
         "policy",
         "hard_policy",
         "preferences",
@@ -1196,6 +1732,8 @@ def _is_validated_web_research_input(tool_input: Mapping[str, Any]) -> bool:
     if not isinstance(tool_input.get("profile"), str) or str(tool_input["profile"]) not in RESEARCH_PROFILES.names():
         return False
     if not isinstance(tool_input.get("mode"), str) or tool_input["mode"] not in {"focused", "open"}:
+        return False
+    if str(tool_input.get("strategy") or "deterministic") not in _WEB_RESEARCH_SUPPORTED_STRATEGIES:
         return False
     if not isinstance(tool_input.get("budget_profile"), str):
         return False
@@ -1276,6 +1814,11 @@ def _normalize_web_research_input(tool_input: Mapping[str, Any]) -> dict[str, An
     scope_mode = scope_map.get("mode")
     if scope_mode is not None and str(scope_mode).strip().lower() not in {"focused", "open"}:
         raise ValueError("scope.mode must be focused or open")
+    strategy = str(tool_input.get("strategy") or "deterministic").strip().lower()
+    if not strategy:
+        strategy = "deterministic"
+    if strategy not in _WEB_RESEARCH_SUPPORTED_STRATEGIES:
+        raise ValueError("strategy must be deterministic or pro")
     if legacy_blocks is not None and "blocked_domains" not in hard_policy_map:
         hard_policy_map["blocked_domains"] = legacy_blocks
     if compact_blocked_domains is not None and "blocked_domains" not in hard_policy_map:
@@ -1342,6 +1885,7 @@ def _normalize_web_research_input(tool_input: Mapping[str, Any]) -> dict[str, An
         "objective": objective,
         "profile": profile,
         "mode": mode,
+        "strategy": strategy,
         "policy": {
             "domains": list(policy.allowed_domains),
             "blocked_domains": list(policy.blocked_domains),
@@ -1569,6 +2113,8 @@ def _project_web_research_result(
     result = {
         "objective": request["objective"],
         "mode": request.get("mode", "focused"),
+        "strategy": request.get("strategy", "deterministic"),
+        **({"requested_strategy": request.get("requested_strategy")} if request.get("requested_strategy") else {}),
         "answer": answer,
         "confidence": web_research_confidence_from_stop_reason(stop_reason),
         "sources": sources,
@@ -1583,6 +2129,8 @@ def _project_web_research_result(
         "stop_reason": stop_reason,
         "research_trace": {
             "profile": request.get("profile", "general"),
+            "strategy": request.get("strategy", "deterministic"),
+            **({"strategy_fallback_reason": request.get("strategy_fallback_reason")} if request.get("strategy_fallback_reason") else {}),
             "queries": state.queries_payload(),
             "pages_read": state.pages_read_payload(),
             "iterations": len(trace),
@@ -1607,6 +2155,7 @@ def _project_web_research_result(
     freshness_scope = state.freshness_scope_payload()
     if freshness_scope:
         result["freshness_scope"] = freshness_scope
+    result["trace_summary"] = list(result["trace_summary"])
     return result
 
 
@@ -1977,6 +2526,42 @@ def _list_of_mappings(raw: Any) -> list[dict[str, Any]]:
     if not isinstance(raw, list):
         return []
     return [dict(item) for item in raw if isinstance(item, Mapping)]
+
+
+def _json_object(raw: str) -> Mapping[str, Any]:
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError("model response must be valid JSON") from exc
+    if not isinstance(parsed, Mapping):
+        raise ValueError("model response must be a JSON object")
+    return parsed
+
+
+def _optional_text(value: Any) -> str | None:
+    text = str(value or "").strip()
+    return text or None
+
+
+def _bounded_items(items: list[dict[str, Any]], *, limit: int, text_limit: int) -> list[dict[str, Any]]:
+    bounded: list[dict[str, Any]] = []
+    for item in items[:limit]:
+        bounded_item: dict[str, Any] = {}
+        for key, value in item.items():
+            if isinstance(value, str):
+                bounded_item[str(key)] = _bounded_trace_text(value, limit=text_limit)
+            elif isinstance(value, (int, float, bool)) or value is None:
+                bounded_item[str(key)] = value
+            elif isinstance(value, Mapping):
+                bounded_item[str(key)] = {
+                    str(child_key): (_bounded_trace_text(child_value, limit=160) if isinstance(child_value, str) else child_value)
+                    for child_key, child_value in list(value.items())[:12]
+                    if isinstance(child_value, (str, int, float, bool)) or child_value is None
+                }
+            elif isinstance(value, list):
+                bounded_item[str(key)] = value[:8]
+        bounded.append(bounded_item)
+    return bounded
 
 
 def _web_research_state(context: Any) -> WebResearchLoopState | None:

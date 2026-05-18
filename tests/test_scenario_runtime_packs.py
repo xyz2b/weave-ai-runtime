@@ -1462,6 +1462,240 @@ def test_web_research_profile_defaults_source_priorities_and_freshness(
     assert outcome.updated_input["freshness_required"] is freshness_required
 
 
+def test_web_research_strategy_validation_accepts_pro_and_rejects_unknown() -> None:
+    context = ToolContext(session_id="pro-validation", turn_id="turn-1", agent_name="tester", cwd=Path.cwd())
+
+    accepted = reference_web_tool_impls.validate_web_research(
+        {"objective": "Research with Pro planning.", "strategy": "pro"},
+        context,
+    )
+    rejected = reference_web_tool_impls.validate_web_research(
+        {"objective": "Research with unknown strategy.", "strategy": "magic"},
+        context,
+    )
+
+    assert accepted.valid is True
+    assert accepted.updated_input["strategy"] == "pro"
+    assert rejected.valid is False
+    assert rejected.message == "strategy must be deterministic or pro"
+
+
+def test_pro_web_research_planner_search_fetch_and_evidence_bound_synthesis(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    query = "refund policy"
+    url = "https://grounding.example.test/refund-policy"
+    provider = reference_web_research_core.FixtureWebResearchProvider(
+        search_results={query: [{"title": "Refund policy", "url": url}]},
+    )
+    monkeypatch.setattr(reference_web_tool_impls, "_web_urlopen", _web_urlopen)
+    monkeypatch.setattr(
+        reference_web_tool_impls,
+        "_web_search_provider_registry",
+        reference_web_research_core.WebSearchProviderRegistry((provider,)),
+    )
+    runtime, _shape, runtime_root = _assemble_shared_reference_runtime(tmp_path, "weavert-shared-web-research")
+    context = _tool_context(runtime, runtime_root)
+    def _synthesis_response(kind: str, payload: dict[str, Any]) -> dict[str, Any]:
+        assert kind == "synthesizer"
+        evidence_id = payload["evidence"][0]["id"]
+        return {
+            "answer": "Refunds stay available for 30 days after purchase.",
+            "claims": [{"claim": "Refunds stay available for 30 days.", "evidence_ids": [evidence_id]}],
+            "confidence": "high",
+        }
+
+    context.metadata[reference_web_tool_impls._WEB_RESEARCH_MODEL_RESPONSE_METADATA_KEY] = [
+        {"actions": [{"type": "search", "query": query}], "rationale": "Find candidates."},
+        {"actions": [{"type": "fetch", "source_handle": url}], "stop_intent": "sufficient_evidence"},
+        _synthesis_response,
+    ]
+
+    result = asyncio.run(
+        runtime.kernel.tool_registry.get("web_research").execute(
+            {"objective": "What is the refund window?", "strategy": "pro", "search_budget": 1, "fetch_budget": 1, "desired_source_count": 1},
+            context,
+        )
+    )
+
+    assert result["strategy"] == "pro"
+    assert result["child_run"]["agent"] == "web_research_pro_loop"
+    assert result["stop_reason"] == "sufficient_evidence"
+    assert result["sources"][0]["url"] == url
+    assert result["claims"][0]["evidence_id"]
+    assert any(event["event"] == "planner_decision" for event in result["trace_summary"])
+    assert any(event["event"] == "synthesis_validated" for event in result["trace_summary"])
+
+
+def test_pro_web_research_rejects_fabricated_source_handles(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = reference_web_research_core.FixtureWebResearchProvider()
+    monkeypatch.setattr(
+        reference_web_tool_impls,
+        "_web_search_provider_registry",
+        reference_web_research_core.WebSearchProviderRegistry((provider,)),
+    )
+    runtime, _shape, runtime_root = _assemble_shared_reference_runtime(tmp_path, "weavert-shared-web-research")
+    context = _tool_context(runtime, runtime_root)
+    context.metadata[reference_web_tool_impls._WEB_RESEARCH_MODEL_RESPONSE_METADATA_KEY] = [
+        {"actions": [{"type": "fetch", "source_handle": "fabricated-source"}], "stop_intent": "sufficient_evidence"},
+        {"answer": "Unsupported.", "claims": [{"claim": "Unsupported.", "evidence_ids": ["fabricated-source"]}]},
+        {"answer": "", "claims": []},
+    ]
+
+    result = asyncio.run(
+        runtime.kernel.tool_registry.get("web_research").execute(
+            {"objective": "Reject fabricated source.", "strategy": "pro", "search_budget": 1, "fetch_budget": 1, "desired_source_count": 1},
+            context,
+        )
+    )
+
+    assert result["sources"] == []
+    assert result["claims"] == []
+    assert result["stop_reason"] in {"policy_blocked", "partial_result", "remaining_gaps"}
+    assert any(event["event"] == "planner_action_rejected" for event in result["trace_summary"])
+
+
+def test_pro_web_research_rejects_policy_violating_direct_url_before_fetch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    opened_urls: list[str] = []
+
+    def _urlopen(request, timeout=10, **_kwargs):
+        _ = timeout
+        opened_urls.append(request.full_url if hasattr(request, "full_url") else str(request))
+        return _FakeUrlopenResponse("<html><body>blocked</body></html>")
+
+    monkeypatch.setattr(reference_web_tool_impls, "_web_urlopen", _urlopen)
+    runtime, _shape, runtime_root = _assemble_shared_reference_runtime(tmp_path, "weavert-shared-web-research")
+    context = _tool_context(runtime, runtime_root)
+    context.metadata[reference_web_tool_impls._WEB_RESEARCH_MODEL_RESPONSE_METADATA_KEY] = [
+        {"actions": [{"type": "direct_url_fetch", "url": "https://blocked.example.test/page"}]},
+        {"answer": "", "claims": []},
+    ]
+
+    result = asyncio.run(
+        runtime.kernel.tool_registry.get("web_research").execute(
+            {
+                "objective": "Reject blocked direct URL.",
+                "strategy": "pro",
+                "allowed_domains": ["grounding.example.test"],
+                "search_budget": 1,
+                "fetch_budget": 1,
+                "desired_source_count": 1,
+            },
+            context,
+        )
+    )
+
+    assert opened_urls == []
+    assert result["sources"] == []
+    assert result["stop_reason"] == "policy_blocked"
+    assert any(event["event"] == "planner_action_rejected" for event in result["trace_summary"])
+
+
+def test_pro_web_research_traces_valid_direct_url_and_keeps_source_coverage_gap(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(reference_web_tool_impls, "_web_urlopen", _web_urlopen)
+    runtime, _shape, runtime_root = _assemble_shared_reference_runtime(tmp_path, "weavert-shared-web-research")
+    context = _tool_context(runtime, runtime_root)
+    context.metadata[reference_web_tool_impls._WEB_RESEARCH_MODEL_RESPONSE_METADATA_KEY] = [
+        {"actions": [{"type": "direct_url_fetch", "url": "https://grounding.example.test/refund-policy"}], "stop_intent": "sufficient_evidence"},
+        {"answer": "Refunds stay available.", "claims": []},
+    ]
+
+    result = asyncio.run(
+        runtime.kernel.tool_registry.get("web_research").execute(
+            {
+                "objective": "Inspect one direct URL.",
+                "strategy": "pro",
+                "allowed_domains": ["grounding.example.test"],
+                "search_budget": 1,
+                "fetch_budget": 1,
+                "desired_source_count": 2,
+            },
+            context,
+        )
+    )
+
+    assert result["sources"][0]["url"] == "https://grounding.example.test/refund-policy"
+    assert result["stop_reason"] == "remaining_gaps"
+    assert any(event["event"] == "direct_url_fetch" and event["provenance"] == "direct_url" for event in result["trace_summary"])
+
+
+def test_pro_web_research_unsupported_synthesis_gets_one_repair_then_drops(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(reference_web_tool_impls, "_web_urlopen", _web_urlopen)
+    runtime, _shape, runtime_root = _assemble_shared_reference_runtime(tmp_path, "weavert-shared-web-research")
+    context = _tool_context(runtime, runtime_root)
+
+    def _bad_synthesis(kind: str, payload: dict[str, Any]) -> dict[str, Any]:
+        assert kind == "synthesizer"
+        assert payload["evidence"]
+        return {"answer": "Unsupported answer.", "claims": [{"claim": "Unsupported claim.", "evidence_ids": ["missing-evidence"]}]}
+
+    context.metadata[reference_web_tool_impls._WEB_RESEARCH_MODEL_RESPONSE_METADATA_KEY] = [
+        {"actions": [{"type": "direct_url_fetch", "url": "https://grounding.example.test/refund-policy"}], "stop_intent": "sufficient_evidence"},
+        _bad_synthesis,
+        {"answer": "Still unsupported.", "claims": [{"claim": "Still unsupported.", "evidence_ids": ["still-missing"]}]},
+    ]
+
+    result = asyncio.run(
+        runtime.kernel.tool_registry.get("web_research").execute(
+            {
+                "objective": "Drop unsupported synthesis.",
+                "strategy": "pro",
+                "allowed_domains": ["grounding.example.test"],
+                "search_budget": 1,
+                "fetch_budget": 1,
+                "desired_source_count": 1,
+            },
+            context,
+        )
+    )
+
+    assert result["claims"] == []
+    assert result["stop_reason"] == "remaining_gaps"
+    assert any(event["event"] == "synthesis_repair_attempt" for event in result["trace_summary"])
+    assert any(event["event"] == "unsupported_synthesis_dropped" for event in result["trace_summary"])
+
+
+def test_web_research_pro_unavailable_falls_back_to_deterministic_loop(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(reference_web_tool_impls, "_web_urlopen", _web_urlopen)
+    provider = reference_web_research_core.FixtureWebResearchProvider(
+        search_results={"What is the refund window?": [{"title": "Refund policy", "url": "https://grounding.example.test/refund-policy"}]},
+    )
+    monkeypatch.setattr(
+        reference_web_tool_impls,
+        "_web_search_provider_registry",
+        reference_web_research_core.WebSearchProviderRegistry((provider,)),
+    )
+    runtime, _shape, runtime_root = _assemble_shared_reference_runtime(tmp_path, "weavert-shared-web-research")
+
+    result = asyncio.run(
+        runtime.kernel.tool_registry.get("web_research").execute(
+            {"objective": "What is the refund window?", "strategy": "pro", "search_budget": 1, "fetch_budget": 1, "desired_source_count": 1},
+            _tool_context(runtime, runtime_root),
+        )
+    )
+
+    assert result["strategy"] == "deterministic"
+    assert result["requested_strategy"] == "pro"
+    assert result["research_trace"]["strategy_fallback_reason"] == "pro_model_unavailable"
+    assert result["child_run"]["agent"] == "web_research_loop"
+
+
 def test_web_research_runtime_projects_ledger_evidence_without_terminal_metadata(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1544,7 +1778,7 @@ def test_web_research_public_result_envelope_matches_registered_schema(
     assert set(result["budget"]["used"]) == {"searches", "fetches", "finds"}
     assert set(result["budget"]["rejections"]) == {"policy", "budget"}
     assert set(result["freshness"]) == {"requested_days", "required", "status"}
-    assert set(result["research_trace"]) == {"profile", "queries", "pages_read", "iterations", "trace_summary"}
+    assert set(result["research_trace"]) == {"profile", "strategy", "queries", "pages_read", "iterations", "trace_summary"}
     assert result["research_trace"]["trace_summary"] == result["trace_summary"]
     assert all(isinstance(result[field], list) for field in ("sources", "evidence", "conflicts", "gaps", "claims", "trace_summary"))
     assert isinstance(result["auxiliary_signals"], dict)
