@@ -1086,6 +1086,135 @@ class GoogleSearchApiProvider:
         raise NotImplementedError("GoogleSearchApiProvider only implements search")
 
 
+class SerpApiGoogleSearchProvider:
+    provider_metadata = WebSearchProviderMetadata(
+        provider_id="serpapi-google-search",
+        display_name="SerpAPI Google Search",
+        capabilities=WebSearchProviderCapabilities(
+            domain_filtering=True,
+            blocked_domain_filtering=True,
+            result_limit=True,
+            freshness=False,
+            fetch=False,
+            page_find=False,
+            usage=(
+                "Optional live provider. Configure with SERPAPI_API_KEY and optional "
+                "WEAVERT_SERPAPI_GOOGLE_DOMAIN, WEAVERT_SERPAPI_HL, and WEAVERT_SERPAPI_GL. "
+                "Uses SerpAPI's Google engine and leaves freshness unsupported."
+            ),
+        ),
+        credential_required=True,
+        configured=False,
+        notes=(
+            "Domain allow/block constraints are mapped to Google query operators and still revalidated by the core. "
+            "Only organic_results are normalized into candidate search results."
+        ),
+    )
+
+    def __init__(
+        self,
+        *,
+        api_key: str | None = None,
+        google_domain: str | None = None,
+        hl: str | None = None,
+        gl: str | None = None,
+        urlopen: Callable[..., Any] | None = None,
+        endpoint: str = "https://serpapi.com/search.json",
+    ) -> None:
+        self._api_key = api_key or os.environ.get("SERPAPI_API_KEY")
+        self._google_domain = _normalize_optional_string(
+            google_domain or os.environ.get("WEAVERT_SERPAPI_GOOGLE_DOMAIN")
+        ) or "google.com"
+        self._hl = _normalize_optional_string(hl or os.environ.get("WEAVERT_SERPAPI_HL")) or "en"
+        self._gl = _normalize_optional_string(gl or os.environ.get("WEAVERT_SERPAPI_GL")) or "us"
+        self._urlopen = urlopen or web_urlopen
+        self._endpoint = endpoint
+        configured = bool(self._api_key)
+        self.provider_metadata = WebSearchProviderMetadata(
+            provider_id="serpapi-google-search",
+            display_name="SerpAPI Google Search",
+            capabilities=self.__class__.provider_metadata.capabilities,
+            credential_required=True,
+            configured=configured,
+            notes=self.__class__.provider_metadata.notes,
+        )
+
+    @property
+    def configured(self) -> bool:
+        return bool(self._api_key)
+
+    def search(
+        self,
+        query: str,
+        *,
+        limit: int,
+        policy: WebResearchPolicy | None = None,
+    ) -> list[BackendSearchResult]:
+        if not self._api_key:
+            raise ValueError("SerpAPI Google Search provider requires SERPAPI_API_KEY")
+        resolved_policy = policy or WebResearchPolicy()
+        params: dict[str, Any] = {
+            "engine": "google",
+            "api_key": self._api_key,
+            "q": _query_with_domain_operators(
+                query,
+                allowed_domains=resolved_policy.allowed_domains,
+                blocked_domains=resolved_policy.blocked_domains,
+            ),
+            "num": max(1, min(int(limit), 100)),
+            "google_domain": self._google_domain,
+            "hl": self._hl,
+            "gl": self._gl,
+        }
+        request = urllib.request.Request(
+            f"{self._endpoint}?{urllib.parse.urlencode(params)}",
+            headers={
+                "Accept": "application/json",
+                "Accept-Encoding": "identity",
+                "User-Agent": "weavert/0.1",
+            },
+        )
+        with self._urlopen(request, timeout=10) as response:
+            body = response.read().decode("utf-8", errors="replace")
+        payload = json.loads(body)
+        raw_results = payload.get("organic_results", [])
+        if not isinstance(raw_results, list):
+            return []
+        results: list[BackendSearchResult] = []
+        for raw in raw_results:
+            if not isinstance(raw, Mapping):
+                continue
+            normalized_url = normalize_web_url(raw.get("link"))
+            if normalized_url is None:
+                continue
+            title = _normalize_optional_string(raw.get("title")) or normalized_url
+            excerpt = _normalize_optional_string(raw.get("snippet")) or ""
+            metadata = {
+                key: raw[key]
+                for key in ("position", "displayed_link", "source", "date", "favicon")
+                if key in raw
+            }
+            results.append(BackendSearchResult(title=title, url=normalized_url, excerpt=excerpt, metadata=metadata))
+            if len(results) >= limit:
+                break
+        return results
+
+    def fetch(self, url: str, *, timeout: float, max_bytes: int) -> BackendFetchResult:
+        _ = url, timeout, max_bytes
+        raise NotImplementedError("SerpApiGoogleSearchProvider only implements search")
+
+    def find(
+        self,
+        page: Mapping[str, Any],
+        pattern: str,
+        *,
+        limit: int,
+        excerpt_chars: int,
+    ) -> list[BackendFindMatch]:
+        _ = page, pattern, limit, excerpt_chars
+        raise NotImplementedError("SerpApiGoogleSearchProvider only implements search")
+
+
 class BingGroundingSearchProvider:
     provider_metadata = WebSearchProviderMetadata(
         provider_id="bing-grounding",
@@ -1464,6 +1593,9 @@ def default_web_search_provider_registry(
     google = GoogleSearchApiProvider()
     if google.configured:
         providers.append(google)
+    serpapi_google = SerpApiGoogleSearchProvider()
+    if serpapi_google.configured:
+        providers.append(serpapi_google)
     brave = BraveSearchApiProvider()
     if brave.configured:
         providers.append(brave)
