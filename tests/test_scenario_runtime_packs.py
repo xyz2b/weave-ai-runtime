@@ -363,6 +363,77 @@ def _tool_context(runtime, cwd: Path) -> ToolContext:
     )
 
 
+def _pro_schema_version(kind: str) -> str:
+    if kind == "planner":
+        return reference_web_tool_impls._WEB_RESEARCH_PLANNER_SCHEMA_VERSION
+    if kind == "synthesizer":
+        return reference_web_tool_impls._WEB_RESEARCH_SYNTHESIZER_SCHEMA_VERSION
+    if kind == "verifier":
+        return reference_web_tool_impls._WEB_RESEARCH_VERIFIER_SCHEMA_VERSION
+    if kind.endswith("_repair"):
+        return reference_web_tool_impls._WEB_RESEARCH_REPAIR_SCHEMA_VERSION
+    raise AssertionError(f"Unknown Pro model turn kind: {kind}")
+
+
+def _pro_response(kind: str, **payload: Any) -> dict[str, Any]:
+    return {"schema_version": _pro_schema_version(kind), "kind": kind, **payload}
+
+
+def _pro_repair_response(kind: str, repaired_response: dict[str, Any]) -> dict[str, Any]:
+    return _pro_response(kind, repaired_response=repaired_response)
+
+
+def _answer_unit(
+    unit_id: str,
+    text: str,
+    *,
+    kind: str = "claim",
+    support: str = "entailed",
+    claim_ids: list[str] | None = None,
+    gap_ids: list[str] | None = None,
+    conflict_ids: list[str] | None = None,
+    limitation_ids: list[str] | None = None,
+    evidence_ids: list[str] | None = None,
+) -> dict[str, Any]:
+    unit = {"id": unit_id, "text": text, "kind": kind, "support": support}
+    if claim_ids:
+        unit["claim_ids"] = claim_ids
+    if gap_ids:
+        unit["gap_ids"] = gap_ids
+    if conflict_ids:
+        unit["conflict_ids"] = conflict_ids
+    if limitation_ids:
+        unit["limitation_ids"] = limitation_ids
+    if evidence_ids:
+        unit["evidence_ids"] = evidence_ids
+    return unit
+
+
+def _verifier_unit(
+    unit_id: str,
+    *,
+    status: str = "entailed",
+    support: str = "entailed",
+    claim_ids: list[str] | None = None,
+    gap_ids: list[str] | None = None,
+    conflict_ids: list[str] | None = None,
+    limitation_ids: list[str] | None = None,
+    evidence_ids: list[str] | None = None,
+) -> dict[str, Any]:
+    unit = {"unit_id": unit_id, "status": status, "support": support}
+    if claim_ids:
+        unit["claim_ids"] = claim_ids
+    if gap_ids:
+        unit["gap_ids"] = gap_ids
+    if conflict_ids:
+        unit["conflict_ids"] = conflict_ids
+    if limitation_ids:
+        unit["limitation_ids"] = limitation_ids
+    if evidence_ids:
+        unit["evidence_ids"] = evidence_ids
+    return unit
+
+
 def _assert_public_web_fetch_schema_is_single_page(schema: dict[str, Any]) -> None:
     properties = schema["properties"]
     assert {"url", "source"} <= set(properties)
@@ -1500,16 +1571,35 @@ def test_pro_web_research_planner_search_fetch_and_evidence_bound_synthesis(
     def _synthesis_response(kind: str, payload: dict[str, Any]) -> dict[str, Any]:
         assert kind == "synthesizer"
         evidence_id = payload["evidence"][0]["id"]
-        return {
-            "answer": "Refunds stay available for 30 days after purchase.",
-            "claims": [{"claim": "Refunds stay available for 30 days.", "evidence_ids": [evidence_id]}],
-            "confidence": "high",
-        }
+        return _pro_response(
+            "synthesizer",
+            answer="Refunds stay available for 30 days after purchase.",
+            claims=[{"id": "claim-refund-window", "claim": "Refunds stay available for 30 days.", "evidence_ids": [evidence_id]}],
+            answer_units=[
+                _answer_unit(
+                    "unit-refund-window",
+                    "Refunds stay available for 30 days after purchase.",
+                    claim_ids=["claim-refund-window"],
+                    evidence_ids=[evidence_id],
+                )
+            ],
+            confidence="high",
+        )
 
     context.metadata[reference_web_tool_impls._WEB_RESEARCH_MODEL_RESPONSE_METADATA_KEY] = [
-        {"actions": [{"type": "search", "query": query}], "rationale": "Find candidates."},
-        {"actions": [{"type": "fetch", "source_handle": url}], "stop_intent": "sufficient_evidence"},
+        _pro_response("planner", actions=[{"type": "search", "query": query}], rationale="Find candidates."),
+        _pro_response("planner", actions=[{"type": "fetch", "source_handle": url}], stop_intent="sufficient_evidence"),
         _synthesis_response,
+        _pro_response(
+            "verifier",
+            unit_statuses=[
+                _verifier_unit(
+                    "unit-refund-window",
+                    claim_ids=["claim-refund-window"],
+                    evidence_ids=[],
+                )
+            ],
+        ),
     ]
 
     result = asyncio.run(
@@ -1522,6 +1612,8 @@ def test_pro_web_research_planner_search_fetch_and_evidence_bound_synthesis(
     assert result["strategy"] == "pro"
     assert result["child_run"]["agent"] == "web_research_pro_loop"
     assert result["stop_reason"] == "sufficient_evidence"
+    assert result["answer"] == "Refunds stay available for 30 days after purchase."
+    assert result["answer_units"][0]["claim_ids"] == ["claim-refund-window"]
     assert result["sources"][0]["url"] == url
     assert result["claims"][0]["evidence_id"]
     assert any(event["event"] == "planner_decision" for event in result["trace_summary"])
@@ -1545,23 +1637,41 @@ def test_web_research_omitted_strategy_runtime_pro_opt_in_runs_pro_loop(
     )
     client = ScriptedModelClient(
         [
-            text_batch(request_id="wr-pro-plan-1", text=json.dumps({"actions": [{"type": "search", "query": query}]})),
+            text_batch(request_id="wr-pro-plan-1", text=json.dumps(_pro_response("planner", actions=[{"type": "search", "query": query}]))),
             text_batch(
                 request_id="wr-pro-plan-2",
-                text=json.dumps({"actions": [{"type": "fetch", "source_handle": url}], "stop_intent": "sufficient_evidence"}),
+                text=json.dumps(_pro_response("planner", actions=[{"type": "fetch", "source_handle": url}], stop_intent="sufficient_evidence")),
             ),
             lambda request: text_batch(
                 request_id="wr-pro-synth",
                 text=json.dumps(
-                    {
-                        "answer": "The modeled synthesis says refunds are available for 30 days.",
-                        "claims": [
+                    _pro_response(
+                        "synthesizer",
+                        answer="The modeled synthesis says refunds are available for 30 days.",
+                        claims=[
                             {
+                                "id": "claim-refund-window",
                                 "claim": "Refunds are available for 30 days.",
                                 "evidence_id": json.loads(request.messages[0].text)["payload"]["evidence"][0]["id"],
                             }
                         ],
-                    }
+                        answer_units=[
+                            _answer_unit(
+                                "unit-refund-window",
+                                "The modeled synthesis says refunds are available for 30 days.",
+                                claim_ids=["claim-refund-window"],
+                            )
+                        ],
+                    )
+                ),
+            ),
+            lambda request: text_batch(
+                request_id="wr-pro-verify",
+                text=json.dumps(
+                    _pro_response(
+                        "verifier",
+                        unit_statuses=[_verifier_unit(json.loads(request.messages[0].text)["payload"]["proposed_answer_units"][0]["id"], claim_ids=["claim-refund-window"])],
+                    )
                 ),
             ),
         ]
@@ -1589,6 +1699,7 @@ def test_web_research_omitted_strategy_runtime_pro_opt_in_runs_pro_loop(
         "planner",
         "planner",
         "synthesizer",
+        "verifier",
     ]
 
 
@@ -1642,20 +1753,38 @@ def test_pro_web_research_uses_runtime_model_client_without_private_hooks(
         [
             text_batch(
                 request_id="wr-runtime-plan",
-                text=json.dumps({"actions": [{"type": "direct_url_fetch", "url": url}], "stop_intent": "sufficient_evidence"}),
+                text=json.dumps(_pro_response("planner", actions=[{"type": "direct_url_fetch", "url": url}], stop_intent="sufficient_evidence")),
             ),
             lambda request: text_batch(
                 request_id="wr-runtime-synth",
                 text=json.dumps(
-                    {
-                        "answer": "Runtime model synthesis preserves the 30 day refund window.",
-                        "claims": [
+                    _pro_response(
+                        "synthesizer",
+                        answer="Runtime model synthesis preserves the 30 day refund window.",
+                        claims=[
                             {
+                                "id": "claim-refund-window",
                                 "claim": "Refunds stay available for 30 days.",
                                 "evidence_id": json.loads(request.messages[0].text)["payload"]["evidence"][0]["id"],
                             }
                         ],
-                    }
+                        answer_units=[
+                            _answer_unit(
+                                "unit-refund-window",
+                                "Runtime model synthesis preserves the 30 day refund window.",
+                                claim_ids=["claim-refund-window"],
+                            )
+                        ],
+                    )
+                ),
+            ),
+            lambda request: text_batch(
+                request_id="wr-runtime-verify",
+                text=json.dumps(
+                    _pro_response(
+                        "verifier",
+                        unit_statuses=[_verifier_unit(json.loads(request.messages[0].text)["payload"]["proposed_answer_units"][0]["id"], claim_ids=["claim-refund-window"])],
+                    )
                 ),
             ),
         ]
@@ -1676,6 +1805,7 @@ def test_pro_web_research_uses_runtime_model_client_without_private_hooks(
                 "search_budget": 1,
                 "fetch_budget": 1,
                 "desired_source_count": 1,
+                "max_turns": 1,
             },
             context,
         )
@@ -1689,7 +1819,15 @@ def test_pro_web_research_uses_runtime_model_client_without_private_hooks(
     assert [request.metadata["web_research_internal_model_turn"]["kind"] for request in client.requests] == [
         "planner",
         "synthesizer",
+        "verifier",
     ]
+    first_payload = json.loads(client.requests[0].messages[0].text)
+    assert first_payload["schema_version"] == reference_web_tool_impls._WEB_RESEARCH_PLANNER_SCHEMA_VERSION
+    assert first_payload["kind"] == "planner"
+    assert {"payload", "instructions", "authority", "response_contract"} <= set(first_payload)
+    assert first_payload["response_contract"]["type"] == "object"
+    assert "runtime validates policy" in first_payload["authority"].lower()
+    assert len(json.dumps(first_payload["payload"])) < 12_000
 
 
 def test_pro_web_research_rejects_fabricated_source_handles(
@@ -1705,9 +1843,8 @@ def test_pro_web_research_rejects_fabricated_source_handles(
     runtime, _shape, runtime_root = _assemble_shared_reference_runtime(tmp_path, "weavert-shared-web-research")
     context = _tool_context(runtime, runtime_root)
     context.metadata[reference_web_tool_impls._WEB_RESEARCH_MODEL_RESPONSE_METADATA_KEY] = [
-        {"actions": [{"type": "fetch", "source_handle": "fabricated-source"}], "stop_intent": "sufficient_evidence"},
-        {"answer": "Unsupported.", "claims": [{"claim": "Unsupported.", "evidence_ids": ["fabricated-source"]}]},
-        {"answer": "", "claims": []},
+        _pro_response("planner", actions=[{"type": "fetch", "source_handle": "fabricated-source"}], stop_intent="sufficient_evidence"),
+        _pro_response("synthesizer", answer="", claims=[], answer_units=[]),
     ]
 
     result = asyncio.run(
@@ -1738,8 +1875,8 @@ def test_pro_web_research_rejects_policy_violating_direct_url_before_fetch(
     runtime, _shape, runtime_root = _assemble_shared_reference_runtime(tmp_path, "weavert-shared-web-research")
     context = _tool_context(runtime, runtime_root)
     context.metadata[reference_web_tool_impls._WEB_RESEARCH_MODEL_RESPONSE_METADATA_KEY] = [
-        {"actions": [{"type": "direct_url_fetch", "url": "https://blocked.example.test/page"}]},
-        {"answer": "", "claims": []},
+        _pro_response("planner", actions=[{"type": "direct_url_fetch", "url": "https://blocked.example.test/page"}]),
+        _pro_response("synthesizer", answer="", claims=[], answer_units=[]),
     ]
 
     result = asyncio.run(
@@ -1751,6 +1888,7 @@ def test_pro_web_research_rejects_policy_violating_direct_url_before_fetch(
                 "search_budget": 1,
                 "fetch_budget": 1,
                 "desired_source_count": 1,
+                "max_turns": 1,
             },
             context,
         )
@@ -1770,8 +1908,8 @@ def test_pro_web_research_traces_valid_direct_url_and_keeps_source_coverage_gap(
     runtime, _shape, runtime_root = _assemble_shared_reference_runtime(tmp_path, "weavert-shared-web-research")
     context = _tool_context(runtime, runtime_root)
     context.metadata[reference_web_tool_impls._WEB_RESEARCH_MODEL_RESPONSE_METADATA_KEY] = [
-        {"actions": [{"type": "direct_url_fetch", "url": "https://grounding.example.test/refund-policy"}], "stop_intent": "sufficient_evidence"},
-        {"answer": "Refunds stay available.", "claims": []},
+        _pro_response("planner", actions=[{"type": "direct_url_fetch", "url": "https://grounding.example.test/refund-policy"}], stop_intent="sufficient_evidence"),
+        _pro_response("synthesizer", answer="Refunds stay available.", claims=[], answer_units=[]),
     ]
 
     result = asyncio.run(
@@ -1804,12 +1942,25 @@ def test_pro_web_research_unsupported_synthesis_gets_one_repair_then_drops(
     def _bad_synthesis(kind: str, payload: dict[str, Any]) -> dict[str, Any]:
         assert kind == "synthesizer"
         assert payload["evidence"]
-        return {"answer": "Unsupported answer.", "claims": [{"claim": "Unsupported claim.", "evidence_ids": ["missing-evidence"]}]}
+        return _pro_response(
+            "synthesizer",
+            answer="Unsupported answer.",
+            claims=[{"id": "claim-missing", "claim": "Unsupported claim.", "evidence_ids": ["missing-evidence"]}],
+            answer_units=[_answer_unit("unit-missing", "Unsupported answer.", claim_ids=["claim-missing"])],
+        )
 
     context.metadata[reference_web_tool_impls._WEB_RESEARCH_MODEL_RESPONSE_METADATA_KEY] = [
-        {"actions": [{"type": "direct_url_fetch", "url": "https://grounding.example.test/refund-policy"}], "stop_intent": "sufficient_evidence"},
+        _pro_response("planner", actions=[{"type": "direct_url_fetch", "url": "https://grounding.example.test/refund-policy"}], stop_intent="sufficient_evidence"),
         _bad_synthesis,
-        {"answer": "Still unsupported.", "claims": [{"claim": "Still unsupported.", "evidence_ids": ["still-missing"]}]},
+        _pro_repair_response(
+            "synthesis_repair",
+            _pro_response(
+                "synthesizer",
+                answer="Still unsupported.",
+                claims=[{"id": "claim-still-missing", "claim": "Still unsupported.", "evidence_ids": ["still-missing"]}],
+                answer_units=[_answer_unit("unit-still-missing", "Still unsupported.", claim_ids=["claim-still-missing"])],
+            ),
+        ),
     ]
 
     result = asyncio.run(
@@ -1843,9 +1994,10 @@ def test_pro_web_research_preserves_evidence_bound_conflict_metadata(
     def _conflict_synthesis(kind: str, payload: dict[str, Any]) -> dict[str, Any]:
         assert kind == "synthesizer"
         evidence_id = payload["evidence"][0]["id"]
-        return {
-            "answer": "Refunds remain available for 30 days, with an unresolved legacy-notice conflict.",
-            "claims": [
+        return _pro_response(
+            "synthesizer",
+            answer="Refunds remain available for 30 days, with an unresolved legacy-notice conflict.",
+            claims=[
                 {
                     "id": "claim-current",
                     "claim": "Refunds remain available for 30 days.",
@@ -1857,11 +2009,20 @@ def test_pro_web_research_preserves_evidence_bound_conflict_metadata(
                     "resolution_rationale": "The legacy notice was not inspected in this run.",
                 }
             ],
-        }
+            answer_units=[
+                _answer_unit(
+                    "unit-current-refund",
+                    "Refunds remain available for 30 days.",
+                    claim_ids=["claim-current"],
+                    evidence_ids=[evidence_id],
+                )
+            ],
+        )
 
     context.metadata[reference_web_tool_impls._WEB_RESEARCH_MODEL_RESPONSE_METADATA_KEY] = [
-        {"actions": [{"type": "direct_url_fetch", "url": "https://grounding.example.test/refund-policy"}], "stop_intent": "sufficient_evidence"},
+        _pro_response("planner", actions=[{"type": "direct_url_fetch", "url": "https://grounding.example.test/refund-policy"}], stop_intent="sufficient_evidence"),
         _conflict_synthesis,
+        _pro_response("verifier", unit_statuses=[_verifier_unit("unit-current-refund", claim_ids=["claim-current"])]),
     ]
 
     result = asyncio.run(
@@ -1896,11 +2057,13 @@ def test_pro_web_research_rejects_unbound_conflict_metadata(
     runtime, _shape, runtime_root = _assemble_shared_reference_runtime(tmp_path, "weavert-shared-web-research")
     context = _tool_context(runtime, runtime_root)
     context.metadata[reference_web_tool_impls._WEB_RESEARCH_MODEL_RESPONSE_METADATA_KEY] = [
-        {"actions": [{"type": "direct_url_fetch", "url": "https://grounding.example.test/refund-policy"}], "stop_intent": "sufficient_evidence"},
-        {
-            "answer": "Unsupported conflict answer.",
-            "claims": [
+        _pro_response("planner", actions=[{"type": "direct_url_fetch", "url": "https://grounding.example.test/refund-policy"}], stop_intent="sufficient_evidence"),
+        _pro_response(
+            "synthesizer",
+            answer="Unsupported conflict answer.",
+            claims=[
                 {
+                    "id": "claim-fabricated-conflict",
                     "claim": "A fabricated legacy notice conflicts with the current policy.",
                     "evidence_id": "missing-evidence",
                     "claim_key": "refund_window",
@@ -1908,8 +2071,17 @@ def test_pro_web_research_rejects_unbound_conflict_metadata(
                     "conflicts_with": ["claim-current"],
                 }
             ],
-        },
-        {"answer": "Still unsupported.", "claims": [{"claim": "Still unsupported.", "evidence_id": "still-missing"}]},
+            answer_units=[_answer_unit("unit-fabricated-conflict", "Unsupported conflict answer.", claim_ids=["claim-fabricated-conflict"])],
+        ),
+        _pro_repair_response(
+            "synthesis_repair",
+            _pro_response(
+                "synthesizer",
+                answer="Still unsupported.",
+                claims=[{"id": "claim-still-missing", "claim": "Still unsupported.", "evidence_id": "still-missing"}],
+                answer_units=[_answer_unit("unit-still-missing", "Still unsupported.", claim_ids=["claim-still-missing"])],
+            ),
+        ),
     ]
 
     result = asyncio.run(
@@ -1931,6 +2103,321 @@ def test_pro_web_research_rejects_unbound_conflict_metadata(
     assert result["confidence"] != "high"
     assert any(gap["kind"] == "unsupported_synthesis" for gap in result["gaps"])
     assert any(event["event"] == "unsupported_synthesis_dropped" for event in result["trace_summary"])
+
+
+def test_pro_web_research_unknown_answer_unit_claim_falls_back_before_projection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(reference_web_tool_impls, "_web_urlopen", _web_urlopen)
+    runtime, _shape, runtime_root = _assemble_shared_reference_runtime(tmp_path, "weavert-shared-web-research")
+    context = _tool_context(runtime, runtime_root)
+
+    def _synthesis(kind: str, payload: dict[str, Any]) -> dict[str, Any]:
+        assert kind == "synthesizer"
+        evidence_id = payload["evidence"][0]["id"]
+        return _pro_response(
+            "synthesizer",
+            answer="Refunds stay available for 30 days. Free lifetime returns are guaranteed.",
+            claims=[{"id": "claim-refund-window", "claim": "Refunds stay available for 30 days.", "evidence_id": evidence_id}],
+            answer_units=[
+                _answer_unit(
+                    "unit-unsupported-lifetime",
+                    "Free lifetime returns are guaranteed.",
+                    claim_ids=["missing-claim"],
+                )
+            ],
+        )
+
+    context.metadata[reference_web_tool_impls._WEB_RESEARCH_MODEL_RESPONSE_METADATA_KEY] = [
+        _pro_response("planner", actions=[{"type": "direct_url_fetch", "url": "https://grounding.example.test/refund-policy"}], stop_intent="sufficient_evidence"),
+        _synthesis,
+        _pro_response("verifier", unit_statuses=[_verifier_unit("unit-unsupported-lifetime", claim_ids=["missing-claim"])]),
+    ]
+
+    result = asyncio.run(
+        runtime.kernel.tool_registry.get("web_research").execute(
+            {
+                "objective": "Reject unsupported answer unit.",
+                "strategy": "pro",
+                "allowed_domains": ["grounding.example.test"],
+                "search_budget": 1,
+                "fetch_budget": 1,
+                "desired_source_count": 1,
+            },
+            context,
+        )
+    )
+
+    assert "Free lifetime returns" not in result["answer"]
+    assert result["answer_units"] == []
+    assert result["stop_reason"] == "remaining_gaps"
+    assert any(event.get("validation_class") == "out_of_state_reference" for event in result["trace_summary"])
+
+
+def test_pro_web_research_verifier_contradiction_prevents_projection_and_downgrades(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(reference_web_tool_impls, "_web_urlopen", _web_urlopen)
+    runtime, _shape, runtime_root = _assemble_shared_reference_runtime(tmp_path, "weavert-shared-web-research")
+    context = _tool_context(runtime, runtime_root)
+
+    def _synthesis(kind: str, payload: dict[str, Any]) -> dict[str, Any]:
+        assert kind == "synthesizer"
+        evidence_id = payload["evidence"][0]["id"]
+        return _pro_response(
+            "synthesizer",
+            answer="Refunds are unavailable after purchase.",
+            claims=[{"id": "claim-refund-window", "claim": "Refunds stay available for 30 days.", "evidence_id": evidence_id}],
+            answer_units=[
+                _answer_unit(
+                    "unit-contradicted",
+                    "Refunds are unavailable after purchase.",
+                    claim_ids=["claim-refund-window"],
+                )
+            ],
+        )
+
+    context.metadata[reference_web_tool_impls._WEB_RESEARCH_MODEL_RESPONSE_METADATA_KEY] = [
+        _pro_response("planner", actions=[{"type": "direct_url_fetch", "url": "https://grounding.example.test/refund-policy"}], stop_intent="sufficient_evidence"),
+        _synthesis,
+        _pro_response(
+            "verifier",
+            unit_statuses=[
+                _verifier_unit(
+                    "unit-contradicted",
+                    status="contradicted",
+                    support="contradicted",
+                    claim_ids=["claim-refund-window"],
+                )
+            ],
+        ),
+    ]
+
+    result = asyncio.run(
+        runtime.kernel.tool_registry.get("web_research").execute(
+            {
+                "objective": "Reject contradicted unit.",
+                "strategy": "pro",
+                "allowed_domains": ["grounding.example.test"],
+                "search_budget": 1,
+                "fetch_budget": 1,
+                "desired_source_count": 1,
+            },
+            context,
+        )
+    )
+
+    assert "unavailable after purchase" not in result["answer"]
+    assert result["confidence"] != "high"
+    assert any(event["event"] == "answer_units_dropped" for event in result["trace_summary"])
+
+
+def test_pro_web_research_gap_freshness_limitation_and_conflict_units_bind_to_stable_ids(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(reference_web_tool_impls, "_web_urlopen", _web_urlopen)
+    runtime, _shape, runtime_root = _assemble_shared_reference_runtime(tmp_path, "weavert-shared-web-research")
+    context = _tool_context(runtime, runtime_root)
+    captured: dict[str, str] = {}
+
+    def _synthesis(kind: str, payload: dict[str, Any]) -> dict[str, Any]:
+        assert kind == "synthesizer"
+        evidence_id = payload["evidence"][0]["id"]
+        gap_id = payload["answer_proof_state"]["gaps"][0]["id"]
+        limitation_id = payload["answer_proof_state"]["limitations"][0]["id"]
+        conflict_id = reference_web_tool_impls._stable_proof_id(
+            "conflict",
+            {
+                "kind": "claim_conflict",
+                "claim_key": "refund_window",
+                "message": "Ledger-bound claims disagree.",
+                "source_handles": [payload["evidence"][0]["source_handle"]],
+            },
+            0,
+        )
+        captured.update({"gap_id": gap_id, "limitation_id": limitation_id, "conflict_id": conflict_id})
+        return _pro_response(
+            "synthesizer",
+            answer="Refunds stay available for 30 days. Source coverage remains incomplete. Freshness is not fully verified. An unresolved legacy conflict remains.",
+            claims=[
+                {
+                    "id": "claim-current",
+                    "claim": "Refunds stay available for 30 days.",
+                    "evidence_id": evidence_id,
+                    "claim_key": "refund_window",
+                    "conflicts_with": ["legacy_notice"],
+                    "resolved": False,
+                }
+            ],
+            answer_units=[
+                _answer_unit("unit-claim", "Refunds stay available for 30 days.", claim_ids=["claim-current"]),
+                _answer_unit("unit-gap", "Source coverage remains incomplete.", kind="gap", support="gap", gap_ids=[gap_id]),
+                _answer_unit("unit-freshness", "Freshness is not fully verified.", kind="limitation", support="limitation", limitation_ids=[limitation_id]),
+                _answer_unit("unit-conflict", "An unresolved legacy conflict remains.", kind="conflict", support="conflict", conflict_ids=[conflict_id]),
+            ],
+        )
+
+    context.metadata[reference_web_tool_impls._WEB_RESEARCH_MODEL_RESPONSE_METADATA_KEY] = [
+        _pro_response(
+            "planner",
+            actions=[{"type": "direct_url_fetch", "url": "https://grounding.example.test/refund-policy"}],
+            expected_gaps=[{"kind": "source_coverage_gap", "message": "A second source was not inspected."}],
+            stop_intent="sufficient_evidence",
+        ),
+        _synthesis,
+        lambda _kind, _payload: _pro_response(
+            "verifier",
+            unit_statuses=[
+                _verifier_unit("unit-claim", claim_ids=["claim-current"]),
+                _verifier_unit("unit-gap", status="gap", support="gap", gap_ids=[captured["gap_id"]]),
+                _verifier_unit("unit-freshness", status="limitation", support="limitation", limitation_ids=[captured["limitation_id"]]),
+                _verifier_unit("unit-conflict", status="conflict", support="conflict", conflict_ids=[captured["conflict_id"]]),
+            ],
+        ),
+    ]
+
+    result = asyncio.run(
+        runtime.kernel.tool_registry.get("web_research").execute(
+            {
+                "objective": "Expose limitations.",
+                "strategy": "pro",
+                "allowed_domains": ["grounding.example.test"],
+                "freshness_days": 7,
+                "freshness_required": True,
+                "search_budget": 1,
+                "fetch_budget": 1,
+                "desired_source_count": 1,
+                "max_turns": 1,
+            },
+            context,
+        )
+    )
+
+    public_units = {unit["id"]: unit for unit in result["answer_units"]}
+    assert public_units["unit-gap"]["gap_ids"] == [captured["gap_id"]]
+    assert public_units["unit-freshness"]["limitation_ids"] == [captured["limitation_id"]]
+    assert public_units["unit-conflict"]["conflict_ids"] == [captured["conflict_id"]]
+    assert result["confidence"] != "high"
+    assert result["stop_reason"] in {"freshness_unsupported", "unresolved_conflict", "remaining_gaps"}
+
+
+def test_pro_web_research_transition_units_require_non_factual_verifier_support(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(reference_web_tool_impls, "_web_urlopen", _web_urlopen)
+    runtime, _shape, runtime_root = _assemble_shared_reference_runtime(tmp_path, "weavert-shared-web-research")
+    context = _tool_context(runtime, runtime_root)
+
+    def _synthesis(kind: str, payload: dict[str, Any]) -> dict[str, Any]:
+        assert kind == "synthesizer"
+        evidence_id = payload["evidence"][0]["id"]
+        return _pro_response(
+            "synthesizer",
+            answer="Also, refunds stay available for 30 days. This proves lifetime refunds.",
+            claims=[{"id": "claim-refund-window", "claim": "Refunds stay available for 30 days.", "evidence_id": evidence_id}],
+            answer_units=[
+                _answer_unit("unit-transition", "Also,", kind="transition", support="non_factual"),
+                _answer_unit("unit-claim", "refunds stay available for 30 days.", claim_ids=["claim-refund-window"]),
+                _answer_unit("unit-factual-transition", "This proves lifetime refunds.", kind="transition", support="non_factual"),
+            ],
+        )
+
+    context.metadata[reference_web_tool_impls._WEB_RESEARCH_MODEL_RESPONSE_METADATA_KEY] = [
+        _pro_response("planner", actions=[{"type": "direct_url_fetch", "url": "https://grounding.example.test/refund-policy"}], stop_intent="sufficient_evidence"),
+        _synthesis,
+        _pro_response(
+            "verifier",
+            unit_statuses=[
+                _verifier_unit("unit-transition", status="non_factual", support="non_factual"),
+                _verifier_unit("unit-claim", claim_ids=["claim-refund-window"]),
+                _verifier_unit("unit-factual-transition", status="unsupported", support="unsupported"),
+            ],
+        ),
+    ]
+
+    result = asyncio.run(
+        runtime.kernel.tool_registry.get("web_research").execute(
+            {
+                "objective": "Check transitions.",
+                "strategy": "pro",
+                "allowed_domains": ["grounding.example.test"],
+                "search_budget": 1,
+                "fetch_budget": 1,
+                "desired_source_count": 1,
+            },
+            context,
+        )
+    )
+
+    assert "This proves lifetime refunds" not in result["answer"]
+    assert any(unit["id"] == "unit-transition" and unit["support"] == "non_factual" for unit in result["answer_units"])
+    assert all(unit["id"] != "unit-factual-transition" for unit in result["answer_units"])
+
+
+@pytest.mark.parametrize(
+    ("case", "operation", "expected_class"),
+    (
+        ("non_object_json", "planner_json", "non_object_json"),
+        ("schema_version_mismatch", "planner_response", "schema_version_mismatch"),
+        ("missing_required_fields", "planner_response", "missing_required_field"),
+        ("invalid_enum", "planner_parse", "invalid_enum"),
+        ("oversized_field", "synthesis_parse", "oversized_field"),
+        ("out_of_state_reference", "verifier_reference", "out_of_state_reference"),
+    ),
+)
+def test_pro_model_turn_validation_classes_are_structured(
+    tmp_path: Path,
+    case: str,
+    operation: str,
+    expected_class: str,
+) -> None:
+    runtime, _shape, runtime_root = _assemble_shared_reference_runtime(tmp_path, "weavert-shared-web-research")
+    context = _tool_context(runtime, runtime_root)
+
+    with pytest.raises(reference_web_tool_impls.ModelTurnValidationError) as excinfo:
+        if operation == "planner_json":
+            context.metadata[reference_web_tool_impls._WEB_RESEARCH_MODEL_RESPONSE_METADATA_KEY] = ["[]"]
+            asyncio.run(reference_web_tool_impls._request_internal_model_json("planner", {}, context))
+        elif operation == "planner_response":
+            response = _pro_response("planner", actions=[])
+            if case == "schema_version_mismatch":
+                response["schema_version"] = "wrong.version"
+            else:
+                response.pop("actions")
+            reference_web_tool_impls._validate_model_turn_response("planner", response)
+        elif operation == "planner_parse":
+            reference_web_tool_impls._parse_planner_decision(_pro_response("planner", actions=[{"type": "delete"}]))
+        elif operation == "synthesis_parse":
+            reference_web_tool_impls._parse_synthesis_response(
+                _pro_response(
+                    "synthesizer",
+                    claims=[],
+                    answer_units=[
+                        _answer_unit(
+                            "unit-too-large",
+                            "x" * (reference_web_tool_impls._WEB_RESEARCH_MAX_ANSWER_UNIT_TEXT_CHARS + 1),
+                            claim_ids=["claim-1"],
+                        )
+                    ],
+                )
+            )
+        elif operation == "verifier_reference":
+            verifier = reference_web_tool_impls._parse_answer_verification_response(
+                _pro_response("verifier", unit_statuses=[_verifier_unit("unit-1", claim_ids=["missing-claim"])])
+            )
+            reference_web_tool_impls._validate_answer_verification_response(
+                verifier,
+                (reference_web_tool_impls.AnswerUnit(id="unit-1", text="text", kind="claim", support="entailed", claim_ids=("claim-1",)),),
+                {"claims": [{"id": "claim-1"}], "gaps": [], "conflicts": [], "limitations": [], "evidence_ids": set()},
+            )
+        else:  # pragma: no cover - guarded by parametrization
+            raise AssertionError(operation)
+
+    assert excinfo.value.validation_class == expected_class
 
 
 def test_web_research_pro_unavailable_falls_back_to_deterministic_loop(

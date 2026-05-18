@@ -32,15 +32,17 @@ Canonical import root: `weavert_kit_common_web_research`
 - 传入 `strategy="pro"` 时，在同一个 public tool 名称背后请求 model-directed Pro research。
 - 未知 strategy value 会在 input validation 阶段被拒绝，不会被静默解释成 Pro 或 deterministic 行为。
 
-Pro mode 会向内部 planner 和 synthesizer model turns 请求 structured JSON，但这些 outputs 只是 proposals。Deterministic scripted test responses 会先被消费，其次是显式 Pro test hook，最后才使用 assembled runtime 的普通 model client。Runtime validation 仍然负责 allowed domains、blocked domains、public-host checks、search/fetch/find budgets、source-handle identity、direct-URL provenance、freshness metadata、authoritative evidence ledger、public stop reason 和 public confidence。若 Pro model support 不可用，host 可以继续把 deterministic behavior 作为 fallback baseline，调用方仍使用 `web_research`。
+Pro mode 会向内部 planner、synthesizer、answer verifier 和 bounded repair model turns 请求 schema-versioned structured JSON，但这些 outputs 只是 proposals。Deterministic scripted test responses 会先被消费，其次是显式 Pro test hook，最后才使用 assembled runtime 的普通 model client。Runtime validation 仍然负责 allowed domains、blocked domains、public-host checks、search/fetch/find budgets、source-handle identity、direct-URL provenance、freshness metadata、authoritative evidence ledger、public stop reason 和 public confidence。若 Pro model support 不可用，host 可以继续把 deterministic behavior 作为 fallback baseline，调用方仍使用 `web_research`。
 
 Pro planner 可以提出 `search`、`fetch`、`find`、`direct_url_fetch` 或 `stop`。`fetch` 必须引用之前 search 或 ledger state 中已知的 source。直接 URL 检查必须使用显式 `direct_url_fetch`；被接受的 direct-URL evidence 会带有 provenance trace，调用方可以区分它和 search-discovered evidence。仅有 direct-URL evidence 时，不会静默满足更宽的 source-discovery 或 profile-coverage 预期。
 
 ## Model-Directed Synthesis
 
-Pro synthesis 是 evidence-bound 的。Synthesizer 收到 bounded ledger evidence、conflicts、gaps、freshness metadata、provider metadata 和 objective，然后返回 answer text 与 structured claims。Runtime 只接受 evidence ids 能绑定到 inspected ledger evidence 的 claims。Accepted claims 可以保留 bounded metadata，例如 `claim_key`、`stance`、`conflicts_with`、`incompatible_with`、`resolved` 和 `resolution_rationale`；unbound metadata 不能创建 public claims、evidence、conflicts 或 high confidence。可选 excerpt spans 或 exact excerpts 会在提供时校验；无效 span metadata 会被标记为 unsupported，不会让 model 成为事实来源。
+Pro synthesis 是 answer-proof-bound 的。Synthesizer 收到 bounded ledger evidence、conflicts、gaps、freshness metadata、provider metadata、proof-addressable runtime records 和 objective，然后返回 structured claims 与有序 `answer_units`。Runtime 只接受 evidence ids 能绑定到 inspected ledger evidence 的 claims。Public Pro `answer` 只从已接受 answer units 组装；这些 units 必须绑定到 accepted claim ids、gap ids、conflict ids、limitation ids，或被 verifier 以 `support="non_factual"` 接受为 transition text。Raw synthesizer answer text 只作为 draft，不会被直接投射为 public answer。Accepted public `answer_units` 会暴露 bounded text、kind、support status 和 proof ids，供后续 citation preparation 使用。
 
-当 unsupported synthesis 仍然存在时，runtime 最多允许一次 configured repair turn，之后丢弃仍不支持的 claims，通过 gaps 或 stop-reason refinement 降级 terminal result，并记录 bounded trace events。即使 planner 或 synthesizer 忽略 unresolved ledger-bound conflicts 和 unsupported freshness，它们仍会保留在结果中。
+Internal Pro model turns 当前使用这些 schema versions：`web_research.planner.v1`、`web_research.synthesizer.v1`、`web_research.verifier.v1` 和 `web_research.repair.v1`。Runtime 会用 structured validation classes 拒绝 non-object JSON、schema-version mismatch、missing required fields、invalid enum values、oversized fields、duplicate answer-unit ids，以及引用 supplied proof state 之外 ids 的 responses，并在 bounded trace metadata 中记录。
+
+当 unsupported synthesis 或 answer proof failures 仍然存在时，runtime 最多允许一次 configured repair turn（适用时），之后丢弃仍不支持的 claims 或 answer units，通过 gaps 或 stop-reason refinement 降级 terminal result，并记录 bounded trace events。已绑定的 gaps、limitations 和 unresolved conflicts 可以保留在 answer 中，但不会提高 confidence。即使 planner、synthesizer 或 verifier 忽略 unresolved ledger-bound conflicts 和 unsupported freshness，它们仍会保留在结果中。
 
 ## 剩余限制
 

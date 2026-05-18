@@ -209,6 +209,7 @@ def web_research_builtin_tools() -> tuple[ToolDefinition, ...]:
                     "gaps": {"type": "array", "items": {"type": "object"}},
                     "freshness": {"type": "object"},
                     "claims": {"type": "array", "items": {"type": "object"}},
+                    "answer_units": {"type": "array", "items": {"type": "object"}},
                     "auxiliary_signals": {"type": "object"},
                     "policy": {"type": "object"},
                     "hard_policy": {"type": "object"},

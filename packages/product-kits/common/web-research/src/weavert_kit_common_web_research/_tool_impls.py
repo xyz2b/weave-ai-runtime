@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import socket
 import urllib.error
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Any
@@ -44,7 +45,7 @@ _WEB_RESEARCH_DEFAULT_SEARCH_BUDGET = 4
 _WEB_RESEARCH_DEFAULT_FETCH_BUDGET = 4
 _WEB_RESEARCH_DEFAULT_FIND_BUDGET = 6
 _WEB_RESEARCH_DEFAULT_DESIRED_SOURCES = 3
-_WEB_RESEARCH_MAX_TRACE_ITEMS = 8
+_WEB_RESEARCH_MAX_TRACE_ITEMS = 16
 _WEB_RESEARCH_DEFAULT_MAX_CONCURRENT_FETCHES = 3
 _WEB_RESEARCH_RUN_ID_METADATA_KEY = "web_research_run_id"
 _WEB_RESEARCH_MAX_REPLAN_PASSES = 1
@@ -53,6 +54,19 @@ _WEB_RESEARCH_MODEL_RESPONSE_METADATA_KEY = "web_research_model_responses"
 _WEB_RESEARCH_PRO_DEFAULT_METADATA_KEY = "web_research_default_strategy"
 _WEB_RESEARCH_PRO_OPT_IN_METADATA_KEY = "web_research_pro_default"
 _WEB_RESEARCH_DEFAULT_SYNTHESIS_REPAIR_TURNS = 1
+_WEB_RESEARCH_PLANNER_SCHEMA_VERSION = "web_research.planner.v1"
+_WEB_RESEARCH_SYNTHESIZER_SCHEMA_VERSION = "web_research.synthesizer.v1"
+_WEB_RESEARCH_VERIFIER_SCHEMA_VERSION = "web_research.verifier.v1"
+_WEB_RESEARCH_REPAIR_SCHEMA_VERSION = "web_research.repair.v1"
+_WEB_RESEARCH_ANSWER_UNIT_KINDS = frozenset({"claim", "limitation", "gap", "conflict", "transition"})
+_WEB_RESEARCH_ANSWER_UNIT_SUPPORTS = frozenset(
+    {"entailed", "limitation", "gap", "conflict", "non_factual", "unsupported", "contradicted"}
+)
+_WEB_RESEARCH_VERIFIER_STATUSES = _WEB_RESEARCH_ANSWER_UNIT_SUPPORTS | frozenset({"accepted", "rejected"})
+_WEB_RESEARCH_MAX_ANSWER_UNITS = 24
+_WEB_RESEARCH_MAX_ANSWER_UNIT_ID_CHARS = 80
+_WEB_RESEARCH_MAX_ANSWER_UNIT_TEXT_CHARS = 900
+_WEB_RESEARCH_MAX_REFERENCE_ID_CHARS = 120
 _WEB_FETCH_PUBLIC_BATCH_FIELDS = frozenset({"urls", "sources", "max_concurrent_fetches"})
 _WEB_RESEARCH_SOURCE_ANNOTATION_FIELDS = frozenset(
     {
@@ -138,6 +152,23 @@ _web_research_runs: dict[str, WebResearchLoopState] = {}
 
 class _DelegatedWebResearchFallbackRequested(Exception):
     """Raised only when the package-owned loop deliberately hands off before using web budget."""
+
+
+class ModelTurnValidationError(ValueError):
+    """Structured validation failure for an internal Pro model turn."""
+
+    def __init__(
+        self,
+        turn_kind: str,
+        validation_class: str,
+        message: str,
+        *,
+        raw_response: Mapping[str, Any] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.turn_kind = turn_kind
+        self.validation_class = validation_class
+        self.raw_response = dict(raw_response) if isinstance(raw_response, Mapping) else None
 
 
 @dataclass(frozen=True, slots=True)
@@ -256,14 +287,112 @@ class SynthesisClaim:
 
 
 @dataclass(frozen=True, slots=True)
+class AnswerUnit:
+    id: str
+    text: str
+    kind: str
+    support: str
+    claim_ids: tuple[str, ...] = ()
+    gap_ids: tuple[str, ...] = ()
+    conflict_ids: tuple[str, ...] = ()
+    limitation_ids: tuple[str, ...] = ()
+    evidence_ids: tuple[str, ...] = ()
+    rationale: str = ""
+    raw: Mapping[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class AnswerVerificationUnit:
+    unit_id: str
+    status: str
+    support: str
+    claim_ids: tuple[str, ...] = ()
+    gap_ids: tuple[str, ...] = ()
+    conflict_ids: tuple[str, ...] = ()
+    limitation_ids: tuple[str, ...] = ()
+    evidence_ids: tuple[str, ...] = ()
+    rationale: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class AnswerVerificationResponse:
+    units: tuple[AnswerVerificationUnit, ...]
+    raw: Mapping[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class AnswerProof:
+    proposed_units: tuple[AnswerUnit, ...] = ()
+    accepted_units: tuple[AnswerUnit, ...] = ()
+    dropped_units: tuple[Mapping[str, Any], ...] = ()
+    verification: AnswerVerificationResponse | None = None
+    repair_used: bool = False
+    fallback_used: bool = False
+
+
+@dataclass(frozen=True, slots=True)
 class SynthesisResponse:
     answer: str
     claims: tuple[SynthesisClaim, ...] = ()
+    answer_units: tuple[AnswerUnit, ...] = ()
     limitations: tuple[str, ...] = ()
     conflict_treatment: str = ""
     confidence: str | None = None
     confidence_rationale: str = ""
+    self_verification: Mapping[str, Any] = field(default_factory=dict)
     raw: Mapping[str, Any] = field(default_factory=dict)
+
+
+_WEB_RESEARCH_MODEL_TURN_CONTRACTS: dict[str, dict[str, Any]] = {
+    "planner": {
+        "schema_version": _WEB_RESEARCH_PLANNER_SCHEMA_VERSION,
+        "required": ("schema_version",),
+        "response": {
+            "type": "object",
+            "required_any": ("actions", "stop_intent"),
+            "actions": "array of search/fetch/find/direct_url_fetch/stop actions",
+            "stop_intent": "optional runtime-reviewed stop reason",
+        },
+        "instructions": "Choose bounded web_research actions or stop only from supplied state.",
+        "authority": "Planner proposes actions only; runtime owns policy, budgets, source identity, evidence, stop reason, and confidence.",
+    },
+    "synthesizer": {
+        "schema_version": _WEB_RESEARCH_SYNTHESIZER_SCHEMA_VERSION,
+        "required": ("schema_version", "claims", "answer_units"),
+        "response": {
+            "type": "object",
+            "required": ("schema_version", "claims", "answer_units"),
+            "claims": "array of evidence-bound claim objects",
+            "answer_units": "ordered array of proof-carrying answer units",
+            "answer": "optional draft text; runtime never projects it directly",
+        },
+        "instructions": "Produce bounded evidence-bound claims and answer units. Do not create sources, evidence, stop reasons, or confidence.",
+        "authority": "Runtime accepts only proof bindings to supplied ledger evidence, gaps, conflicts, and limitations.",
+    },
+    "verifier": {
+        "schema_version": _WEB_RESEARCH_VERIFIER_SCHEMA_VERSION,
+        "required": ("schema_version",),
+        "response": {
+            "type": "object",
+            "required_any": ("unit_statuses", "units"),
+            "unit_statuses": "array of unit_id/status/support records for proposed answer units",
+        },
+        "instructions": "Classify each proposed answer unit as entailed, contradicted, unsupported, limitation, gap, conflict, or non_factual.",
+        "authority": "Verifier judges semantics only against supplied state; runtime owns reference checks and projection.",
+    },
+    "repair": {
+        "schema_version": _WEB_RESEARCH_REPAIR_SCHEMA_VERSION,
+        "required": ("schema_version", "repaired_response"),
+        "response": {
+            "type": "object",
+            "required": ("schema_version", "repaired_response"),
+            "repaired_response": "schema-valid response for the target turn",
+        },
+        "instructions": "Return one corrected structured response for the target turn and do not add state outside the payload.",
+        "authority": "Repair may rewrite model output only; runtime still validates the repaired response.",
+    },
+}
+
 
 SUPPORTED_RESEARCH_PROFILES = ("general", "coding", "business", "academic", "legal_compliance", "product_shopping")
 
@@ -662,7 +791,16 @@ async def _run_pro_web_research_loop(
         try:
             decision = await _request_planner_decision(payload, context)
         except ValueError as exc:
-            _record_loop_trace(state, {"event": "planner_malformed", "turn": turn_index + 1, "error": _bounded_trace_text(exc)})
+            _record_loop_trace(state, _model_turn_trace_event("planner", "rejected", exc=exc, fallback_path="loop_stop"))
+            _record_loop_trace(
+                state,
+                {
+                    "event": "planner_malformed",
+                    "turn": turn_index + 1,
+                    "validation_class": _validation_class(exc),
+                    "error": _bounded_trace_text(exc),
+                },
+            )
             state.record_gap({"kind": "malformed_planner_output", "message": "Planner response could not be parsed as a bounded decision."})
             break
         _record_planner_decision_trace(state, decision, turn_index=turn_index)
@@ -713,6 +851,8 @@ async def _run_pro_web_research_loop(
                 "answer": answer,
                 "claims": synthesis["claims"],
                 "gaps": synthesis["gaps"],
+                "conflicts": synthesis.get("conflicts", []),
+                "answer_units": synthesis.get("answer_units", []),
                 "stop_reason": stop_reason,
                 "trace_summary": synthesis["trace"],
                 "strategy": {"selected": "pro"},
@@ -1240,8 +1380,13 @@ async def _request_planner_decision(payload: Mapping[str, Any], context: ToolCon
     raw = await _request_internal_model_json("planner", payload, context)
     try:
         return _parse_planner_decision(raw)
-    except ValueError:
-        repaired = await _request_internal_model_json("planner_repair", {"invalid_response": raw, "payload": payload}, context, required=False)
+    except ValueError as exc:
+        repaired = await _request_internal_model_json(
+            "planner_repair",
+            {"invalid_response": _invalid_model_response_payload(exc, raw), "payload": payload},
+            context,
+            required=False,
+        )
         if repaired is not None:
             return _parse_planner_decision(repaired)
         raise
@@ -1252,38 +1397,48 @@ async def _request_synthesis_response(payload: Mapping[str, Any], context: ToolC
     return _parse_synthesis_response(raw)
 
 
+async def _request_answer_verification(payload: Mapping[str, Any], context: ToolContext) -> AnswerVerificationResponse:
+    raw = await _request_internal_model_json("verifier", payload, context)
+    return _parse_answer_verification_response(raw)
+
+
 async def _request_internal_model_json(kind: str, payload: Mapping[str, Any], context: ToolContext, *, required: bool = True) -> Mapping[str, Any] | None:
+    contract_payload = _build_model_turn_request_payload(kind, payload)
     scripted = context.metadata.get(_WEB_RESEARCH_MODEL_RESPONSE_METADATA_KEY)
     if isinstance(scripted, list) and scripted:
         item = scripted.pop(0)
         if callable(item):
-            item = item(kind, payload)
+            item = item(kind, contract_payload)
         if isinstance(item, str):
-            return _json_object(item)
+            return _validate_model_turn_response(kind, _json_object(item, kind=kind))
         if isinstance(item, Mapping):
-            return dict(item)
+            return _validate_model_turn_response(kind, item)
+        raise ModelTurnValidationError(kind, "non_object_json", "model response must be a JSON object")
     client = context.metadata.get("web_research_model_client")
     if callable(client):
-        item = client(kind, payload)
+        item = client(kind, contract_payload)
         if hasattr(item, "__await__"):
             item = await item
         if isinstance(item, str):
-            return _json_object(item)
+            return _validate_model_turn_response(kind, _json_object(item, kind=kind))
         if isinstance(item, Mapping):
-            return dict(item)
+            return _validate_model_turn_response(kind, item)
+        raise ModelTurnValidationError(kind, "non_object_json", "model response must be a JSON object")
     runtime_client = _runtime_model_client(context)
     if runtime_client is not None:
-        text = await _request_runtime_model_text(runtime_client, kind, payload, context)
-        return _json_object(text)
+        text = await _request_runtime_model_text(runtime_client, kind, contract_payload, context)
+        return _validate_model_turn_response(kind, _json_object(text, kind=kind))
     if required:
         raise ValueError("Pro web_research requires an internal model response provider")
     return None
 
 
 async def _request_runtime_model_text(client: Any, kind: str, payload: Mapping[str, Any], context: ToolContext) -> str:
+    schema_version = str(payload.get("schema_version") or _model_turn_schema_version(kind))
     request = ModelRequest(
         system_prompt=(
-            "You are an internal web_research JSON adapter. Return one JSON object only. "
+            "You are an internal web_research structured JSON adapter. Return one JSON object only. "
+            "Follow the supplied schema_version, response_contract, and authority boundaries. "
             "Do not include markdown, citations, or prose outside the JSON object."
         ),
         turn_context=TurnContext(
@@ -1300,15 +1455,19 @@ async def _request_runtime_model_text(client: Any, kind: str, payload: Mapping[s
                 role=MessageRole.USER,
                 content=json.dumps(
                     {
+                        "schema_version": schema_version,
                         "kind": kind,
-                        "payload": _bounded_model_payload(payload),
+                        "payload": payload.get("input_state") if isinstance(payload.get("input_state"), Mapping) else _bounded_model_payload(payload),
+                        "instructions": payload.get("instructions"),
+                        "authority": payload.get("authority"),
+                        "response_contract": payload.get("response_contract"),
                     },
                     sort_keys=True,
                 ),
             ),
         ),
         max_output_tokens=1200,
-        metadata={"web_research_internal_model_turn": {"kind": kind}},
+        metadata={"web_research_internal_model_turn": {"kind": kind, "schema_version": schema_version}},
     )
     if hasattr(client, "complete"):
         try:
@@ -1331,6 +1490,108 @@ async def _request_runtime_model_text(client: Any, kind: str, payload: Mapping[s
             error = str(event.payload.get("error") or "Runtime model stream failed")
             raise ValueError(error)
     return "".join(chunks).strip()
+
+
+def _build_model_turn_request_payload(kind: str, payload: Mapping[str, Any]) -> dict[str, Any]:
+    schema_kind = _model_turn_contract_kind(kind)
+    contract = _WEB_RESEARCH_MODEL_TURN_CONTRACTS[schema_kind]
+    input_state = _bounded_model_payload(payload)
+    request_payload: dict[str, Any] = {
+        "schema_version": contract["schema_version"],
+        "kind": kind,
+        "input_state": input_state,
+        "instructions": contract["instructions"],
+        "authority": contract["authority"],
+        "response_contract": contract["response"],
+    }
+    # Keep bounded legacy top-level fields for existing explicit hooks while making
+    # the schema-versioned contract available to the same scripted path.
+    request_payload.update(input_state)
+    return request_payload
+
+
+def _model_turn_contract_kind(kind: str) -> str:
+    return "repair" if kind.endswith("_repair") else kind
+
+
+def _model_turn_schema_version(kind: str) -> str:
+    return str(_WEB_RESEARCH_MODEL_TURN_CONTRACTS[_model_turn_contract_kind(kind)]["schema_version"])
+
+
+def _repair_target_kind(kind: str) -> str:
+    if kind == "planner_repair":
+        return "planner"
+    return "synthesizer"
+
+
+def _validate_model_turn_response(kind: str, raw: Mapping[str, Any]) -> dict[str, Any]:
+    response = dict(raw)
+    expected_schema_version = _model_turn_schema_version(kind)
+    schema_version = _identity_value(response.get("schema_version"))
+    if not schema_version:
+        raise ModelTurnValidationError(kind, "missing_required_field", "model response missing schema_version", raw_response=response)
+    if schema_version != expected_schema_version:
+        raise ModelTurnValidationError(kind, "schema_version_mismatch", "model response schema_version is unsupported", raw_response=response)
+    response_kind = _identity_value(response.get("kind"))
+    if response_kind and response_kind not in {kind, _model_turn_contract_kind(kind)}:
+        raise ModelTurnValidationError(kind, "invalid_enum", "model response kind does not match the requested turn", raw_response=response)
+    if _model_turn_contract_kind(kind) == "repair":
+        repaired = response.get("repaired_response")
+        if not isinstance(repaired, Mapping):
+            raise ModelTurnValidationError(kind, "missing_required_field", "repair response must include repaired_response", raw_response=response)
+        return _validate_model_turn_response(_repair_target_kind(kind), repaired)
+    if kind == "planner":
+        actions = response.get("actions")
+        if actions is not None and not isinstance(actions, list):
+            raise ModelTurnValidationError(kind, "invalid_type", "planner actions must be a list", raw_response=response)
+        if actions is None and not _identity_value(response.get("stop_intent") or response.get("stop_reason")):
+            raise ModelTurnValidationError(kind, "missing_required_field", "planner response must include actions or stop_intent", raw_response=response)
+    elif kind == "synthesizer":
+        if not isinstance(response.get("claims"), list):
+            raise ModelTurnValidationError(kind, "missing_required_field", "synthesizer response must include claims as a list", raw_response=response)
+        if not isinstance(response.get("answer_units"), list):
+            raise ModelTurnValidationError(kind, "missing_required_field", "synthesizer response must include answer_units as a list", raw_response=response)
+    elif kind == "verifier":
+        units = response.get("unit_statuses") if "unit_statuses" in response else response.get("units")
+        if not isinstance(units, list):
+            raise ModelTurnValidationError(kind, "missing_required_field", "verifier response must include unit_statuses as a list", raw_response=response)
+    return response
+
+
+def _invalid_model_response_payload(exc: ValueError, raw: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "message": _bounded_trace_text(exc),
+        "validation_class": _validation_class(exc),
+    }
+    raw_response = getattr(exc, "raw_response", None)
+    if isinstance(raw_response, Mapping):
+        payload["raw_response"] = _bounded_model_payload(raw_response)
+    elif raw is not None:
+        payload["raw_response"] = _bounded_model_payload(raw)
+    return payload
+
+
+def _validation_class(exc: BaseException) -> str:
+    if isinstance(exc, ModelTurnValidationError):
+        return exc.validation_class
+    return "invalid_response"
+
+
+def _model_turn_trace_event(kind: str, outcome: str, *, exc: BaseException | None = None, repair_attempt: bool = False, fallback_path: str | None = None) -> dict[str, Any]:
+    event: dict[str, Any] = {
+        "event": "model_turn_validation",
+        "kind": kind,
+        "schema_version": _model_turn_schema_version(kind),
+        "validation_outcome": outcome,
+    }
+    if exc is not None:
+        event["validation_class"] = _validation_class(exc)
+        event["error"] = _bounded_trace_text(exc)
+    if repair_attempt:
+        event["repair_attempt"] = True
+    if fallback_path:
+        event["fallback_path"] = fallback_path
+    return event
 
 
 def _bounded_model_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -1356,7 +1617,7 @@ def _parse_planner_decision(raw: Mapping[str, Any]) -> PlannerDecision:
     for item in _list_of_mappings(raw.get("actions")):
         action_type = str(item.get("type") or item.get("action") or "").strip().lower()
         if action_type not in {"search", "fetch", "find", "direct_url_fetch", "stop"}:
-            raise ValueError("planner action type must be search, fetch, find, direct_url_fetch, or stop")
+            raise ModelTurnValidationError("planner", "invalid_enum", "planner action type must be search, fetch, find, direct_url_fetch, or stop", raw_response=raw)
         actions.append(
             ResearchAction(
                 type=action_type,
@@ -1385,7 +1646,7 @@ def _parse_planner_decision(raw: Mapping[str, Any]) -> PlannerDecision:
         if str(item.get("message") or item.get("gap") or "").strip()
     )
     if not actions and not stop_intent:
-        raise ValueError("planner decision must include actions or stop_intent")
+        raise ModelTurnValidationError("planner", "missing_required_field", "planner decision must include actions or stop_intent", raw_response=raw)
     return PlannerDecision(actions=tuple(actions), rationale=_bounded_trace_text(raw.get("rationale") or ""), coverage=coverage, expected_gaps=gaps, stop_intent=stop_intent, raw=dict(raw))
 
 
@@ -1416,15 +1677,144 @@ def _parse_synthesis_response(raw: Mapping[str, Any]) -> SynthesisResponse:
     limitations = raw.get("limitations") or raw.get("gaps") or ()
     if not isinstance(limitations, list):
         limitations = []
+    self_verification = raw.get("self_verification")
     return SynthesisResponse(
         answer=str(raw.get("answer") or raw.get("summary") or "").strip(),
         claims=tuple(claims),
+        answer_units=_parse_answer_units(raw.get("answer_units"), turn_kind="synthesizer"),
         limitations=tuple(_bounded_trace_text(item) for item in limitations if str(item).strip()),
         conflict_treatment=_bounded_trace_text(raw.get("conflict_treatment") or ""),
         confidence=_optional_text(raw.get("confidence")),
         confidence_rationale=_bounded_trace_text(raw.get("confidence_rationale") or raw.get("rationale") or ""),
+        self_verification=dict(self_verification) if isinstance(self_verification, Mapping) else {},
         raw=dict(raw),
     )
+
+
+def _parse_answer_units(raw: Any, *, turn_kind: str) -> tuple[AnswerUnit, ...]:
+    if not isinstance(raw, list):
+        raise ModelTurnValidationError(turn_kind, "missing_required_field", "answer_units must be a list")
+    if len(raw) > _WEB_RESEARCH_MAX_ANSWER_UNITS:
+        raise ModelTurnValidationError(turn_kind, "oversized_field", "answer_units exceeds the maximum unit count")
+    units: list[AnswerUnit] = []
+    seen: set[str] = set()
+    for index, item in enumerate(raw):
+        if not isinstance(item, Mapping):
+            raise ModelTurnValidationError(turn_kind, "invalid_type", "answer_units entries must be objects")
+        unit_id = _required_bounded_text(item.get("id"), "answer_units.id", turn_kind, max_chars=_WEB_RESEARCH_MAX_ANSWER_UNIT_ID_CHARS)
+        if unit_id in seen:
+            raise ModelTurnValidationError(turn_kind, "duplicate_id", "answer_unit ids must be unique")
+        seen.add(unit_id)
+        text = _required_bounded_text(item.get("text"), "answer_units.text", turn_kind, max_chars=_WEB_RESEARCH_MAX_ANSWER_UNIT_TEXT_CHARS)
+        kind = _required_enum(item.get("kind"), "answer_units.kind", _WEB_RESEARCH_ANSWER_UNIT_KINDS, turn_kind)
+        support = _required_enum(item.get("support"), "answer_units.support", _WEB_RESEARCH_ANSWER_UNIT_SUPPORTS, turn_kind)
+        unit = AnswerUnit(
+            id=unit_id,
+            text=text,
+            kind=kind,
+            support=support,
+            claim_ids=_reference_ids(item, "claim_ids", "claim_id", turn_kind),
+            gap_ids=_reference_ids(item, "gap_ids", "gap_id", turn_kind),
+            conflict_ids=_reference_ids(item, "conflict_ids", "conflict_id", turn_kind),
+            limitation_ids=_reference_ids(item, "limitation_ids", "limitation_id", turn_kind),
+            evidence_ids=_reference_ids(item, "evidence_ids", "evidence_id", turn_kind),
+            rationale=_bounded_trace_text(item.get("rationale") or "", limit=360),
+            raw=dict(item),
+        )
+        _validate_answer_unit_kind_support(unit, turn_kind=turn_kind, raw=item, index=index)
+        units.append(unit)
+    return tuple(units)
+
+
+def _parse_answer_verification_response(raw: Mapping[str, Any]) -> AnswerVerificationResponse:
+    raw_units = raw.get("unit_statuses") if "unit_statuses" in raw else raw.get("units")
+    if not isinstance(raw_units, list):
+        raise ModelTurnValidationError("verifier", "missing_required_field", "verifier unit_statuses must be a list", raw_response=raw)
+    if len(raw_units) > _WEB_RESEARCH_MAX_ANSWER_UNITS:
+        raise ModelTurnValidationError("verifier", "oversized_field", "verifier unit_statuses exceeds the maximum unit count", raw_response=raw)
+    units: list[AnswerVerificationUnit] = []
+    seen: set[str] = set()
+    for item in raw_units:
+        if not isinstance(item, Mapping):
+            raise ModelTurnValidationError("verifier", "invalid_type", "verifier unit_status entries must be objects", raw_response=raw)
+        unit_id = _required_bounded_text(item.get("unit_id") or item.get("id"), "unit_statuses.unit_id", "verifier", max_chars=_WEB_RESEARCH_MAX_ANSWER_UNIT_ID_CHARS)
+        if unit_id in seen:
+            raise ModelTurnValidationError("verifier", "duplicate_id", "verifier unit ids must be unique", raw_response=raw)
+        seen.add(unit_id)
+        status = _required_enum(item.get("status") or item.get("support"), "unit_statuses.status", _WEB_RESEARCH_VERIFIER_STATUSES, "verifier")
+        support = _required_enum(item.get("support") or status, "unit_statuses.support", _WEB_RESEARCH_ANSWER_UNIT_SUPPORTS, "verifier")
+        units.append(
+            AnswerVerificationUnit(
+                unit_id=unit_id,
+                status=status,
+                support=support,
+                claim_ids=_reference_ids(item, "claim_ids", "claim_id", "verifier"),
+                gap_ids=_reference_ids(item, "gap_ids", "gap_id", "verifier"),
+                conflict_ids=_reference_ids(item, "conflict_ids", "conflict_id", "verifier"),
+                limitation_ids=_reference_ids(item, "limitation_ids", "limitation_id", "verifier"),
+                evidence_ids=_reference_ids(item, "evidence_ids", "evidence_id", "verifier"),
+                rationale=_bounded_trace_text(item.get("rationale") or "", limit=360),
+            )
+        )
+    return AnswerVerificationResponse(units=tuple(units), raw=dict(raw))
+
+
+def _required_bounded_text(value: Any, field_name: str, turn_kind: str, *, max_chars: int) -> str:
+    text = str(value or "").strip()
+    if not text:
+        raise ModelTurnValidationError(turn_kind, "missing_required_field", f"{field_name} is required")
+    if len(text) > max_chars:
+        raise ModelTurnValidationError(turn_kind, "oversized_field", f"{field_name} exceeds {max_chars} characters")
+    return text
+
+
+def _required_enum(value: Any, field_name: str, allowed: frozenset[str], turn_kind: str) -> str:
+    text = str(value or "").strip().lower()
+    if not text:
+        raise ModelTurnValidationError(turn_kind, "missing_required_field", f"{field_name} is required")
+    if text not in allowed:
+        raise ModelTurnValidationError(turn_kind, "invalid_enum", f"{field_name} has an unsupported value")
+    return text
+
+
+def _reference_ids(raw: Mapping[str, Any], plural_key: str, singular_key: str, turn_kind: str) -> tuple[str, ...]:
+    values: list[Any]
+    if isinstance(raw.get(plural_key), list):
+        values = list(raw.get(plural_key) or [])
+    elif raw.get(singular_key):
+        values = [raw.get(singular_key)]
+    else:
+        values = []
+    refs: list[str] = []
+    for value in values:
+        ref = str(value or "").strip()
+        if not ref:
+            continue
+        if len(ref) > _WEB_RESEARCH_MAX_REFERENCE_ID_CHARS:
+            raise ModelTurnValidationError(turn_kind, "oversized_field", f"{plural_key} contains an oversized id")
+        refs.append(ref)
+    return tuple(dict.fromkeys(refs))
+
+
+def _validate_answer_unit_kind_support(unit: AnswerUnit, *, turn_kind: str, raw: Mapping[str, Any], index: int) -> None:
+    _ = raw, index
+    support_by_kind = {
+        "claim": {"entailed", "unsupported", "contradicted"},
+        "limitation": {"limitation", "unsupported"},
+        "gap": {"gap", "unsupported"},
+        "conflict": {"conflict", "unsupported", "contradicted"},
+        "transition": {"non_factual", "unsupported", "contradicted"},
+    }
+    if unit.support not in support_by_kind[unit.kind]:
+        raise ModelTurnValidationError(turn_kind, "invalid_enum", "answer_unit support is incompatible with its kind")
+    if unit.kind == "claim" and unit.support == "entailed" and not unit.claim_ids:
+        raise ModelTurnValidationError(turn_kind, "out_of_state_reference", "claim answer_units must reference accepted claim ids")
+    if unit.kind == "gap" and unit.support == "gap" and not unit.gap_ids:
+        raise ModelTurnValidationError(turn_kind, "out_of_state_reference", "gap answer_units must reference accepted gap ids")
+    if unit.kind == "conflict" and unit.support == "conflict" and not unit.conflict_ids:
+        raise ModelTurnValidationError(turn_kind, "out_of_state_reference", "conflict answer_units must reference accepted conflict ids")
+    if unit.kind == "limitation" and unit.support == "limitation" and not unit.limitation_ids:
+        raise ModelTurnValidationError(turn_kind, "out_of_state_reference", "limitation answer_units must reference accepted limitation ids")
 
 
 def _record_planner_decision_trace(state: WebResearchLoopState, decision: PlannerDecision, *, turn_index: int) -> None:
@@ -1433,6 +1823,8 @@ def _record_planner_decision_trace(state: WebResearchLoopState, decision: Planne
         "turn": turn_index + 1,
         "actions": [action.type for action in decision.actions],
         "rationale": decision.rationale,
+        "schema_version": _WEB_RESEARCH_PLANNER_SCHEMA_VERSION,
+        "validation_outcome": "accepted",
     }
     if decision.stop_intent:
         event["stop_intent"] = decision.stop_intent
@@ -1559,44 +1951,426 @@ def _direct_url_only_evidence(state: WebResearchLoopState) -> bool:
 
 
 async def _run_pro_synthesis(request: Mapping[str, Any], context: ToolContext, state: WebResearchLoopState) -> dict[str, Any]:
+    runtime_proof_state = _normalize_answer_proof_state(request, state, (), ())
     payload = {
         "objective": request["objective"],
         "evidence": _bounded_items(state.evidence_payload(), limit=16, text_limit=900),
         "conflicts": _bounded_items(state.conflicts_payload(), limit=8, text_limit=500),
         "gaps": _bounded_items(state.gaps_payload(), limit=8, text_limit=500),
+        "answer_proof_state": {
+            "gaps": _bounded_items(runtime_proof_state["gaps"], limit=8, text_limit=500),
+            "conflicts": _bounded_items(runtime_proof_state["conflicts"], limit=8, text_limit=500),
+            "limitations": _bounded_items(runtime_proof_state["limitations"], limit=8, text_limit=500),
+        },
         "freshness": _freshness_payload(request, state),
         "provider": state.provider_payload() or {},
     }
     trace: list[dict[str, Any]] = []
     try:
         response = await _request_synthesis_response(payload, context)
+        trace.append(_model_turn_trace_event("synthesizer", "accepted"))
     except ValueError as exc:
         state.record_gap({"kind": "unsupported_synthesis", "message": "Synthesizer response could not be parsed."})
-        return {"answer": "", "claims": [], "gaps": [], "trace": [{"event": "synthesis_malformed", "error": _bounded_trace_text(exc)}]}
+        trace.append(_model_turn_trace_event("synthesizer", "rejected", exc=exc, fallback_path="ledger_synthesis"))
+        return {"answer": "", "claims": [], "gaps": [], "conflicts": [], "answer_units": [], "trace": trace, "answer_accepted": False}
     accepted, rejected = _validate_synthesis_claims(response, state.evidence_payload())
     repair_used = False
-    if rejected and _WEB_RESEARCH_DEFAULT_SYNTHESIS_REPAIR_TURNS > 0:
+    if (rejected or not response.answer_units) and _WEB_RESEARCH_DEFAULT_SYNTHESIS_REPAIR_TURNS > 0:
         repair_used = True
-        trace.append({"event": "synthesis_repair_attempt", "unsupported_claims": len(rejected)})
-        repaired_raw = await _request_internal_model_json(
-            "synthesis_repair",
-            {"invalid_claims": rejected, "payload": payload},
-            context,
-            required=False,
+        trace.append(
+            {
+                "event": "synthesis_repair_attempt",
+                "unsupported_claims": len(rejected),
+                "missing_answer_units": not response.answer_units,
+            }
         )
-        if repaired_raw is not None:
-            repaired = _parse_synthesis_response(repaired_raw)
-            response = repaired
-            accepted, rejected = _validate_synthesis_claims(repaired, state.evidence_payload())
-    answer_accepted = bool(response.answer and accepted and not rejected)
-    gaps = [{"kind": "synthesis_limitation", "message": item} for item in response.limitations]
+        try:
+            repaired_raw = await _request_internal_model_json(
+                "synthesis_repair",
+                {"invalid_claims": rejected, "missing_answer_units": not response.answer_units, "payload": payload},
+                context,
+                required=False,
+            )
+            if repaired_raw is not None:
+                trace.append(_model_turn_trace_event("synthesis_repair", "accepted", repair_attempt=True))
+                repaired = _parse_synthesis_response(repaired_raw)
+                response = repaired
+                accepted, rejected = _validate_synthesis_claims(repaired, state.evidence_payload())
+        except ValueError as exc:
+            trace.append(_model_turn_trace_event("synthesis_repair", "rejected", exc=exc, repair_attempt=True))
+    proof_state = _normalize_answer_proof_state(request, state, accepted, response.limitations)
+    proof = await _verify_answer_proof(request, context, state, response, proof_state, trace, repair_used=repair_used)
+    answer_accepted = bool(proof.accepted_units and not proof.fallback_used)
+    answer = _assemble_answer_from_answer_units(proof.accepted_units) if answer_accepted else ""
+    gaps = _public_proof_gaps(proof_state)
+    conflicts = [dict(item) for item in proof_state["conflicts"]]
     if rejected:
         state.record_gap({"kind": "unsupported_synthesis", "message": "Unsupported synthesis claims were dropped."})
         gaps.append({"kind": "unsupported_synthesis", "message": "Unsupported synthesis claims were dropped."})
         trace.append({"event": "unsupported_synthesis_dropped", "claims": len(rejected), "repair_used": repair_used})
+    if proof.dropped_units:
+        state.record_gap({"kind": "answer_proof_failed", "message": "Unsupported answer units were not projected."})
+        gaps.append({"kind": "answer_proof_failed", "message": "Unsupported answer units were not projected."})
+        trace.append(
+            {
+                "event": "answer_units_dropped",
+                "units": len(proof.dropped_units),
+                "repair_used": proof.repair_used,
+                "fallback_used": proof.fallback_used,
+            }
+        )
+    if proof.fallback_used:
+        trace.append({"event": "answer_proof_fallback", "fallback_path": "ledger_synthesis"})
+    trace.append(
+        {
+            "event": "answer_proof_validated",
+            "accepted_units": len(proof.accepted_units),
+            "dropped_units": len(proof.dropped_units),
+            "answer_accepted": answer_accepted,
+            "repair_used": proof.repair_used,
+            "fallback_used": proof.fallback_used,
+        }
+    )
     trace.append({"event": "synthesis_validated", "accepted_claims": len(accepted), "unsupported_claims": len(rejected), "answer_accepted": answer_accepted})
     state.record_unverified_child_metadata_dropped(trace)
-    return {"answer": response.answer if answer_accepted else "", "claims": accepted, "gaps": gaps, "trace": trace, "answer_accepted": answer_accepted}
+    return {
+        "answer": answer,
+        "claims": accepted,
+        "gaps": _dedupe_records(gaps),
+        "conflicts": _dedupe_records(conflicts),
+        "answer_units": [_public_answer_unit(unit) for unit in proof.accepted_units],
+        "trace": trace,
+        "answer_accepted": answer_accepted,
+    }
+
+
+async def _verify_answer_proof(
+    request: Mapping[str, Any],
+    context: ToolContext,
+    state: WebResearchLoopState,
+    response: SynthesisResponse,
+    proof_state: Mapping[str, Any],
+    trace: list[dict[str, Any]],
+    *,
+    repair_used: bool,
+) -> AnswerProof:
+    proposed = response.answer_units
+    if not proposed:
+        return AnswerProof(
+            proposed_units=(),
+            accepted_units=(),
+            dropped_units=({"reason": "missing_answer_units"},),
+            repair_used=repair_used,
+            fallback_used=True,
+        )
+    payload = _build_answer_verifier_payload(request, state, proof_state, proposed)
+    try:
+        verification = await _request_answer_verification(payload, context)
+        _validate_answer_verification_response(verification, proposed, proof_state)
+        trace.append(_model_turn_trace_event("verifier", "accepted"))
+    except ValueError as exc:
+        state.record_gap({"kind": "answer_verification_failed", "message": "Answer verifier output failed schema or reference validation."})
+        trace.append(_model_turn_trace_event("verifier", "rejected", exc=exc, fallback_path="ledger_synthesis"))
+        return AnswerProof(
+            proposed_units=proposed,
+            accepted_units=(),
+            dropped_units=({"reason": "verifier_failed", "validation_class": _validation_class(exc)},),
+            repair_used=repair_used,
+            fallback_used=True,
+        )
+    accepted, dropped = _accepted_answer_units(proposed, verification, proof_state)
+    fallback = not accepted or any(item.get("support") in {"unsupported", "contradicted"} for item in dropped)
+    return AnswerProof(
+        proposed_units=proposed,
+        accepted_units=tuple(accepted),
+        dropped_units=tuple(dropped),
+        verification=verification,
+        repair_used=repair_used,
+        fallback_used=fallback and not accepted,
+    )
+
+
+def _build_answer_verifier_payload(
+    request: Mapping[str, Any],
+    state: WebResearchLoopState,
+    proof_state: Mapping[str, Any],
+    proposed_units: Sequence[AnswerUnit],
+) -> dict[str, Any]:
+    return {
+        "objective": request["objective"],
+        "accepted_claims": _bounded_items([dict(item) for item in proof_state["claims"]], limit=24, text_limit=700),
+        "evidence": _bounded_items(state.evidence_payload(), limit=16, text_limit=700),
+        "gaps": _bounded_items([dict(item) for item in proof_state["gaps"]], limit=12, text_limit=500),
+        "conflicts": _bounded_items([dict(item) for item in proof_state["conflicts"]], limit=12, text_limit=500),
+        "limitations": _bounded_items([dict(item) for item in proof_state["limitations"]], limit=12, text_limit=500),
+        "proposed_answer_units": [_public_answer_unit(unit) for unit in proposed_units],
+        "authority": "verifier classifies answer units only against supplied proof state; runtime validates references and projection",
+    }
+
+
+def _normalize_answer_proof_state(
+    request: Mapping[str, Any],
+    state: WebResearchLoopState,
+    accepted_claims: Sequence[Mapping[str, Any]],
+    synthesis_limitations: Sequence[str],
+) -> dict[str, Any]:
+    evidence = state.evidence_payload()
+    evidence_ids = {_identity_value(item.get("id")) for item in evidence if _identity_value(item.get("id"))}
+    claims = _normalize_proof_records("claim", [dict(item) for item in accepted_claims])
+    gaps = _normalize_proof_records("gap", state.gaps_payload())
+    limitations = _normalize_proof_records("limitation", _runtime_limitations_payload(request, state, synthesis_limitations))
+    conflicts = _normalize_proof_records("conflict", [*state.conflicts_payload(), *_detect_claim_conflicts([dict(item) for item in claims])])
+    return {
+        "claims": claims,
+        "gaps": gaps,
+        "conflicts": conflicts,
+        "limitations": limitations,
+        "evidence_ids": evidence_ids,
+    }
+
+
+def _runtime_limitations_payload(
+    request: Mapping[str, Any],
+    state: WebResearchLoopState,
+    synthesis_limitations: Sequence[str],
+) -> list[dict[str, Any]]:
+    limitations: list[dict[str, Any]] = []
+    freshness = _freshness_payload(request, state)
+    if freshness.get("required") and freshness.get("status") not in {"enforced", "satisfied"}:
+        limitations.append(
+            {
+                "kind": "freshness_limitation",
+                "message": "Freshness requirements were not fully supported by the inspected provider evidence.",
+                "freshness_status": freshness.get("status"),
+            }
+        )
+    provider_fallback = state.provider_fallback_payload()
+    if provider_fallback and provider_fallback.get("used"):
+        limitations.append(
+            {
+                "kind": "provider_fallback_limitation",
+                "message": "Research used a fallback provider; source freshness or coverage may be limited.",
+                "provider_fallback": True,
+            }
+        )
+    for item in synthesis_limitations:
+        limitations.append({"kind": "synthesis_limitation", "message": _bounded_trace_text(item)})
+    return limitations
+
+
+def _normalize_proof_records(kind: str, records: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for index, record in enumerate(records):
+        item = dict(record)
+        proof_id = _bounded_proof_id(item.get("id")) or _stable_proof_id(kind, item, index)
+        if proof_id in seen:
+            proof_id = _stable_proof_id(kind, {**item, "_ordinal": index}, index)
+        seen.add(proof_id)
+        item["id"] = proof_id
+        item.setdefault("proof_kind", kind)
+        normalized.append(item)
+    return normalized
+
+
+def _bounded_proof_id(value: Any) -> str:
+    proof_id = _identity_value(value)
+    if not proof_id:
+        return ""
+    if len(proof_id) <= _WEB_RESEARCH_MAX_ANSWER_UNIT_ID_CHARS:
+        return proof_id
+    digest = hashlib.sha256(proof_id.encode("utf-8")).hexdigest()[:12]
+    return f"id-{digest}"
+
+
+def _stable_proof_id(kind: str, item: Mapping[str, Any], index: int) -> str:
+    fields: list[str] = [kind, str(index)]
+    for key in (
+        "claim_key",
+        "claim",
+        "claim_text",
+        "message",
+        "kind",
+        "source_handle",
+        "page_handle",
+        "url",
+        "freshness_status",
+    ):
+        value = _identity_value(item.get(key))
+        if value:
+            fields.append(value)
+    for key in ("evidence_ids", "source_handles", "claim_ids", "conflict_ids", "gap_ids", "limitation_ids"):
+        raw = item.get(key)
+        if isinstance(raw, list):
+            fields.extend(str(value) for value in raw[:8])
+    digest = hashlib.sha256("|".join(fields).encode("utf-8")).hexdigest()[:12]
+    return f"{kind}-{digest}"
+
+
+def _validate_answer_verification_response(
+    verification: AnswerVerificationResponse,
+    proposed_units: Sequence[AnswerUnit],
+    proof_state: Mapping[str, Any],
+) -> None:
+    proposed_ids = {unit.id for unit in proposed_units}
+    verified_ids = {unit.unit_id for unit in verification.units}
+    unknown = verified_ids - proposed_ids
+    if unknown:
+        raise ModelTurnValidationError("verifier", "out_of_state_reference", "verifier referenced unknown answer unit ids")
+    missing = proposed_ids - verified_ids
+    if missing:
+        raise ModelTurnValidationError("verifier", "missing_required_field", "verifier omitted proposed answer unit statuses")
+    for unit in verification.units:
+        if not _refs_resolve(unit.claim_ids, proof_state["claims"]):
+            raise ModelTurnValidationError("verifier", "out_of_state_reference", "verifier referenced unknown claim ids")
+        if not _refs_resolve(unit.gap_ids, proof_state["gaps"]):
+            raise ModelTurnValidationError("verifier", "out_of_state_reference", "verifier referenced unknown gap ids")
+        if not _refs_resolve(unit.conflict_ids, proof_state["conflicts"]):
+            raise ModelTurnValidationError("verifier", "out_of_state_reference", "verifier referenced unknown conflict ids")
+        if not _refs_resolve(unit.limitation_ids, proof_state["limitations"]):
+            raise ModelTurnValidationError("verifier", "out_of_state_reference", "verifier referenced unknown limitation ids")
+        unknown_evidence = set(unit.evidence_ids) - set(proof_state["evidence_ids"])
+        if unknown_evidence:
+            raise ModelTurnValidationError("verifier", "out_of_state_reference", "verifier referenced unknown evidence ids")
+
+
+def _accepted_answer_units(
+    proposed_units: Sequence[AnswerUnit],
+    verification: AnswerVerificationResponse,
+    proof_state: Mapping[str, Any],
+) -> tuple[list[AnswerUnit], list[dict[str, Any]]]:
+    status_by_id = {unit.unit_id: unit for unit in verification.units}
+    accepted: list[AnswerUnit] = []
+    dropped: list[dict[str, Any]] = []
+    for unit in proposed_units:
+        status = status_by_id.get(unit.id)
+        if status is None:
+            dropped.append(_dropped_answer_unit(unit, "missing_verifier_status"))
+            continue
+        if status.status in {"unsupported", "contradicted", "rejected"} or status.support in {"unsupported", "contradicted"}:
+            dropped.append(_dropped_answer_unit(unit, status.status, support=status.support))
+            continue
+        resolved, reason = _answer_unit_references_resolve(unit, status, proof_state)
+        if not resolved:
+            dropped.append(_dropped_answer_unit(unit, reason, support=status.support))
+            continue
+        expected_support = {
+            "claim": "entailed",
+            "limitation": "limitation",
+            "gap": "gap",
+            "conflict": "conflict",
+            "transition": "non_factual",
+        }[unit.kind]
+        if status.support != expected_support:
+            dropped.append(_dropped_answer_unit(unit, "verifier_support_mismatch", support=status.support))
+            continue
+        accepted.append(
+            AnswerUnit(
+                id=unit.id,
+                text=unit.text,
+                kind=unit.kind,
+                support=status.support,
+                claim_ids=unit.claim_ids,
+                gap_ids=unit.gap_ids,
+                conflict_ids=unit.conflict_ids,
+                limitation_ids=unit.limitation_ids,
+                evidence_ids=unit.evidence_ids,
+                rationale=status.rationale or unit.rationale,
+                raw=unit.raw,
+            )
+        )
+    return accepted, dropped
+
+
+def _answer_unit_references_resolve(
+    unit: AnswerUnit,
+    status: AnswerVerificationUnit,
+    proof_state: Mapping[str, Any],
+) -> tuple[bool, str]:
+    _ = status
+    if unit.kind == "claim":
+        if not unit.claim_ids:
+            return False, "missing_claim_ids"
+        if not _refs_resolve(unit.claim_ids, proof_state["claims"]):
+            return False, "unknown_claim_id"
+    if unit.kind == "gap":
+        if not unit.gap_ids:
+            return False, "missing_gap_ids"
+        if not _refs_resolve(unit.gap_ids, proof_state["gaps"]):
+            return False, "unknown_gap_id"
+    if unit.kind == "conflict":
+        if not unit.conflict_ids:
+            return False, "missing_conflict_ids"
+        if not _refs_resolve(unit.conflict_ids, proof_state["conflicts"]):
+            return False, "unknown_conflict_id"
+    if unit.kind == "limitation":
+        if not unit.limitation_ids:
+            return False, "missing_limitation_ids"
+        if not _refs_resolve(unit.limitation_ids, proof_state["limitations"]):
+            return False, "unknown_limitation_id"
+    unknown_evidence = set(unit.evidence_ids) - set(proof_state["evidence_ids"])
+    if unknown_evidence:
+        return False, "unknown_evidence_id"
+    return True, ""
+
+
+def _refs_resolve(refs: Sequence[str], records: Sequence[Mapping[str, Any]]) -> bool:
+    available = {_identity_value(record.get("id")) for record in records if _identity_value(record.get("id"))}
+    return set(refs) <= available
+
+
+def _dropped_answer_unit(unit: AnswerUnit, reason: str, *, support: str | None = None) -> dict[str, Any]:
+    return {
+        "unit_id": unit.id,
+        "kind": unit.kind,
+        "support": support or unit.support,
+        "reason": reason,
+        "text": _bounded_trace_text(unit.text),
+    }
+
+
+def _assemble_answer_from_answer_units(units: Sequence[AnswerUnit]) -> str:
+    answer = " ".join(unit.text.strip() for unit in units if unit.text.strip()).strip()
+    for needle, replacement in ((" ,", ","), (" .", "."), (" ;", ";"), (" :", ":"), (" )", ")"), ("( ", "(")):
+        answer = answer.replace(needle, replacement)
+    return answer
+
+
+def _public_answer_unit(unit: AnswerUnit) -> dict[str, Any]:
+    public: dict[str, Any] = {
+        "id": unit.id,
+        "text": unit.text,
+        "kind": unit.kind,
+        "support": unit.support,
+    }
+    for key in ("claim_ids", "gap_ids", "conflict_ids", "limitation_ids", "evidence_ids"):
+        value = getattr(unit, key)
+        if value:
+            public[key] = list(value)
+    if unit.rationale:
+        public["rationale"] = _bounded_trace_text(unit.rationale, limit=360)
+    return public
+
+
+def _public_proof_gaps(proof_state: Mapping[str, Any]) -> list[dict[str, Any]]:
+    return [dict(item) for item in [*proof_state["gaps"], *proof_state["limitations"]]]
+
+
+def _dedupe_records(records: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    deduped: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for record in records:
+        item = dict(record)
+        key = (
+            _identity_value(item.get("id")),
+            _identity_value(item.get("kind")),
+            _identity_value(item.get("message") or item.get("claim_key") or item.get("claim")),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(item)
+    return deduped
 
 
 def _validate_synthesis_claims(response: SynthesisResponse, evidence: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -2185,12 +2959,15 @@ def _project_web_research_result(
     child_status = structured.get("stop_reason") or terminal_metadata.get("stop_reason") or child_payload.get("status")
     stop_reason = state.stop_reason(child_status)
     state.finalize_provider_and_freshness_trace()
-    trace = [*state.trace_summary(), *child_trace]
+    trace = [*state.trace_summary(max_items=_WEB_RESEARCH_MAX_TRACE_ITEMS), *child_trace]
     child_answer = str(structured.get("answer") or child_payload.get("summary") or "").strip()
     answer = _synthesize_answer_from_evidence(request, evidence)
     pro_answer_accepted = (
         request.get("strategy") == "pro"
-        and any(event.get("event") == "synthesis_validated" and event.get("answer_accepted") for event in child_trace)
+        and any(
+            event.get("event") in {"synthesis_validated", "answer_proof_validated"} and event.get("answer_accepted")
+            for event in child_trace
+        )
     )
     if child_answer:
         trace.append({"event": "delegated_summary", "summary": _bounded_trace_text(child_answer)})
@@ -2226,12 +3003,13 @@ def _project_web_research_result(
     if dropped_conflicts:
         state.record_unverified_child_metadata_dropped(dropped_conflicts)
         trace.extend(dropped_conflicts)
-    conflicts = [
+    conflicts = _dedupe_records([
         *state.conflicts_payload(),
         *child_conflicts,
         *_detect_claim_conflicts(annotated_claims),
-    ]
+    ])
     gaps = _derive_gaps(request, sources, evidence, stop_reason, [*state.gaps_payload(), *_list_of_mappings(structured.get("gaps"))])
+    gaps = _dedupe_records(gaps)
     stop_reason = refine_web_research_stop_reason(
         stop_reason,
         child_status=child_status,
@@ -2288,6 +3066,8 @@ def _project_web_research_result(
         "provider_selection": state.provider_selection_payload() or {},
         "provider_fallback": state.provider_fallback_payload() or {},
     }
+    if request.get("strategy") == "pro":
+        result["answer_units"] = _list_of_mappings(structured.get("answer_units"))
     freshness_scope = state.freshness_scope_payload()
     if freshness_scope:
         result["freshness_scope"] = freshness_scope
@@ -2668,13 +3448,13 @@ def _list_of_mappings(raw: Any) -> list[dict[str, Any]]:
     return [dict(item) for item in raw if isinstance(item, Mapping)]
 
 
-def _json_object(raw: str) -> Mapping[str, Any]:
+def _json_object(raw: str, *, kind: str = "model") -> Mapping[str, Any]:
     try:
         parsed = json.loads(raw)
     except json.JSONDecodeError as exc:
-        raise ValueError("model response must be valid JSON") from exc
+        raise ModelTurnValidationError(kind, "malformed_json", "model response must be valid JSON") from exc
     if not isinstance(parsed, Mapping):
-        raise ValueError("model response must be a JSON object")
+        raise ModelTurnValidationError(kind, "non_object_json", "model response must be a JSON object")
     return parsed
 
 
