@@ -1528,6 +1528,170 @@ def test_pro_web_research_planner_search_fetch_and_evidence_bound_synthesis(
     assert any(event["event"] == "synthesis_validated" for event in result["trace_summary"])
 
 
+def test_web_research_omitted_strategy_runtime_pro_opt_in_runs_pro_loop(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    query = "refund policy"
+    url = "https://grounding.example.test/refund-policy"
+    provider = reference_web_research_core.FixtureWebResearchProvider(
+        search_results={query: [{"title": "Refund policy", "url": url}]},
+    )
+    monkeypatch.setattr(reference_web_tool_impls, "_web_urlopen", _web_urlopen)
+    monkeypatch.setattr(
+        reference_web_tool_impls,
+        "_web_search_provider_registry",
+        reference_web_research_core.WebSearchProviderRegistry((provider,)),
+    )
+    client = ScriptedModelClient(
+        [
+            text_batch(request_id="wr-pro-plan-1", text=json.dumps({"actions": [{"type": "search", "query": query}]})),
+            text_batch(
+                request_id="wr-pro-plan-2",
+                text=json.dumps({"actions": [{"type": "fetch", "source_handle": url}], "stop_intent": "sufficient_evidence"}),
+            ),
+            lambda request: text_batch(
+                request_id="wr-pro-synth",
+                text=json.dumps(
+                    {
+                        "answer": "The modeled synthesis says refunds are available for 30 days.",
+                        "claims": [
+                            {
+                                "claim": "Refunds are available for 30 days.",
+                                "evidence_id": json.loads(request.messages[0].text)["payload"]["evidence"][0]["id"],
+                            }
+                        ],
+                    }
+                ),
+            ),
+        ]
+    )
+    runtime, _shape, runtime_root = _assemble_shared_reference_runtime(
+        tmp_path,
+        "weavert-shared-web-research",
+        model_client=client,
+    )
+    context = _tool_context(runtime, runtime_root)
+    context.metadata[reference_web_tool_impls._WEB_RESEARCH_PRO_DEFAULT_METADATA_KEY] = "pro"
+
+    result = asyncio.run(
+        runtime.kernel.tool_registry.get("web_research").execute(
+            {"objective": "What is the refund window?", "search_budget": 1, "fetch_budget": 1, "desired_source_count": 1},
+            context,
+        )
+    )
+
+    assert result["strategy"] == "pro"
+    assert "strategy_source" not in result
+    assert result["child_run"]["agent"] == "web_research_pro_loop"
+    assert result["answer"] == "The modeled synthesis says refunds are available for 30 days."
+    assert [request.metadata["web_research_internal_model_turn"]["kind"] for request in client.requests] == [
+        "planner",
+        "planner",
+        "synthesizer",
+    ]
+
+
+def test_web_research_explicit_deterministic_overrides_runtime_pro_opt_in(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = reference_web_research_core.FixtureWebResearchProvider(
+        search_results={"What is the refund window?": [{"title": "Refund policy", "url": "https://grounding.example.test/refund-policy"}]},
+    )
+    monkeypatch.setattr(reference_web_tool_impls, "_web_urlopen", _web_urlopen)
+    monkeypatch.setattr(
+        reference_web_tool_impls,
+        "_web_search_provider_registry",
+        reference_web_research_core.WebSearchProviderRegistry((provider,)),
+    )
+    client = ScriptedModelClient([])
+    runtime, _shape, runtime_root = _assemble_shared_reference_runtime(
+        tmp_path,
+        "weavert-shared-web-research",
+        model_client=client,
+    )
+    context = _tool_context(runtime, runtime_root)
+    context.metadata[reference_web_tool_impls._WEB_RESEARCH_PRO_DEFAULT_METADATA_KEY] = "pro"
+
+    result = asyncio.run(
+        runtime.kernel.tool_registry.get("web_research").execute(
+            {
+                "objective": "What is the refund window?",
+                "strategy": "deterministic",
+                "search_budget": 1,
+                "fetch_budget": 1,
+                "desired_source_count": 1,
+            },
+            context,
+        )
+    )
+
+    assert result["strategy"] == "deterministic"
+    assert result["child_run"]["agent"] == "web_research_loop"
+    assert client.requests == []
+
+
+def test_pro_web_research_uses_runtime_model_client_without_private_hooks(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    url = "https://grounding.example.test/refund-policy"
+    monkeypatch.setattr(reference_web_tool_impls, "_web_urlopen", _web_urlopen)
+    client = ScriptedModelClient(
+        [
+            text_batch(
+                request_id="wr-runtime-plan",
+                text=json.dumps({"actions": [{"type": "direct_url_fetch", "url": url}], "stop_intent": "sufficient_evidence"}),
+            ),
+            lambda request: text_batch(
+                request_id="wr-runtime-synth",
+                text=json.dumps(
+                    {
+                        "answer": "Runtime model synthesis preserves the 30 day refund window.",
+                        "claims": [
+                            {
+                                "claim": "Refunds stay available for 30 days.",
+                                "evidence_id": json.loads(request.messages[0].text)["payload"]["evidence"][0]["id"],
+                            }
+                        ],
+                    }
+                ),
+            ),
+        ]
+    )
+    runtime, _shape, runtime_root = _assemble_shared_reference_runtime(
+        tmp_path,
+        "weavert-shared-web-research",
+        model_client=client,
+    )
+    context = _tool_context(runtime, runtime_root)
+
+    result = asyncio.run(
+        runtime.kernel.tool_registry.get("web_research").execute(
+            {
+                "objective": "What is the refund window?",
+                "strategy": "pro",
+                "allowed_domains": ["grounding.example.test"],
+                "search_budget": 1,
+                "fetch_budget": 1,
+                "desired_source_count": 1,
+            },
+            context,
+        )
+    )
+
+    assert reference_web_tool_impls._WEB_RESEARCH_MODEL_RESPONSE_METADATA_KEY not in context.metadata
+    assert "web_research_model_client" not in context.metadata
+    assert result["strategy"] == "pro"
+    assert result["child_run"]["agent"] == "web_research_pro_loop"
+    assert result["answer"] == "Runtime model synthesis preserves the 30 day refund window."
+    assert [request.metadata["web_research_internal_model_turn"]["kind"] for request in client.requests] == [
+        "planner",
+        "synthesizer",
+    ]
+
+
 def test_pro_web_research_rejects_fabricated_source_handles(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1665,6 +1829,107 @@ def test_pro_web_research_unsupported_synthesis_gets_one_repair_then_drops(
     assert result["claims"] == []
     assert result["stop_reason"] == "remaining_gaps"
     assert any(event["event"] == "synthesis_repair_attempt" for event in result["trace_summary"])
+    assert any(event["event"] == "unsupported_synthesis_dropped" for event in result["trace_summary"])
+
+
+def test_pro_web_research_preserves_evidence_bound_conflict_metadata(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(reference_web_tool_impls, "_web_urlopen", _web_urlopen)
+    runtime, _shape, runtime_root = _assemble_shared_reference_runtime(tmp_path, "weavert-shared-web-research")
+    context = _tool_context(runtime, runtime_root)
+
+    def _conflict_synthesis(kind: str, payload: dict[str, Any]) -> dict[str, Any]:
+        assert kind == "synthesizer"
+        evidence_id = payload["evidence"][0]["id"]
+        return {
+            "answer": "Refunds remain available for 30 days, with an unresolved legacy-notice conflict.",
+            "claims": [
+                {
+                    "id": "claim-current",
+                    "claim": "Refunds remain available for 30 days.",
+                    "evidence_id": evidence_id,
+                    "claim_key": "refund_window",
+                    "stance": "supports",
+                    "conflicts_with": ["legacy_notice"],
+                    "resolved": False,
+                    "resolution_rationale": "The legacy notice was not inspected in this run.",
+                }
+            ],
+        }
+
+    context.metadata[reference_web_tool_impls._WEB_RESEARCH_MODEL_RESPONSE_METADATA_KEY] = [
+        {"actions": [{"type": "direct_url_fetch", "url": "https://grounding.example.test/refund-policy"}], "stop_intent": "sufficient_evidence"},
+        _conflict_synthesis,
+    ]
+
+    result = asyncio.run(
+        runtime.kernel.tool_registry.get("web_research").execute(
+            {
+                "objective": "Find refund conflict metadata.",
+                "strategy": "pro",
+                "allowed_domains": ["grounding.example.test"],
+                "search_budget": 1,
+                "fetch_budget": 1,
+                "desired_source_count": 1,
+            },
+            context,
+        )
+    )
+
+    assert result["claims"][0]["claim_key"] == "refund_window"
+    assert result["claims"][0]["stance"] == "supports"
+    assert result["claims"][0]["conflicts_with"] == ["legacy_notice"]
+    assert result["claims"][0]["resolved"] is False
+    assert result["claims"][0]["resolution_rationale"] == "The legacy notice was not inspected in this run."
+    assert result["conflicts"][0]["claim_key"] == "refund_window"
+    assert result["conflicts"][0]["resolved"] is False
+    assert result["stop_reason"] == "unresolved_conflict"
+
+
+def test_pro_web_research_rejects_unbound_conflict_metadata(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(reference_web_tool_impls, "_web_urlopen", _web_urlopen)
+    runtime, _shape, runtime_root = _assemble_shared_reference_runtime(tmp_path, "weavert-shared-web-research")
+    context = _tool_context(runtime, runtime_root)
+    context.metadata[reference_web_tool_impls._WEB_RESEARCH_MODEL_RESPONSE_METADATA_KEY] = [
+        {"actions": [{"type": "direct_url_fetch", "url": "https://grounding.example.test/refund-policy"}], "stop_intent": "sufficient_evidence"},
+        {
+            "answer": "Unsupported conflict answer.",
+            "claims": [
+                {
+                    "claim": "A fabricated legacy notice conflicts with the current policy.",
+                    "evidence_id": "missing-evidence",
+                    "claim_key": "refund_window",
+                    "stance": "disputes",
+                    "conflicts_with": ["claim-current"],
+                }
+            ],
+        },
+        {"answer": "Still unsupported.", "claims": [{"claim": "Still unsupported.", "evidence_id": "still-missing"}]},
+    ]
+
+    result = asyncio.run(
+        runtime.kernel.tool_registry.get("web_research").execute(
+            {
+                "objective": "Reject fabricated conflict metadata.",
+                "strategy": "pro",
+                "allowed_domains": ["grounding.example.test"],
+                "search_budget": 1,
+                "fetch_budget": 1,
+                "desired_source_count": 1,
+            },
+            context,
+        )
+    )
+
+    assert result["claims"] == []
+    assert result["conflicts"] == []
+    assert result["confidence"] != "high"
+    assert any(gap["kind"] == "unsupported_synthesis" for gap in result["gaps"])
     assert any(event["event"] == "unsupported_synthesis_dropped" for event in result["trace_summary"])
 
 

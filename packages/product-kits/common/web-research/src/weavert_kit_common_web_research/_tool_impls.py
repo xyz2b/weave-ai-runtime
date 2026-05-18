@@ -10,8 +10,10 @@ from functools import lru_cache
 from typing import Any
 from urllib.parse import urlparse
 
+from weavert.contracts import MessageRole, RuntimeMessage, TurnContext
 from weavert.definitions import ValidationOutcome
 from weavert.tool_runtime import ToolContext
+from weavert.turn_engine import ModelRequest, ModelStreamEventType
 from weavert_web_research import ResearchProfile, ResearchProfileRegistry
 from weavert_kit_common_retrieval._tool_impls import (
     prepare_citations_tool,
@@ -48,6 +50,8 @@ _WEB_RESEARCH_RUN_ID_METADATA_KEY = "web_research_run_id"
 _WEB_RESEARCH_MAX_REPLAN_PASSES = 1
 _WEB_RESEARCH_SUPPORTED_STRATEGIES = frozenset({"deterministic", "pro"})
 _WEB_RESEARCH_MODEL_RESPONSE_METADATA_KEY = "web_research_model_responses"
+_WEB_RESEARCH_PRO_DEFAULT_METADATA_KEY = "web_research_default_strategy"
+_WEB_RESEARCH_PRO_OPT_IN_METADATA_KEY = "web_research_pro_default"
 _WEB_RESEARCH_DEFAULT_SYNTHESIS_REPAIR_TURNS = 1
 _WEB_FETCH_PUBLIC_BATCH_FIELDS = frozenset({"urls", "sources", "max_concurrent_fetches"})
 _WEB_RESEARCH_SOURCE_ANNOTATION_FIELDS = frozenset(
@@ -243,6 +247,12 @@ class SynthesisClaim:
     start: int | None = None
     end: int | None = None
     confidence: str | None = None
+    claim_key: str | None = None
+    stance: str | None = None
+    conflicts_with: tuple[str, ...] = ()
+    incompatible_with: tuple[str, ...] = ()
+    resolved: bool | None = None
+    resolution_rationale: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -354,6 +364,9 @@ def validate_web_research(tool_input: dict[str, Any], _: ToolContext) -> Validat
 
 async def web_research_tool(tool_input: dict[str, Any], context: ToolContext) -> dict[str, Any]:
     normalized = _normalized_web_research_execution_input(tool_input)
+    if normalized.get("strategy_source") == "omitted" and _runtime_pro_strategy_opted_in(context):
+        normalized = dict(normalized)
+        normalized["strategy"] = "pro"
     if normalized.get("strategy") == "pro" and not _pro_model_provider_available(context):
         normalized = dict(normalized)
         normalized["requested_strategy"] = "pro"
@@ -386,11 +399,7 @@ def _select_web_research_strategy(request: Mapping[str, Any], context: ToolConte
     strategy = str(request.get("strategy") or "").strip().lower()
     if strategy:
         return strategy
-    config = getattr(context, "runtime_services", None)
-    default_strategy = getattr(config, "web_research_default_strategy", None)
-    if default_strategy is None:
-        default_strategy = context.metadata.get("web_research_default_strategy")
-    if str(default_strategy or "").strip().lower() == "pro":
+    if _runtime_pro_strategy_opted_in(context):
         return "pro"
     return "deterministic"
 
@@ -399,7 +408,33 @@ def _pro_model_provider_available(context: ToolContext) -> bool:
     scripted = context.metadata.get(_WEB_RESEARCH_MODEL_RESPONSE_METADATA_KEY)
     if isinstance(scripted, list) and scripted:
         return True
-    return callable(context.metadata.get("web_research_model_client"))
+    if callable(context.metadata.get("web_research_model_client")):
+        return True
+    return _runtime_model_client(context) is not None
+
+
+def _runtime_pro_strategy_opted_in(context: ToolContext) -> bool:
+    default_strategy = context.metadata.get(_WEB_RESEARCH_PRO_DEFAULT_METADATA_KEY)
+    opt_in = context.metadata.get(_WEB_RESEARCH_PRO_OPT_IN_METADATA_KEY)
+    services = getattr(context, "runtime_services", None)
+    if services is not None:
+        default_strategy = getattr(services, "web_research_default_strategy", default_strategy)
+        opt_in = getattr(services, "web_research_pro_default", opt_in)
+        metadata = getattr(services, "metadata", None)
+        if isinstance(metadata, Mapping):
+            default_strategy = metadata.get(_WEB_RESEARCH_PRO_DEFAULT_METADATA_KEY, default_strategy)
+            opt_in = metadata.get(_WEB_RESEARCH_PRO_OPT_IN_METADATA_KEY, opt_in)
+    return str(default_strategy or "").strip().lower() == "pro" or bool(opt_in)
+
+
+def _runtime_model_client(context: ToolContext) -> Any | None:
+    services = getattr(context, "runtime_services", None)
+    runtime = getattr(services, "_runtime_assembly", None) if services is not None else None
+    kernel = getattr(runtime, "kernel", None) if runtime is not None else None
+    client = getattr(kernel, "model_client", None) if kernel is not None else None
+    if client is not None and client.__class__.__name__ != "_UnconfiguredModelClient":
+        return client
+    return None
 
 
 async def _run_delegated_web_research_fallback(request: Mapping[str, Any], context: ToolContext) -> dict[str, Any]:
@@ -1236,9 +1271,84 @@ async def _request_internal_model_json(kind: str, payload: Mapping[str, Any], co
             return _json_object(item)
         if isinstance(item, Mapping):
             return dict(item)
+    runtime_client = _runtime_model_client(context)
+    if runtime_client is not None:
+        text = await _request_runtime_model_text(runtime_client, kind, payload, context)
+        return _json_object(text)
     if required:
         raise ValueError("Pro web_research requires an internal model response provider")
     return None
+
+
+async def _request_runtime_model_text(client: Any, kind: str, payload: Mapping[str, Any], context: ToolContext) -> str:
+    request = ModelRequest(
+        system_prompt=(
+            "You are an internal web_research JSON adapter. Return one JSON object only. "
+            "Do not include markdown, citations, or prose outside the JSON object."
+        ),
+        turn_context=TurnContext(
+            session_id=context.session_id,
+            turn_id=context.turn_id,
+            agent_name=context.agent_name,
+            cwd=str(context.cwd),
+            messages=tuple(context.messages),
+            available_tools=tuple(tool.name for tool in context.tool_pool),
+        ),
+        messages=(
+            RuntimeMessage(
+                message_id=f"web-research-{kind}",
+                role=MessageRole.USER,
+                content=json.dumps(
+                    {
+                        "kind": kind,
+                        "payload": _bounded_model_payload(payload),
+                    },
+                    sort_keys=True,
+                ),
+            ),
+        ),
+        max_output_tokens=1200,
+        metadata={"web_research_internal_model_turn": {"kind": kind}},
+    )
+    if hasattr(client, "complete"):
+        try:
+            response = await client.complete(request)
+        except NotImplementedError:
+            response = None
+        if response is not None:
+            message = getattr(response, "message", None)
+            text = getattr(message, "text", "") if message is not None else ""
+            if text:
+                return str(text)
+    if not hasattr(client, "stream"):
+        raise ValueError("Runtime model client does not support web_research JSON turns")
+    chunks: list[str] = []
+    async for event in client.stream(request):
+        event_type = getattr(event, "event_type", None)
+        if event_type == ModelStreamEventType.CONTENT_DELTA:
+            chunks.append(str(event.payload.get("text") or ""))
+        elif event_type == ModelStreamEventType.ERROR:
+            error = str(event.payload.get("error") or "Runtime model stream failed")
+            raise ValueError(error)
+    return "".join(chunks).strip()
+
+
+def _bounded_model_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
+    return {str(key): _bound_model_value(value, depth=0) for key, value in payload.items()}
+
+
+def _bound_model_value(value: Any, *, depth: int) -> Any:
+    if depth >= 4:
+        return _bounded_trace_text(value)
+    if isinstance(value, Mapping):
+        return {str(key): _bound_model_value(inner, depth=depth + 1) for key, inner in list(value.items())[:24]}
+    if isinstance(value, (list, tuple)):
+        return [_bound_model_value(item, depth=depth + 1) for item in list(value)[:24]]
+    if isinstance(value, str):
+        return value[:1200]
+    if isinstance(value, bool | int | float) or value is None:
+        return value
+    return _bounded_trace_text(value)
 
 
 def _parse_planner_decision(raw: Mapping[str, Any]) -> PlannerDecision:
@@ -1295,6 +1405,12 @@ def _parse_synthesis_response(raw: Mapping[str, Any]) -> SynthesisResponse:
                 start=item.get("start") if isinstance(item.get("start"), int) else item.get("match_start") if isinstance(item.get("match_start"), int) else None,
                 end=item.get("end") if isinstance(item.get("end"), int) else item.get("match_end") if isinstance(item.get("match_end"), int) else None,
                 confidence=_optional_text(item.get("confidence")),
+                claim_key=_optional_text(item.get("claim_key") or item.get("key")),
+                stance=_optional_text(item.get("stance")),
+                conflicts_with=tuple(str(value).strip() for value in item.get("conflicts_with") or () if str(value).strip()) if isinstance(item.get("conflicts_with"), list) else (),
+                incompatible_with=tuple(str(value).strip() for value in item.get("incompatible_with") or item.get("explicit_incompatibility") or () if str(value).strip()) if isinstance(item.get("incompatible_with") or item.get("explicit_incompatibility"), list) else (),
+                resolved=item.get("resolved") if isinstance(item.get("resolved"), bool) else None,
+                resolution_rationale=_optional_text(item.get("resolution_rationale") or item.get("rationale")),
             )
         )
     limitations = raw.get("limitations") or raw.get("gaps") or ()
@@ -1472,14 +1588,15 @@ async def _run_pro_synthesis(request: Mapping[str, Any], context: ToolContext, s
             repaired = _parse_synthesis_response(repaired_raw)
             response = repaired
             accepted, rejected = _validate_synthesis_claims(repaired, state.evidence_payload())
+    answer_accepted = bool(response.answer and accepted and not rejected)
     gaps = [{"kind": "synthesis_limitation", "message": item} for item in response.limitations]
     if rejected:
         state.record_gap({"kind": "unsupported_synthesis", "message": "Unsupported synthesis claims were dropped."})
         gaps.append({"kind": "unsupported_synthesis", "message": "Unsupported synthesis claims were dropped."})
         trace.append({"event": "unsupported_synthesis_dropped", "claims": len(rejected), "repair_used": repair_used})
-    trace.append({"event": "synthesis_validated", "accepted_claims": len(accepted), "unsupported_claims": len(rejected)})
+    trace.append({"event": "synthesis_validated", "accepted_claims": len(accepted), "unsupported_claims": len(rejected), "answer_accepted": answer_accepted})
     state.record_unverified_child_metadata_dropped(trace)
-    return {"answer": response.answer, "claims": accepted, "gaps": gaps, "trace": trace}
+    return {"answer": response.answer if answer_accepted else "", "claims": accepted, "gaps": gaps, "trace": trace, "answer_accepted": answer_accepted}
 
 
 def _validate_synthesis_claims(response: SynthesisResponse, evidence: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -1503,11 +1620,19 @@ def _validate_synthesis_claims(response: SynthesisResponse, evidence: list[dict[
             "source_handle": matches[0].get("source_handle"),
             "page_handle": matches[0].get("page_handle"),
             "url": matches[0].get("url"),
-            "stance": "supports",
-            "claim_key": claim.claim[:80].lower(),
+            "stance": _bounded_trace_text(claim.stance or "supports"),
+            "claim_key": _bounded_trace_text(claim.claim_key or claim.claim[:80].lower()),
         }
         if claim.confidence:
             item["confidence"] = claim.confidence
+        if claim.conflicts_with:
+            item["conflicts_with"] = list(claim.conflicts_with[:8])
+        if claim.incompatible_with:
+            item["incompatible_with"] = list(claim.incompatible_with[:8])
+        if claim.resolved is not None:
+            item["resolved"] = claim.resolved
+        if claim.resolution_rationale:
+            item["resolution_rationale"] = _bounded_trace_text(claim.resolution_rationale)
         if claim.excerpt and span_valid:
             item["exact_excerpt"] = claim.excerpt
         if claim.start is not None and claim.end is not None and span_valid:
@@ -1695,6 +1820,7 @@ def _normalized_web_research_execution_input(tool_input: Mapping[str, Any]) -> d
             "profile": str(tool_input["profile"]),
             "mode": str(tool_input["mode"]),
             "strategy": str(tool_input.get("strategy") or "deterministic"),
+            "strategy_source": str(tool_input.get("strategy_source") or "omitted"),
             "policy": dict(tool_input["policy"]),
             "hard_policy": dict(tool_input["hard_policy"]),
             "preferences": dict(tool_input["preferences"]),
@@ -1738,6 +1864,8 @@ def _is_validated_web_research_input(tool_input: Mapping[str, Any]) -> bool:
     if not isinstance(tool_input.get("budget_profile"), str):
         return False
     if not isinstance(tool_input.get("freshness_required"), bool):
+        return False
+    if "strategy_source" in tool_input and str(tool_input.get("strategy_source")) not in {"explicit", "omitted"}:
         return False
     budget = tool_input["budget"]
     budget_ranges = (
@@ -1814,6 +1942,7 @@ def _normalize_web_research_input(tool_input: Mapping[str, Any]) -> dict[str, An
     scope_mode = scope_map.get("mode")
     if scope_mode is not None and str(scope_mode).strip().lower() not in {"focused", "open"}:
         raise ValueError("scope.mode must be focused or open")
+    strategy_was_supplied = "strategy" in tool_input and tool_input.get("strategy") is not None
     strategy = str(tool_input.get("strategy") or "deterministic").strip().lower()
     if not strategy:
         strategy = "deterministic"
@@ -1886,6 +2015,7 @@ def _normalize_web_research_input(tool_input: Mapping[str, Any]) -> dict[str, An
         "profile": profile,
         "mode": mode,
         "strategy": strategy,
+        "strategy_source": "explicit" if strategy_was_supplied else "omitted",
         "policy": {
             "domains": list(policy.allowed_domains),
             "blocked_domains": list(policy.blocked_domains),
@@ -2058,9 +2188,15 @@ def _project_web_research_result(
     trace = [*state.trace_summary(), *child_trace]
     child_answer = str(structured.get("answer") or child_payload.get("summary") or "").strip()
     answer = _synthesize_answer_from_evidence(request, evidence)
+    pro_answer_accepted = (
+        request.get("strategy") == "pro"
+        and any(event.get("event") == "synthesis_validated" and event.get("answer_accepted") for event in child_trace)
+    )
     if child_answer:
         trace.append({"event": "delegated_summary", "summary": _bounded_trace_text(child_answer)})
-        if child_answer != answer:
+        if pro_answer_accepted:
+            answer = child_answer
+        elif child_answer != answer:
             trace.append(
                 {
                     "event": "unverified_child_answer_dropped",
@@ -2267,7 +2403,11 @@ def _detect_claim_conflicts(claims: list[dict[str, Any]]) -> list[dict[str, Any]
             for claim in group
             if claim.get("incompatible_with") or claim.get("conflicts_with") or claim.get("explicit_incompatibility")
         ]
-        resolved_claims = [claim for claim in group if claim.get("resolved") or claim.get("resolution_rationale")]
+        resolved_claims = [
+            claim
+            for claim in group
+            if claim.get("resolved") is True or (claim.get("resolved") is not False and claim.get("resolution_rationale"))
+        ]
         incompatible = bool(positive and negative) or bool(explicit) or bool(resolved_claims)
         if not incompatible:
             continue
