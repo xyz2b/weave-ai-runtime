@@ -657,7 +657,12 @@ async def _run_goal_driven_web_research_loop(
                 plan.queries.extend(_replan_queries(request, plan))
                 _record_loop_trace(state, {"event": "replanned", "stage": "replan_or_stop", "pass": 1})
                 continue
-            if _loop_decision_is_terminal(evaluation, low_yield_searches=low_yield_searches, replan_used=replan_used):
+            if _loop_decision_is_terminal(
+                evaluation,
+                low_yield_searches=low_yield_searches,
+                replan_used=replan_used,
+                has_pending_queries=search_index < len(plan.queries) and state.search_used < int(request["budget"]["search_budget"]),
+            ):
                 break
             continue
         candidates = _candidate_sources_from_search(
@@ -724,7 +729,12 @@ async def _run_goal_driven_web_research_loop(
             plan.queries.extend(_replan_queries(request, plan))
             _record_loop_trace(state, {"event": "replanned", "stage": "replan_or_stop", "pass": 1})
             continue
-        if _loop_decision_is_terminal(evaluation, low_yield_searches=low_yield_searches, replan_used=replan_used):
+        if _loop_decision_is_terminal(
+            evaluation,
+            low_yield_searches=low_yield_searches,
+            replan_used=replan_used,
+            has_pending_queries=search_index < len(plan.queries) and state.search_used < int(request["budget"]["search_budget"]),
+        ):
             break
 
     state.finalize_provider_and_freshness_trace()
@@ -1064,9 +1074,18 @@ async def web_find_tool(tool_input: dict[str, Any], context: ToolContext) -> dic
 def _build_research_plan(request: Mapping[str, Any]) -> ResearchPlan:
     objective = str(request["objective"]).strip()
     profile_definition = RESEARCH_PROFILES.get(str(request.get("profile") or "general"))
-    subquestions = (
-        ResearchSubquestion(id="sq-objective", question=objective),
-    )
+    subquestions = [ResearchSubquestion(id="sq-objective", question=objective)]
+    if _looks_like_event_verification_question(objective):
+        subquestions.append(
+            ResearchSubquestion(id="sq-verify-event", question=f"Verify whether the event occurred: {objective}")
+        )
+    if _looks_like_participant_inquiry(objective):
+        subquestions.append(
+            ResearchSubquestion(
+                id="sq-participants",
+                question=f"Identify named participants, delegation members, or accompanying people: {objective}",
+            )
+        )
     queries = [
         ResearchQueryCandidate(
             query=_query_for_profile(objective, request),
@@ -1074,6 +1093,7 @@ def _build_research_plan(request: Mapping[str, Any]) -> ResearchPlan:
             rationale="objective_terms",
         )
     ]
+    queries.extend(_expanded_query_candidates(objective, request))
     for index, template in enumerate(profile_definition.query_templates or ("{objective}",)):
         queries.append(
             ResearchQueryCandidate(
@@ -1096,7 +1116,7 @@ def _build_research_plan(request: Mapping[str, Any]) -> ResearchPlan:
     return ResearchPlan(
         objective=objective,
         profile=str(request.get("profile") or "general"),
-        subquestions=subquestions,
+        subquestions=tuple(subquestions),
         queries=_dedupe_queries(queries),
         desired_source_count=int(request["budget"]["desired_source_count"]),
         source_priorities=tuple(str(item) for item in request.get("preferences", {}).get("source_priorities") or ()),
@@ -1118,6 +1138,119 @@ def _query_for_profile(objective: str, request: Mapping[str, Any]) -> str:
         return f"{objective} specs review price"
     return objective
 
+
+def _expanded_query_candidates(objective: str, request: Mapping[str, Any]) -> list[ResearchQueryCandidate]:
+    candidates: list[ResearchQueryCandidate] = []
+    objective_text = objective.strip()
+    if not objective_text:
+        return candidates
+    subquestion_ids = ["sq-objective"]
+    if _looks_like_participant_inquiry(objective_text):
+        participant_subquestions = tuple([*subquestion_ids, "sq-participants"])
+        candidates.extend(
+            [
+                ResearchQueryCandidate(
+                    query=f"{objective_text} delegation accompanying officials list",
+                    subquestion_ids=participant_subquestions,
+                    rationale="participant_lookup_english",
+                ),
+                ResearchQueryCandidate(
+                    query=f"{objective_text} 随行人员 名单 代表团",
+                    subquestion_ids=participant_subquestions,
+                    rationale="participant_lookup",
+                ),
+            ]
+        )
+    for query in _site_queries_for_public_institution_objective(objective_text, request):
+        candidates.append(
+            ResearchQueryCandidate(
+                query=query,
+                subquestion_ids=tuple(subquestion_ids),
+                rationale="public_institution_source",
+            )
+        )
+    if _looks_like_event_verification_question(objective_text):
+        subquestion_ids.append("sq-verify-event")
+        candidates.extend(
+            [
+                ResearchQueryCandidate(
+                    query=f"{objective_text} 是否 发生 官方",
+                    subquestion_ids=tuple(subquestion_ids),
+                    rationale="event_verification",
+                ),
+                ResearchQueryCandidate(
+                    query=f"{objective_text} official confirmation",
+                    subquestion_ids=tuple(subquestion_ids),
+                    rationale="event_verification_english",
+                ),
+            ]
+        )
+    return candidates
+
+
+def _looks_like_event_verification_question(objective: str) -> bool:
+    text = objective.casefold()
+    if any(token in text for token in ("是否", "真的", "核实", "证实", "属实")):
+        return True
+    if any(token in text for token in ("visit", "visited", "meeting", "met with", "summit", "delegation")):
+        return True
+    return any(token in text for token in ("访", "访问", "访华", "会见", "会晤", "出访", "代表团"))
+
+
+def _looks_like_participant_inquiry(objective: str) -> bool:
+    text = objective.casefold()
+    return any(
+        token in text
+        for token in (
+            "随行",
+            "随员",
+            "陪同",
+            "同行",
+            "带了哪些人",
+            "哪些人",
+            "名单",
+            "人员",
+            "代表团",
+            "delegation",
+            "accompanying",
+            "officials",
+            "participants",
+            "attendees",
+            "who accompanied",
+        )
+    )
+
+
+def _site_queries_for_public_institution_objective(objective: str, request: Mapping[str, Any]) -> list[str]:
+    if not _mentions_public_institution_context(objective):
+        return []
+    if request.get("policy", {}).get("domains"):
+        return []
+    query_terms = objective.strip()
+    if not query_terms:
+        return []
+    domains = ("whitehouse.gov", "mfa.gov.cn", "gov.cn")
+    return [f"{query_terms} site:{domain}" for domain in domains]
+
+
+def _mentions_public_institution_context(objective: str) -> bool:
+    text = objective.casefold()
+    return any(
+        token in text
+        for token in (
+            "trump",
+            "特朗普",
+            "president",
+            "总统",
+            "china",
+            "中国",
+            "访华",
+            "white house",
+            "白宫",
+            "外交部",
+            "mfa",
+        )
+    )
 
 def _dedupe_queries(queries: list[ResearchQueryCandidate]) -> list[ResearchQueryCandidate]:
     deduped: list[ResearchQueryCandidate] = []
@@ -1298,9 +1431,12 @@ def _loop_decision_is_terminal(
     *,
     low_yield_searches: int,
     replan_used: bool,
+    has_pending_queries: bool = False,
 ) -> bool:
     if decision.stop_reason in {"budget_exhausted", "policy_blocked", "freshness_unsupported", "unresolved_conflict"}:
         return True
+    if has_pending_queries:
+        return False
     return bool(
         replan_used
         and low_yield_searches

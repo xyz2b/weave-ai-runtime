@@ -2749,6 +2749,95 @@ def test_web_research_open_mode_repeated_fetch_uses_preferences_and_deterministi
     assert result["stop_reason"] == "sufficient_evidence"
 
 
+def test_web_research_expands_current_event_participant_queries(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    opened_urls: list[str] = []
+
+    def _urlopen(request, timeout=10, **_kwargs):
+        _ = timeout
+        url = request.full_url if hasattr(request, "full_url") else str(request)
+        opened_urls.append(url)
+        if url == "https://apnews.example.test/trump-china-delegation":
+            return _FakeUrlopenResponse(
+                (
+                    "<html><head><title>Trump China delegation</title></head><body>"
+                    "<p>The delegation list named senior officials and business leaders accompanying Trump.</p>"
+                    "</body></html>"
+                )
+            )
+        if url == "https://www.whitehouse.gov/fact-sheets/trump-china-visit":
+            return _FakeUrlopenResponse(
+                (
+                    "<html><head><title>White House China visit</title></head><body>"
+                    "<p>The White House confirmed President Trump visited China in May 2026.</p>"
+                    "</body></html>"
+                )
+            )
+        raise AssertionError(f"Unexpected URL requested during test: {url}")
+
+    class _CapturingProvider(reference_web_research_core.FixtureWebResearchProvider):
+        def __init__(self) -> None:
+            super().__init__(
+                search_results={
+                    "特朗普 2026 年访华带了哪些人": [],
+                    "特朗普 2026 年访华带了哪些人 delegation accompanying officials list": [
+                        {
+                            "title": "AP: Trump China delegation",
+                            "url": "https://apnews.example.test/trump-china-delegation",
+                        }
+                    ],
+                    "特朗普 2026 年访华带了哪些人 site:whitehouse.gov": [
+                        {
+                            "title": "White House confirms China visit",
+                            "url": "https://www.whitehouse.gov/fact-sheets/trump-china-visit",
+                        }
+                    ],
+                }
+            )
+            self.queries: list[str] = []
+
+        def search(self, query: str, *, limit: int, policy=None):
+            self.queries.append(query)
+            return super().search(query, limit=limit, policy=policy)
+
+    provider = _CapturingProvider()
+    monkeypatch.setattr(reference_web_tool_impls, "_web_urlopen", _urlopen)
+    monkeypatch.setattr(
+        reference_web_tool_impls,
+        "_web_search_provider_registry",
+        reference_web_research_core.WebSearchProviderRegistry((provider,)),
+    )
+    runtime, _shape, runtime_root = _assemble_shared_reference_runtime(tmp_path, "weavert-shared-web-research")
+
+    result = asyncio.run(
+        runtime.kernel.tool_registry.get("web_research").execute(
+            {
+                "objective": "特朗普 2026 年访华带了哪些人",
+                "search_budget": 4,
+                "fetch_budget": 2,
+                "desired_source_count": 2,
+            },
+            _tool_context(runtime, runtime_root),
+        )
+    )
+
+    assert provider.queries[:3] == [
+        "特朗普 2026 年访华带了哪些人",
+        "特朗普 2026 年访华带了哪些人 delegation accompanying officials list",
+        "特朗普 2026 年访华带了哪些人 随行人员 名单 代表团",
+    ]
+    assert "特朗普 2026 年访华带了哪些人 site:whitehouse.gov" in provider.queries
+    assert opened_urls == [
+        "https://apnews.example.test/trump-china-delegation",
+        "https://www.whitehouse.gov/fact-sheets/trump-china-visit",
+    ]
+    assert result["stop_reason"] == "sufficient_evidence"
+    assert any("business leaders accompanying Trump" in item["excerpt"] for item in result["evidence"])
+    assert any("President Trump visited China in May 2026" in item["excerpt"] for item in result["evidence"])
+
+
 def test_web_research_runtime_drops_fabricated_child_metadata_without_ledger(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
