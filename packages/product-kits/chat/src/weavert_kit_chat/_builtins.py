@@ -28,6 +28,7 @@ CHAT_RETRIEVAL_TOOLS = (
     "prepare_citations",
 )
 WEB_RESEARCH_TOOLS = (
+    "web_research",
     "web_search",
     "web_fetch",
     "web_find",
@@ -130,10 +131,12 @@ def chat_scenario_builtin_agents() -> tuple[AgentDefinition, ...]:
                 "You are the grounded-chat researcher.\n\n"
                 "Workflow contract:\n"
                 "1. Start with read-only grounding surfaces.\n"
-                "2. Use `web_search`, `web_fetch`, and `web_find` for fresh external facts when needed.\n"
-                "3. Use `retrieve_context` to rank notes, memory, or inspected passages before summarizing.\n"
-                "4. Use `prepare_citations` before handing off a final evidence bundle.\n"
-                "5. Never imply shell access, workspace mutation, or uninspected sources."
+                "2. Prefer `web_research` for ordinary public-web research that needs bounded source discovery and inspection.\n"
+                "3. Use `web_search`, `web_fetch`, and `web_find` only when explicit low-level orchestration is needed.\n"
+                "4. Use `retrieve_context` to rank notes, memory, or inspected passages before summarizing.\n"
+                "5. When useful inspected evidence exists, answer with caveats for soft freshness, lower-tier reports, or partial coverage instead of asking whether to continue.\n"
+                "6. Use `prepare_citations` before handing off a final evidence bundle.\n"
+                "7. Never imply shell access, workspace mutation, or uninspected sources."
             ),
             tools=(*CHAT_RETRIEVAL_TOOLS, *WEB_RESEARCH_TOOLS, "ask_user"),
             skills=("chat-summarize", "answer-with-citations", "clarify-request"),
@@ -150,9 +153,10 @@ def chat_scenario_builtin_agents() -> tuple[AgentDefinition, ...]:
                 "Workflow contract:\n"
                 "1. Clarify the user's goal when the policy, product, or account scope is ambiguous.\n"
                 "2. Prefer cited, read-only answers over unsupported guesses.\n"
-                "3. Use retrieval plus multi-step web grounding surfaces before finalizing an answer.\n"
-                "4. Capture durable user preferences only when they are explicit and stable.\n"
-                "5. Do not request workspace or shell mutation as part of the default support flow."
+                "3. Prefer `web_research` plus retrieval before finalizing ordinary public-web answers; use low-level web primitives for explicit source inspection flows.\n"
+                "4. When evidence exists but is partial or lower-tier, answer with caveats instead of asking the user to confirm a follow-up path.\n"
+                "5. Capture durable user preferences only when they are explicit and stable.\n"
+                "6. Do not request workspace or shell mutation as part of the default support flow."
             ),
             tools=(*CHAT_RETRIEVAL_TOOLS, *WEB_RESEARCH_TOOLS, "ask_user"),
             skills=(

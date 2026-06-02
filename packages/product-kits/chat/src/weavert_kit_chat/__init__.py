@@ -54,6 +54,7 @@ REFERENCE_SCENARIO_PACK_SHAPE = ReferenceScenarioPackShape(
         "Preserve read-mostly defaults and avoid implicit workspace mutation or shell execution.",
         "Default web_research to profile=\"general\" unless the app declares a more specific first-party profile.",
         "Prefer web_research for bounded public web research; use low-level web primitives only for explicit search, fetch, or page-local find orchestration.",
+        "Answer clear questions with evidence caveats when useful inspected evidence exists; reserve ask_user for genuinely ambiguous goals, product scope, policy scope, or account scope.",
     ),
     workflow_agent_ids=CHAT_SCENARIO_AGENTS,
     workflow_skill_ids=CHAT_SCENARIO_SKILLS,

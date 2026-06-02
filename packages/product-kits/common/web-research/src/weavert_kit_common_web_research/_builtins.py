@@ -143,7 +143,15 @@ def web_research_builtin_tools() -> tuple[ToolDefinition, ...]:
                     "question": {"type": "string"},
                     "profile": {
                         "type": "string",
-                        "enum": ["general", "coding", "business", "academic", "legal_compliance", "product_shopping"],
+                        "enum": [
+                            "general",
+                            "coding",
+                            "business",
+                            "academic",
+                            "legal_compliance",
+                            "medical",
+                            "product_shopping",
+                        ],
                     },
                     "strategy": {"type": "string", "enum": ["deterministic", "pro"]},
                     "mode": {"type": "string", "enum": ["focused", "open"]},
@@ -386,7 +394,8 @@ def chat_scenario_builtin_agents() -> tuple[AgentDefinition, ...]:
                 "3. Use `web_search`, `web_fetch`, and `web_find` only when explicit low-level orchestration is needed.\n"
                 "4. Use `retrieve_context` to rank notes, memory, or inspected passages before summarizing.\n"
                 "5. Use `prepare_citations` before handing off a final evidence bundle.\n"
-                "6. Never imply shell access, workspace mutation, or uninspected sources."
+                "6. When evidence exists but has soft freshness caveats, lower-tier reports, or remaining source-strength gaps, return the best grounded answer with caveats instead of asking the user to confirm a follow-up path.\n"
+                "7. Never imply shell access, workspace mutation, or uninspected sources."
             ),
             tools=(*CHAT_RETRIEVAL_TOOLS, *WEB_RESEARCH_TOOLS, "ask_user"),
             skills=("chat-summarize", "answer-with-citations", "clarify-request"),
@@ -404,8 +413,9 @@ def chat_scenario_builtin_agents() -> tuple[AgentDefinition, ...]:
                 "1. Clarify the user's goal when the policy, product, or account scope is ambiguous.\n"
                 "2. Prefer cited, read-only answers over unsupported guesses.\n"
                 "3. Prefer `web_research` plus retrieval before finalizing an answer; use low-level web primitives for explicit source inspection flows.\n"
-                "4. Capture durable user preferences only when they are explicit and stable.\n"
-                "5. Do not request workspace or shell mutation as part of the default support flow."
+                "4. When useful inspected evidence exists, answer with caveats for unsupported soft freshness, lower-tier reports, or partial coverage instead of asking whether to continue.\n"
+                "5. Capture durable user preferences only when they are explicit and stable.\n"
+                "6. Do not request workspace or shell mutation as part of the default support flow."
             ),
             tools=(*CHAT_RETRIEVAL_TOOLS, *WEB_RESEARCH_TOOLS, "ask_user"),
             skills=(
@@ -453,11 +463,12 @@ def web_research_worker_builtin_agents() -> tuple[AgentDefinition, ...]:
                 "1. Serve only `web_research` child runs or package extension paths.\n"
                 "2. Use the controlled read-only tool pool: `web_search`, `web_fetch`, and `web_find`.\n"
                 "3. Stay inside caller-provided hard policy and budgets; open-mode preferences guide ranking, not safety.\n"
-                "4. Treat provider, provider fallback, and freshness_scope fields as part of the evidence contract.\n"
-                "5. Do not present a freshness-constrained answer as confirmed when search reports unsupported freshness or a provider downgrade.\n"
-                "6. Inspect evidence before citing it, and return source references plus concise evidence.\n"
-                "7. Keep any bounded concurrent page inspection inside the package-owned workflow.\n"
-                "8. Do not request shell access, workspace mutation, browser navigation, or direct user adoption."
+                "4. Treat provider, provider fallback, freshness_scope, source_tier, and evidence_tier fields as part of the evidence contract.\n"
+                "5. Do not present a hard freshness-constrained answer as confirmed when search reports unsupported freshness or a provider downgrade.\n"
+                "6. For soft freshness caveats or lower-tier evidence, return usable evidence distinctions instead of asking the user to choose a follow-up path.\n"
+                "7. Inspect evidence before citing it, and return source references plus concise evidence.\n"
+                "8. Keep any bounded concurrent page inspection inside the package-owned workflow.\n"
+                "9. Do not request shell access, workspace mutation, browser navigation, or direct user adoption."
             ),
             tools=("web_search", "web_fetch", "web_find"),
             permission_mode=PermissionMode.DEFAULT,

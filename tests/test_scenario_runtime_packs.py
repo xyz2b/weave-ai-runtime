@@ -80,6 +80,7 @@ from weavert_kit_common_web_research import (
     validate_web_fetch,
     validate_web_find,
 )
+from weavert_kit_common_web_research._builtins import web_research_builtin_tools
 from weavert_devtools.tool_impls import validate_web_fetch as validate_devtools_web_fetch
 from weavert_kit_common_workspace_intelligence import (
     reference_shared_package_manifest as workspace_shared_package_manifest,
@@ -700,7 +701,8 @@ def test_grounded_reference_shared_packages_can_be_admitted_selected_and_execute
     assert web_research_result["sources"][0]["title"] == "Refund policy"
     assert "Refunds stay available" in web_research_result["evidence"][0]["excerpt"]
     assert "Refunds stay available" in web_research_result["answer"]
-    assert web_research_result["stop_reason"] == "freshness_unsupported"
+    assert web_research_result["freshness"] == {"requested_days": 14, "required": False, "status": "unsupported"}
+    assert web_research_result["stop_reason"] == "sufficient_evidence"
     assert web_research_result["child_run"]["agent"] == "web_research_loop"
 
     search_tool = web_runtime.kernel.tool_registry.get("web_search")
@@ -1511,7 +1513,8 @@ def test_web_research_compact_request_normalization_and_precedence() -> None:
         ("business", ["official_company", "filings", "announcements", "news", "reviews"], False),
         ("academic", ["papers", "publishers", "institutions", "preprints"], False),
         ("legal_compliance", ["statutes", "regulations", "standards", "official_guidance"], True),
-        ("product_shopping", ["official_specs", "prices", "reviews", "alternatives", "risk_notes"], True),
+        ("medical", ["official_health_guidance", "clinical_guidelines", "public_health_authorities", "medical_literature"], True),
+        ("product_shopping", ["official_specs", "prices", "reviews", "alternatives", "risk_notes"], False),
     ),
 )
 def test_web_research_profile_defaults_source_priorities_and_freshness(
@@ -1531,6 +1534,22 @@ def test_web_research_profile_defaults_source_priorities_and_freshness(
     assert outcome.updated_input["preferences"]["source_priorities"] == expected_priorities
     assert outcome.updated_input["preferences"]["freshness_required"] is freshness_required
     assert outcome.updated_input["freshness_required"] is freshness_required
+
+
+def test_web_research_medical_profile_contract_surfaces() -> None:
+    context = ToolContext(session_id="medical-profile", turn_id="turn-1", agent_name="tester", cwd=Path.cwd())
+    tool = next(tool for tool in web_research_builtin_tools() if tool.name == "web_research")
+
+    outcome = reference_web_tool_impls.validate_web_research(
+        {"objective": "Current asthma inhaler guidance.", "profile": "medical"},
+        context,
+    )
+
+    assert outcome.valid is True
+    assert outcome.updated_input["profile"] == "medical"
+    assert outcome.updated_input["freshness_required"] is True
+    assert "medical" in tool.input_schema["properties"]["profile"]["enum"]
+    assert "medical" in web_research_shared_package_shape().intended_profiles
 
 
 def test_web_research_strategy_validation_accepts_pro_and_rejects_unknown() -> None:
@@ -2581,6 +2600,8 @@ def test_web_research_runtime_preserves_provider_and_freshness_metadata(
     assert result["freshness_scope"] == {"requested_days": 7, "status": "enforced"}
     assert result["stop_reason"] == "sufficient_evidence"
     assert result["sources"][0]["provider"]["id"] == "fresh-fixture"
+    assert result["sources"][0]["source_tier"] in {"official", "general"}
+    assert result["evidence"][0]["evidence_tier"] in {"official", "single_source_report"}
 
 
 def test_web_research_runtime_classifies_provider_fallback_as_freshness_unsupported(
@@ -2631,6 +2652,91 @@ def test_web_research_runtime_classifies_provider_fallback_as_freshness_unsuppor
     assert result["provider_fallback"]["used"] is True
     assert result["freshness_scope"] == {"requested_days": 7, "status": "unsupported"}
     assert result["stop_reason"] == "freshness_unsupported"
+    assert result["gaps"][0]["kind"] == "freshness_limitation"
+    assert result["gaps"][0]["severity"] == "hard"
+
+
+def test_web_research_soft_freshness_returns_evidence_backed_nonterminal_result(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(reference_web_tool_impls, "_web_urlopen", _web_urlopen)
+    provider = reference_web_research_core.FixtureWebResearchProvider(
+        provider_id="legacy-fixture",
+        supports_freshness=False,
+        search_results={
+            "refund policy": [
+                {"title": "Refund policy", "url": "https://grounding.example.test/refund-policy"}
+            ]
+        },
+    )
+    monkeypatch.setattr(
+        reference_web_tool_impls,
+        "_web_search_provider_registry",
+        reference_web_research_core.WebSearchProviderRegistry((provider,)),
+    )
+    runtime, _shape, runtime_root = _assemble_shared_reference_runtime(tmp_path, "weavert-shared-web-research")
+
+    result = asyncio.run(
+        runtime.kernel.tool_registry.get("web_research").execute(
+            {
+                "objective": "What is the current refund policy?",
+                "domains": ["grounding.example.test"],
+                "freshness_days": 7,
+                "fetch_budget": 1,
+                "desired_source_count": 1,
+            },
+            _tool_context(runtime, runtime_root),
+        )
+    )
+
+    assert result["freshness"] == {"requested_days": 7, "required": False, "status": "unsupported"}
+    assert result["freshness_scope"] == {"requested_days": 7, "status": "unsupported"}
+    assert result["stop_reason"] == "sufficient_evidence"
+    assert result["gaps"][0]["kind"] == "soft_freshness_caveat"
+    assert result["gaps"][0]["severity"] == "soft"
+    assert result["evidence"][0]["evidence_tier"] in {"official", "single_source_report"}
+
+
+def test_web_research_medical_profile_freshness_window_is_hard_terminal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(reference_web_tool_impls, "_web_urlopen", _web_urlopen)
+    provider = reference_web_research_core.FixtureWebResearchProvider(
+        provider_id="legacy-fixture",
+        supports_freshness=False,
+        search_results={
+            "current asthma inhaler guidance official health guidance clinical guideline": [
+                {"title": "Asthma guidance", "url": "https://grounding.example.test/refund-policy"}
+            ]
+        },
+    )
+    monkeypatch.setattr(
+        reference_web_tool_impls,
+        "_web_search_provider_registry",
+        reference_web_research_core.WebSearchProviderRegistry((provider,)),
+    )
+    runtime, _shape, runtime_root = _assemble_shared_reference_runtime(tmp_path, "weavert-shared-web-research")
+
+    result = asyncio.run(
+        runtime.kernel.tool_registry.get("web_research").execute(
+            {
+                "objective": "current asthma inhaler guidance",
+                "profile": "medical",
+                "domains": ["grounding.example.test"],
+                "freshness_days": 7,
+                "fetch_budget": 1,
+                "desired_source_count": 1,
+            },
+            _tool_context(runtime, runtime_root),
+        )
+    )
+
+    assert result["freshness"] == {"requested_days": 7, "required": True, "status": "unsupported"}
+    assert result["stop_reason"] == "freshness_unsupported"
+    assert result["gaps"][0]["kind"] == "freshness_limitation"
+    assert result["gaps"][0]["severity"] == "hard"
 
 
 def test_web_research_runtime_enforces_policy_and_budget_in_package_loop(
@@ -2836,6 +2942,110 @@ def test_web_research_expands_current_event_participant_queries(
     assert result["stop_reason"] == "sufficient_evidence"
     assert any("business leaders accompanying Trump" in item["excerpt"] for item in result["evidence"])
     assert any("President Trump visited China in May 2026" in item["excerpt"] for item in result["evidence"])
+    assert {source["source_tier"] for source in result["sources"]} <= {
+        "official",
+        "media_report",
+        "single_source_report",
+        "general",
+    }
+    assert {item["evidence_tier"] for item in result["evidence"]} <= {
+        "official",
+        "media_report",
+        "single_source_report",
+        "general",
+    }
+
+
+def test_web_research_progressively_replans_participant_lists_with_tiers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    opened_urls: list[str] = []
+
+    def _urlopen(request, timeout=10, **_kwargs):
+        _ = timeout
+        url = request.full_url if hasattr(request, "full_url") else str(request)
+        opened_urls.append(url)
+        if url == "https://apnews.example.test/delegation-list":
+            return _FakeUrlopenResponse(
+                "<html><head><title>Delegation list</title></head><body>"
+                "<p>AP reported the delegation list included the foreign minister and senior advisers.</p>"
+                "</body></html>"
+            )
+        if url == "https://reuters.example.test/delegation-report":
+            return _FakeUrlopenResponse(
+                "<html><head><title>Delegation report</title></head><body>"
+                "<p>Reuters reported additional delegation members and accompanying officials.</p>"
+                "</body></html>"
+            )
+        raise AssertionError(f"Unexpected URL requested during test: {url}")
+
+    class _CapturingProvider(reference_web_research_core.FixtureWebResearchProvider):
+        def __init__(self) -> None:
+            super().__init__(
+                search_results={
+                    "Who accompanied the 2026 official trip": [],
+                    "Who accompanied the 2026 official trip delegation accompanying officials list": [],
+                    "Who accompanied the 2026 official trip 随行人员 名单 代表团": [],
+                    "Who accompanied the 2026 official trip official confirmation current source": [],
+                    "Who accompanied the 2026 official trip participants attendees delegation list": [
+                        {
+                            "title": "AP delegation list",
+                            "url": "https://apnews.example.test/delegation-list",
+                            "excerpt": "AP reported the delegation list.",
+                        }
+                    ],
+                    "Who accompanied the 2026 official trip credible reporting": [
+                        {
+                            "title": "Reuters delegation report",
+                            "url": "https://reuters.example.test/delegation-report",
+                            "excerpt": "Reuters reported additional delegation members.",
+                        }
+                    ],
+                }
+            )
+            self.queries: list[str] = []
+
+        def search(self, query: str, *, limit: int, policy=None):
+            self.queries.append(query)
+            return super().search(query, limit=limit, policy=policy)
+
+    provider = _CapturingProvider()
+    monkeypatch.setattr(reference_web_tool_impls, "_web_urlopen", _urlopen)
+    monkeypatch.setattr(
+        reference_web_tool_impls,
+        "_web_search_provider_registry",
+        reference_web_research_core.WebSearchProviderRegistry((provider,)),
+    )
+    runtime, _shape, runtime_root = _assemble_shared_reference_runtime(tmp_path, "weavert-shared-web-research")
+
+    result = asyncio.run(
+        runtime.kernel.tool_registry.get("web_research").execute(
+            {
+                "objective": "Who accompanied the 2026 official trip",
+                "search_budget": 8,
+                "fetch_budget": 3,
+                "desired_source_count": 3,
+            },
+            _tool_context(runtime, runtime_root),
+        )
+    )
+
+    replan_events = [event for event in result["trace_summary"] if event["event"] == "replanned"]
+    assert [event["family"] for event in replan_events[:3]] == [
+        "official_confirmation",
+        "participant_list_extraction",
+        "credible_reporting",
+    ]
+    assert "Who accompanied the 2026 official trip participants attendees delegation list" in provider.queries
+    assert "Who accompanied the 2026 official trip credible reporting" in provider.queries
+    assert opened_urls == [
+        "https://apnews.example.test/delegation-list",
+        "https://reuters.example.test/delegation-report",
+    ]
+    assert result["stop_reason"] == "partial_result"
+    assert {source["source_tier"] for source in result["sources"]} == {"media_report"}
+    assert {item["evidence_tier"] for item in result["evidence"]} == {"media_report"}
 
 
 def test_web_research_runtime_drops_fabricated_child_metadata_without_ledger(
@@ -3533,14 +3743,16 @@ def test_web_research_budget_exhausted_when_fetch_budget_prevents_inspection(
     assert result["research_trace"]["pages_read"] == []
 
 
-def test_web_research_low_yield_replans_once_then_stops_with_remaining_gaps(
+def test_web_research_low_yield_replans_until_budget_then_stops_with_remaining_gaps(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     provider = reference_web_research_core.FixtureWebResearchProvider(
         search_results={
             "refund policy": [],
-            "Low yield refund policy official source": [],
+            "Low yield refund policy official confirmation current source": [],
+            "Low yield refund policy credible reporting": [],
+            "Low yield refund policy Reuters AP report": [],
         },
     )
     monkeypatch.setattr(
@@ -3554,7 +3766,7 @@ def test_web_research_low_yield_replans_once_then_stops_with_remaining_gaps(
         runtime.kernel.tool_registry.get("web_research").execute(
             {
                 "objective": "Low yield refund policy",
-                "search_budget": 2,
+                "search_budget": 4,
                 "fetch_budget": 1,
                 "desired_source_count": 1,
             },
@@ -3562,11 +3774,20 @@ def test_web_research_low_yield_replans_once_then_stops_with_remaining_gaps(
         )
     )
 
-    assert result["budget"]["used"] == {"searches": 2, "fetches": 0, "finds": 0}
+    assert result["budget"]["used"] == {"searches": 4, "fetches": 0, "finds": 0}
     assert result["stop_reason"] == "remaining_gaps"
-    events = [event["event"] for event in result["trace_summary"]]
-    assert events.count("replanned") == 1
-    assert events.count("low_yield_search") == 2
+    replan_events = [event for event in result["trace_summary"] if event["event"] == "replanned"]
+    assert [event["family"] for event in replan_events] == [
+        "official_confirmation",
+        "credible_reporting",
+        "wider_discovery",
+    ]
+    assert [event["gap"] for event in replan_events] == [
+        "missing_official_confirmation",
+        "missing_credible_reporting",
+        "source_coverage_below_target",
+    ]
+    assert [event["event"] for event in result["trace_summary"]].count("low_yield_search") == 4
 
 
 def test_web_research_low_yield_after_replan_stops_with_partial_result(
@@ -3605,9 +3826,9 @@ def test_web_research_low_yield_after_replan_stops_with_partial_result(
     assert len(result["evidence"]) == 1
     assert result["budget"]["used"] == {"searches": 2, "fetches": 1, "finds": 0}
     assert result["stop_reason"] == "partial_result"
-    events = [event["event"] for event in result["trace_summary"]]
-    assert events.count("replanned") == 1
-    assert "low_yield_search" in events
+    replan_events = [event for event in result["trace_summary"] if event["event"] == "replanned"]
+    assert [event["family"] for event in replan_events] == ["official_confirmation"]
+    assert "low_yield_search" in [event["event"] for event in result["trace_summary"]]
 
 
 def test_web_research_internal_invariant_failure_is_not_projected_as_partial_result(
@@ -3742,7 +3963,7 @@ def test_web_research_stop_reason_uses_desired_source_count_and_freshness_limit(
     assert len(unmet_count["evidence"]) == 1
     assert unmet_count["stop_reason"] == "partial_result"
 
-    freshness_limited = asyncio.run(
+    soft_freshness = asyncio.run(
         runtime.kernel.tool_registry.get("web_research").execute(
             {
                 "objective": "Collect fresh refund policy evidence.",
@@ -3754,12 +3975,29 @@ def test_web_research_stop_reason_uses_desired_source_count_and_freshness_limit(
             _tool_context(runtime, runtime_root),
         )
     )
-    assert len(freshness_limited["evidence"]) == 1
-    assert freshness_limited["stop_reason"] == "freshness_unsupported"
+    assert len(soft_freshness["evidence"]) == 1
+    assert soft_freshness["stop_reason"] == "sufficient_evidence"
+    assert soft_freshness["gaps"][0]["kind"] == "soft_freshness_caveat"
     assert any(
         event == {"event": "freshness_unsupported", "requested_days": 7, "status": "unsupported"}
-        for event in freshness_limited["trace_summary"]
+        for event in soft_freshness["trace_summary"]
     )
+
+    hard_freshness = asyncio.run(
+        runtime.kernel.tool_registry.get("web_research").execute(
+            {
+                "objective": "Collect fresh refund policy evidence.",
+                "domains": ["grounding.example.test"],
+                "freshness": {"days": 7, "required": True},
+                "fetch_budget": 1,
+                "desired_source_count": 1,
+            },
+            _tool_context(runtime, runtime_root),
+        )
+    )
+    assert len(hard_freshness["evidence"]) == 1
+    assert hard_freshness["stop_reason"] == "freshness_unsupported"
+    assert hard_freshness["gaps"][0]["kind"] == "freshness_limitation"
 
 
 def test_web_fetch_validation_rejects_missing_url() -> None:
@@ -4149,6 +4387,14 @@ def test_grounded_chat_reference_stack_exercises_retrieval_web_and_memory_surfac
 
     memory_service = runtime.services.resolve_memory_service()
     support_agent = runtime.kernel.agent_registry.get("support-agent")
+    researcher = runtime.kernel.agent_registry.get("researcher")
+    assert "web_research" in researcher.tools
+    assert "web_research" in support_agent.tools
+    assert researcher.tools.index("web_research") < researcher.tools.index("web_search")
+    assert "Prefer `web_research`" in researcher.prompt
+    assert "answer with caveats" in researcher.prompt
+    assert "Prefer `web_research`" in support_agent.prompt
+    assert "answer with caveats" in support_agent.prompt
     persisted = asyncio.run(
         memory_service.persist_entries(
             session_id="grounded-chat-stack",

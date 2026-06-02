@@ -8,8 +8,8 @@ Canonical import root: `weavert_kit_common_web_research`
 - 基于 `weavert-web-research` 的低层 `web_search`、单页 `web_fetch`、`web_find` primitives
 - `web_research` 背后的 package-owned research loops：deterministic goal-driven loop，以及 opt-in model-directed Pro loop
 - 仅用于 bounded implementation-period fallback path 的 package-owned `web-searcher` delegated worker
-- first-party research profiles：`general`、`coding`、`business`、`academic`、`legal_compliance`、`product_shopping`
-- 统一结果 envelope：sources、evidence、conflicts、gaps、freshness、provider metadata、research trace 和 profile facets
+- first-party research profiles：`general`、`coding`、`business`、`academic`、`legal_compliance`、`medical`、`product_shopping`
+- 统一结果 envelope：sources、evidence、conflicts、gaps、freshness、provider metadata、source/evidence tiers、research trace 和 profile facets
 
 ## Canonical names
 
@@ -54,13 +54,13 @@ Public tool names 保持稳定：调用方继续使用 `web_research`、`web_sea
 - `bing-grounding`：设置 `FOUNDRY_PROJECT_ENDPOINT`、`FOUNDRY_MODEL_DEPLOYMENT_NAME`、`BING_PROJECT_CONNECTION_ID` 和 `AGENT_TOKEN`；可选设置 `WEAVERT_WEB_SEARCH_PROVIDER=bing-grounding`。
 - `duckduckgo-html`：不需要 credentials 的 fallback。这个 adapter 不暴露稳定的 freshness filter。
 
-Bing grounding 使用 Azure AI Foundry Responses API `bing_grounding`，并把稳定公网 URL citations 规范化成 shared result shape；它不是已退役的 Bing Search API v7 endpoint。Google Programmable Search、SerpAPI Google Search 和 Brave 会在支持时把 domain constraints 映射为 provider query operators；Bing grounding 和 DuckDuckGo 会把这些 controls 报告为 framework-filtered。Shared core 仍会根据 allowed domains、blocked domains 和 public-host policy 重新校验 accepted result URLs。Freshness semantics 是 provider-specific：Google 使用近似的 `dateRestrict`，Brave 使用它的 `freshness` parameter，Bing grounding 映射支持的 1/7/30 天 freshness windows，SerpAPI 和 DuckDuckGo 会报告 freshness unsupported。SerpAPI 只把 `organic_results` 转为 source candidates；SERP answer blocks 和 related-search payloads 不会提升为 ledger evidence。
+Bing grounding 使用 Azure AI Foundry Responses API `bing_grounding`，并把稳定公网 URL citations 规范化成 shared result shape；它不是已退役的 Bing Search API v7 endpoint。Google Programmable Search、SerpAPI Google Search 和 Brave 会在支持时把 domain constraints 映射为 provider query operators；Bing grounding 和 DuckDuckGo 会把这些 controls 报告为 framework-filtered。Shared core 仍会根据 allowed domains、blocked domains 和 public-host policy 重新校验 accepted result URLs。Freshness semantics 是 provider-specific：Google 使用近似的 `dateRestrict`，Brave 使用它的 `freshness` parameter，Bing grounding 映射支持的 1/7/30 天 freshness windows，SerpAPI 和 DuckDuckGo 会报告 freshness unsupported。`freshness_days` 或 `freshness.days` 默认只是 soft ranking hint；只有 `freshness.required=true`、`freshness_required=true`，或命中 hard-freshness profile default 时才是 terminal freshness requirement。First-party hard-freshness defaults 是 `legal_compliance` 和 `medical`；`business` 与 `product_shopping` 除非显式要求，否则保持 soft freshness。SerpAPI 只把 `organic_results` 转为 source candidates；SERP answer blocks 和 related-search payloads 不会提升为 ledger evidence。
 
 ## Research Profiles and Quality Signals
 
-`web_research` 会在 inspection pages 之前应用 profile strategy。Coding 优先官方文档、release notes、changelogs、source repositories 和 issue trackers，并提供 API names、versions、compatibility notes 与 breaking changes facets。Legal compliance 优先 statutes、regulations、standards 和 official guidance，并保留 jurisdiction、authority、freshness 和 effective-date gaps。Business research 偏向 company sources、filings、announcements、credible news、reviews、competitors、timelines、comparison axes 和 market claims。Academic research 偏向 papers、publishers、institutions、preprints、methods、experiments、conclusions 和 citation metadata。Product shopping 偏向 official specs、current prices、reviews、alternatives、comparison axes 和 purchase-risk signals。
+`web_research` 会在 inspection pages 之前应用 profile strategy。Coding 优先官方文档、release notes、changelogs、source repositories 和 issue trackers，并提供 API names、versions、compatibility notes 与 breaking changes facets。Legal compliance 优先 statutes、regulations、standards 和 official guidance，并保留 jurisdiction、authority、freshness 和 effective-date gaps。Medical research 优先 official health guidance、clinical guidelines、public health authorities 和 medical literature，并默认把当前健康指导视为 hard freshness。Business research 偏向 company sources、filings、announcements、credible news、reviews、competitors、timelines、comparison axes 和 market claims。Academic research 偏向 papers、publishers、institutions、preprints、methods、experiments、conclusions 和 citation metadata。Product shopping 偏向 official specs、current prices、reviews、alternatives、comparison axes 和 purchase-risk signals，但 freshness 默认是 soft，除非调用方显式要求。
 
-Candidate sources 在 fetch 前会得到可追踪的 quality metadata：objective relevance、profile priority、provider metadata、freshness signals、preferred 或 allowed domains、duplicate clusters，以及按 domain 和 URL 做的 deterministic tie-breaking。Inspection 后，ledger evidence 会保留 source class 和 quality metadata，方便调用方和测试解释 source selection。
+Candidate sources 在 fetch 前会得到可追踪的 quality metadata：objective relevance、profile priority、provider metadata、freshness signals、preferred 或 allowed domains、duplicate clusters、source tier，以及按 domain 和 URL 做的 deterministic tie-breaking。Inspection 后，ledger evidence 会保留 source class、quality metadata 和 `evidence_tier`，方便调用方和测试解释 source selection。Tier values 是 `official`、`authoritative`、`media_report`、`single_source_report` 或 `general`；它们分类 evidence strength 和 source type，不代表事实真伪评分。
 
 ## Claims, Conflicts, Gaps, and Limits
 

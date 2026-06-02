@@ -45,11 +45,14 @@ _WEB_RESEARCH_DEFAULT_SEARCH_BUDGET = 4
 _WEB_RESEARCH_DEFAULT_FETCH_BUDGET = 4
 _WEB_RESEARCH_DEFAULT_FIND_BUDGET = 6
 _WEB_RESEARCH_DEFAULT_DESIRED_SOURCES = 3
-_WEB_RESEARCH_MAX_TRACE_ITEMS = 16
+_WEB_RESEARCH_MAX_TRACE_ITEMS = 64
 _WEB_RESEARCH_DEFAULT_MAX_CONCURRENT_FETCHES = 3
 _WEB_RESEARCH_RUN_ID_METADATA_KEY = "web_research_run_id"
-_WEB_RESEARCH_MAX_REPLAN_PASSES = 1
+_WEB_RESEARCH_MAX_REPLAN_PASSES = 4
 _WEB_RESEARCH_SUPPORTED_STRATEGIES = frozenset({"deterministic", "pro"})
+_WEB_RESEARCH_TIER_VALUES = frozenset(
+    {"official", "authoritative", "media_report", "single_source_report", "general"}
+)
 _WEB_RESEARCH_MODEL_RESPONSE_METADATA_KEY = "web_research_model_responses"
 _WEB_RESEARCH_PRO_DEFAULT_METADATA_KEY = "web_research_default_strategy"
 _WEB_RESEARCH_PRO_OPT_IN_METADATA_KEY = "web_research_pro_default"
@@ -85,11 +88,13 @@ _WEB_RESEARCH_SOURCE_ANNOTATION_FIELDS = frozenset(
         "synthesis",
         "synthesis_note",
         "synthesis_notes",
+        "source_tier",
     }
 )
 _WEB_RESEARCH_EVIDENCE_ANNOTATION_FIELDS = _WEB_RESEARCH_SOURCE_ANNOTATION_FIELDS | frozenset(
     {
         "claim_key",
+        "evidence_tier",
         "stance",
         "supports",
         "supports_claim",
@@ -197,6 +202,13 @@ class CandidateSource:
 class SelectedPage:
     source: Mapping[str, Any]
     rationale: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class ReplanPass:
+    family: str
+    gap: str
+    queries: tuple[ResearchQueryCandidate, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -394,7 +406,15 @@ _WEB_RESEARCH_MODEL_TURN_CONTRACTS: dict[str, dict[str, Any]] = {
 }
 
 
-SUPPORTED_RESEARCH_PROFILES = ("general", "coding", "business", "academic", "legal_compliance", "product_shopping")
+SUPPORTED_RESEARCH_PROFILES = (
+    "general",
+    "coding",
+    "business",
+    "academic",
+    "legal_compliance",
+    "medical",
+    "product_shopping",
+)
 
 RESEARCH_PROFILES = ResearchProfileRegistry(
     (
@@ -459,6 +479,19 @@ RESEARCH_PROFILES = ResearchProfileRegistry(
             facet_keys=("jurisdiction", "authorities", "effective_dates", "compliance_gaps"),
         ),
         ResearchProfile(
+            name="medical",
+            query_templates=(
+                "{objective} official health guidance",
+                "{objective} clinical guideline current recommendation",
+                "{objective} public health authority patient safety",
+            ),
+            source_priorities=("official_health_guidance", "clinical_guidelines", "public_health_authorities", "medical_literature"),
+            evidence_schema={"expected": ("conditions", "recommendations", "authorities", "effective_dates", "safety_gaps")},
+            defaults={"quality_signals": ("official_health_guidance", "clinical_guideline", "public_health_authority", "medical_literature", "effective_date")},
+            freshness_policy={"required": True},
+            facet_keys=("conditions", "recommendations", "authorities", "effective_dates", "safety_gaps"),
+        ),
+        ResearchProfile(
             name="product_shopping",
             query_templates=(
                 "{objective} official specs current price",
@@ -468,7 +501,7 @@ RESEARCH_PROFILES = ResearchProfileRegistry(
             source_priorities=("official_specs", "prices", "reviews", "alternatives", "risk_notes"),
             evidence_schema={"expected": ("products", "prices", "alternatives", "comparison_axes", "purchase_risks")},
             defaults={"quality_signals": ("official_specs", "price", "review", "alternative", "risk")},
-            freshness_policy={"required": True},
+            freshness_policy={"required": False},
             facet_keys=("products", "prices", "alternatives", "comparison_axes", "purchase_risks"),
         ),
     )
@@ -602,7 +635,7 @@ async def _run_goal_driven_web_research_loop(
     searched_urls: set[str] = set()
     selected_urls: set[str] = set()
     low_yield_searches = 0
-    replan_used = False
+    replan_families: set[str] = set()
     search_index = 0
 
     while search_index < len(plan.queries):
@@ -639,7 +672,7 @@ async def _run_goal_driven_web_research_loop(
                 state,
                 plan,
                 low_yield_searches=low_yield_searches,
-                replan_used=replan_used,
+                replan_passes=len(replan_families),
             )
             plan.decisions.append(evaluation)
             _record_loop_trace(
@@ -652,15 +685,27 @@ async def _run_goal_driven_web_research_loop(
                     "rationale": evaluation.rationale,
                 },
             )
-            if evaluation.replan and not replan_used:
-                replan_used = True
-                plan.queries.extend(_replan_queries(request, plan))
-                _record_loop_trace(state, {"event": "replanned", "stage": "replan_or_stop", "pass": 1})
+            if evaluation.replan:
+                replan_pass = _next_replan_pass(request, plan, state, replan_families)
+                if replan_pass is not None:
+                    replan_families.add(replan_pass.family)
+                    plan.queries.extend(replan_pass.queries)
+                    _record_loop_trace(
+                        state,
+                        {
+                            "event": "replanned",
+                            "stage": "replan_or_stop",
+                            "pass": len(replan_families),
+                            "family": replan_pass.family,
+                            "gap": replan_pass.gap,
+                            "queries": [query.query for query in replan_pass.queries],
+                        },
+                    )
                 continue
             if _loop_decision_is_terminal(
                 evaluation,
                 low_yield_searches=low_yield_searches,
-                replan_used=replan_used,
+                replan_passes=len(replan_families),
                 has_pending_queries=search_index < len(plan.queries) and state.search_used < int(request["budget"]["search_budget"]),
             ):
                 break
@@ -709,7 +754,7 @@ async def _run_goal_driven_web_research_loop(
             state,
             plan,
             low_yield_searches=low_yield_searches,
-            replan_used=replan_used,
+            replan_passes=len(replan_families),
         )
         plan.decisions.append(evaluation)
         _record_loop_trace(
@@ -724,15 +769,27 @@ async def _run_goal_driven_web_research_loop(
         )
         if evaluation.stop_reason == "sufficient_evidence":
             break
-        if evaluation.replan and not replan_used:
-            replan_used = True
-            plan.queries.extend(_replan_queries(request, plan))
-            _record_loop_trace(state, {"event": "replanned", "stage": "replan_or_stop", "pass": 1})
+        if evaluation.replan:
+            replan_pass = _next_replan_pass(request, plan, state, replan_families)
+            if replan_pass is not None:
+                replan_families.add(replan_pass.family)
+                plan.queries.extend(replan_pass.queries)
+                _record_loop_trace(
+                    state,
+                    {
+                        "event": "replanned",
+                        "stage": "replan_or_stop",
+                        "pass": len(replan_families),
+                        "family": replan_pass.family,
+                        "gap": replan_pass.gap,
+                        "queries": [query.query for query in replan_pass.queries],
+                    },
+                )
             continue
         if _loop_decision_is_terminal(
             evaluation,
             low_yield_searches=low_yield_searches,
-            replan_used=replan_used,
+            replan_passes=len(replan_families),
             has_pending_queries=search_index < len(plan.queries) and state.search_used < int(request["budget"]["search_budget"]),
         ):
             break
@@ -744,7 +801,7 @@ async def _run_goal_driven_web_research_loop(
             state,
             plan,
             low_yield_searches=low_yield_searches,
-            replan_used=replan_used,
+            replan_passes=len(replan_families),
         ).stop_reason
         or state.stop_reason(None)
     )
@@ -1134,6 +1191,8 @@ def _query_for_profile(objective: str, request: Mapping[str, Any]) -> str:
         return f"{objective} paper study"
     if profile == "legal_compliance":
         return f"{objective} official guidance regulation"
+    if profile == "medical":
+        return f"{objective} official health guidance clinical guideline"
     if profile == "product_shopping":
         return f"{objective} specs review price"
     return objective
@@ -1330,6 +1389,7 @@ def _candidate_sources_from_search(
         }
         annotated["quality"] = quality
         annotated["source_class"] = source_class
+        annotated["source_tier"] = _source_tier_for_candidate(annotated, source_class=source_class)
         candidates.append(CandidateSource(source=annotated, score=score, rationale=tuple(quality["signals"])))
     candidates.sort(
         key=lambda candidate: (
@@ -1378,7 +1438,7 @@ def _evaluate_loop_progress(
     plan: ResearchPlan,
     *,
     low_yield_searches: int = 0,
-    replan_used: bool = False,
+    replan_passes: int = 0,
 ) -> LoopDecision:
     stop_reason = state.stop_reason(None)
     evidence_count = len(state.evidence_payload())
@@ -1401,14 +1461,14 @@ def _evaluate_loop_progress(
     if stop_reason == "partial_result" and state.operation_failures and evidence_count:
         return LoopDecision(stage="evaluate_progress", stop_reason="partial_result", rationale="some evidence collected after an inspection failure")
     if low_yield_searches:
-        if not replan_used and state.search_used < search_budget:
+        if replan_passes < _WEB_RESEARCH_MAX_REPLAN_PASSES and state.search_used < search_budget:
             return LoopDecision(
                 stage="evaluate_progress",
                 stop_reason="remaining_gaps",
                 replan=True,
                 rationale="low-yield search left source coverage below target",
             )
-        if replan_used and evidence_count:
+        if replan_passes and evidence_count:
             return LoopDecision(
                 stage="evaluate_progress",
                 stop_reason="partial_result",
@@ -1419,7 +1479,7 @@ def _evaluate_loop_progress(
             stop_reason="remaining_gaps",
             rationale="repeated low-yield searches found no inspectable evidence",
         )
-    if evidence_count < plan.desired_source_count and state.search_used < search_budget and not replan_used:
+    if evidence_count < plan.desired_source_count and state.search_used < search_budget and replan_passes < _WEB_RESEARCH_MAX_REPLAN_PASSES:
         return LoopDecision(stage="evaluate_progress", stop_reason="remaining_gaps", replan=True, rationale="source coverage remains below target")
     if evidence_count:
         return LoopDecision(stage="evaluate_progress", stop_reason="partial_result", rationale="some verified evidence collected")
@@ -1430,7 +1490,7 @@ def _loop_decision_is_terminal(
     decision: LoopDecision,
     *,
     low_yield_searches: int,
-    replan_used: bool,
+    replan_passes: int,
     has_pending_queries: bool = False,
 ) -> bool:
     if decision.stop_reason in {"budget_exhausted", "policy_blocked", "freshness_unsupported", "unresolved_conflict"}:
@@ -1438,24 +1498,134 @@ def _loop_decision_is_terminal(
     if has_pending_queries:
         return False
     return bool(
-        replan_used
+        replan_passes >= _WEB_RESEARCH_MAX_REPLAN_PASSES
         and low_yield_searches
         and decision.stop_reason in {"remaining_gaps", "partial_result"}
         and not decision.replan
     )
 
 
-def _replan_queries(request: Mapping[str, Any], plan: ResearchPlan) -> list[ResearchQueryCandidate]:
-    if not plan.queries:
-        return []
+def _next_replan_pass(
+    request: Mapping[str, Any],
+    plan: ResearchPlan,
+    state: WebResearchLoopState,
+    used_families: set[str],
+) -> ReplanPass | None:
+    for candidate in _replan_pass_candidates(request, plan, state):
+        if candidate.family in used_families:
+            continue
+        deduped = _dedupe_new_queries(list(candidate.queries), plan.queries)
+        if not deduped:
+            continue
+        return ReplanPass(family=candidate.family, gap=candidate.gap, queries=tuple(deduped))
+    return None
+
+
+def _replan_pass_candidates(
+    request: Mapping[str, Any],
+    plan: ResearchPlan,
+    state: WebResearchLoopState,
+) -> list[ReplanPass]:
     objective = str(request.get("objective") or plan.objective)
     profile = str(request.get("profile") or "general")
-    query = f"{objective} official source"
-    if profile == "coding":
-        query = f"{objective} official docs"
-    if profile in {"legal_compliance", "product_shopping"}:
-        query = f"{objective} current official source"
-    return _dedupe_queries([ResearchQueryCandidate(query=query, subquestion_ids=("sq-objective",), rationale="bounded_replan", replan=True)])
+    evidence = state.evidence_payload()
+    source_tiers = {_identity_value(item.get("source_tier") or item.get("evidence_tier")) for item in [*state.sources_payload(), *evidence]}
+    passes: list[ReplanPass] = []
+    if "official" not in source_tiers:
+        official_query = f"{objective} official confirmation current source"
+        if profile == "coding":
+            official_query = f"{objective} official documentation release notes"
+        elif profile == "legal_compliance":
+            official_query = f"{objective} current official guidance regulation"
+        elif profile == "medical":
+            official_query = f"{objective} current official health guidance guideline"
+        elif profile == "product_shopping":
+            official_query = f"{objective} official specs current price"
+        passes.append(
+            ReplanPass(
+                family="official_confirmation",
+                gap="missing_official_confirmation",
+                queries=(
+                    ResearchQueryCandidate(
+                        query=official_query,
+                        subquestion_ids=("sq-objective",),
+                        rationale="official_confirmation",
+                        replan=True,
+                    ),
+                ),
+            )
+        )
+    if _looks_like_participant_inquiry(objective):
+        passes.append(
+            ReplanPass(
+                family="participant_list_extraction",
+                gap="missing_participant_list",
+                queries=(
+                    ResearchQueryCandidate(
+                        query=f"{objective} participants attendees delegation list",
+                        subquestion_ids=("sq-objective", "sq-participants"),
+                        rationale="participant_list_extraction",
+                        replan=True,
+                    ),
+                    ResearchQueryCandidate(
+                        query=f"{objective} named officials accompanying delegation media report",
+                        subquestion_ids=("sq-objective", "sq-participants"),
+                        rationale="participant_media_extraction",
+                        replan=True,
+                    ),
+                ),
+            )
+        )
+    if "media_report" not in source_tiers:
+        passes.append(
+            ReplanPass(
+                family="credible_reporting",
+                gap="missing_credible_reporting",
+                queries=(
+                    ResearchQueryCandidate(
+                        query=f"{objective} credible reporting",
+                        subquestion_ids=("sq-objective",),
+                        rationale="credible_reporting",
+                        replan=True,
+                    ),
+                    ResearchQueryCandidate(
+                        query=f"{objective} Reuters AP report",
+                        subquestion_ids=("sq-objective",),
+                        rationale="credible_wire_reporting",
+                        replan=True,
+                    ),
+                ),
+            )
+        )
+    passes.append(
+        ReplanPass(
+            family="wider_discovery",
+            gap="source_coverage_below_target",
+            queries=(
+                ResearchQueryCandidate(
+                    query=f"{objective} additional sources",
+                    subquestion_ids=("sq-objective",),
+                    rationale="wider_discovery",
+                    replan=True,
+                ),
+                ResearchQueryCandidate(
+                    query=f"{objective} background evidence",
+                    subquestion_ids=("sq-objective",),
+                    rationale="wider_background_discovery",
+                    replan=True,
+                ),
+            ),
+        )
+    )
+    return passes
+
+
+def _dedupe_new_queries(
+    queries: list[ResearchQueryCandidate],
+    existing: Sequence[ResearchQueryCandidate],
+) -> list[ResearchQueryCandidate]:
+    existing_keys = {query.query.strip().lower() for query in existing}
+    return [query for query in _dedupe_queries(queries) if query.query.strip().lower() not in existing_keys]
 
 
 def _synthesize_from_verified_evidence(request: Mapping[str, Any], state: WebResearchLoopState) -> str:
@@ -2625,6 +2795,17 @@ def _classify_source(source: Mapping[str, Any], profile: str) -> str:
             return "regulations"
         if "standard" in text or "iso" in text:
             return "standards"
+    if profile == "medical":
+        if any(token in domain for token in ("who.int", "cdc.gov", "nih.gov", "fda.gov", ".gov")) or any(
+            token in text for token in ("official health", "public health", "health authority")
+        ):
+            return "official_health_guidance"
+        if any(token in text for token in ("guideline", "clinical guideline", "recommendation")):
+            return "clinical_guidelines"
+        if any(token in text for token in ("public health", "health authority", "ministry of health")):
+            return "public_health_authorities"
+        if any(token in text for token in ("journal", "study", "clinical trial", "pubmed", "medline")):
+            return "medical_literature"
     if profile == "business":
         if any(token in text for token in ("investor", "press release", "company")):
             return "official_company"
@@ -2663,6 +2844,63 @@ def _classify_source(source: Mapping[str, Any], profile: str) -> str:
     if any(token in text for token in ("reference", "wiki", "encyclopedia")):
         return "reference"
     return "general_reference"
+
+
+def _source_tier_for_candidate(source: Mapping[str, Any], *, source_class: str | None = None) -> str:
+    explicit = _identity_value(source.get("source_tier")).lower()
+    if explicit in _WEB_RESEARCH_TIER_VALUES:
+        return explicit
+    source_class = _identity_value(source_class or source.get("source_class")).lower()
+    if source_class in {
+        "official",
+        "official_docs",
+        "official_company",
+        "official_guidance",
+        "official_specs",
+        "official_health_guidance",
+        "public_health_authorities",
+        "release_notes",
+        "changelog",
+        "source_repository",
+        "statutes",
+        "regulations",
+        "standards",
+    }:
+        return "official"
+    if source_class in {
+        "filings",
+        "papers",
+        "publishers",
+        "institutions",
+        "preprints",
+        "clinical_guidelines",
+        "medical_literature",
+        "reference",
+        "issue_tracker",
+    }:
+        return "authoritative"
+    if source_class in {"news", "reviews", "prices", "alternatives", "risk_notes"}:
+        return "media_report"
+    domain = _source_domain(source)
+    text = " ".join(
+        str(source.get(key) or "")
+        for key in ("title", "url", "excerpt", "content")
+    ).casefold()
+    if _looks_official_source_domain(domain) or any(token in text for token in ("official", "documentation", "guidance")):
+        return "official"
+    if any(token in domain for token in (".edu", "arxiv.org", "doi.org", "pubmed.ncbi.nlm.nih.gov")):
+        return "authoritative"
+    if any(token in text for token in ("news", "reported", "report", "apnews", "reuters", "associated press")):
+        return "media_report"
+    return "general"
+
+
+def _looks_official_source_domain(domain: str) -> bool:
+    if not domain:
+        return False
+    if domain.endswith(".gov") or ".gov." in domain or domain.endswith(".mil"):
+        return True
+    return domain in {"europa.eu", "who.int", "cdc.gov", "nih.gov", "fda.gov"}
 
 
 def _profile_source_priority_score(source_class: str, request: Mapping[str, Any]) -> float:
@@ -3015,7 +3253,7 @@ def _normalize_research_profile(raw: Any) -> str:
     profile = str(raw or "general").strip().lower().replace("-", "_")
     if profile not in SUPPORTED_RESEARCH_PROFILES:
         raise ValueError(
-            "profile must be one of general, coding, business, academic, legal_compliance, or product_shopping"
+            "profile must be one of general, coding, business, academic, legal_compliance, medical, or product_shopping"
         )
     return profile
 
@@ -3144,7 +3382,15 @@ def _project_web_research_result(
         *child_conflicts,
         *_detect_claim_conflicts(annotated_claims),
     ])
-    gaps = _derive_gaps(request, sources, evidence, stop_reason, [*state.gaps_payload(), *_list_of_mappings(structured.get("gaps"))])
+    freshness = _freshness_payload(request, state)
+    gaps = _derive_gaps(
+        request,
+        sources,
+        evidence,
+        stop_reason,
+        [*state.gaps_payload(), *_list_of_mappings(structured.get("gaps"))],
+        freshness=freshness,
+    )
     gaps = _dedupe_records(gaps)
     stop_reason = refine_web_research_stop_reason(
         stop_reason,
@@ -3171,7 +3417,7 @@ def _project_web_research_result(
         "evidence": evidence,
         "conflicts": conflicts,
         "gaps": gaps,
-        "freshness": _freshness_payload(request, state),
+        "freshness": freshness,
         "policy": dict(request["policy"]),
         "hard_policy": dict(request.get("hard_policy") or {}),
         "preferences": dict(request.get("preferences") or {}),
@@ -3229,8 +3475,37 @@ def _derive_gaps(
     evidence: list[dict[str, Any]],
     stop_reason: str,
     child_gaps: Any,
+    *,
+    freshness: Mapping[str, Any],
 ) -> list[dict[str, Any]]:
     gaps = _list_of_mappings(child_gaps)
+    freshness_status = str(freshness.get("status") or "")
+    freshness_blocked = freshness.get("requested_days") is not None and freshness_status not in {
+        "enforced",
+        "satisfied",
+    }
+    if freshness_blocked and freshness.get("required"):
+        gaps.append(
+            {
+                "kind": "freshness_limitation",
+                "severity": "hard",
+                "message": "Hard freshness was requested but provider-side freshness was not enforced or otherwise satisfied.",
+                "freshness_status": freshness_status,
+                "requested_days": freshness.get("requested_days"),
+                "profile": request.get("profile", "general"),
+            }
+        )
+    elif freshness_blocked:
+        gaps.append(
+            {
+                "kind": "soft_freshness_caveat",
+                "severity": "soft",
+                "message": "Freshness was requested as a ranking hint, but provider-side freshness enforcement was unsupported.",
+                "freshness_status": freshness_status,
+                "requested_days": freshness.get("requested_days"),
+                "profile": request.get("profile", "general"),
+            }
+        )
     if stop_reason != "sufficient_evidence" and not gaps:
         gaps.append(
             {
@@ -3549,6 +3824,8 @@ def _merge_child_annotations(
             continue
         value = child[field]
         if value is None or value == "":
+            continue
+        if field in {"source_tier", "evidence_tier"} and value not in _WEB_RESEARCH_TIER_VALUES:
             continue
         target[field] = value
 

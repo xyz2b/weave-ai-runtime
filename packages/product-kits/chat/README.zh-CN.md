@@ -18,6 +18,8 @@
 - `weavert_kit_common_retrieval`
 - `weavert_kit_common_web_research`
 
+Chat workflow agents 会优先使用共享的 `web_research` 入口处理普通公网 research；只有在需要显式 source inspection flow 时才使用低层 web primitives。当已经有 inspected evidence，但存在 soft freshness caveats、lower-tier reports 或 partial coverage 时，agents 应带 caveat 作答，而不是要求用户确认是否继续。
+
 ## 什么时候选它，而不是旁边那些包
 
 - 当你想直接拿一个已经组合好 retrieval 和公网 web grounding 的 higher-layer profile 时，选 `weavert-kit-chat`。

@@ -20,6 +20,8 @@ The public install name stays separate from the runtime scenario-pack activation
 - `weavert_kit_common_retrieval`
 - `weavert_kit_common_web_research`
 
+Chat workflow agents prefer the shared `web_research` entrypoint for ordinary public-web research, then use low-level web primitives only for explicit source inspection flows. When inspected evidence exists but has soft freshness caveats, lower-tier reports, or partial coverage, the agents should answer with those caveats instead of asking the user whether to continue.
+
 ## When to choose this package instead of the nearby ones
 
 - Choose `weavert-kit-chat` when you want a higher-layer profile that already combines retrieval and public-web grounding.

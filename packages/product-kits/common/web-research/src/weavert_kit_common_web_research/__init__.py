@@ -35,6 +35,7 @@ REFERENCE_SHARED_PACKAGE_SHAPE = ReferenceSharedPackageShape(
         "business",
         "academic",
         "legal_compliance",
+        "medical",
         "product_shopping",
     ),
     surfaces=(

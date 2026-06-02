@@ -44,7 +44,10 @@ _DEFAULT_BLOCKED_HOST_SUFFIXES = (
 )
 _DEFAULT_FETCH_BYTES = 256_000
 _DEFAULT_FETCH_CHARS = 12_000
-_DEFAULT_LOOP_TRACE_ITEMS = 8
+_DEFAULT_LOOP_TRACE_ITEMS = 16
+_WEB_RESEARCH_TIER_VALUES = frozenset(
+    {"official", "authoritative", "media_report", "single_source_report", "general"}
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -240,9 +243,15 @@ def refine_web_research_stop_reason(
         return child_stop
     if unresolved_conflicts and stop_reason in {"sufficient_evidence", "partial_result"}:
         return "unresolved_conflict"
-    if gaps and stop_reason == "sufficient_evidence":
+    if any(_gap_affects_stop_reason(gap) for gap in gaps) and stop_reason == "sufficient_evidence":
         return "remaining_gaps"
     return stop_reason
+
+
+def _gap_affects_stop_reason(gap: Mapping[str, Any]) -> bool:
+    kind = str(gap.get("kind") or "").strip()
+    severity = str(gap.get("severity") or "").strip()
+    return kind not in {"freshness_caveat", "soft_freshness_caveat"} and severity != "soft"
 
 
 @dataclass(slots=True)
@@ -336,6 +345,8 @@ class WebResearchLoopState:
                     "page_handle": result.get("page_handle"),
                     "source_class": result.get("source_class")
                     or (result.get("source") if isinstance(result.get("source"), Mapping) else {}).get("source_class"),
+                    "source_tier": result.get("source_tier")
+                    or (result.get("source") if isinstance(result.get("source"), Mapping) else {}).get("source_tier"),
                     "quality": _inspection_quality(result),
                 }
             )
@@ -560,6 +571,7 @@ class WebResearchLoopState:
             budget_rejections = self.budget_rejections
             operation_failures = self.operation_failures
             freshness_requested = self.request["policy"].get("freshness_days") is not None
+            freshness_required = bool(self.request.get("freshness_required"))
             freshness_satisfied = any(
                 outcome.get("status") in {"enforced", "satisfied"} for outcome in self.freshness_outcomes
             )
@@ -570,13 +582,13 @@ class WebResearchLoopState:
                 return "policy_blocked"
             if budget_rejections:
                 return "budget_exhausted"
-            if freshness_requested and not freshness_satisfied:
+            if freshness_requested and freshness_required and not freshness_satisfied:
                 return "freshness_unsupported"
             if operation_failures:
                 return "partial_result"
             mapped_status = web_research_stop_reason_from_status(child_status)
             return "partial_result" if mapped_status == "sufficient_evidence" else mapped_status
-        if freshness_requested and not freshness_satisfied:
+        if freshness_requested and freshness_required and not freshness_satisfied:
             return "freshness_unsupported"
         if self.provider_fallback_payload() and self.provider_fallback_payload().get("used") and self.request.get(
             "freshness_required"
@@ -595,7 +607,7 @@ class WebResearchLoopState:
         for existing in self.sources:
             if existing.get("url") != url:
                 continue
-            for key in ("source_class", "quality"):
+            for key in ("source_class", "quality", "source_tier"):
                 if key in item:
                     existing[key] = item[key]
             return
@@ -610,6 +622,7 @@ class WebResearchLoopState:
         for key in ("source_class", "quality"):
             if key in item:
                 source[key] = item[key]
+        source["source_tier"] = _source_tier(item)
         self._attach_provider_source_metadata(source, item)
         self.sources.append(source)
 
@@ -630,9 +643,10 @@ class WebResearchLoopState:
             "page_handle": item.get("page_handle"),
             **_optional_fact_fields(item, ("exact_excerpt", "match_start", "match_end")),
         }
-        for key in ("source_class", "quality"):
+        for key in ("source_class", "quality", "source_tier"):
             if key in item:
                 evidence[key] = item[key]
+        evidence["evidence_tier"] = _evidence_tier(item)
         self._attach_provider_source_metadata(evidence, item)
         self.evidence.append(evidence)
 
@@ -709,6 +723,10 @@ class WebResearchLoopState:
         if isinstance(metadata, Mapping):
             provider = provider or metadata.get("provider")
             freshness_scope = freshness_scope or metadata.get("freshness_scope")
+            if "source_tier" not in target and metadata.get("source_tier") in _WEB_RESEARCH_TIER_VALUES:
+                target["source_tier"] = metadata["source_tier"]
+            if "evidence_tier" not in target and metadata.get("evidence_tier") in _WEB_RESEARCH_TIER_VALUES:
+                target["evidence_tier"] = metadata["evidence_tier"]
         if isinstance(provider, Mapping):
             target["provider"] = dict(provider)
         if isinstance(freshness_scope, Mapping):
@@ -1737,7 +1755,7 @@ def inspect_page(
     source_handle = _stable_handle("source", resolved_url)
     title = fetched.title or _normalize_optional_string(raw.get("title")) or resolved_url
     source = _source_descriptor(title=title, url=resolved_url, page_handle=page_handle, source_handle=source_handle)
-    for key in ("source_class", "quality"):
+    for key in ("source_class", "quality", "source_tier"):
         if key in raw:
             source[key] = raw[key]
     policy_payload = _policy_dict(resolved_policy)
@@ -1764,6 +1782,7 @@ def inspect_page(
         "page_handle": page_handle,
         "source": source,
         **({"source_class": raw["source_class"]} if "source_class" in raw else {}),
+        **({"source_tier": raw["source_tier"]} if raw.get("source_tier") in _WEB_RESEARCH_TIER_VALUES else {}),
         **({"quality": dict(raw["quality"])} if isinstance(raw.get("quality"), Mapping) else {}),
         "policy": policy_payload,
         "provider": provider_metadata,
@@ -2516,6 +2535,75 @@ def _url_from_tool_input(tool_input: Mapping[str, Any]) -> str:
 
 def _optional_fact_fields(item: Mapping[str, Any], fields: tuple[str, ...]) -> dict[str, Any]:
     return {field: item[field] for field in fields if field in item}
+
+
+def _source_tier(item: Mapping[str, Any]) -> str:
+    explicit = _identity_value(item.get("source_tier")).lower()
+    if explicit in _WEB_RESEARCH_TIER_VALUES:
+        return explicit
+    source_class = _identity_value(item.get("source_class")).lower()
+    if source_class in {
+        "official",
+        "official_docs",
+        "official_company",
+        "official_guidance",
+        "official_specs",
+        "official_health_guidance",
+        "public_health_authorities",
+        "release_notes",
+        "changelog",
+        "source_repository",
+        "statutes",
+        "regulations",
+        "standards",
+    }:
+        return "official"
+    if source_class in {
+        "filings",
+        "papers",
+        "publishers",
+        "institutions",
+        "preprints",
+        "clinical_guidelines",
+        "medical_literature",
+        "reference",
+        "issue_tracker",
+    }:
+        return "authoritative"
+    if source_class in {"news", "reviews", "prices", "alternatives", "risk_notes"}:
+        return "media_report"
+    domain = _domain(_identity_value(item.get("url")))
+    text = " ".join(
+        _identity_value(item.get(key))
+        for key in ("title", "url", "excerpt", "content")
+    ).casefold()
+    if _looks_official_domain(domain) or any(token in text for token in ("official", "documentation", "guidance")):
+        return "official"
+    if any(token in domain for token in (".edu", "arxiv.org", "doi.org")):
+        return "authoritative"
+    if any(token in text for token in ("news", "reported", "report", "apnews", "reuters", "associated press")):
+        return "media_report"
+    return "general"
+
+
+def _evidence_tier(item: Mapping[str, Any]) -> str:
+    explicit = _identity_value(item.get("evidence_tier")).lower()
+    if explicit in _WEB_RESEARCH_TIER_VALUES:
+        return explicit
+    source_tier = _source_tier(item)
+    if source_tier in {"official", "authoritative", "media_report"}:
+        return source_tier
+    if _identity_value(item.get("excerpt") or item.get("content")):
+        return "single_source_report"
+    return "general"
+
+
+def _looks_official_domain(domain: str) -> bool:
+    if not domain:
+        return False
+    if domain.endswith(".gov") or ".gov." in domain or domain.endswith(".mil"):
+        return True
+    return domain in {"europa.eu", "who.int", "cdc.gov", "nih.gov", "fda.gov"}
 
 
 def _first_excerpt(value: Any) -> str:
