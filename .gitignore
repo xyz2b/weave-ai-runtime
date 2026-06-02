@@ -42,6 +42,15 @@ logs/
 node_modules/
 vendor/
 
+# Rust local rewrite experiments
+/rust/
+/rust-*/
+/Cargo.toml
+/Cargo.lock
+target/
+**/target/
+/docs/zh-CN/maintainers/rust-rewrite-learning-plan.md
+
 # Python
 __pycache__/
 *.py[cod]
