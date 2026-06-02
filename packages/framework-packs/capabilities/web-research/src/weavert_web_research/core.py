@@ -341,6 +341,7 @@ class WebResearchLoopState:
                     "title": result.get("title"),
                     "url": result.get("url"),
                     "excerpt": result.get("excerpt") or _first_excerpt(result.get("content")),
+                    "content": result.get("content"),
                     "source_handle": result.get("source_handle"),
                     "page_handle": result.get("page_handle"),
                     "source_class": result.get("source_class")
@@ -378,6 +379,53 @@ class WebResearchLoopState:
                     "match_count": len(matches),
                 }
             )
+
+    def record_snippet_evidence(
+        self,
+        results: Sequence[Mapping[str, Any]],
+        *,
+        tier: str = "single_source_report",
+        limit: int = 3,
+    ) -> int:
+        """Promote search-result snippets into evidence when page fetch yields nothing.
+
+        Non-strict research profiles use this so a thin or failed fetch pass still leaves
+        usable, clearly low-tier evidence (the provider's own snippet) instead of an empty
+        ledger. URLs already represented in inspected evidence are skipped.
+        """
+        resolved_tier = tier if tier in _WEB_RESEARCH_TIER_VALUES else "single_source_report"
+        added = 0
+        with self._lock:
+            existing_urls = {_identity_value(item.get("url")) for item in self.evidence}
+            for item in list(results)[:limit]:
+                url = _identity_value(item.get("url"))
+                snippet = str(item.get("excerpt") or item.get("content") or "").strip()
+                if not url or not snippet or url in existing_urls:
+                    continue
+                before = len(self.evidence)
+                self._add_evidence(
+                    {
+                        "id": item.get("source_handle") or item.get("id") or url,
+                        "title": item.get("title"),
+                        "url": url,
+                        "excerpt": snippet,
+                        "content": snippet,
+                        "source_handle": item.get("source_handle"),
+                        "page_handle": item.get("page_handle"),
+                        "source_class": "search_snippet",
+                        "source_tier": resolved_tier,
+                        "evidence_tier": resolved_tier,
+                        "quality": {"signals": ["search_snippet"], "snippet": True},
+                    }
+                )
+                if len(self.evidence) > before:
+                    existing_urls.add(url)
+                    added += 1
+            if added:
+                self._append_trace(
+                    {"event": "snippet_evidence_promoted", "tool": "web_search", "count": added, "tier": resolved_tier}
+                )
+        return added
 
     def record_conflict(self, conflict: Mapping[str, Any]) -> None:
         with self._lock:
@@ -644,6 +692,11 @@ class WebResearchLoopState:
             "page_handle": item.get("page_handle"),
             **_optional_fact_fields(item, ("exact_excerpt", "match_start", "match_end")),
         }
+        # Retain the full inspected page text (not just the 240-char excerpt) so
+        # downstream synthesis can aggregate facts/entities across the whole page.
+        content = str(item.get("content") or "").strip()
+        if content:
+            evidence["content"] = content
         for key in ("source_class", "quality", "source_tier"):
             if key in item:
                 evidence[key] = item[key]
@@ -781,6 +834,21 @@ def build_policy(
     )
 
 
+# Remote pages flake on transient SSL/timeout/5xx errors. A small bounded retry keeps the
+# research loop from treating one blip as "page unreadable" and degrading to "cannot verify".
+_WEB_FETCH_RETRY_ATTEMPTS = 3
+_WEB_FETCH_RETRY_BASE_DELAY = 0.25
+
+
+def _is_transient_fetch_error(exc: BaseException) -> bool:
+    if isinstance(exc, urllib.error.HTTPError):
+        return exc.code >= 500
+    if isinstance(exc, urllib.error.URLError):
+        # Wraps socket timeouts, connection resets, DNS hiccups, and SSL errors.
+        return True
+    return isinstance(exc, (TimeoutError, socket.timeout, ConnectionError))
+
+
 class DuckDuckGoHtmlBackend:
     provider_metadata = WebSearchProviderMetadata(
         provider_id="duckduckgo-html",
@@ -837,20 +905,30 @@ class DuckDuckGoHtmlBackend:
 
     def fetch(self, url: str, *, timeout: float, max_bytes: int) -> BackendFetchResult:
         request = urllib.request.Request(url, headers={"User-Agent": "weavert/0.1"})
-        with self._urlopen(request, timeout=timeout) as response:
-            raw = response.read(max_bytes + 1)
-            body = raw.decode("utf-8", errors="replace")
-            content_type = response.headers.get_content_type()
-            resolved_url = normalize_web_url(response_url(response)) or url
-            title = extract_html_title(body) if "html" in content_type else None
-            return BackendFetchResult(
-                url=resolved_url,
-                status=getattr(response, "status", 200),
-                content_type=content_type,
-                body=body,
-                raw_bytes=len(raw),
-                title=title,
-            )
+        last_error: BaseException | None = None
+        for attempt in range(_WEB_FETCH_RETRY_ATTEMPTS):
+            try:
+                with self._urlopen(request, timeout=timeout) as response:
+                    raw = response.read(max_bytes + 1)
+                    body = raw.decode("utf-8", errors="replace")
+                    content_type = response.headers.get_content_type()
+                    resolved_url = normalize_web_url(response_url(response)) or url
+                    title = extract_html_title(body) if "html" in content_type else None
+                    return BackendFetchResult(
+                        url=resolved_url,
+                        status=getattr(response, "status", 200),
+                        content_type=content_type,
+                        body=body,
+                        raw_bytes=len(raw),
+                        title=title,
+                    )
+            except BaseException as exc:  # noqa: BLE001 - re-raised below; only transient ones retry
+                last_error = exc
+                if attempt + 1 >= _WEB_FETCH_RETRY_ATTEMPTS or not _is_transient_fetch_error(exc):
+                    raise
+                time.sleep(_WEB_FETCH_RETRY_BASE_DELAY * (2 ** attempt))
+        assert last_error is not None  # unreachable: loop either returns or raises
+        raise last_error
 
     def find(
         self,
@@ -1762,7 +1840,7 @@ def inspect_page(
     resolved_backend = backend or DuckDuckGoHtmlBackend()
     provider_metadata = _provider_metadata(resolved_backend)
     normalized = validate_fetch_input(raw, policy=resolved_policy).normalized_url
-    timeout = max(1, int(raw.get("timeout_ms", 10_000))) / 1000
+    timeout = max(1, int(raw.get("timeout_ms", 20_000))) / 1000
     fetched = resolved_backend.fetch(normalized, timeout=timeout, max_bytes=resolved_policy.max_fetch_bytes)
     resolved_url = _revalidate_final_fetch_url(fetched.url, policy=resolved_policy)
     normalized_text = normalize_remote_text(fetched.body, content_type=fetched.content_type)
@@ -2133,7 +2211,7 @@ def _build_search_result(
     return {
         "id": source_handle,
         "title": item.title,
-        "excerpt": "",
+        "excerpt": item.excerpt,
         "content": "",
         "url": item.url,
         "source_kind": "external",

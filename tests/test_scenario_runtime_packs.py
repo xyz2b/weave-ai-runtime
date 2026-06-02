@@ -2492,7 +2492,7 @@ def test_web_research_runtime_projects_ledger_evidence_without_terminal_metadata
         )
     )
 
-    assert result["answer"] == "Refunds stay available for 30 days after purchase."
+    assert result["answer"] == "Refunds stay available for 30 days after purchase. Support can cite this window directly."
     assert result["sources"][0]["url"] == "https://grounding.example.test/refund-policy"
     assert result["evidence"][0]["url"] == "https://grounding.example.test/refund-policy"
     assert "30 days" in result["evidence"][0]["excerpt"]
@@ -3294,7 +3294,7 @@ def test_web_research_runtime_merges_child_annotations_without_overriding_ledger
     assert result["evidence"][0]["url"] == "https://grounding.example.test/refund-policy"
     assert "Refunds stay available" in result["evidence"][0]["excerpt"]
     assert result["evidence"][0]["claim"] == "Refunds remain available for 30 days."
-    assert result["answer"] == "Refunds stay available for 30 days after purchase."
+    assert result["answer"] == "Refunds stay available for 30 days after purchase. Support can cite this window directly."
     assert result["stop_reason"] == "sufficient_evidence"
 
 
@@ -4040,6 +4040,151 @@ def test_web_research_records_page_inspection_failure_as_partial_result(
             "url": "https://grounding.example.test/fail",
         }
     ]
+
+
+def test_web_research_synthesizes_full_page_roster_not_just_first_sentence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    roster_url = "https://grounding.example.test/delegation"
+
+    def _urlopen(request, timeout=10, **_kwargs):
+        _ = timeout
+        url = request.full_url if hasattr(request, "full_url") else str(request)
+        if url == roster_url:
+            return _FakeUrlopenResponse(
+                "<html><head><title>Delegation</title></head><body><article>"
+                "<p>Government officials joined first.</p>"
+                "<p>Business leaders included Alice Chen, Bob Lee, and Carol Ng.</p>"
+                "</article></body></html>"
+            )
+        raise AssertionError(f"Unexpected URL requested during test: {url}")
+
+    monkeypatch.setattr(reference_web_tool_impls, "_web_urlopen", _urlopen)
+    provider = reference_web_research_core.FixtureWebResearchProvider(
+        search_results={"Who joined the delegation?": [{"title": "Delegation", "url": roster_url}]},
+    )
+    monkeypatch.setattr(
+        reference_web_tool_impls,
+        "_web_search_provider_registry",
+        reference_web_research_core.WebSearchProviderRegistry((provider,)),
+    )
+    runtime, _shape, runtime_root = _assemble_shared_reference_runtime(tmp_path, "weavert-shared-web-research")
+
+    result = asyncio.run(
+        runtime.kernel.tool_registry.get("web_research").execute(
+            {
+                "objective": "Who joined the delegation?",
+                "domains": ["grounding.example.test"],
+                "search_budget": 1,
+                "fetch_budget": 1,
+                "desired_source_count": 1,
+            },
+            _tool_context(runtime, runtime_root),
+        )
+    )
+
+    # Evidence retains the full inspected page text, not just a 240-char excerpt.
+    assert "Alice Chen" in result["evidence"][0]["content"]
+    assert "Carol Ng" in result["evidence"][0]["content"]
+    # Synthesis aggregates the whole page instead of stopping at the first sentence,
+    # so every roster name survives into the answer.
+    for name in ("Alice Chen", "Bob Lee", "Carol Ng"):
+        assert name in result["answer"]
+
+
+def test_web_research_promotes_search_snippets_when_fetch_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(reference_web_research_core, "_WEB_FETCH_RETRY_BASE_DELAY", 0)
+
+    def _urlopen(request, timeout=10, **_kwargs):
+        _ = timeout
+        url = request.full_url if hasattr(request, "full_url") else str(request)
+        raise urllib.error.URLError(f"backend unavailable for {url}")
+
+    provider = reference_web_research_core.FixtureWebResearchProvider(
+        search_results={
+            "Who joined the delegation?": [
+                {
+                    "title": "Delegation roster",
+                    "url": "https://grounding.example.test/roster",
+                    "excerpt": "Alice Chen and Bob Lee accompanied the delegation.",
+                }
+            ]
+        },
+    )
+    monkeypatch.setattr(
+        reference_web_tool_impls,
+        "_web_search_provider_registry",
+        reference_web_research_core.WebSearchProviderRegistry((provider,)),
+    )
+
+    def _run(profile: str) -> dict[str, Any]:
+        monkeypatch.setattr(reference_web_tool_impls, "_web_urlopen", _urlopen)
+        runtime, _shape, runtime_root = _assemble_shared_reference_runtime(tmp_path / profile, "weavert-shared-web-research")
+        return asyncio.run(
+            runtime.kernel.tool_registry.get("web_research").execute(
+                {
+                    "objective": "Who joined the delegation?",
+                    "profile": profile,
+                    "domains": ["grounding.example.test"],
+                    "search_budget": 1,
+                    "fetch_budget": 1,
+                    "desired_source_count": 1,
+                },
+                _tool_context(runtime, runtime_root),
+            )
+        )
+
+    general = _run("general")
+    # Non-strict profile keeps the provider snippet as clearly low-tier evidence.
+    assert general["evidence"], "expected snippet evidence when the page fetch failed"
+    assert general["evidence"][0]["evidence_tier"] == "single_source_report"
+    assert general["evidence"][0]["source_class"] == "search_snippet"
+    assert "Alice Chen" in general["evidence"][0]["content"]
+    assert any(event.get("event") == "snippet_evidence_promoted" for event in general["trace_summary"])
+
+    legal = _run("legal_compliance")
+    # Hard-verification profile never promotes snippets; it keeps the ledger empty.
+    assert legal["evidence"] == []
+    assert not any(event.get("event") == "snippet_evidence_promoted" for event in legal["trace_summary"])
+
+
+def test_web_research_fetch_retries_transient_error_then_succeeds(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(reference_web_research_core, "_WEB_FETCH_RETRY_BASE_DELAY", 0)
+    page_url = "https://grounding.example.test/refund-policy"
+    attempts = {"count": 0}
+
+    def _urlopen(request, timeout=10, **_kwargs):
+        _ = timeout
+        url = request.full_url if hasattr(request, "full_url") else str(request)
+        if url == page_url:
+            attempts["count"] += 1
+            if attempts["count"] == 1:
+                raise urllib.error.URLError("transient blip")
+            return _FakeUrlopenResponse(
+                "<html><head><title>Refund policy</title></head><body>"
+                "<p>Refunds stay available for 30 days after purchase.</p></body></html>"
+            )
+        raise AssertionError(f"Unexpected URL requested during test: {url}")
+
+    monkeypatch.setattr(reference_web_tool_impls, "_web_urlopen", _urlopen)
+    runtime, _shape, runtime_root = _assemble_shared_reference_runtime(tmp_path, "weavert-shared-web-research")
+
+    fetch_result = asyncio.run(
+        runtime.kernel.tool_registry.get("web_fetch").execute(
+            {"url": page_url},
+            _tool_context(runtime, runtime_root),
+        )
+    )
+
+    assert attempts["count"] == 2  # first attempt failed, retry succeeded
+    assert "30 days" in fetch_result["content"]
 
 
 def test_web_research_stop_reason_uses_desired_source_count_and_freshness_limit(

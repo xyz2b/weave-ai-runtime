@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "weavert-web-research"
-version = "0.1.2"
+version = "0.1.3"
 description = "Shared primitive web research core for WeaveRT framework and product-kit adapters."
 readme = "README.md"
 license = "Apache-2.0"

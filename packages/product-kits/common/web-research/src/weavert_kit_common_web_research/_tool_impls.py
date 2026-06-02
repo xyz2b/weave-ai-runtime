@@ -50,6 +50,14 @@ _WEB_RESEARCH_DEFAULT_MAX_CONCURRENT_FETCHES = 3
 _WEB_RESEARCH_RUN_ID_METADATA_KEY = "web_research_run_id"
 _WEB_RESEARCH_MAX_REPLAN_PASSES = 4
 _WEB_RESEARCH_SUPPORTED_STRATEGIES = frozenset({"deterministic", "pro"})
+# Profiles that keep the strict "only assert inspected page text" posture: they never
+# promote search snippets to evidence and never project an unbound synthesized answer.
+_WEB_RESEARCH_HARD_VERIFICATION_PROFILES = frozenset({"legal_compliance", "medical"})
+# Per-string char cap applied to model-turn payloads. Sized so the synthesizer can see the
+# full retained page text (`content`) of several sources and aggregate entities across them,
+# not just a leading snippet.
+_WEB_RESEARCH_MODEL_STRING_CHAR_CAP = 4000
+_WEB_RESEARCH_SYNTHESIS_EVIDENCE_CHARS = 4000
 _WEB_RESEARCH_TIER_VALUES = frozenset(
     {"official", "authoritative", "media_report", "single_source_report", "general"}
 )
@@ -529,6 +537,18 @@ async def web_research_tool(tool_input: dict[str, Any], context: ToolContext) ->
     if normalized.get("strategy_source") == "omitted" and _runtime_pro_strategy_opted_in(context):
         normalized = dict(normalized)
         normalized["strategy"] = "pro"
+    # List / roster / comparison questions need cross-source entity aggregation, which only the
+    # model-directed (Pro) synthesis can do. Auto-select it when the caller left strategy unset
+    # and a real model client is wired; deterministic stays the baseline everywhere else.
+    if (
+        normalized.get("strategy_source") == "omitted"
+        and normalized.get("strategy") != "pro"
+        and _objective_benefits_from_model_synthesis(normalized.get("objective"))
+        and _pro_model_provider_available(context)
+    ):
+        normalized = dict(normalized)
+        normalized["strategy"] = "pro"
+        normalized["strategy_auto_reason"] = "aggregation_objective"
     if normalized.get("strategy") == "pro" and not _pro_model_provider_available(context):
         normalized = dict(normalized)
         normalized["requested_strategy"] = "pro"
@@ -737,16 +757,34 @@ async def _run_goal_driven_web_research_loop(
                 continue
         inspected_after = len(state.evidence_payload())
         if inspected_after == inspected_before:
-            low_yield_searches += 1
-            _record_loop_trace(
-                state,
-                {
-                    "event": "low_yield_search",
-                    "stage": "evaluate_progress",
-                    "query": query.query,
-                    "consecutive": low_yield_searches,
-                },
-            )
+            promoted = 0
+            if not _is_hard_verification_profile(request.get("profile")):
+                promoted = state.record_snippet_evidence(
+                    _list_of_mappings(search_result.get("results")),
+                    tier="single_source_report",
+                )
+            if promoted:
+                low_yield_searches = 0
+                _record_loop_trace(
+                    state,
+                    {
+                        "event": "snippet_evidence_promoted",
+                        "stage": "select_pages",
+                        "query": query.query,
+                        "count": promoted,
+                    },
+                )
+            else:
+                low_yield_searches += 1
+                _record_loop_trace(
+                    state,
+                    {
+                        "event": "low_yield_search",
+                        "stage": "evaluate_progress",
+                        "query": query.query,
+                        "consecutive": low_yield_searches,
+                    },
+                )
         else:
             low_yield_searches = 0
         evaluation = _evaluate_loop_progress(
@@ -1256,6 +1294,41 @@ def _looks_like_event_verification_question(objective: str) -> bool:
     return any(token in text for token in ("访", "访问", "访华", "会见", "会晤", "出访", "代表团"))
 
 
+def _is_hard_verification_profile(profile: Any) -> bool:
+    return str(profile or "general").strip().lower() in _WEB_RESEARCH_HARD_VERIFICATION_PROFILES
+
+
+def _looks_like_aggregation_inquiry(objective: str) -> bool:
+    text = str(objective or "").casefold()
+    return any(
+        token in text
+        for token in (
+            "名单",
+            "哪些",
+            "列表",
+            "清单",
+            "几位",
+            "多少",
+            "排名",
+            "对比",
+            "比较",
+            "list",
+            "list of",
+            "all the",
+            "compare",
+            "comparison",
+            "ranking",
+            "how many",
+            "which ones",
+        )
+    )
+
+
+def _objective_benefits_from_model_synthesis(objective: Any) -> bool:
+    text = str(objective or "")
+    return _looks_like_participant_inquiry(text) or _looks_like_aggregation_inquiry(text)
+
+
 def _looks_like_participant_inquiry(objective: str) -> bool:
     text = objective.casefold()
     return any(
@@ -1597,26 +1670,48 @@ def _replan_pass_candidates(
                 ),
             )
         )
-    passes.append(
-        ReplanPass(
-            family="wider_discovery",
-            gap="source_coverage_below_target",
-            queries=(
-                ResearchQueryCandidate(
-                    query=f"{objective} additional sources",
-                    subquestion_ids=("sq-objective",),
-                    rationale="wider_discovery",
-                    replan=True,
+    if _objective_benefits_from_model_synthesis(objective):
+        passes.append(
+            ReplanPass(
+                family="wider_discovery",
+                gap="source_coverage_below_target",
+                queries=(
+                    ResearchQueryCandidate(
+                        query=f"{objective} complete list details",
+                        subquestion_ids=("sq-objective",),
+                        rationale="wider_discovery_list",
+                        replan=True,
+                    ),
+                    ResearchQueryCandidate(
+                        query=f"{objective} 完整 名单 详情",
+                        subquestion_ids=("sq-objective",),
+                        rationale="wider_discovery_list_zh",
+                        replan=True,
+                    ),
                 ),
-                ResearchQueryCandidate(
-                    query=f"{objective} background evidence",
-                    subquestion_ids=("sq-objective",),
-                    rationale="wider_background_discovery",
-                    replan=True,
-                ),
-            ),
+            )
         )
-    )
+    else:
+        passes.append(
+            ReplanPass(
+                family="wider_discovery",
+                gap="source_coverage_below_target",
+                queries=(
+                    ResearchQueryCandidate(
+                        query=f"{objective} additional sources",
+                        subquestion_ids=("sq-objective",),
+                        rationale="wider_discovery",
+                        replan=True,
+                    ),
+                    ResearchQueryCandidate(
+                        query=f"{objective} background evidence",
+                        subquestion_ids=("sq-objective",),
+                        rationale="wider_background_discovery",
+                        replan=True,
+                    ),
+                ),
+            )
+        )
     return passes
 
 
@@ -1635,22 +1730,46 @@ def _synthesize_from_verified_evidence(request: Mapping[str, Any], state: WebRes
     return prefix + _synthesize_answer_from_evidence(request, state.evidence_payload())
 
 
+_WEB_RESEARCH_SYNTHESIS_MAX_ANSWER_CHARS = 2000
+_WEB_RESEARCH_SYNTHESIS_PER_SOURCE_CHARS = 600
+
+
 def _synthesize_answer_from_evidence(request: Mapping[str, Any], evidence: list[dict[str, Any]]) -> str:
     if not evidence:
         return ""
-    excerpts = []
-    for item in evidence[: int(request["budget"]["desired_source_count"])]:
-        excerpt = str(item.get("excerpt") or "").strip()
+    # Aggregate across ALL inspected evidence (not just desired_source_count) and prefer the
+    # full retained page text over the 240-char excerpt, so list/roster/comparison answers can
+    # carry the facts the page actually contained instead of a single leading sentence.
+    segments: list[str] = []
+    seen: set[str] = set()
+    total = 0
+    for item in evidence:
+        text = str(item.get("content") or item.get("excerpt") or "").strip()
+        if not text:
+            continue
         title = str(item.get("title") or "").strip()
-        if title and excerpt.startswith(f"{title} {title} "):
-            excerpt = excerpt[len(f"{title} {title} ") :]
-        elif title and excerpt.startswith(f"{title} "):
-            excerpt = excerpt[len(title) + 1 :]
-        if ". " in excerpt:
-            excerpt = excerpt.split(". ", 1)[0].strip() + "."
-        if excerpt:
-            excerpts.append(excerpt)
-    return " ".join(excerpts).strip()
+        if title:
+            for prefix in (f"{title} {title} ", f"{title} "):
+                if text.startswith(prefix):
+                    text = text[len(prefix):]
+                    break
+        normalized = " ".join(text.split())
+        if not normalized:
+            continue
+        if len(normalized) > _WEB_RESEARCH_SYNTHESIS_PER_SOURCE_CHARS:
+            normalized = normalized[: _WEB_RESEARCH_SYNTHESIS_PER_SOURCE_CHARS - 1].rstrip() + "…"
+        key = normalized[:160].lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        segments.append(normalized)
+        total += len(normalized)
+        if total >= _WEB_RESEARCH_SYNTHESIS_MAX_ANSWER_CHARS:
+            break
+    answer = " ".join(segments).strip()
+    if len(answer) > _WEB_RESEARCH_SYNTHESIS_MAX_ANSWER_CHARS:
+        answer = answer[: _WEB_RESEARCH_SYNTHESIS_MAX_ANSWER_CHARS - 1].rstrip() + "…"
+    return answer
 
 
 def _record_loop_trace(state: WebResearchLoopState, event: Mapping[str, Any]) -> None:
@@ -1912,7 +2031,7 @@ def _bound_model_value(value: Any, *, depth: int) -> Any:
     if isinstance(value, (list, tuple)):
         return [_bound_model_value(item, depth=depth + 1) for item in list(value)[:24]]
     if isinstance(value, str):
-        return value[:1200]
+        return value[:_WEB_RESEARCH_MODEL_STRING_CHAR_CAP]
     if isinstance(value, bool | int | float) or value is None:
         return value
     return _bounded_trace_text(value)
@@ -2260,7 +2379,7 @@ async def _run_pro_synthesis(request: Mapping[str, Any], context: ToolContext, s
     runtime_proof_state = _normalize_answer_proof_state(request, state, (), ())
     payload = {
         "objective": request["objective"],
-        "evidence": _bounded_items(state.evidence_payload(), limit=16, text_limit=900),
+        "evidence": _bounded_items(state.evidence_payload(), limit=16, text_limit=_WEB_RESEARCH_SYNTHESIS_EVIDENCE_CHARS),
         "conflicts": _bounded_items(state.conflicts_payload(), limit=8, text_limit=500),
         "gaps": _bounded_items(state.gaps_payload(), limit=8, text_limit=500),
         "answer_proof_state": {
@@ -3124,6 +3243,11 @@ def _normalize_web_research_input(tool_input: Mapping[str, Any]) -> dict[str, An
         freshness_required = _normalize_bool(tool_input.get("freshness_required"))
     budget_profile = str(tool_input.get("budget_profile") or tool_input.get("depth") or "standard").strip().lower()
     profile_defaults = _budget_profile_defaults(budget_profile)
+    # Roster / list / comparison questions need to read more sources to assemble a complete
+    # answer, so raise the *defaults* for them. Explicit caller-supplied budgets still win,
+    # because _bounded_int only falls back to these defaults when the field is unset.
+    if _objective_benefits_from_model_synthesis(objective):
+        profile_defaults = _scale_budget_for_aggregation(profile_defaults)
     desired_source_default = (
         compact_desired_source_count
         if compact_desired_source_count is not None and tool_input.get("desired_source_count") is None
@@ -3216,6 +3340,17 @@ def _normalize_web_research_input(tool_input: Mapping[str, Any]) -> dict[str, An
         "freshness_required": freshness_required,
         "output_hints": dict(output_hints or {}),
     }
+
+
+def _scale_budget_for_aggregation(defaults: dict[str, int]) -> dict[str, int]:
+    scaled = dict(defaults)
+    scaled["search_budget"] = min(8, max(scaled["search_budget"], 6))
+    scaled["fetch_budget"] = min(8, max(scaled["fetch_budget"], 6))
+    scaled["find_budget"] = min(12, max(scaled["find_budget"], 8))
+    scaled["desired_source_count"] = min(8, max(scaled["desired_source_count"], 5))
+    scaled["max_turns"] = min(8, max(scaled["max_turns"], 6))
+    scaled["max_concurrent_fetches"] = min(5, max(scaled["max_concurrent_fetches"], 4))
+    return scaled
 
 
 def _budget_profile_defaults(profile: str) -> dict[str, int]:
