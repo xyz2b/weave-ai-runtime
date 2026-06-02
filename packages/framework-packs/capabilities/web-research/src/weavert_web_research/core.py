@@ -457,7 +457,8 @@ class WebResearchLoopState:
 
     def evidence_payload(self) -> list[dict[str, Any]]:
         with self._lock:
-            return [dict(item) for item in self.evidence]
+            self._refresh_evidence_tiers_locked()
+            return [{key: value for key, value in item.items() if not key.startswith("_")} for item in self.evidence]
 
     def conflicts_payload(self) -> list[dict[str, Any]]:
         with self._lock:
@@ -646,9 +647,14 @@ class WebResearchLoopState:
         for key in ("source_class", "quality", "source_tier"):
             if key in item:
                 evidence[key] = item[key]
-        evidence["evidence_tier"] = _evidence_tier(item)
+        if item.get("evidence_tier") in _WEB_RESEARCH_TIER_VALUES:
+            evidence["evidence_tier"] = item["evidence_tier"]
+            evidence["_evidence_tier_explicit"] = True
+        else:
+            evidence["evidence_tier"] = _evidence_tier(item)
         self._attach_provider_source_metadata(evidence, item)
         self.evidence.append(evidence)
+        self._refresh_evidence_tiers_locked()
 
     def _inspected_source_count_locked(self) -> int:
         keys: set[str] = set()
@@ -657,6 +663,17 @@ class WebResearchLoopState:
             if key:
                 keys.add(key)
         return len(keys)
+
+    def _refresh_evidence_tiers_locked(self) -> None:
+        corroborated_keys = _corroborated_report_keys(self.evidence)
+        for item in self.evidence:
+            if item.get("_evidence_tier_explicit"):
+                continue
+            item["evidence_tier"] = _evidence_tier(
+                item,
+                corroborated_report_keys=corroborated_keys,
+                honor_explicit=False,
+            )
 
     def _append_trace(self, event: Mapping[str, Any]) -> None:
         self.trace.append(dict(event))
@@ -2586,16 +2603,47 @@ def _source_tier(item: Mapping[str, Any]) -> str:
     return "general"
 
 
-def _evidence_tier(item: Mapping[str, Any]) -> str:
+def _evidence_tier(
+    item: Mapping[str, Any],
+    *,
+    corroborated_report_keys: set[str] | None = None,
+    honor_explicit: bool = True,
+) -> str:
     explicit = _identity_value(item.get("evidence_tier")).lower()
-    if explicit in _WEB_RESEARCH_TIER_VALUES:
+    if honor_explicit and explicit in _WEB_RESEARCH_TIER_VALUES:
         return explicit
     source_tier = _source_tier(item)
-    if source_tier in {"official", "authoritative", "media_report"}:
+    if source_tier in {"official", "authoritative"}:
         return source_tier
-    if _identity_value(item.get("excerpt") or item.get("content")):
+    if source_tier == "media_report":
+        claim_key = _report_claim_key(item)
+        if corroborated_report_keys and claim_key in corroborated_report_keys:
+            return "media_report"
         return "single_source_report"
     return "general"
+
+
+def _corroborated_report_keys(evidence: Sequence[Mapping[str, Any]]) -> set[str]:
+    report_sources: dict[str, set[str]] = {}
+    for item in evidence:
+        if _source_tier(item) != "media_report":
+            continue
+        report_sources.setdefault(_report_claim_key(item), set()).add(_independent_source_key(item))
+    return {key for key, sources in report_sources.items() if len(sources) > 1}
+
+
+def _report_claim_key(item: Mapping[str, Any]) -> str:
+    explicit_key = _identity_value(item.get("claim_key") or item.get("subquestion_id")).casefold()
+    if explicit_key:
+        return explicit_key[:120]
+    return "reported_claim"
+
+
+def _independent_source_key(item: Mapping[str, Any]) -> str:
+    domain = _domain(_identity_value(item.get("url")))
+    if domain:
+        return domain
+    return _identity_value(item.get("source_handle") or item.get("page_handle") or item.get("id"))
 
 
 def _looks_official_domain(domain: str) -> bool:

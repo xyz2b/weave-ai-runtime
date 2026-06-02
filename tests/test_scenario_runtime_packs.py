@@ -2601,7 +2601,7 @@ def test_web_research_runtime_preserves_provider_and_freshness_metadata(
     assert result["stop_reason"] == "sufficient_evidence"
     assert result["sources"][0]["provider"]["id"] == "fresh-fixture"
     assert result["sources"][0]["source_tier"] in {"official", "general"}
-    assert result["evidence"][0]["evidence_tier"] in {"official", "single_source_report"}
+    assert result["evidence"][0]["evidence_tier"] in {"official", "general"}
 
 
 def test_web_research_runtime_classifies_provider_fallback_as_freshness_unsupported(
@@ -2695,7 +2695,7 @@ def test_web_research_soft_freshness_returns_evidence_backed_nonterminal_result(
     assert result["stop_reason"] == "sufficient_evidence"
     assert result["gaps"][0]["kind"] == "soft_freshness_caveat"
     assert result["gaps"][0]["severity"] == "soft"
-    assert result["evidence"][0]["evidence_tier"] in {"official", "single_source_report"}
+    assert result["evidence"][0]["evidence_tier"] in {"official", "general"}
 
 
 def test_web_research_medical_profile_freshness_window_is_hard_terminal(
@@ -3044,6 +3044,118 @@ def test_web_research_progressively_replans_participant_lists_with_tiers(
         "https://reuters.example.test/delegation-report",
     ]
     assert result["stop_reason"] == "partial_result"
+    assert {source["source_tier"] for source in result["sources"]} == {"media_report"}
+    assert {item["evidence_tier"] for item in result["evidence"]} == {"media_report"}
+
+
+def test_web_research_keeps_uncorroborated_report_as_single_source_tier(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _urlopen(request, timeout=10, **_kwargs):
+        _ = timeout
+        url = request.full_url if hasattr(request, "full_url") else str(request)
+        if url == "https://apnews.example.test/delegation-list":
+            return _FakeUrlopenResponse(
+                "<html><head><title>AP delegation list</title></head><body>"
+                "<p>AP reported the delegation list included the foreign minister.</p>"
+                "</body></html>"
+            )
+        raise AssertionError(f"Unexpected URL requested during test: {url}")
+
+    provider = reference_web_research_core.FixtureWebResearchProvider(
+        search_results={
+            "Who accompanied the 2026 official trip": [
+                {
+                    "title": "AP delegation list",
+                    "url": "https://apnews.example.test/delegation-list",
+                    "excerpt": "AP reported the delegation list.",
+                }
+            ],
+        }
+    )
+    monkeypatch.setattr(reference_web_tool_impls, "_web_urlopen", _urlopen)
+    monkeypatch.setattr(
+        reference_web_tool_impls,
+        "_web_search_provider_registry",
+        reference_web_research_core.WebSearchProviderRegistry((provider,)),
+    )
+    runtime, _shape, runtime_root = _assemble_shared_reference_runtime(tmp_path, "weavert-shared-web-research")
+
+    result = asyncio.run(
+        runtime.kernel.tool_registry.get("web_research").execute(
+            {
+                "objective": "Who accompanied the 2026 official trip",
+                "search_budget": 1,
+                "fetch_budget": 1,
+                "desired_source_count": 1,
+            },
+            _tool_context(runtime, runtime_root),
+        )
+    )
+
+    assert result["sources"][0]["source_tier"] == "media_report"
+    assert result["evidence"][0]["evidence_tier"] == "single_source_report"
+    assert "_evidence_tier_explicit" not in result["evidence"][0]
+
+
+def test_web_research_promotes_corroborated_independent_reports_to_media_tier(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _urlopen(request, timeout=10, **_kwargs):
+        _ = timeout
+        url = request.full_url if hasattr(request, "full_url") else str(request)
+        if url == "https://apnews.example.test/delegation-list":
+            return _FakeUrlopenResponse(
+                "<html><head><title>AP delegation list</title></head><body>"
+                "<p>AP reported the delegation list included the foreign minister.</p>"
+                "</body></html>"
+            )
+        if url == "https://reuters.example.test/delegation-report":
+            return _FakeUrlopenResponse(
+                "<html><head><title>Reuters delegation report</title></head><body>"
+                "<p>Reuters reported the delegation list included senior advisers.</p>"
+                "</body></html>"
+            )
+        raise AssertionError(f"Unexpected URL requested during test: {url}")
+
+    provider = reference_web_research_core.FixtureWebResearchProvider(
+        search_results={
+            "Who accompanied the 2026 official trip": [
+                {
+                    "title": "AP delegation list",
+                    "url": "https://apnews.example.test/delegation-list",
+                    "excerpt": "AP reported the delegation list.",
+                },
+                {
+                    "title": "Reuters delegation report",
+                    "url": "https://reuters.example.test/delegation-report",
+                    "excerpt": "Reuters reported the delegation list.",
+                },
+            ],
+        }
+    )
+    monkeypatch.setattr(reference_web_tool_impls, "_web_urlopen", _urlopen)
+    monkeypatch.setattr(
+        reference_web_tool_impls,
+        "_web_search_provider_registry",
+        reference_web_research_core.WebSearchProviderRegistry((provider,)),
+    )
+    runtime, _shape, runtime_root = _assemble_shared_reference_runtime(tmp_path, "weavert-shared-web-research")
+
+    result = asyncio.run(
+        runtime.kernel.tool_registry.get("web_research").execute(
+            {
+                "objective": "Who accompanied the 2026 official trip",
+                "search_budget": 1,
+                "fetch_budget": 2,
+                "desired_source_count": 2,
+            },
+            _tool_context(runtime, runtime_root),
+        )
+    )
+
     assert {source["source_tier"] for source in result["sources"]} == {"media_report"}
     assert {item["evidence_tier"] for item in result["evidence"]} == {"media_report"}
 
