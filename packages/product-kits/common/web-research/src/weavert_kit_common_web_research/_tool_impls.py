@@ -38,13 +38,13 @@ from weavert_web_research import (
     web_urlopen,
 )
 
-_WEB_PRIMITIVE_DEFAULT_SEARCH_LIMIT = 8
+_WEB_PRIMITIVE_DEFAULT_SEARCH_LIMIT = 12
 _WEB_PRIMITIVE_DEFAULT_FETCH_CHARS = 12_000
 _WEB_PRIMITIVE_DEFAULT_FIND_LIMIT = 5
-_WEB_RESEARCH_DEFAULT_SEARCH_BUDGET = 4
-_WEB_RESEARCH_DEFAULT_FETCH_BUDGET = 4
-_WEB_RESEARCH_DEFAULT_FIND_BUDGET = 6
-_WEB_RESEARCH_DEFAULT_DESIRED_SOURCES = 3
+_WEB_RESEARCH_DEFAULT_SEARCH_BUDGET = 5
+_WEB_RESEARCH_DEFAULT_FETCH_BUDGET = 6
+_WEB_RESEARCH_DEFAULT_FIND_BUDGET = 8
+_WEB_RESEARCH_DEFAULT_DESIRED_SOURCES = 4
 _WEB_RESEARCH_MAX_TRACE_ITEMS = 64
 _WEB_RESEARCH_DEFAULT_MAX_CONCURRENT_FETCHES = 3
 _WEB_RESEARCH_RUN_ID_METADATA_KEY = "web_research_run_id"
@@ -756,37 +756,47 @@ async def _run_goal_driven_web_research_loop(
                     raise
                 continue
         inspected_after = len(state.evidence_payload())
-        if inspected_after == inspected_before:
-            promoted = 0
-            if not _is_hard_verification_profile(request.get("profile")):
+        made_progress = inspected_after > inspected_before
+        # Non-strict profiles (everything except legal_compliance / medical) backfill coverage
+        # from the provider's own search snippets when a search stalls (no new inspectable page)
+        # or when the search budget is spent but coverage is still below the desired count.
+        # Fetched pages are always preferred first; snippets only keep a thin run from collapsing
+        # into a cautious "could not verify" answer for general-knowledge questions. Legal/medical
+        # keep the strict "only assert inspected page text" posture and never promote snippets.
+        promoted = 0
+        if not _is_hard_verification_profile(request.get("profile")):
+            desired = int(request["budget"]["desired_source_count"])
+            search_budget = int(request["budget"]["search_budget"])
+            short_of_target = len(state.evidence_payload()) < desired
+            budget_spent = state.search_used >= search_budget
+            if short_of_target and (not made_progress or budget_spent):
                 promoted = state.record_snippet_evidence(
                     _list_of_mappings(search_result.get("results")),
                     tier="single_source_report",
                 )
-            if promoted:
-                low_yield_searches = 0
-                _record_loop_trace(
-                    state,
-                    {
-                        "event": "snippet_evidence_promoted",
-                        "stage": "select_pages",
-                        "query": query.query,
-                        "count": promoted,
-                    },
-                )
-            else:
-                low_yield_searches += 1
-                _record_loop_trace(
-                    state,
-                    {
-                        "event": "low_yield_search",
-                        "stage": "evaluate_progress",
-                        "query": query.query,
-                        "consecutive": low_yield_searches,
-                    },
-                )
-        else:
+                if promoted:
+                    _record_loop_trace(
+                        state,
+                        {
+                            "event": "snippet_evidence_promoted",
+                            "stage": "select_pages",
+                            "query": query.query,
+                            "count": promoted,
+                        },
+                    )
+        if made_progress or promoted:
             low_yield_searches = 0
+        else:
+            low_yield_searches += 1
+            _record_loop_trace(
+                state,
+                {
+                    "event": "low_yield_search",
+                    "stage": "evaluate_progress",
+                    "query": query.query,
+                    "consecutive": low_yield_searches,
+                },
+            )
         evaluation = _evaluate_loop_progress(
             request,
             state,
@@ -1312,6 +1322,14 @@ def _looks_like_aggregation_inquiry(objective: str) -> bool:
             "排名",
             "对比",
             "比较",
+            "大事件",
+            "大事",
+            "盘点",
+            "总览",
+            "概览",
+            "发生了什么",
+            "有什么",
+            "重大事件",
             "list",
             "list of",
             "all the",
@@ -1320,6 +1338,11 @@ def _looks_like_aggregation_inquiry(objective: str) -> bool:
             "ranking",
             "how many",
             "which ones",
+            "what happened",
+            "major events",
+            "key events",
+            "roundup",
+            "overview of",
         )
     )
 
@@ -3379,7 +3402,7 @@ def _budget_profile_defaults(profile: str) -> dict[str, int]:
         "fetch_budget": _WEB_RESEARCH_DEFAULT_FETCH_BUDGET,
         "find_budget": _WEB_RESEARCH_DEFAULT_FIND_BUDGET,
         "desired_source_count": _WEB_RESEARCH_DEFAULT_DESIRED_SOURCES,
-        "max_turns": 4,
+        "max_turns": 5,
         "max_concurrent_fetches": _WEB_RESEARCH_DEFAULT_MAX_CONCURRENT_FETCHES,
     }
 
@@ -4072,10 +4095,15 @@ def _effective_web_tool_input(kind: str, tool_input: Mapping[str, Any], context:
 
 def _web_research_candidate_search_limit(state: WebResearchLoopState) -> int:
     budget = state.request["budget"]
+    desired = int(budget["desired_source_count"])
     remaining_fetches = max(1, int(budget["fetch_budget"]) - state.fetch_used)
-    remaining_sources = max(1, int(budget["desired_source_count"]) - len(state.evidence_payload()))
+    remaining_sources = max(1, desired - len(state.evidence_payload()))
     candidate_need = min(remaining_fetches, remaining_sources, max(1, state.max_concurrent_fetches))
-    breadth = 4 if int(budget["desired_source_count"]) == 1 else int(budget["desired_source_count"])
+    # Pull a wider candidate pool than we strictly need to inspect, so each search (and the
+    # first one especially) surfaces spare high-quality, domain-diverse pages to choose from
+    # and to replan against — instead of stopping after the first two or three hits. The
+    # provider result limit still caps it.
+    breadth = 4 if desired == 1 else max(desired + 4, 6)
     return min(_WEB_PRIMITIVE_DEFAULT_SEARCH_LIMIT, max(candidate_need, breadth))
 
 

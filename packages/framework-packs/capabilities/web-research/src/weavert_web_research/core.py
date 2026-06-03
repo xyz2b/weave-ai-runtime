@@ -59,7 +59,7 @@ class WebResearchPolicy:
     provider: str | None = None
     max_fetch_bytes: int = _DEFAULT_FETCH_BYTES
     max_text_chars: int = _DEFAULT_FETCH_CHARS
-    max_search_results: int = 8
+    max_search_results: int = 12
     max_find_matches: int = 5
     excerpt_chars: int = 280
 

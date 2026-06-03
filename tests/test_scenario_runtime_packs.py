@@ -3805,7 +3805,11 @@ def test_web_research_single_search_can_fetch_multiple_candidates(
         )
     )
 
-    assert provider.search_limits == [3]
+    # The runtime now requests a wider candidate pool than the desired source count so a
+    # single search surfaces spare, domain-diverse pages to choose from (breadth = desired + 4,
+    # capped at the provider result limit). The provider only has three hits, so all three are
+    # still fetched.
+    assert provider.search_limits == [7]
     assert opened_urls == [
         "https://grounding.example.test/one",
         "https://grounding.example.test/two",
