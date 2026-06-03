@@ -398,10 +398,13 @@ _WEB_RESEARCH_MODEL_TURN_CONTRACTS: dict[str, dict[str, Any]] = {
             "rationale": "optional short reason",
         },
         "instructions": (
-            "Triage one research objective. Choose 'pro' only when a correct answer requires "
-            "aggregating or enumerating entities across multiple sources, comparison, ranking, or an "
-            "open-ended roundup. Choose 'deterministic' for a single fact, definition, lookup, or "
-            "yes/no verification. Decide from the objective's intent, not from any specific keywords."
+            "Triage one research objective. Choose 'pro' when a correct answer requires "
+            "aggregating or enumerating entities across multiple sources, comparison, ranking, an "
+            "open-ended roundup, or any fact that requires live web retrieval to verify (news, events, "
+            "current state of anything). Choose 'deterministic' only for stable facts that are unlikely "
+            "to change and can be confirmed from a single authoritative source (definitions, math, "
+            "well-established historical facts). When in doubt, choose 'pro'. "
+            "Decide from the objective's intent, not from any specific keywords."
         ),
         "authority": "Router proposes the research strategy only; runtime owns budgets, evidence, and validation.",
     },

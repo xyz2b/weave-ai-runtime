@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "weavert-kit-common-web-research"
-version = "0.1.5"
+version = "0.1.6"
 description = "Unified AI-first web_research and read-only web primitive kit surfaces for WeaveRT product kits."
 readme = "README.md"
 license = "Apache-2.0"
