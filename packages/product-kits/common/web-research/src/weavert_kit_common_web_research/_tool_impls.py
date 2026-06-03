@@ -49,6 +49,24 @@ _WEB_RESEARCH_MAX_TRACE_ITEMS = 64
 _WEB_RESEARCH_DEFAULT_MAX_CONCURRENT_FETCHES = 3
 _WEB_RESEARCH_RUN_ID_METADATA_KEY = "web_research_run_id"
 _WEB_RESEARCH_MAX_REPLAN_PASSES = 4
+# Budget fields the Pro loop can raise at runtime (Plan C: model-directed scaling).
+_WEB_RESEARCH_BUDGET_KEYS = (
+    "search_budget",
+    "fetch_budget",
+    "find_budget",
+    "desired_source_count",
+    "max_turns",
+    "max_concurrent_fetches",
+)
+# Runtime breadth thresholds. Instead of guessing "is this an enumeration question?"
+# from objective keywords, the Pro loop watches what the planner *actually* does and
+# treats these as the trigger to lift the in-flight budget for aggregation work.
+_WEB_RESEARCH_BREADTH_SEARCH_ACTION_THRESHOLD = 3
+_WEB_RESEARCH_BREADTH_DISTINCT_QUERY_THRESHOLD = 4
+_WEB_RESEARCH_BREADTH_MISSING_THRESHOLD = 3
+_WEB_RESEARCH_BREADTH_INCOMPLETE_STATUSES = frozenset(
+    {"incomplete", "partial", "insufficient", "remaining_gaps", "in_progress"}
+)
 _WEB_RESEARCH_SUPPORTED_STRATEGIES = frozenset({"deterministic", "pro"})
 # Profiles that keep the strict "only assert inspected page text" posture: they never
 # promote search snippets to evidence and never project an unbound synthesized answer.
@@ -65,10 +83,15 @@ _WEB_RESEARCH_MODEL_RESPONSE_METADATA_KEY = "web_research_model_responses"
 _WEB_RESEARCH_PRO_DEFAULT_METADATA_KEY = "web_research_default_strategy"
 _WEB_RESEARCH_PRO_OPT_IN_METADATA_KEY = "web_research_pro_default"
 _WEB_RESEARCH_DEFAULT_SYNTHESIS_REPAIR_TURNS = 1
+_WEB_RESEARCH_ROUTER_SCHEMA_VERSION = "web_research.router.v1"
 _WEB_RESEARCH_PLANNER_SCHEMA_VERSION = "web_research.planner.v1"
 _WEB_RESEARCH_SYNTHESIZER_SCHEMA_VERSION = "web_research.synthesizer.v1"
 _WEB_RESEARCH_VERIFIER_SCHEMA_VERSION = "web_research.verifier.v1"
 _WEB_RESEARCH_REPAIR_SCHEMA_VERSION = "web_research.repair.v1"
+# Bounded cache of router (strategy-triage) decisions keyed by (objective, profile, mode)
+# so repeated identical requests don't pay for the entry classification twice.
+_WEB_RESEARCH_ROUTER_CACHE: dict[tuple[str, str, str], bool] = {}
+_WEB_RESEARCH_ROUTER_CACHE_MAX = 512
 _WEB_RESEARCH_ANSWER_UNIT_KINDS = frozenset({"claim", "limitation", "gap", "conflict", "transition"})
 _WEB_RESEARCH_ANSWER_UNIT_SUPPORTS = frozenset(
     {"entailed", "limitation", "gap", "conflict", "non_factual", "unsupported", "contradicted"}
@@ -364,6 +387,24 @@ class SynthesisResponse:
 
 
 _WEB_RESEARCH_MODEL_TURN_CONTRACTS: dict[str, dict[str, Any]] = {
+    "router": {
+        "schema_version": _WEB_RESEARCH_ROUTER_SCHEMA_VERSION,
+        "required": ("schema_version",),
+        "response": {
+            "type": "object",
+            "required_any": ("strategy", "needs_model_synthesis"),
+            "strategy": "either 'deterministic' or 'pro'",
+            "needs_model_synthesis": "boolean: true when answering needs cross-source entity aggregation, comparison, ranking, or open-ended roundup",
+            "rationale": "optional short reason",
+        },
+        "instructions": (
+            "Triage one research objective. Choose 'pro' only when a correct answer requires "
+            "aggregating or enumerating entities across multiple sources, comparison, ranking, or an "
+            "open-ended roundup. Choose 'deterministic' for a single fact, definition, lookup, or "
+            "yes/no verification. Decide from the objective's intent, not from any specific keywords."
+        ),
+        "authority": "Router proposes the research strategy only; runtime owns budgets, evidence, and validation.",
+    },
     "planner": {
         "schema_version": _WEB_RESEARCH_PLANNER_SCHEMA_VERSION,
         "required": ("schema_version",),
@@ -537,18 +578,27 @@ async def web_research_tool(tool_input: dict[str, Any], context: ToolContext) ->
     if normalized.get("strategy_source") == "omitted" and _runtime_pro_strategy_opted_in(context):
         normalized = dict(normalized)
         normalized["strategy"] = "pro"
-    # List / roster / comparison questions need cross-source entity aggregation, which only the
-    # model-directed (Pro) synthesis can do. Auto-select it when the caller left strategy unset
-    # and a real model client is wired; deterministic stays the baseline everywhere else.
+    # Plan A — model-directed entry routing. When the caller left strategy unset and a model
+    # is wired, ask a cheap router turn whether this objective needs cross-source aggregation
+    # (Pro) instead of pattern-matching keywords in the objective. The keyword heuristic
+    # survives only as the fallback when the router is unavailable or returns an ambiguous
+    # verdict; deterministic stays the baseline everywhere else.
     if (
         normalized.get("strategy_source") == "omitted"
         and normalized.get("strategy") != "pro"
-        and _objective_benefits_from_model_synthesis(normalized.get("objective"))
         and _pro_model_provider_available(context)
     ):
-        normalized = dict(normalized)
-        normalized["strategy"] = "pro"
-        normalized["strategy_auto_reason"] = "aggregation_objective"
+        objective = normalized.get("objective")
+        route_pro = await _request_router_decision(objective, normalized, context)
+        if route_pro is None:
+            route_pro = _objective_benefits_from_model_synthesis(objective)
+            auto_reason = "aggregation_objective_keyword_fallback" if route_pro else None
+        else:
+            auto_reason = "router_model_decision" if route_pro else None
+        if route_pro:
+            normalized = dict(normalized)
+            normalized["strategy"] = "pro"
+            normalized["strategy_auto_reason"] = auto_reason
     if normalized.get("strategy") == "pro" and not _pro_model_provider_available(context):
         normalized = dict(normalized)
         normalized["requested_strategy"] = "pro"
@@ -593,6 +643,47 @@ def _pro_model_provider_available(context: ToolContext) -> bool:
     if callable(context.metadata.get("web_research_model_client")):
         return True
     return _runtime_model_client(context) is not None
+
+
+async def _request_router_decision(objective: Any, request: Mapping[str, Any], context: ToolContext) -> bool | None:
+    """Cheap entry triage (Plan A): ask the model whether this objective needs the
+    Pro (model-directed, cross-source aggregation) loop. Returns True for Pro, False
+    for deterministic, or None when the router is unavailable or its verdict is
+    ambiguous — in which case the caller falls back to the keyword heuristic.
+    """
+    text = str(objective or "").strip()
+    if not text:
+        return None
+    cache_key = (text, str(request.get("profile") or "general"), str(request.get("mode") or "focused"))
+    if cache_key in _WEB_RESEARCH_ROUTER_CACHE:
+        return _WEB_RESEARCH_ROUTER_CACHE[cache_key]
+    payload = {"objective": text, "profile": cache_key[1], "mode": cache_key[2]}
+    try:
+        raw = await _request_internal_model_json("router", payload, context, required=False)
+    except ValueError:
+        return None
+    decision = _interpret_router_decision(raw)
+    if decision is not None:
+        if len(_WEB_RESEARCH_ROUTER_CACHE) >= _WEB_RESEARCH_ROUTER_CACHE_MAX:
+            _WEB_RESEARCH_ROUTER_CACHE.clear()
+        _WEB_RESEARCH_ROUTER_CACHE[cache_key] = decision
+    return decision
+
+
+def _interpret_router_decision(raw: Mapping[str, Any] | None) -> bool | None:
+    if not isinstance(raw, Mapping):
+        return None
+    strategy = str(raw.get("strategy") or "").strip().lower()
+    if strategy in _WEB_RESEARCH_SUPPORTED_STRATEGIES:
+        return strategy == "pro"
+    flag = raw.get("needs_model_synthesis")
+    if flag is None:
+        flag = raw.get("needs_pro")
+    if flag is None:
+        flag = raw.get("aggregation")
+    if flag is None:
+        return None
+    return _normalize_bool(flag, default=False)
 
 
 def _runtime_pro_strategy_opted_in(context: ToolContext) -> bool:
@@ -883,6 +974,66 @@ async def _run_goal_driven_web_research_loop(
     }
 
 
+def _planner_signals_breadth(decision: PlannerDecision, state: WebResearchLoopState) -> bool:
+    """Detect an enumeration/aggregation objective from the planner's *actual* output.
+
+    This is the model-directed replacement for entry-time objective-keyword guessing
+    (``_objective_benefits_from_model_synthesis``): rather than matching words in the
+    objective, we watch how broadly the planner fans out — how many distinct search
+    lines it pursues and how many coverage items it still reports missing. A roster /
+    list / comparison question shows up here as wide fan-out or a long ``missing`` list,
+    regardless of how the user phrased it. The keyword table survives only as a
+    warm-start fallback at entry, not as the primary trigger.
+    """
+    breadth_actions = sum(1 for action in decision.actions if action.type in {"search", "find"})
+    if breadth_actions >= _WEB_RESEARCH_BREADTH_SEARCH_ACTION_THRESHOLD:
+        return True
+    if len(state.queries_payload()) >= _WEB_RESEARCH_BREADTH_DISTINCT_QUERY_THRESHOLD:
+        return True
+    coverage = decision.coverage
+    if coverage is not None:
+        missing = len(coverage.missing)
+        if missing >= _WEB_RESEARCH_BREADTH_MISSING_THRESHOLD:
+            return True
+        if missing >= 2 and str(coverage.status or "").strip().lower() in _WEB_RESEARCH_BREADTH_INCOMPLETE_STATUSES:
+            return True
+    if len(decision.expected_gaps) >= _WEB_RESEARCH_BREADTH_MISSING_THRESHOLD:
+        return True
+    return False
+
+
+def _scale_pro_budget_runtime(request: Mapping[str, Any], state: WebResearchLoopState, *, reason: str) -> bool:
+    """Raise the in-flight Pro-loop budget when the planner's output reveals breadth.
+
+    Caps only ever move up — and never past the ceilings in
+    ``_scale_budget_for_aggregation`` — so caller-supplied or already-larger budgets
+    keep winning. Returns ``True`` only when at least one cap was actually lifted, so
+    the caller can stop re-checking. The mutated ``request["budget"]`` is the same dict
+    the loop and ``state.reserve`` read from, so the higher caps take effect for the
+    remainder of the run (including ``max_turns``, which the loop re-reads each turn).
+    """
+    budget = request.get("budget")
+    if not isinstance(budget, dict):
+        return False
+    explicit = set(request.get("budget_explicit_fields") or ())
+    current = {key: int(budget.get(key, 0)) for key in _WEB_RESEARCH_BUDGET_KEYS}
+    target = _scale_budget_for_aggregation(current)
+    raised = {key: value for key, value in target.items() if key not in explicit and value > current[key]}
+    if not raised:
+        return False
+    budget.update(raised)
+    _record_loop_trace(
+        state,
+        {
+            "event": "pro_budget_scaled",
+            "reason": reason,
+            "before": current,
+            "after": {key: int(budget[key]) for key in _WEB_RESEARCH_BUDGET_KEYS},
+        },
+    )
+    return True
+
+
 async def _run_pro_web_research_loop(
     request: Mapping[str, Any],
     context: ToolContext,
@@ -891,8 +1042,11 @@ async def _run_pro_web_research_loop(
     _record_loop_trace(state, {"event": "strategy_selected", "strategy": "pro"})
     invalid_actions = 0
     stop_intent: str | None = None
-    max_turns = int(request["budget"]["max_turns"])
-    for turn_index in range(max_turns):
+    budget_scaled = False
+    turn_index = 0
+    # Re-read max_turns each iteration: runtime budget scaling (Plan C) can lift it
+    # mid-loop when the planner's output reveals an enumeration objective.
+    while turn_index < int(request["budget"]["max_turns"]):
         payload = _build_planner_request_payload(request, state, turn_index=turn_index)
         _record_loop_trace(
             state,
@@ -919,6 +1073,11 @@ async def _run_pro_web_research_loop(
             state.record_gap({"kind": "malformed_planner_output", "message": "Planner response could not be parsed as a bounded decision."})
             break
         _record_planner_decision_trace(state, decision, turn_index=turn_index)
+        # Plan C — model-directed budget: if the planner's own output shows it is
+        # enumerating across many sources, lift the in-flight budget before executing
+        # this turn's actions so they (and the remaining turns) get the wider headroom.
+        if not budget_scaled and _planner_signals_breadth(decision, state):
+            budget_scaled = _scale_pro_budget_runtime(request, state, reason="planner_breadth_signal")
         if decision.expected_gaps:
             for gap in decision.expected_gaps:
                 state.record_gap({"kind": gap.kind, "message": gap.message, **({"subquestion_id": gap.subquestion_id} if gap.subquestion_id else {})})
@@ -944,6 +1103,7 @@ async def _run_pro_web_research_loop(
                 )
                 state.record_gap({"kind": "invalid_stop_intent", "message": "Planner stop intent was not supported by ledger coverage."})
             break
+        turn_index += 1
     state.finalize_provider_and_freshness_trace()
     stop_reason = _pro_runtime_terminal_decision(request, state, stop_intent=stop_intent)
     synthesis = await _run_pro_synthesis(request, context, state)
@@ -3116,6 +3276,7 @@ def _normalized_web_research_execution_input(tool_input: Mapping[str, Any]) -> d
             "preferences": dict(tool_input["preferences"]),
             "budget": dict(tool_input["budget"]),
             "budget_profile": str(tool_input["budget_profile"]),
+            "budget_explicit_fields": [str(field) for field in tool_input.get("budget_explicit_fields") or []],
             "freshness_required": bool(tool_input["freshness_required"]),
             "output_hints": dict(tool_input["output_hints"]),
         }
@@ -3266,9 +3427,12 @@ def _normalize_web_research_input(tool_input: Mapping[str, Any]) -> dict[str, An
         freshness_required = _normalize_bool(tool_input.get("freshness_required"))
     budget_profile = str(tool_input.get("budget_profile") or tool_input.get("depth") or "standard").strip().lower()
     profile_defaults = _budget_profile_defaults(budget_profile)
-    # Roster / list / comparison questions need to read more sources to assemble a complete
-    # answer, so raise the *defaults* for them. Explicit caller-supplied budgets still win,
-    # because _bounded_int only falls back to these defaults when the field is unset.
+    # Warm-start fallback only: the Pro loop now scales its budget at runtime from the
+    # planner's actual fan-out (Plan C, _scale_pro_budget_runtime), so this keyword bump
+    # is no longer the primary driver. It still matters for the deterministic path (which
+    # has no planner to observe) and gives keyword-matched Pro runs a head start. Explicit
+    # caller-supplied budgets still win, because _bounded_int only falls back to these
+    # defaults when the field is unset.
     if _objective_benefits_from_model_synthesis(objective):
         profile_defaults = _scale_budget_for_aggregation(profile_defaults)
     desired_source_default = (
@@ -3305,6 +3469,12 @@ def _normalize_web_research_input(tool_input: Mapping[str, Any]) -> dict[str, An
     for key, value in preferences_map.items():
         if key not in preferences_payload:
             preferences_payload[str(key)] = value
+    # Record which budget fields the caller set explicitly so runtime scaling (Plan C)
+    # can leave those alone — an explicit cap is an intent we honor, exactly as the
+    # entry-time defaults do via _bounded_int.
+    explicit_budget_fields = [field for field in _WEB_RESEARCH_BUDGET_KEYS if tool_input.get(field) is not None]
+    if compact_desired_source_count is not None and "desired_source_count" not in explicit_budget_fields:
+        explicit_budget_fields.append("desired_source_count")
     return {
         "objective": objective,
         "profile": profile,
@@ -3360,6 +3530,7 @@ def _normalize_web_research_input(tool_input: Mapping[str, Any]) -> dict[str, An
             ),
         },
         "budget_profile": budget_profile,
+        "budget_explicit_fields": sorted(explicit_budget_fields),
         "freshness_required": freshness_required,
         "output_hints": dict(output_hints or {}),
     }

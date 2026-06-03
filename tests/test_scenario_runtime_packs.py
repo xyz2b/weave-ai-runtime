@@ -365,6 +365,8 @@ def _tool_context(runtime, cwd: Path) -> ToolContext:
 
 
 def _pro_schema_version(kind: str) -> str:
+    if kind == "router":
+        return reference_web_tool_impls._WEB_RESEARCH_ROUTER_SCHEMA_VERSION
     if kind == "planner":
         return reference_web_tool_impls._WEB_RESEARCH_PLANNER_SCHEMA_VERSION
     if kind == "synthesizer":
@@ -1637,6 +1639,167 @@ def test_pro_web_research_planner_search_fetch_and_evidence_bound_synthesis(
     assert result["claims"][0]["evidence_id"]
     assert any(event["event"] == "planner_decision" for event in result["trace_summary"])
     assert any(event["event"] == "synthesis_validated" for event in result["trace_summary"])
+
+
+def test_planner_breadth_signal_scales_pro_budget_without_keywords() -> None:
+    impls = reference_web_tool_impls
+    core = reference_web_research_core
+    objective = "Tell me about the current state of things."
+    # Plan C premise: the objective carries no aggregation keyword, so the entry-time
+    # heuristic stays off — runtime adaptation is the only thing that can scale here.
+    assert impls._objective_benefits_from_model_synthesis(objective) is False
+
+    request = {
+        "objective": objective,
+        "profile": "general",
+        "budget": dict(impls._budget_profile_defaults("quick")),
+        "budget_explicit_fields": [],
+    }
+    state = core.WebResearchLoopState(request)
+    # The planner fans out across three independent search lines: that breadth — not a
+    # keyword in the objective — is what marks this as an enumeration task.
+    decision = impls.PlannerDecision(
+        actions=(
+            impls.ResearchAction(type="search", query="q1"),
+            impls.ResearchAction(type="search", query="q2"),
+            impls.ResearchAction(type="search", query="q3"),
+        )
+    )
+    assert impls._planner_signals_breadth(decision, state) is True
+
+    before = dict(request["budget"])
+    assert impls._scale_pro_budget_runtime(request, state, reason="planner_breadth_signal") is True
+    assert request["budget"]["search_budget"] > before["search_budget"]
+    assert request["budget"]["desired_source_count"] >= 5
+    assert request["budget"]["max_turns"] >= 6
+    # Idempotent: nothing left to raise on a second pass.
+    assert impls._scale_pro_budget_runtime(request, state, reason="planner_breadth_signal") is False
+    scaled_events = [event for event in state.trace_summary() if event.get("event") == "pro_budget_scaled"]
+    assert len(scaled_events) == 1
+    assert scaled_events[0]["before"]["search_budget"] == before["search_budget"]
+
+    # A narrow, single-query plan must NOT trip the breadth signal.
+    narrow_state = core.WebResearchLoopState(
+        {"objective": objective, "profile": "general", "budget": dict(impls._budget_profile_defaults("quick")), "budget_explicit_fields": []}
+    )
+    narrow_decision = impls.PlannerDecision(actions=(impls.ResearchAction(type="search", query="only"),))
+    assert impls._planner_signals_breadth(narrow_decision, narrow_state) is False
+
+    # Explicit caller budgets are honored: a pinned field is never overridden at runtime.
+    pinned_request = {
+        "objective": objective,
+        "profile": "general",
+        "budget": dict(impls._budget_profile_defaults("quick")),
+        "budget_explicit_fields": ["search_budget"],
+    }
+    pinned_state = core.WebResearchLoopState(pinned_request)
+    pinned_value = pinned_request["budget"]["search_budget"]
+    assert impls._scale_pro_budget_runtime(pinned_request, pinned_state, reason="planner_breadth_signal") is True
+    assert pinned_request["budget"]["search_budget"] == pinned_value
+    assert pinned_request["budget"]["desired_source_count"] >= 5
+
+
+def test_interpret_router_decision_reads_strategy_and_flag() -> None:
+    impls = reference_web_tool_impls
+    assert impls._interpret_router_decision({"strategy": "pro"}) is True
+    assert impls._interpret_router_decision({"strategy": "deterministic"}) is False
+    assert impls._interpret_router_decision({"needs_model_synthesis": True}) is True
+    assert impls._interpret_router_decision({"needs_model_synthesis": False}) is False
+    # Ambiguous / empty verdict -> None so the caller falls back to the keyword heuristic.
+    assert impls._interpret_router_decision({"rationale": "unsure"}) is None
+    assert impls._interpret_router_decision(None) is None
+
+
+def test_router_routes_omitted_strategy_to_pro_without_keywords(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reference_web_tool_impls._WEB_RESEARCH_ROUTER_CACHE.clear()
+    query = "company refund window"
+    url = "https://grounding.example.test/refund-policy"
+    # No aggregation keyword in the objective: only the model router can route this to Pro.
+    objective = "Tell me about the refund window."
+    assert reference_web_tool_impls._objective_benefits_from_model_synthesis(objective) is False
+
+    provider = reference_web_research_core.FixtureWebResearchProvider(
+        search_results={query: [{"title": "Refund policy", "url": url}]},
+    )
+    monkeypatch.setattr(reference_web_tool_impls, "_web_urlopen", _web_urlopen)
+    monkeypatch.setattr(
+        reference_web_tool_impls,
+        "_web_search_provider_registry",
+        reference_web_research_core.WebSearchProviderRegistry((provider,)),
+    )
+    runtime, _shape, runtime_root = _assemble_shared_reference_runtime(tmp_path, "weavert-shared-web-research")
+    context = _tool_context(runtime, runtime_root)
+
+    def _synthesis_response(kind: str, payload: dict[str, Any]) -> dict[str, Any]:
+        assert kind == "synthesizer"
+        evidence_id = payload["evidence"][0]["id"]
+        return _pro_response(
+            "synthesizer",
+            answer="The company background summary.",
+            claims=[{"id": "claim-bg", "claim": "Background summary.", "evidence_ids": [evidence_id]}],
+            answer_units=[
+                _answer_unit("unit-bg", "The company background summary.", claim_ids=["claim-bg"], evidence_ids=[evidence_id])
+            ],
+            confidence="high",
+        )
+
+    context.metadata[reference_web_tool_impls._WEB_RESEARCH_MODEL_RESPONSE_METADATA_KEY] = [
+        _pro_response("router", strategy="pro"),
+        _pro_response("planner", actions=[{"type": "search", "query": query}], rationale="Find candidates."),
+        _pro_response("planner", actions=[{"type": "fetch", "source_handle": url}], stop_intent="sufficient_evidence"),
+        _synthesis_response,
+        _pro_response("verifier", unit_statuses=[_verifier_unit("unit-bg", claim_ids=["claim-bg"], evidence_ids=[])]),
+    ]
+
+    result = asyncio.run(
+        runtime.kernel.tool_registry.get("web_research").execute(
+            {"objective": objective, "search_budget": 1, "fetch_budget": 1, "desired_source_count": 1},
+            context,
+        )
+    )
+
+    assert result["strategy"] == "pro"
+    assert result["answer"] == "The company background summary."
+    # The router response was consumed first, ahead of the planner turns.
+    assert reference_web_tool_impls._WEB_RESEARCH_MODEL_RESPONSE_METADATA_KEY in context.metadata
+
+
+def test_router_overrides_keyword_to_keep_deterministic(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reference_web_tool_impls._WEB_RESEARCH_ROUTER_CACHE.clear()
+    # The objective DOES hit the keyword table, so the old heuristic would force Pro.
+    objective = "Which ones are on the list?"
+    assert reference_web_tool_impls._objective_benefits_from_model_synthesis(objective) is True
+
+    provider = reference_web_research_core.FixtureWebResearchProvider()
+    monkeypatch.setattr(reference_web_tool_impls, "_web_urlopen", _web_urlopen)
+    monkeypatch.setattr(
+        reference_web_tool_impls,
+        "_web_search_provider_registry",
+        reference_web_research_core.WebSearchProviderRegistry((provider,)),
+    )
+    runtime, _shape, runtime_root = _assemble_shared_reference_runtime(tmp_path, "weavert-shared-web-research")
+    context = _tool_context(runtime, runtime_root)
+    # The deterministic loop makes no model calls, so the router verdict is the only turn.
+    context.metadata[reference_web_tool_impls._WEB_RESEARCH_MODEL_RESPONSE_METADATA_KEY] = [
+        _pro_response("router", strategy="deterministic"),
+    ]
+
+    result = asyncio.run(
+        runtime.kernel.tool_registry.get("web_research").execute(
+            {"objective": objective, "search_budget": 1, "fetch_budget": 1, "desired_source_count": 1},
+            context,
+        )
+    )
+
+    # Model router beats the keyword heuristic: stays deterministic, and consumed the verdict.
+    assert result["strategy"] == "deterministic"
+    assert context.metadata[reference_web_tool_impls._WEB_RESEARCH_MODEL_RESPONSE_METADATA_KEY] == []
 
 
 def test_web_research_omitted_strategy_runtime_pro_opt_in_runs_pro_loop(
